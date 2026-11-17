@@ -1,12 +1,9 @@
 //! Byte-class tables shared by the ICAP grammar.
 
 use rama_utils::{
-    byte_set::{set_ascii_alphanum, set_each, set_range},
+    byte_set::{set_each, set_range},
     bytes::trim_ows,
 };
-
-/// RFC 2616 `token`, used by ICAP methods, field names, and chunk extensions.
-const TOKEN_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"!#$%&'*+-.^_`|~");
 
 /// RFC 2616 `TEXT` after the parser has excluded line endings.
 // `set_range` has an exclusive upper bound; `\xff` closes the obs-text range.
@@ -30,11 +27,6 @@ const QUOTED_TEXT_BYTE_SET: [bool; 256] = set_each(
 );
 
 const HORIZONTAL_WHITESPACE_BYTE_SET: [bool; 256] = set_each([false; 256], b" \t");
-
-#[inline(always)]
-pub(crate) const fn is_token_byte(byte: u8) -> bool {
-    TOKEN_BYTE_SET[byte as usize]
-}
 
 #[inline(always)]
 pub(crate) const fn is_field_value_byte(byte: u8) -> bool {
@@ -62,9 +54,6 @@ mod tests {
     #[test]
     fn byte_tables_match_the_protocol_classes() {
         for byte in u8::MIN..=u8::MAX {
-            let token = matches!(byte, 0x21..=0x7e) && !b"()<>@,;:\\\"/[]?={}".contains(&byte);
-            assert_eq!(is_token_byte(byte), token, "token byte {byte:#04x}");
-
             let field_value = matches!(byte, b'\t' | b' '..=b'~' | 0x80..=0xff);
             assert_eq!(
                 is_field_value_byte(byte),

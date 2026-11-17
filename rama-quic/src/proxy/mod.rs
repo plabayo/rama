@@ -28,8 +28,8 @@ pub use mitm::{
 
 mod migration;
 pub use migration::{
-    QuicEgressMigration, QuicMigrationConfig, QuicMigrationDecision, QuicMigrationFailureAction,
-    QuicMigrationInput, QuicMigrationLayer, QuicMigrationService, QuicMigrationSide,
-    QuicMigrationTrigger, QuicNetworkAvailability, QuicNetworkChanges, QuicNetworkPath,
-    QuicNetworkSnapshot, QuicPathAction, QuicTransportReplacement,
+    QuicEgressConnector, QuicEgressMigration, QuicMigrationConfig, QuicMigrationDecision,
+    QuicMigrationFailureAction, QuicMigrationInput, QuicMigrationLayer, QuicMigrationService,
+    QuicMigrationSide, QuicMigrationTrigger, QuicNetworkSnapshot, QuicPathAction,
+    QuicTransportReplacement,
 };

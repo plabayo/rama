@@ -1,6 +1,10 @@
 use core::num::NonZeroUsize;
 use rama_utils::macros::generate_set_and_with;
 
+/// Default for [`ParseConfig::with_max_line_bytes`]: far above any line a real peer sends.
+pub const DEFAULT_MAX_LINE_BYTES: NonZeroUsize =
+    NonZeroUsize::new(rama_utils::octets::mib(16)).expect("16 MiB is not zero");
+
 /// Controls how the parser deals with lines that contain no JSON values.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum EmptyLineHandling {
@@ -26,11 +30,10 @@ pub enum EmptyLineHandling {
 /// Configuration for the NDJSON-parser which controls the behavior in various situations.
 ///
 /// By default, the parser will skip empty lines ([`EmptyLineHandling::IgnoreEmpty`]) and accept
-/// lines of unbounded size. The unbounded line size is **safe only for trusted input** — when
-/// parsing data from an untrusted peer (e.g. a remote proxy backend), set
-/// [`ParseConfig::with_max_line_bytes`] to bound memory usage. Oversized lines are reported as a
-/// parse error and the engine resyncs to the next newline so subsequent lines can still be
-/// decoded.
+/// lines up to [`DEFAULT_MAX_LINE_BYTES`]. Tighten that with
+/// [`ParseConfig::with_max_line_bytes`] for untrusted input, or lift it with
+/// [`ParseConfig::without_max_line_bytes`]. Oversized lines are reported as a parse error and
+/// the engine resyncs to the next newline so subsequent lines can still be decoded.
 ///
 /// You can construct a config by first calling [`ParseConfig::default`] and then using the
 /// builder-style associated functions to configure it. See the example below.
@@ -46,7 +49,7 @@ impl Default for ParseConfig {
         Self {
             empty_line_handling: Default::default(),
             parse_rest: true,
-            max_line_bytes: None,
+            max_line_bytes: Some(DEFAULT_MAX_LINE_BYTES),
         }
     }
 }
@@ -87,9 +90,8 @@ impl ParseConfig {
         /// (i.e. between two `\n` characters) exceed this limit, the engine emits a parse error
         /// and resynchronises to the next newline; subsequent lines can still be decoded.
         ///
-        /// `None` (the default) means no limit — appropriate only for trusted input sources.
-        /// Set this for any NDJSON stream sourced from an untrusted peer to avoid unbounded
-        /// memory growth from a peer that never sends a `\n`.
+        /// Defaults to [`DEFAULT_MAX_LINE_BYTES`]. `None` means no limit, appropriate only for
+        /// trusted input sources.
         ///
         /// # Returns
         ///

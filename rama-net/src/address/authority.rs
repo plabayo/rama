@@ -24,6 +24,9 @@ use crate::{
 /// which percent-decodes and validates; [`From<Basic>`](UserInfo) is the
 /// percent-encoding reverse. The two types are kept distinct on purpose.
 ///
+/// Parsing: an unbracketed IPv6 address never carries a port (`::1:80` is one
+/// address); a port requires brackets (`[::1]:80`).
+///
 /// ## Examples
 ///
 /// - example.com
@@ -591,45 +594,15 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
     let host;
     let mut port = OptPort::Unset;
 
-    // Standalone bracketed IP-literal (no trailing port): `[::1]` or
-    // `[v1.fe80::a]`. Without this fast-path the colon-split below
-    // treats the final `:` inside the address as a port separator.
-    if s.starts_with('[') && s.ends_with(']') {
-        let inside = &s[1..s.len() - 1];
-        if inside.is_empty() {
-            return Err(BoxError::from_static_str("empty bracketed IP-literal"));
-        }
-        // IPvFuture: `[v1.xxx]` — stored as `Uninterpreted(bracketed=true)`
-        // verbatim, matching the URI authority parser's shape.
-        if matches!(inside.as_bytes().first(), Some(b'v' | b'V')) {
-            crate::uri::parser::authority::validate_ipvfuture(inside.as_bytes())
-                .map_err(BoxError::from)
-                .context("parse bracketed IPvFuture")?;
-            return Ok(Authority {
-                user_info,
-                address: HostWithOptPort {
-                    host: Host::Uninterpreted(super::UninterpretedHost::from_validated(
-                        inside.into(),
-                        true,
-                    )),
-                    port: OptPort::Unset,
-                },
-            });
-        }
-        if crate::address::parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
-            return Err(BoxError::from_static_str(
-                "ipv6 zone identifiers (RFC 6874) are not supported",
-            ));
-        }
-        let addr = inside
-            .parse::<Ipv6Addr>()
-            .context("parse bracketed ipv6 authority host without port")?;
+    if s.is_empty() {
+        return Err(BoxError::from_static_str("empty host after userinfo"));
+    }
+
+    // Bracketed IP-literal, with or without a port: the URI authority scanner decides.
+    if s.starts_with('[') {
         return Ok(Authority {
             user_info,
-            address: HostWithOptPort {
-                host: Host::Address(IpAddr::V6(addr)),
-                port: OptPort::Unset,
-            },
+            address: super::host_with_opt_port::parse_bracketed_host_with_opt_port(s)?,
         });
     }
 
@@ -733,6 +706,9 @@ impl TryFrom<&[u8]> for Authority {
 /// Constructed by [`Uri::authority`](crate::uri::Uri::authority),
 /// [`Authority::view`], or parsed without allocation through
 /// [`AuthorityRef::parse_strict`].
+///
+/// Parsing: an unbracketed IPv6 address never carries a port (`::1:80` is one
+/// address); a port requires brackets (`[::1]:80`).
 ///
 /// `PartialEq` / `Eq` / `Hash` follow the same component-wise rules as
 /// the owned [`Authority`] (case-insensitive host via `HostRef`'s impl,
@@ -902,6 +878,101 @@ impl_serde_str!(display Authority);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eager_and_borrowed_authority_parsers_agree() {
+        for input in [
+            "[v1.a]:80",
+            "[v1.fe80::a]:443",
+            "[v1.a]:",
+            "[v1.a]",
+            "[::1]:080",
+            "[::1]",
+            "[fe80::1%25eth0]:80",
+            "[::1]x",
+            "::1",
+            "::1:80",
+            "user@::1",
+            "user:pw@::1:80",
+            "::ffff:1.2.3.4",
+            "2001:db8::1",
+            "fe80::1%25eth0",
+            "fe80::1%eth0",
+            "[fe80::1%eth0]",
+            ":::1",
+            "1::2::3",
+            "::1]",
+            "[::1",
+            "127.0.0.1",
+            "127.0.0.1:80",
+            "example.com",
+            "example.com:443",
+            ":80",
+            "a:b:c",
+            "host:",
+            "host:80",
+            "user@",
+            "@",
+            "a:b@",
+            "a@b:1",
+            "a@[v1.a]:1",
+        ] {
+            let eager = Authority::try_from(input).ok();
+            let borrowed = AuthorityRef::parse(input.as_bytes())
+                .ok()
+                .map(AuthorityRef::into_owned);
+            assert_eq!(eager, borrowed, "{input}");
+
+            if !input.contains('@') {
+                let host = HostWithOptPort::try_from(input).ok();
+                assert_eq!(
+                    host,
+                    borrowed.as_ref().map(|a| a.address.clone()),
+                    "{input}"
+                );
+            }
+
+            if let Some(eager) = eager {
+                let reparsed: Authority = eager.to_string().parse().unwrap();
+                assert_eq!(reparsed, eager, "{input}");
+                let reparsed: HostWithOptPort = eager.address.to_string().parse().unwrap();
+                assert_eq!(reparsed, eager.address, "{input}");
+            }
+        }
+    }
+
+    #[test]
+    fn unbracketed_ipv6_never_carries_a_port() {
+        let loopback: Ipv6Addr = "::1".parse().unwrap();
+        let cases: [(&str, Ipv6Addr, Option<u16>); 4] = [
+            ("::1", loopback, None),
+            ("::1:80", "0:0:0:0:0:0:1:80".parse().unwrap(), None),
+            ("[::1]", loopback, None),
+            ("[::1]:80", loopback, Some(80)),
+        ];
+        for (input, address, port) in cases {
+            let owned = Authority::try_from(input).unwrap();
+            assert_eq!(
+                owned.address.host,
+                Host::Address(IpAddr::V6(address)),
+                "{input}"
+            );
+            assert_eq!(owned.address.port.as_u16(), port, "{input}");
+
+            for borrowed in [
+                AuthorityRef::parse(input.as_bytes()).unwrap(),
+                AuthorityRef::parse_strict(input.as_bytes()).unwrap(),
+            ] {
+                assert_eq!(
+                    borrowed.host(),
+                    HostRef::Address(IpAddr::V6(address)),
+                    "{input}"
+                );
+                assert_eq!(borrowed.port_u16(), port, "{input}");
+                assert_eq!(borrowed.into_owned(), owned, "{input}");
+            }
+        }
+    }
     use std::assert_matches;
 
     #[expect(clippy::needless_pass_by_value)]

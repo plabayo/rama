@@ -8,6 +8,32 @@
 //! Reach for a table only for *irregular* byte sets on a hot path: a simple
 //! range such as `b < 0x80` is one compare and should stay a comparison.
 
+/// RFC 9110 §5.6.2 `tchar`, the byte class of HTTP tokens.
+pub const HTTP_TCHAR: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"!#$%&'*+-.^_`|~");
+
+/// Whether `byte` is an RFC 9110 §5.6.2 `tchar`.
+#[inline(always)]
+#[must_use]
+pub const fn is_http_tchar(byte: u8) -> bool {
+    HTTP_TCHAR[byte as usize]
+}
+
+/// Whether `bytes` is a non-empty RFC 9110 §5.6.2 `token` (`1*tchar`).
+#[must_use]
+pub const fn is_http_token(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_http_tchar(bytes[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// Mark every byte in the half-open range `[lo, hi_exclusive)` as `true`.
 #[must_use]
 pub const fn set_range(mut table: [bool; 256], lo: u8, hi_exclusive: u8) -> [bool; 256] {
@@ -53,6 +79,17 @@ mod tests {
         assert!(T[b'0' as usize] && T[b'9' as usize]);
         assert!(T[b'+' as usize] && T[b'-' as usize]);
         assert!(!T[b'a' as usize] && !T[b'/' as usize]);
+    }
+
+    #[test]
+    fn http_tchar_is_visible_ascii_minus_delimiters() {
+        for byte in u8::MIN..=u8::MAX {
+            let tchar = matches!(byte, 0x21..=0x7e) && !b"(),/:;<=>?@[\\]{}\"".contains(&byte);
+            assert_eq!(is_http_tchar(byte), tchar, "tchar {byte:#04x}");
+        }
+        assert!(is_http_token(b"x-Custom_1"));
+        assert!(!is_http_token(b""));
+        assert!(!is_http_token(b"a b"));
     }
 
     #[test]

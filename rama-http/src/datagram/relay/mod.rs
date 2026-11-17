@@ -3,14 +3,19 @@
 use rama_core::{
     Service,
     extensions::ExtensionsRef,
-    graceful::{Scope, WeakScope},
+    graceful::{RunCutoff, WeakScope},
     io::{AbortIo, BridgeIo, Io},
 };
 use rama_http_types::proto::capsule::CapsuleType;
+use rama_net::proxy::{IdleActivity, IdleGuard};
 use rama_utils::guard::DropGuard;
-use std::{io, pin::pin, time::Duration};
+use std::{
+    io,
+    pin::pin,
+    sync::atomic::{AtomicU8, Ordering},
+    time::Duration,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::{sync::watch, time::Instant};
 
 use super::{
     DatagramTransport, HttpDatagramSession, NativeSendError, SessionConfig, SessionError,
@@ -139,8 +144,8 @@ where
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
         // Reserve only each stream's own abort handle, never its parent connection's.
         // Construct the guard before the first poll so cancellation also covers setup.
-        let abort_left = left.extensions().self_get_arc::<AbortIo>();
-        let abort_right = right.extensions().self_get_arc::<AbortIo>();
+        let abort_left = left.extensions().get_arc::<AbortIo>();
+        let abort_right = right.extensions().get_arc::<AbortIo>();
         let mut guard = DropGuard::new(move || {
             if let Some(abort) = abort_left {
                 abort.abort();
@@ -159,21 +164,26 @@ where
                 HttpDatagramSession::with_config(left, config.clone()).split();
             let (right_send, right_receive) =
                 HttpDatagramSession::with_config(right, config).split();
-            let (progress, observed) = if idle_timeout.is_some() {
-                let (progress, observed) = watch::channel(Instant::now());
-                (Some(progress), Some(observed))
-            } else {
-                (None, None)
-            };
+            let progress = idle_timeout.map(Progress::new);
             let exchange = exchange(
                 &scope,
                 close_timeout,
-                forward(left_receive, right_send, prefer_native, progress.clone()),
-                forward(right_receive, left_send, prefer_native, progress),
+                forward(
+                    left_receive,
+                    right_send,
+                    prefer_native,
+                    progress.as_ref().map(Forwarding::new),
+                ),
+                forward(
+                    right_receive,
+                    left_send,
+                    prefer_native,
+                    progress.as_ref().map(Forwarding::new),
+                ),
             );
             let (ingress_to_egress, egress_to_ingress) = tokio::select! {
                 result = exchange => result?,
-                () = idle(observed, idle_timeout) => return Err(SessionError::Io(io::Error::new(io::ErrorKind::TimedOut, "datagram relay idle timeout"))),
+                () = idle(progress.as_ref()) => return Err(SessionError::Io(io::Error::new(io::ErrorKind::TimedOut, "datagram relay idle timeout"))),
                 // Datagrams cannot drain: the relay runs through the graceful phase.
                 () = scope.aborted() => return Err(SessionError::Io(io::Error::new(io::ErrorKind::Interrupted, "datagram relay shutdown"))),
             };
@@ -186,21 +196,52 @@ where
     }
 }
 
-async fn idle(progress: Option<watch::Receiver<Instant>>, timeout: Option<Duration>) {
-    let (Some(mut progress), Some(timeout)) = (progress, timeout) else {
+/// Forwarding activity of a relay with an idle bound, shared by both directions.
+struct Progress {
+    timeout: Duration,
+    activity: IdleActivity,
+    // Directions still forwarding: once none is, idleness no longer ends the relay.
+    forwarding: AtomicU8,
+}
+
+impl Progress {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            timeout,
+            activity: IdleActivity::new(),
+            forwarding: AtomicU8::new(0),
+        }
+    }
+}
+
+/// One direction's handle on [`Progress`], counted as forwarding until dropped.
+struct Forwarding<'a>(&'a Progress);
+
+impl<'a> Forwarding<'a> {
+    fn new(progress: &'a Progress) -> Self {
+        progress.forwarding.fetch_add(1, Ordering::Relaxed);
+        Self(progress)
+    }
+
+    fn record(&self) {
+        self.0.activity.record();
+    }
+}
+
+impl Drop for Forwarding<'_> {
+    fn drop(&mut self) {
+        self.0.forwarding.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+async fn idle(progress: Option<&Progress>) {
+    let Some(progress) = progress else {
         return std::future::pending().await;
     };
-    loop {
-        let deadline = *progress.borrow_and_update() + timeout;
-        if tokio::time::timeout_at(deadline, progress.changed())
-            .await
-            .is_err()
-        {
-            return;
-        }
-        if progress.has_changed().is_err() {
-            return std::future::pending().await;
-        }
+    let mut guard = IdleGuard::for_activity(progress.timeout, &progress.activity);
+    guard.expired(&progress.activity).await;
+    if progress.forwarding.load(Ordering::Relaxed) == 0 {
+        std::future::pending().await
     }
 }
 
@@ -233,9 +274,8 @@ async fn exchange<L: AsyncWrite, R: AsyncWrite>(
     }
 }
 
-/// Close the direction that `ended` and run the `other` one to its own close, in a scope
-/// below `scope` that is aborted once `timeout` passed: whichever hard phase comes first
-/// ends what a peer still holds.
+/// Close the direction that `ended` and run the `other` one to its own close, held in
+/// `scope`: its hard phase or `timeout`, whichever comes first, ends what a peer still holds.
 async fn close<L, R, OL, OR>(
     scope: &WeakScope,
     timeout: Option<Duration>,
@@ -246,28 +286,26 @@ where
     R: AsyncWrite,
     OR: AsyncWrite,
 {
-    // A closed scope takes no holder: the close then runs below no parent.
-    let closing = scope
-        .try_hold()
-        .unwrap_or_else(|_closed| Scope::detached())
-        .child()
-        .maybe_with_hard_timeout(timeout);
-    let closed = closing
-        .run_until_aborted(async {
-            tokio::try_join!(finish(ended), async {
-                let (direction, ended) = other.await?;
-                finish(ended).await?;
-                Ok(direction)
-            })
-        })
+    let closed = scope
+        .run_until_aborted_within(
+            // No timeout leaves only the scope to end the close.
+            timeout.unwrap_or(Duration::MAX),
+            async {
+                tokio::try_join!(finish(ended), async {
+                    let (direction, ended) = other.await?;
+                    finish(ended).await?;
+                    Ok(direction)
+                })
+            },
+        )
         .await;
     match closed {
-        Some(closed) => closed.map(|((), direction)| direction),
-        None if scope.is_aborted() => Err(SessionError::Io(io::Error::new(
+        Ok(closed) => closed.map(|((), direction)| direction),
+        Err(RunCutoff::Aborted) => Err(SessionError::Io(io::Error::new(
             io::ErrorKind::Interrupted,
             "datagram relay shutdown",
         ))),
-        None => Err(SessionError::Io(io::Error::new(
+        Err(RunCutoff::TimedOut) => Err(SessionError::Io(io::Error::new(
             io::ErrorKind::TimedOut,
             "datagram relay close timeout",
         ))),
@@ -292,7 +330,7 @@ async fn forward<L: AsyncRead, R: AsyncWrite>(
     mut receive: SessionReceiver<L>,
     mut send: SessionSender<R>,
     prefer_native: bool,
-    progress: Option<watch::Sender<Instant>>,
+    progress: Option<Forwarding<'_>>,
 ) -> Result<(DatagramRelayDirection, Ended<L, R>), SessionError> {
     let mut result = DatagramRelayDirection::default();
     let mut remaining = 0_u64;
@@ -316,7 +354,7 @@ async fn forward<L: AsyncRead, R: AsyncWrite>(
             Err(error) => return Err(error),
         }
         if let Some(progress) = &progress {
-            progress.send_replace(Instant::now());
+            progress.record();
         }
     }
 }

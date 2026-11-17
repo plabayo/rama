@@ -37,6 +37,11 @@ from quic_stream_wire import retransmitted_streams
 # TCP accounting reads relative sequence numbers; never inherit a user preference.
 PDML_OUTPUT = ("-o", "tcp.relative_sequence_numbers:TRUE", "-T", "pdml")
 
+# Segments captured out of order are put back in order before a dissector reads
+# them: a TLS record decrypted ahead of its turn leaves the rest of that
+# direction undecoded.
+REORDER_SEGMENTS = ("-o", "tcp.reassemble_out_of_order:TRUE")
+
 
 # H2/H3 decoding preserves connection and stream identity.
 
@@ -738,7 +743,7 @@ class Request:
 def http_decode_args(port, keylog=None):
     """Select the transport dissector without ever embedding session secrets."""
     if keylog is None:
-        return ["-d", f"tcp.port=={port},http", "-X",
+        return ["-d", f"tcp.port=={port},http", *REORDER_SEGMENTS, "-X",
                 "lua_script:" + str(Path(__file__).with_name("tunnel_payload.lua"))]
     require(Path(keylog).is_file(), "missing TLS key log")
     return [
@@ -746,6 +751,7 @@ def http_decode_args(port, keylog=None):
         f"tcp.port=={port},tls",
         "-o",
         f"tls.keylog_file:{keylog}",
+        *REORDER_SEGMENTS,
         "-X",
         "lua_script:" + str(Path(__file__).with_name("tunnel_payload.lua")),
         "-o",

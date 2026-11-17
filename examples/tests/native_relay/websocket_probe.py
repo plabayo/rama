@@ -288,7 +288,8 @@ def run_probe(args, authority, address, origin_port):
                     subprocess.run(
                         command
                         + ["-Y", f"{transport}.port=={destination}"]
-                        + ["-o", "tcp.relative_sequence_numbers:TRUE", "-T", "pdml"],
+                        + ["-o", "tcp.relative_sequence_numbers:TRUE"]
+                        + ["-o", "tcp.reassemble_out_of_order:TRUE", "-T", "pdml"],
                         stdout=output,
                         check=True,
                         timeout=15,

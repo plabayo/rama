@@ -7,7 +7,10 @@ use rama_http_types::proto::h2::alt_svc::{AltSvcObserverExtension, AltSvcReceive
 use rama_http_types::proto::h2::frame::{
     DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason,
 };
-use rama_http_types::{HeaderMap, Request, Response, header};
+use rama_http_types::{
+    HeaderMap, Request, Response,
+    header::{self, trailer::drop_never_trailers},
+};
 use rama_net::conn::ConnectionHealthWatcher;
 
 use std::cmp::Ordering;
@@ -90,7 +93,8 @@ pub(super) struct DataEvent {
 
 #[derive(Debug)]
 pub(super) enum RecvHeaderBlockError<T> {
-    Oversize(T),
+    /// The head is refused, with the answer a server gives first.
+    Refused(T),
     State(Error),
 }
 
@@ -205,6 +209,22 @@ impl Recv {
 
         use super::stream::ContentLength;
 
+        if frame.is_malformed() {
+            // RFC 9113 §8.1.1: a malformed message is a stream error; a server answers it first.
+            tracing::debug!(
+                "stream error PROTOCOL_ERROR -- recv_headers: malformed field; stream={:?}",
+                stream.id
+            );
+            return if counts.peer().is_server() && is_initial {
+                Err(RecvHeaderBlockError::Refused(Some(bad_request(
+                    stream.id,
+                    frame.is_end_stream(),
+                ))))
+            } else {
+                Err(RecvHeaderBlockError::Refused(None))
+            };
+        }
+
         let ignore_content_length = match stream.content_length {
             ContentLength::Head => {
                 // Not counted, as a HEAD response has no content, but its lines
@@ -278,7 +298,7 @@ impl Recv {
             // > that it cannot process.
             //
             // So, if peer is a server, we'll send a 431. In either case,
-            // an error is recorded, which will send a REFUSED_STREAM,
+            // an error is recorded, which will send a PROTOCOL_ERROR,
             // since we don't want any of the data frames either.
             tracing::debug!(
                 "stream error REQUEST_HEADER_FIELDS_TOO_LARGE -- \
@@ -295,9 +315,9 @@ impl Recv {
                     None,
                 );
                 res.set_end_stream();
-                Err(RecvHeaderBlockError::Oversize(Some(res)))
+                Err(RecvHeaderBlockError::Refused(Some(res)))
             } else {
-                Err(RecvHeaderBlockError::Oversize(None))
+                Err(RecvHeaderBlockError::Refused(None))
             };
         }
 
@@ -540,6 +560,17 @@ impl Recv {
         // Transition the state
         stream.state.recv_close()?;
 
+        if frame.is_malformed() {
+            proto_err!(stream: "recv_trailers: malformed field; stream={:?};", stream.id);
+            return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR));
+        }
+
+        // Trailers past the header limits: no status can follow the message any more.
+        if frame.is_over_size() {
+            proto_err!(stream: "recv_trailers: over the header list limits; stream={:?};", stream.id);
+            return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR));
+        }
+
         if stream.ensure_content_length_zero().is_err() {
             proto_err!(stream: "recv_trailers: content-length is not zero; stream={:?};",  stream.id);
             return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR));
@@ -553,7 +584,8 @@ impl Recv {
             return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR));
         }
 
-        let trailers = frame.into_fields();
+        let mut trailers = frame.into_fields();
+        drop_never_trailers(&mut trailers);
 
         // Push the frame onto the stream's recv buffer
         stream
@@ -1001,7 +1033,7 @@ impl Recv {
                 Reason::REFUSED_STREAM,
             ));
         }
-        if frame.is_over_size() {
+        if frame.is_over_size() || frame.is_malformed() {
             // A frame is over size if the decoded header block was bigger than
             // SETTINGS_MAX_HEADER_LIST_SIZE.
             //
@@ -1015,7 +1047,7 @@ impl Recv {
             // since we don't want any of the data frames either.
             tracing::debug!(
                 "stream error PROTOCOL_ERROR -- recv_push_promise: \
-                 headers frame is over size; promised_id={:?};",
+                 headers frame is over size or malformed; promised_id={:?};",
                 frame.promised_id(),
             );
             return Err(Error::library_reset(
@@ -1486,6 +1518,23 @@ impl Open {
     pub(crate) fn is_push_promise(self) -> bool {
         matches!(self, Self::PushPromise)
     }
+}
+
+/// The answer a server gives a malformed request before resetting its stream.
+///
+/// A request that ended its side leaves the answer open, as a stream closed
+/// from both sides can no longer carry the reset.
+pub(super) fn bad_request(id: StreamId, request_ended: bool) -> frame::Headers {
+    let mut res = frame::Headers::new(
+        id,
+        frame::Pseudo::response(rama_http_types::StatusCode::BAD_REQUEST),
+        HeaderMap::new(),
+        None,
+    );
+    if !request_ended {
+        res.set_end_stream();
+    }
+    res
 }
 
 // ===== impl RecvHeaderBlockError =====

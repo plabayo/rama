@@ -10,6 +10,7 @@ use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Request, Version,
     conn::TargetHttpVersion,
     header::USER_AGENT,
+    layer::alt_svc::SendAltUsed,
     proto::h3::qpack::{FieldSectionBase, encoding::HeaderPreferences},
 };
 use rama_net::{
@@ -411,7 +412,8 @@ fn ordered_headers(headers: &HeaderMap, order: Option<&InputHeaderOrder>) -> Hea
         return headers.clone();
     };
     let mut remaining = headers.clone().into_ordered_iter().collect::<Vec<_>>();
-    let mut output = HeaderMap::with_capacity(remaining.len());
+    // Distinct names always fit a map, unlike the count of repeated values.
+    let mut output = HeaderMap::with_capacity(headers.keys_len());
     for name in order {
         remaining.retain(|(header, value)| {
             if header == name {
@@ -645,6 +647,9 @@ fn replay_request<Body>(
     }
     if let Some(headers) = replayed.headers {
         *req.headers_mut() = headers;
+        if replayed.send_alt_used {
+            req.extensions().insert(SendAltUsed::new());
+        }
     }
     if let Some(pseudo_headers) = replayed.pseudo_headers {
         req.extensions().insert(pseudo_headers);

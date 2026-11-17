@@ -18,22 +18,22 @@ use rama_http_types::{
     Method, StatusCode, Version,
     header::{self, Entry, HeaderMap, HeaderValue, trailer::ForbiddenTrailers},
 };
-use rama_utils::collections::smallvec::{SmallVec, smallvec, smallvec_inline};
+use rama_utils::collections::smallvec::{SmallVec, smallvec};
 
 use super::EncodeHead;
 use crate::{
     body::DecodedLength,
-    common::date,
     error::{Header as HeaderError, Parse},
     headers,
     proto::{
-        BodyLength, MessageHead, RequestLine,
+        BodyLength, DEFAULT_MAX_HEADER_LIST_SIZE, DEFAULT_MAX_HEADERS, MessageHead, RequestLine,
         h1::{Encode, Encoder, Http1Transaction, ParseContext, ParseResult, ParsedMessage},
         target::{normalize_received, repair_outgoing_h1_host, several_hosts},
     },
 };
 
-pub(crate) const DEFAULT_MAX_HEADERS: usize = 100;
+/// Header slots kept on the stack: a head with more fields parses with heap slots.
+const INLINE_HEADERS: usize = 100;
 const AVERAGE_HEADER_SIZE: usize = 30; // totally scientific
 const MAX_URI_LEN: usize = (u16::MAX - 1) as usize;
 
@@ -137,17 +137,12 @@ impl Http1Transaction for Server {
         // but we *never* read any of it until after httparse has assigned
         // values into it. By not zeroing out the stack memory, this saves
         // a good ~5% on pipeline benchmarks.
-        let mut headers_indices: SmallVec<[MaybeUninit<HeaderIndices>; DEFAULT_MAX_HEADERS]> =
-            match ctx.h1_max_headers {
-                Some(cap) => smallvec![MaybeUninit::uninit(); cap],
-                None => smallvec_inline![MaybeUninit::uninit(); DEFAULT_MAX_HEADERS],
-            };
+        let slots = header_slots(buf, ctx.h1_max_headers.unwrap_or(DEFAULT_MAX_HEADERS));
+        let mut headers_indices: SmallVec<[MaybeUninit<HeaderIndices>; INLINE_HEADERS]> =
+            smallvec![MaybeUninit::uninit(); slots];
         {
-            let mut headers: SmallVec<[MaybeUninit<httparse::Header<'_>>; DEFAULT_MAX_HEADERS]> =
-                match ctx.h1_max_headers {
-                    Some(cap) => smallvec![MaybeUninit::uninit(); cap],
-                    None => smallvec_inline![MaybeUninit::uninit(); DEFAULT_MAX_HEADERS],
-                };
+            let mut headers: SmallVec<[MaybeUninit<httparse::Header<'_>>; INLINE_HEADERS]> =
+                smallvec![MaybeUninit::uninit(); slots];
             trace!("Request.parse: bytes = {}", buf.len());
             let mut req = httparse::Request::new(&mut []);
             let bytes = buf.as_ref();
@@ -158,7 +153,7 @@ impl Http1Transaction for Server {
             ) {
                 Ok(httparse::Status::Complete(parsed_len)) => {
                     trace!("Request.parse Complete({parsed_len})");
-                    if ctx.h1_max_header_size.is_some_and(|max| parsed_len > max) {
+                    if parsed_len > max_header_size(&ctx) {
                         return Err(Parse::TooLarge);
                     }
                     len = parsed_len;
@@ -258,7 +253,9 @@ impl Http1Transaction for Server {
         let mut saw_chunked = false;
         let mut wants_upgrade = subject.0 == Method::CONNECT;
 
-        let mut headers = HeaderMap::with_capacity(headers_len);
+        // A configured max_headers can pass the names a map holds.
+        let mut headers =
+            HeaderMap::try_with_capacity(headers_len).map_err(|_error| Parse::TooLarge)?;
 
         for header in &headers_indices[..headers_len] {
             // SAFETY: `assume_init_ref` requires an initialized element.
@@ -345,7 +342,9 @@ impl Http1Transaction for Server {
                 wants_upgrade = is_http_11;
             }
 
-            headers.append(name, value);
+            headers
+                .try_append(name, value)
+                .map_err(|_error| Parse::TooLarge)?;
         }
 
         if is_te && !is_te_chunked {
@@ -511,10 +510,6 @@ impl Http1Transaction for Server {
     fn accepts_upgrade(status: &StatusCode, method: Option<&Method>) -> bool {
         *status == StatusCode::SWITCHING_PROTOCOLS
             || (method == Some(&Method::CONNECT) && status.is_success())
-    }
-
-    fn update_date() {
-        date::update();
     }
 }
 
@@ -682,7 +677,6 @@ impl Server {
         }
         let mut wrote_len = false;
         let mut encoder = Encoder::length(0);
-        let mut wrote_date = false;
         let mut is_name_written = false;
         let mut must_write_chunked = false;
         let connection_header_names = headers::connection_header_names(&msg.head.headers);
@@ -863,9 +857,6 @@ impl Server {
                     }
                     continue 'headers;
                 }
-                Some(header::StandardHeader::Date) => {
-                    wrote_date = true;
-                }
                 Some(header::StandardHeader::Trailer) => {
                     // check that we actually can send a chunked body...
                     if msg.head.version == Version::HTTP_10
@@ -947,16 +938,7 @@ impl Server {
             encoder = Encoder::length(0);
         }
 
-        // cached date is much faster than formatting every request
-        // don't force the write if disabled
-        if !wrote_date && msg.date_header {
-            dst.reserve(date::DATE_VALUE_LENGTH + 8);
-            header_name_writer.write_header_name_with_colon(dst, &header::DATE);
-            date::extend(dst);
-            extend(dst, b"\r\n\r\n");
-        } else {
-            extend(dst, b"\r\n");
-        }
+        extend(dst, b"\r\n");
 
         Ok(encoder
             .with_nominated_fields(connection_header_names)
@@ -989,18 +971,12 @@ impl Http1Transaction for Client {
 
         // Loop to skip information status code headers (100 Continue, etc).
         loop {
-            let mut headers_indices: SmallVec<[MaybeUninit<HeaderIndices>; DEFAULT_MAX_HEADERS]> =
-                match ctx.h1_max_headers {
-                    Some(cap) => smallvec![MaybeUninit::uninit(); cap],
-                    None => smallvec_inline![MaybeUninit::uninit(); DEFAULT_MAX_HEADERS],
-                };
+            let slots = header_slots(buf, ctx.h1_max_headers.unwrap_or(DEFAULT_MAX_HEADERS));
+            let mut headers_indices: SmallVec<[MaybeUninit<HeaderIndices>; INLINE_HEADERS]> =
+                smallvec![MaybeUninit::uninit(); slots];
             let (len, status, reason, version, headers_len) = {
-                let mut headers: SmallVec<
-                    [MaybeUninit<httparse::Header<'_>>; DEFAULT_MAX_HEADERS],
-                > = match ctx.h1_max_headers {
-                    Some(cap) => smallvec![MaybeUninit::uninit(); cap],
-                    None => smallvec_inline![MaybeUninit::uninit(); DEFAULT_MAX_HEADERS],
-                };
+                let mut headers: SmallVec<[MaybeUninit<httparse::Header<'_>>; INLINE_HEADERS]> =
+                    smallvec![MaybeUninit::uninit(); slots];
                 trace!("Response.parse: bytes len = {}", buf.len());
                 let mut res = httparse::Response::new(&mut []);
                 let bytes = buf.as_ref();
@@ -1011,7 +987,7 @@ impl Http1Transaction for Client {
                 ) {
                     Ok(httparse::Status::Complete(len)) => {
                         trace!("Response.parse Complete({})", len);
-                        if ctx.h1_max_header_size.is_some_and(|max| len > max) {
+                        if len > max_header_size(&ctx) {
                             return Err(Parse::TooLarge);
                         }
                         let status = StatusCode::from_u16(res.code.unwrap_or(u16::MAX))?;
@@ -1068,7 +1044,8 @@ impl Http1Transaction for Client {
             let mut keep_alive = version == Version::HTTP_11;
             let mut saw_connection_close = false;
 
-            let mut headers = HeaderMap::with_capacity(headers_len);
+            let mut headers =
+                HeaderMap::try_with_capacity(headers_len).map_err(|_error| Parse::TooLarge)?;
             let mut resp_is_te_chunked = false;
             let mut resp_has_cl = false;
             let mut saw_chunked = false;
@@ -1104,7 +1081,9 @@ impl Http1Transaction for Client {
                     resp_has_cl = true;
                 }
 
-                headers.append(name, value);
+                headers
+                    .try_append(name, value)
+                    .map_err(|_error| Parse::TooLarge)?;
             }
 
             // RFC 9112 §6.1: if a response carries both Content-Length and
@@ -1359,6 +1338,9 @@ impl Client {
         // Content-Length header while holding an `Entry` for the Transfer-Encoding
         // header, so unfortunately, we must do the check here, first.
 
+        if let BodyLength::Known(len) = body {
+            headers::correct_content_length(headers, len);
+        }
         let existing_con_len = headers::content_length_parse_all(headers);
         // A valid list of equal lengths goes out as the one value it stands for.
         if let Some(len) = existing_con_len {
@@ -1577,6 +1559,38 @@ fn set_content_length(headers: &mut HeaderMap, len: u64) -> Encoder {
 struct HeaderIndices {
     name: (usize, usize),
     value: (usize, usize),
+}
+
+/// The configured head size limit, or the default shared by every protocol.
+pub(super) fn max_header_size(ctx: &ParseContext<'_>) -> usize {
+    ctx.h1_max_header_size
+        .unwrap_or(DEFAULT_MAX_HEADER_LIST_SIZE)
+}
+
+/// Header slots to parse `bytes` with: one per line up to the end of the head, so a short
+/// head with a high limit stays on the stack, plus one for a line still arriving.
+fn header_slots(bytes: &[u8], max: usize) -> usize {
+    let mut lines = 0;
+    let mut start = 0;
+    let mut content = false;
+    let newlines = bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(at, byte)| (*byte == b'\n').then_some(at));
+    for end in newlines {
+        let line = &bytes[start..end];
+        start = end + 1;
+        let empty = line.is_empty() || line == b"\r";
+        if empty && content {
+            break;
+        }
+        content |= !empty;
+        lines += 1;
+        if lines >= max {
+            return max;
+        }
+    }
+    (lines + 1).min(max)
 }
 
 /// Record the byte ranges of `headers` within `bytes` into `indices`.
@@ -3075,7 +3089,6 @@ mod tests {
                     keep_alive: true,
                     req_method: &mut None,
                     title_case_headers: false,
-                    date_header: true,
                     strict_connect_framing: false,
                 },
                 &mut vec,
@@ -3100,13 +3113,32 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
         )
         .unwrap();
         (encoder, String::from_utf8(vec).unwrap())
+    }
+
+    #[test]
+    fn request_content_length_follows_a_known_body() {
+        for version in [Version::HTTP_11, Version::HTTP_10] {
+            let mut head: MessageHead<RequestLine> = MessageHead {
+                version,
+                subject: RequestLine(Method::POST, "/".parse().unwrap()),
+                ..Default::default()
+            };
+            head.headers
+                .insert(header::CONTENT_LENGTH, HeaderValue::from_static("10"));
+            let (encoder, wire) = encode_request(head, BodyLength::Known(3));
+            assert!(
+                wire.contains("content-length: 3\r\n"),
+                "{version:?}: {wire}"
+            );
+            assert!(!wire.contains("content-length: 10"), "{version:?}: {wire}");
+            assert!(!encoder.is_eof(), "{version:?}");
+        }
     }
 
     #[test]
@@ -3355,6 +3387,91 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parse_refuses_more_names_than_a_header_map_holds() {
+        let mut request = BytesMut::from("GET / HTTP/1.1\r\n");
+        let mut response = BytesMut::from("HTTP/1.1 200 OK\r\n");
+        for i in 0..25_000 {
+            let line = format!("x-h-{i}: v\r\n");
+            request.extend_from_slice(line.as_bytes());
+            response.extend_from_slice(line.as_bytes());
+        }
+        request.extend_from_slice(b"\r\n");
+        response.extend_from_slice(b"\r\n");
+        for (mut bytes, is_request) in [(request, true), (response, false)] {
+            let ctx = ParseContext {
+                req_method: &mut Some(Method::GET),
+                h1_parser_config: Default::default(),
+                h1_max_headers: Some(30_000),
+                h1_max_header_size: None,
+                h09_responses: false,
+                on_informational: &mut None,
+                informational_left: None,
+                prepared_extensions: &mut Some(Extensions::default()),
+            };
+            let parsed = if is_request {
+                Server::parse(&mut bytes, ctx).map(|_| ())
+            } else {
+                Client::parse(&mut bytes, ctx).map(|_| ())
+            };
+            assert!(
+                matches!(parsed, Err(Parse::TooLarge)),
+                "request {is_request}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_applies_the_shared_header_defaults() {
+        fn head(first_line: &str, headers: usize, value_len: usize) -> BytesMut {
+            let mut head = BytesMut::from(first_line);
+            let value = "v".repeat(value_len);
+            for i in 0..headers {
+                head.extend_from_slice(format!("x-h-{i}: {value}\r\n").as_bytes());
+            }
+            head.extend_from_slice(b"\r\n");
+            head
+        }
+        let big = DEFAULT_MAX_HEADER_LIST_SIZE;
+        let count = DEFAULT_MAX_HEADERS;
+        // (headers, value length, accepted); each line costs its value plus about 10 octets
+        for (headers, value_len, accepted) in [
+            (count, 1, true),
+            (count + 1, 1, false),
+            (1, big - 64, true),
+            (1, big + 1, false),
+        ] {
+            for is_request in [true, false] {
+                let case = format!("request {is_request}, {headers} x {value_len}");
+                let ctx = ParseContext {
+                    req_method: &mut Some(Method::GET),
+                    h1_parser_config: Default::default(),
+                    h1_max_headers: None,
+                    h1_max_header_size: None,
+                    h09_responses: false,
+                    on_informational: &mut None,
+                    informational_left: None,
+                    prepared_extensions: &mut Some(Extensions::default()),
+                };
+                let parsed = if is_request {
+                    let mut bytes = head("GET / HTTP/1.1\r\n", headers, value_len);
+                    Server::parse(&mut bytes, ctx).map(|head| head.map(|head| head.head.headers))
+                } else {
+                    let mut bytes = head("HTTP/1.1 200 OK\r\n", headers, value_len);
+                    Client::parse(&mut bytes, ctx).map(|head| head.map(|head| head.head.headers))
+                };
+                match parsed {
+                    Ok(Some(parsed)) => {
+                        assert!(accepted, "{case}");
+                        assert_eq!(parsed.len(), headers, "{case}");
+                    }
+                    Err(Parse::TooLarge) => assert!(!accepted, "{case}"),
+                    other => panic!("{case}: {other:?}"),
+                }
+            }
+        }
+    }
+
     /// An HTTP/1 CONNECT names `host:port` and is never an Extended CONNECT, whose HTTP/1.1
     /// form is an `Upgrade` request: neither falls back to some other target on the wire.
     #[test]
@@ -3385,7 +3502,6 @@ mod tests {
                     keep_alive: true,
                     req_method: &mut None,
                     title_case_headers: false,
-                    date_header: true,
                     strict_connect_framing: false,
                 },
                 &mut vec,
@@ -3420,7 +3536,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: true,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -3454,7 +3569,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: false,
                 strict_connect_framing: false,
             },
             &mut wire,
@@ -3500,7 +3614,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -3537,7 +3650,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: true,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -3588,7 +3700,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: false,
                 strict_connect_framing: false,
             },
             &mut encoded,
@@ -3617,7 +3728,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: false,
                 strict_connect_framing: false,
             },
             &mut encoded,
@@ -3664,7 +3774,6 @@ mod tests {
                             keep_alive: !close,
                             req_method: &mut Some(Method::POST),
                             title_case_headers: false,
-                            date_header: false,
                             strict_connect_framing: false,
                         },
                         &mut bytes,
@@ -3720,7 +3829,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut Some(method),
                 title_case_headers: false,
-                date_header: false,
                 strict_connect_framing: false,
             },
             &mut wire,
@@ -3845,7 +3953,6 @@ mod tests {
                                 keep_alive: true,
                                 req_method: &mut Some(Method::GET),
                                 title_case_headers: false,
-                                date_header: false,
                                 strict_connect_framing: false,
                             },
                             &mut wire,
@@ -4216,7 +4323,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut Some(method),
                 title_case_headers: false,
-                date_header: false,
                 strict_connect_framing,
             },
             &mut bytes,
@@ -4551,7 +4657,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut Some(Method::CONNECT),
                 title_case_headers: false,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -4588,7 +4693,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: true,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -4625,7 +4729,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -4633,9 +4736,9 @@ mod tests {
         .unwrap();
 
         let expected_response =
-            b"HTTP/1.1 200 OK\r\nCONTENT-LENGTH: 10\r\ncontent-type: application/json\r\ndate: ";
+            b"HTTP/1.1 200 OK\r\nCONTENT-LENGTH: 10\r\ncontent-type: application/json\r\n\r\n";
 
-        assert_eq!(&vec[..expected_response.len()], &expected_response[..]);
+        assert_eq!(&vec, &expected_response);
     }
 
     #[test]
@@ -4662,22 +4765,20 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: true,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
         )
         .unwrap();
 
-        // this will also test that the date does exist
         let expected_response =
-            b"HTTP/1.1 200 OK\r\nCONTENT-LENGTH: 10\r\nContent-Type: application/json\r\nDate: ";
+            b"HTTP/1.1 200 OK\r\nCONTENT-LENGTH: 10\r\nContent-Type: application/json\r\n\r\n";
 
-        assert_eq!(&vec[..expected_response.len()], &expected_response[..]);
+        assert_eq!(&vec, &expected_response);
     }
 
     #[test]
-    fn test_disabled_date_header() {
+    fn server_encode_adds_no_date_header() {
         use rama_http_types::header::HeaderValue;
 
         use crate::proto::BodyLength;
@@ -4700,7 +4801,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: true,
-                date_header: false,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -4818,21 +4918,11 @@ mod tests {
             String::from("GET / HTTP/1.1\r\nkey0: val0\r\nkey1: val1\r\nkey2: val2\r\n\r\n")
         );
 
-        // default max_headers is 100, so
-        //
-        // - less than or equal to 100, accepted
-        //
-        parse(None, 0, true);
-        parse(None, 1, true);
-        parse(None, 50, true);
-        parse(None, 99, true);
-        parse(None, 100, true);
-        //
-        // - more than 100, rejected
-        //
-        parse(None, 101, false);
-        parse(None, 102, false);
-        parse(None, 200, false);
+        // the default max_headers is the limit shared by every protocol
+        for count in [0, 1, 100, 101, DEFAULT_MAX_HEADERS] {
+            parse(None, count, true);
+        }
+        parse(None, DEFAULT_MAX_HEADERS + 1, false);
 
         // max_headers is 0, parser will reject any headers
         //

@@ -26,6 +26,7 @@ use self::settings::Settings;
 use rama_http_types::proto::h2::frame::{self, Frame};
 
 use rama_core::bytes::Buf;
+use rama_utils::octets::kib_u32;
 
 use tokio::io::AsyncWrite;
 
@@ -49,4 +50,4 @@ pub const DEFAULT_RESET_STREAM_MAX: usize = 50;
 // RFC 9113#5.4.2 suggests ~1 RTT. We don't track that closely, but use a
 // reasonable guess of the average here.
 pub const DEFAULT_RESET_STREAM_SECS: u64 = 1;
-pub const DEFAULT_MAX_SEND_BUFFER_SIZE: u32 = 1024 * 400;
+pub const DEFAULT_MAX_SEND_BUFFER_SIZE: u32 = kib_u32(400);

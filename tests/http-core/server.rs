@@ -352,9 +352,10 @@ mod response_body_lengths {
         let client = TestClient::new().http2_only();
         let uri = Uri::from_authority(Protocol::HTTP, server.addr());
 
+        // the known body frames itself, as over HTTP/1.1
         let res = client.get(uri).await.unwrap();
-        assert_eq!(res.headers().get("content-length").unwrap(), "10");
-        assert_eq!(res.body().size_hint().exact(), Some(10));
+        assert_eq!(res.headers().get("content-length").unwrap(), "13");
+        assert_eq!(res.body().size_hint().exact(), Some(13));
     }
 
     #[tokio::test]
@@ -1122,7 +1123,6 @@ fn pipeline_enabled() {
         let mut lines = buf.split(|&b| b == b'\n');
         assert_eq!(s(lines.next().unwrap()), "HTTP/1.1 200 OK\r");
         assert_eq!(s(lines.next().unwrap()), "content-length: 12\r");
-        lines.next().unwrap(); // Date
         assert_eq!(s(lines.next().unwrap()), "\r");
         assert_eq!(s(lines.next().unwrap()), "Hello World");
 
@@ -1130,7 +1130,6 @@ fn pipeline_enabled() {
         assert_eq!(s(lines.next().unwrap()), "content-length: 12\r");
         // close because the last request said to close
         assert_eq!(s(lines.next().unwrap()), "connection: close\r");
-        lines.next().unwrap(); // Date
         assert_eq!(s(lines.next().unwrap()), "\r");
         assert_eq!(s(lines.next().unwrap()), "Hello World");
     }
@@ -2953,6 +2952,127 @@ async fn max_header_size() {
     }
 }
 
+/// By default a request head of 1 MiB or 4096 fields is served; one past either gets 431.
+#[tokio::test]
+async fn default_header_limits_h1() {
+    // (fields, value length, accepted)
+    // the request carries two more fields: host and connection
+    for (fields, value_len, accepted) in [
+        (4094, 1, true),
+        (4095, 1, false),
+        (1, 1_048_000, true),
+        (1, 1_049_000, false),
+    ] {
+        let (listener, addr) = setup_tcp_listener();
+        let client = thread::spawn(move || {
+            let mut head = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n".to_vec();
+            let value = vec![b'v'; value_len];
+            for i in 0..fields {
+                head.extend_from_slice(format!("x-{i}: ").as_bytes());
+                head.extend_from_slice(&value);
+                head.extend_from_slice(b"\r\n");
+            }
+            head.extend_from_slice(b"\r\n");
+            let mut tcp = connect(&addr);
+            // the server may answer 431 before all of it is sent
+            _ = tcp.write_all(&head);
+            let mut buf = [0; 256];
+            let n = tcp.read(&mut buf).expect("read response");
+            let expected = if accepted {
+                "HTTP/1.1 200 "
+            } else {
+                "HTTP/1.1 431 "
+            };
+            assert_eq!(
+                s(&buf[..n.min(expected.len())]),
+                expected,
+                "{fields} x {value_len}"
+            );
+        });
+        let (socket, _) = listener.accept().await.unwrap();
+        let served = http1::Builder::new()
+            .serve_connection(ServiceInput::new(socket), RamaHttpService::new(HelloWorld))
+            .await;
+        assert_eq!(served.is_ok(), accepted, "{fields} x {value_len}");
+        client.join().unwrap();
+    }
+}
+
+/// A keep-alive interval or timeout too large to add to the clock is a bound never reached.
+#[tokio::test]
+async fn h2_keep_alive_durations_past_the_clock_do_not_panic() {
+    for (interval, timeout) in [
+        (Duration::MAX, Duration::from_secs(20)),
+        (Duration::from_millis(10), Duration::MAX),
+    ] {
+        let (listener, addr) = setup_tcp_listener();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            http2::Builder::new(WeakScope::detached())
+                .with_keep_alive_interval(interval)
+                .with_keep_alive_timeout(timeout)
+                .serve_connection(ServiceInput::new(socket), RamaHttpService::new(HelloWorld))
+                .await
+        });
+        let conn = ServiceInput::new(connect_async(addr).await);
+        let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
+        let connection = tokio::spawn(connection);
+        let mut h2 = h2.ready().await.unwrap();
+        for _ in 0..2 {
+            let request = Request::get("https://localhost/").body(()).unwrap();
+            let (response, _) = h2.send_request(request, true).unwrap();
+            assert_eq!(response.await.unwrap().status(), StatusCode::OK);
+            // past the short interval, so a ping goes out and its timeout is armed
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            h2 = h2.ready().await.unwrap();
+        }
+        drop(h2);
+        connection.await.unwrap().unwrap();
+        // how the server sees the client leave does not matter, only that it did not panic
+        _ = server.await.unwrap();
+    }
+}
+
+/// By default a request header list of 1 MiB or 4096 fields is served; one past either gets 431.
+#[tokio::test]
+async fn default_header_limits_h2() {
+    let (listener, addr) = setup_tcp_listener();
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        http2::Builder::new(WeakScope::detached())
+            .serve_connection(ServiceInput::new(socket), RamaHttpService::new(HelloWorld))
+            .await
+            .unwrap();
+    });
+    let conn = ServiceInput::new(connect_async(addr).await);
+    let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
+    let connection = tokio::spawn(connection);
+    let mut h2 = h2.ready().await.unwrap();
+    // (fields, value length, expected status)
+    for (fields, value_len, status) in [
+        (4096, 1, StatusCode::OK),
+        (4097, 1, StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE),
+        (1, 1_048_000, StatusCode::OK),
+        (1, 1_049_000, StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE),
+    ] {
+        let mut request = Request::get("https://localhost/").body(()).unwrap();
+        let value = HeaderValue::from_str(&"v".repeat(value_len)).unwrap();
+        for i in 0..fields {
+            request.headers_mut().append(
+                HeaderName::try_from(format!("x-{i}")).unwrap(),
+                value.clone(),
+            );
+        }
+        let (response, _) = h2.send_request(request, true).unwrap();
+        let response = response.await.unwrap();
+        assert_eq!(response.status(), status, "{fields} x {value_len}");
+        h2 = h2.ready().await.unwrap();
+    }
+    drop(h2);
+    connection.await.unwrap().unwrap();
+    server.await.unwrap();
+}
+
 #[tokio::test]
 async fn graceful_shutdown_before_first_request_no_block() {
     let (listener, addr) = setup_tcp_listener();
@@ -3000,7 +3120,7 @@ fn streaming_body() {
         buf.starts_with(b"HTTP/1.1 200 OK\r\n"),
         "response is 200 OK"
     );
-    assert_eq!(buf.len(), 100_808, "full streamed body read");
+    assert_eq!(buf.len(), 100_771, "full streamed body read");
 }
 
 #[test]
@@ -3220,7 +3340,6 @@ async fn http2_keep_alive_detects_unresponsive_client() {
     let err = http2::Builder::new(WeakScope::detached())
         .with_keep_alive_interval(Duration::from_secs(1))
         .with_keep_alive_timeout(Duration::from_secs(1))
-        .with_auto_date_header(true)
         .serve_connection(socket, RamaHttpService::new(unreachable_service()))
         .await
         .expect_err("serve_connection should error");
@@ -3424,7 +3543,7 @@ async fn http2_peer_settings_handle_does_not_extend_conn_lifetime() {
 }
 
 #[tokio::test]
-async fn http2_check_date_header_disabled() {
+async fn http2_adds_no_date_header() {
     let (listener, addr) = setup_tcp_listener();
 
     tokio::spawn(async move {
@@ -3433,7 +3552,6 @@ async fn http2_check_date_header_disabled() {
 
         http2::Builder::new(WeakScope::detached())
             .with_keep_alive_interval(Duration::from_secs(1))
-            .with_auto_date_header(false)
             .with_keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(socket, RamaHttpService::new(HelloWorld))
             .await
@@ -3581,10 +3699,9 @@ fn http1_trailer_send_fields() {
         "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\ntrailer: chunky-trailer\r\n";
     assert_eq!(&sres[..expected_head.len()], expected_head);
 
-    // skip the date header
-    let date_fragment = "GMT\r\n\r\n";
-    let pos = sres.find(date_fragment).expect("find GMT");
-    let body = &sres[pos + date_fragment.len()..];
+    let head_end = "\r\n\r\n";
+    let pos = sres.find(head_end).expect("find end of head");
+    let body = &sres[pos + head_end.len()..];
 
     let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\nfoo: bar\r\n\r\n";
     assert_eq!(body, expected_body);
@@ -3626,10 +3743,9 @@ fn http1_trailer_send_fields_titlecase() {
         "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\ntrailer: Chunky-Trailer\r\n";
     assert_eq!(&sres[..expected_head.len()], expected_head);
 
-    // skip the date header
-    let date_fragment = "GMT\r\n\r\n";
-    let pos = sres.find(date_fragment).expect("find GMT");
-    let body = &sres[pos + date_fragment.len()..];
+    let head_end = "\r\n\r\n";
+    let pos = sres.find(head_end).expect("find end of head");
+    let body = &sres[pos + head_end.len()..];
 
     let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\nfoo: bar\r\n\r\n";
     assert_eq!(body, expected_body);
@@ -3668,10 +3784,9 @@ fn http1_trailer_fields_not_allowed() {
         "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\ntrailer: chunky-trailer\r\n";
     assert_eq!(&sres[..expected_head.len()], expected_head);
 
-    // skip the date header
-    let date_fragment = "GMT\r\n\r\n";
-    let pos = sres.find(date_fragment).expect("find GMT");
-    let body = &sres[pos + date_fragment.len()..];
+    let head_end = "\r\n\r\n";
+    let pos = sres.find(head_end).expect("find end of head");
+    let body = &sres[pos + head_end.len()..];
 
     // no trailer fields should be sent because TE: trailers was not in request headers
     let expected_body = "5\r\nhello\r\n0\r\n\r\n";
@@ -3706,9 +3821,9 @@ fn http1_trailer_fields_allowed_with_comma_separated_te() {
     let res = read_until(&mut req, |buf| buf.ends_with(chunky_trailer_chunk)).expect("reading");
     let sres = s(&res);
 
-    let date_fragment = "GMT\r\n\r\n";
-    let pos = sres.find(date_fragment).expect("find GMT");
-    let body = &sres[pos + date_fragment.len()..];
+    let head_end = "\r\n\r\n";
+    let pos = sres.find(head_end).expect("find end of head");
+    let body = &sres[pos + head_end.len()..];
 
     let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\n\r\n";
     assert_eq!(body, expected_body);
@@ -3743,9 +3858,9 @@ fn http1_trailer_fields_allowed_with_multiple_te_headers() {
     let res = read_until(&mut req, |buf| buf.ends_with(chunky_trailer_chunk)).expect("reading");
     let sres = s(&res);
 
-    let date_fragment = "GMT\r\n\r\n";
-    let pos = sres.find(date_fragment).expect("find GMT");
-    let body = &sres[pos + date_fragment.len()..];
+    let head_end = "\r\n\r\n";
+    let pos = sres.find(head_end).expect("find end of head");
+    let body = &sres[pos + head_end.len()..];
 
     let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\n\r\n";
     assert_eq!(body, expected_body);
@@ -4210,7 +4325,8 @@ fn s(buf: &[u8]) -> &str {
 }
 
 fn has_header(msg: &str, name: &str) -> bool {
-    let n = msg.find("\r\n\r\n").unwrap_or(msg.len());
+    // Keep the last field's CRLF so a `value\r\n` needle can match it.
+    let n = msg.find("\r\n\r\n").map_or(msg.len(), |n| n + 2);
 
     msg[..n].contains(name)
 }

@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use rama_http::datagram::DatagramTransport;
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{macros::generate_set_and_with, octets::kib_u64};
 
 use super::MAX_UDP_PAYLOAD;
 
@@ -44,7 +44,7 @@ impl TunnelBudget {
         Self {
             traffic: crate::budget::TunnelBudget::new(),
             unanswered_packets: 64,
-            unanswered_bytes: 64 * 1024,
+            unanswered_bytes: kib_u64(64),
         }
     }
 

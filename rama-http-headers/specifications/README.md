@@ -26,7 +26,7 @@ if we have implemented it at all.
 
 * [rfc9651.txt](./rfc9651.txt)  
   Structured Field Values for HTTP. Parsed by `rama-http-types`'
-  `structured_fields` module; used by typed `Priority`, `Capsule-Protocol` and
+  `utils::structured_fields` module; used by typed `Priority`, `Capsule-Protocol` and
   `Proxy-Status`.
 
 ### Related, vendored in sibling crates

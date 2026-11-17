@@ -105,6 +105,7 @@ mod tests {
         ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
         CONTENT_TYPE, RANGE, VARY,
     };
+    use crate::layer::util::compression::ZSTD_MAX_WINDOW_LOG;
     use crate::{
         HeaderMap, HeaderValue, Method, Request, Response, StreamingBody, body::util::BodyExt,
     };
@@ -117,6 +118,7 @@ mod tests {
     use rama_core::service::service_fn;
     use rama_core::stream::io::StreamReader;
     use rama_http_types::Body;
+    use rama_utils::octets::mib;
     use std::convert::Infallible;
     use std::io::Read;
     use std::sync::{Arc, RwLock};
@@ -173,20 +175,23 @@ mod tests {
         }
     }
 
-    async fn brotli_response(
+    async fn compressed_response(
         make_body: impl Fn() -> Body + Send + Sync + 'static,
         streaming: bool,
-    ) -> (u8, Vec<u8>) {
+        encoding: &'static str,
+        quality: CompressionLevel,
+    ) -> Bytes {
         let svc = service_fn(move |_: Request| {
             std::future::ready(Ok::<_, Infallible>(Response::new(make_body())))
         });
         let req = Request::builder()
-            .header("accept-encoding", "br")
+            .header("accept-encoding", encoding)
             .body(Body::empty())
             .unwrap();
-        let compressed = if streaming {
+        if streaming {
             stream::StreamCompression::new(svc)
                 .with_compress_predicate(Always)
+                .with_quality(quality)
                 .serve(req)
                 .await
                 .unwrap()
@@ -198,6 +203,7 @@ mod tests {
         } else {
             Compression::new(svc)
                 .with_compress_predicate(Always)
+                .with_quality(quality)
                 .serve(req)
                 .await
                 .unwrap()
@@ -206,7 +212,15 @@ mod tests {
                 .await
                 .unwrap()
                 .to_bytes()
-        };
+        }
+    }
+
+    async fn brotli_response(
+        make_body: impl Fn() -> Body + Send + Sync + 'static,
+        streaming: bool,
+    ) -> (u8, Vec<u8>) {
+        let compressed =
+            compressed_response(make_body, streaming, "br", CompressionLevel::Default).await;
         let mut decoded = Vec::new();
         let mut decoder = BrotliDecoder::new(&mut decoded);
         decoder.write_all(&compressed).await.unwrap();
@@ -230,6 +244,29 @@ mod tests {
                 assert_eq!(window, bits, "body of {len} bytes, streaming={streaming}");
                 assert_eq!(decoded, data);
             }
+
+            // The highest levels clamp to one level and keep the window within 8 MiB.
+            let data: Bytes = (0..mib(1)).map(|i| (i * 7 % 251) as u8).collect();
+            let mut outputs = Vec::new();
+            for quality in [CompressionLevel::Best, CompressionLevel::Precise(u32::MAX)] {
+                let compressed = compressed_response(
+                    {
+                        let data = data.clone();
+                        move || Body::from(data.clone())
+                    },
+                    streaming,
+                    "zstd",
+                    quality,
+                )
+                .await;
+                let mut decoder = zstd::stream::read::Decoder::new(&compressed[..]).unwrap();
+                decoder.window_log_max(ZSTD_MAX_WINDOW_LOG).unwrap();
+                let mut decoded = Vec::new();
+                decoder.read_to_end(&mut decoded).unwrap();
+                assert_eq!(decoded, data, "{quality:?}, streaming={streaming}");
+                outputs.push(compressed);
+            }
+            assert_eq!(outputs[0], outputs[1], "streaming={streaming}");
         }
     }
 

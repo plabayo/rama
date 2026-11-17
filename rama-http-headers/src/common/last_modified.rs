@@ -1,4 +1,3 @@
-use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
 
 use crate::util::HttpDate;
@@ -53,12 +52,18 @@ impl crate::HeaderDecode for LastModified {
 
 impl crate::HeaderEncode for LastModified {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        match HeaderValue::try_from(&self.0) {
-            Ok(value) => values.extend(::std::iter::once(value)),
-            Err(err) => {
-                tracing::debug!("failed to encode last-modified value as header: {err}");
-            }
-        }
+        values.extend(::std::iter::once(HeaderValue::from(&self.0)));
+    }
+}
+
+impl LastModified {
+    /// `None` for modification times an HTTP-date cannot represent (before 1970 or after 9999).
+    ///
+    /// Prefer this over the clamping [`From`] impl: a clamped date would misstate when the
+    /// representation changed.
+    #[must_use]
+    pub fn try_from_system_time(time: SystemTime) -> Option<Self> {
+        HttpDate::try_from_system_time(time).map(Self)
     }
 }
 
@@ -71,5 +76,26 @@ impl From<SystemTime> for LastModified {
 impl From<LastModified> for SystemTime {
     fn from(date: LastModified) -> Self {
         date.0.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn try_from_system_time_rejects_unrepresentable_times() {
+        let epoch = SystemTime::UNIX_EPOCH;
+        assert!(LastModified::try_from_system_time(epoch).is_some());
+        let last = epoch
+            .checked_add(Duration::from_secs(253_402_300_799))
+            .unwrap();
+        assert!(LastModified::try_from_system_time(last).is_some());
+
+        let before_epoch = epoch.checked_sub(Duration::from_secs(1)).unwrap();
+        let past_9999 = last.checked_add(Duration::from_secs(1)).unwrap();
+        assert!(LastModified::try_from_system_time(before_epoch).is_none());
+        assert!(LastModified::try_from_system_time(past_9999).is_none());
     }
 }

@@ -7,6 +7,7 @@ use std::{
 use fastbloom::BloomFilter;
 use parking_lot::Mutex;
 use rama_core::telemetry::tracing::{trace, warn};
+use rama_utils::octets::mib;
 use rustc_hash::FxBuildHasher;
 
 use crate::proto::{Duration, SystemTime, TokenLog, TokenReuseError, UNIX_EPOCH};
@@ -258,7 +259,7 @@ fn optimal_k_num(num_bytes: usize, expected_hits: u64) -> u32 {
 }
 
 // remember to change the doc comment for `impl Default for BloomTokenLog` if these ever change
-const DEFAULT_MAX_BYTES: usize = 10 << 20;
+const DEFAULT_MAX_BYTES: usize = mib(10);
 const DEFAULT_EXPECTED_HITS: u64 = 1_000_000;
 
 #[cfg(test)]

@@ -28,7 +28,7 @@
     reason = "bench: panic-on-error and printing results is the standard pattern for harnesses"
 )]
 
-use rama::graceful::{Aborted, Cause, Scope};
+use rama::graceful::{Aborted, Cause, RunCutoff, Scope};
 use std::future::Future;
 use std::hint::black_box;
 use std::pin::Pin;
@@ -227,7 +227,7 @@ fn bound_child(scope: &Scope) -> Held<impl Future<Output = Option<()>> + use<>> 
     Held { scope, future }
 }
 
-fn bound_within(scope: &Scope) -> impl Future<Output = Option<()>> + use<> {
+fn bound_within(scope: &Scope) -> impl Future<Output = Result<(), RunCutoff>> + use<> {
     scope.run_until_aborted_within(CLOSE_GRACE, std::future::pending())
 }
 

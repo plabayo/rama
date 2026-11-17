@@ -4,13 +4,11 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
-    graceful::scope_context,
     io::{
-        PeekIoProvider, PrefixedIo, ReplayReader, StackReader,
+        PeekIoProvider, PrefixedIo, StackReader,
         peek::{
-            PeekEgressPredicate, PeekMapped, PeekOptions, PeekOutput, PeekPolicy,
-            PeekPolicyProvider, PeekVerdict, default_egress_peek_max_size,
-            peek_input_until_verdict_with_options,
+            DEFAULT_EGRESS_PEEK_MAX_SIZE, PeekEgressPredicate, PeekMapped, PeekOptions, PeekOutput,
+            PeekPolicy, PeekPolicyProvider, PeekVerdict, peek_input_until_verdict, replay_peeked,
         },
     },
     service::RejectService,
@@ -49,7 +47,7 @@ impl<T> TlsPeekRouter<T> {
             tls_acceptor,
             fallback: RejectService::new(NoTlsRejectError),
             peek_policy: PeekPolicy::FAIL_OPEN,
-            max_egress_peek_size: default_egress_peek_max_size(),
+            max_egress_peek_size: DEFAULT_EGRESS_PEEK_MAX_SIZE,
         }
     }
 }
@@ -110,51 +108,32 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut input: PeekableInput) -> Result<Self::Output, Self::Error> {
-        let options = PeekOptions::new()
-            .with_policy(self.peek_policy.peek_policy(&input))
-            .maybe_with_scope(scope_context(input.extensions()))
-            .with_max_egress_peek_size(self.max_egress_peek_size);
+        let options = PeekOptions::from_input(&input, &self.peek_policy, self.max_egress_peek_size);
         let (peek_reader, egress) = input.peek_ios_mut();
         let mut waiter = options.waiter(egress, &TlsEgressPredicate);
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
 
+        // Non-TLS prefixes are rejected fast (see `tls_record_header_verdict`),
+        // so only a still-plausible header arriving fragmented keeps reading.
         let PeekOutput {
             data, peek_size, ..
-        } = peek_input_until_verdict_with_options(
+        } = peek_input_until_verdict(
             peek_reader,
             &mut peek_buf,
             0,
             &mut waiter,
-            // No attempt cap: non-TLS prefixes are rejected fast (see
-            // `tls_record_header_verdict`), so the only reads that continue are
-            // for a still-plausible TLS record header arriving fragmented. Those
-            // are bounded by the 5-byte buffer, EOF, and the waiter.
-            None,
             tls_record_header_verdict,
         )
         .await;
 
-        waiter.check::<BoxError>()?;
-
+        let egress_prefix = waiter.finish::<BoxError>()?;
         let is_tls = data.is_some();
-        let egress_prefix = waiter.into_egress_prefix();
-
         tracing::trace!(%is_tls, "tls prefix header read: is tls: {is_tls}");
 
-        let offset = TLS_HEADER_PEEK_LEN - peek_size;
-        if offset > 0 {
-            tracing::trace!(
-                "move tls peek buffer cursor due to reading not enough: (read: {peek_size})"
-            );
-            peek_buf.copy_within(0..peek_size, offset);
-        }
-
-        let mut peek_stack_data = StackReader::new(peek_buf);
-        peek_stack_data.skip(offset);
-
-        let mapped_input = input.map_peek_io(
-            |io| PrefixedIo::new(peek_stack_data, io),
-            |io| PrefixedIo::new(ReplayReader::new(egress_prefix), io),
+        let mapped_input = replay_peeked(
+            input,
+            StackReader::from_prefix(peek_buf, peek_size),
+            egress_prefix,
         );
 
         if is_tls {

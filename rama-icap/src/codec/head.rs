@@ -3,15 +3,17 @@ use core::fmt;
 use rama_net::{Protocol, address::AuthorityRef, uri::AbsoluteUriRef};
 #[cfg(feature = "http")]
 use rama_net::{address::OptPort, uri::Uri};
-use rama_utils::bytes::trim_ows;
+use rama_utils::{
+    byte_set::{is_http_tchar, is_http_token},
+    bytes::trim_ows,
+    octets::kib,
+};
 
 use crate::{
-    byte_sets::{
-        comma_separated_items, is_field_value_byte, is_horizontal_whitespace_byte, is_token_byte,
-    },
+    byte_sets::{comma_separated_items, is_field_value_byte, is_horizontal_whitespace_byte},
     proto::{
         InvalidMethod, InvalidStatusCode, InvalidVersion, Method, MethodKind, Preview, StatusCode,
-        Version, header, is_token,
+        Version, header,
     },
 };
 
@@ -22,7 +24,7 @@ use super::{Framed, ScanStatus};
 pub const DEFAULT_MAX_HEADERS: usize = 64;
 
 /// Default maximum encoded size of an ICAP start line and header block.
-pub const DEFAULT_MAX_HEAD_BYTES: usize = 64 * 1024;
+pub const DEFAULT_MAX_HEAD_BYTES: usize = kib(64);
 
 /// Policy for the obsolete line folding admitted by RFC 3507.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -650,7 +652,7 @@ impl<'a> Header<'a> {
             return Err(InvalidHeader);
         }
         let value = HeaderValue::contiguous(value);
-        if !is_token(name.as_bytes())
+        if !is_http_token(name.as_bytes())
             || validate_known_header(name, value, ServiceTagSyntax::Quoted).is_err()
         {
             return Err(InvalidHeader);
@@ -1633,7 +1635,7 @@ fn parse_headers<'headers>(
             .position(|byte| *byte == b':')
             .ok_or(ParseError::InvalidHeader)?;
         let name = &line[..colon];
-        if count == storage.len() || !is_token(name) {
+        if count == storage.len() || !is_http_token(name) {
             return Err(if count == storage.len() {
                 ParseError::TooManyHeaders
             } else {
@@ -1784,7 +1786,7 @@ fn valid_istag(value: &[u8], syntax: ServiceTagSyntax) -> bool {
     else {
         return syntax == ServiceTagSyntax::AllowUnquotedToken
             && value.len() <= 32
-            && is_token(value);
+            && is_http_token(value);
     };
     let mut escaped = false;
     let mut decoded_len = 0;
@@ -1832,12 +1834,12 @@ fn valid_methods(value: HeaderValue<'_>) -> bool {
     for byte in NormalizedHeaderValueBytes::new(value) {
         match state {
             State::Before | State::After if is_horizontal_whitespace_byte(byte) => {}
-            State::Before if is_token_byte(byte) => {
+            State::Before if is_http_tchar(byte) => {
                 method_len = 1;
                 is_options = b"OPTIONS".first() == Some(&byte);
                 state = State::In;
             }
-            State::In if is_token_byte(byte) => {
+            State::In if is_http_tchar(byte) => {
                 is_options &= b"OPTIONS".get(method_len) == Some(&byte);
                 method_len += 1;
             }
@@ -2096,7 +2098,7 @@ fn valid_trailer_name_list(value: HeaderValue<'_>) -> bool {
     let mut after_name = false;
     for byte in NormalizedHeaderValueBytes::new(value) {
         match byte {
-            byte if is_token_byte(byte) && !after_name => {
+            byte if is_http_tchar(byte) && !after_name => {
                 in_name = true;
                 saw_name = true;
             }
@@ -2195,7 +2197,7 @@ impl HeaderValidation {
     }
 
     fn validate(&mut self, header: Header<'_>) -> Result<(), InvalidHeader> {
-        if !is_token(header.name.as_bytes()) {
+        if !is_http_token(header.name.as_bytes()) {
             return Err(InvalidHeader);
         }
         let compatible = self.composition_validation == CompositionValidation::Compatible;

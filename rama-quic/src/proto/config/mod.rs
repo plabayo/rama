@@ -462,8 +462,8 @@ impl ServerConfig {
             preferred_address_v6: None,
 
             max_incoming: 1 << 16,
-            incoming_buffer_size: 10 << 20,
-            incoming_buffer_size_total: 100 << 20,
+            incoming_buffer_size: octets::mib_u64(10),
+            incoming_buffer_size_total: octets::mib_u64(100),
             admission: Some(AdmissionConfig::default()),
 
             time_source: Arc::new(StdSystemTime),

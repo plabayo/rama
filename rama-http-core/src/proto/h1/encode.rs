@@ -1,10 +1,7 @@
 use std::{fmt, io::IoSlice, sync::Arc};
 
 use rama_core::{
-    bytes::{
-        Buf, Bytes,
-        buf::{Chain, Take},
-    },
+    bytes::{Buf, Bytes, buf::Chain},
     telemetry::tracing::{debug, trace},
 };
 use rama_http_types::{
@@ -31,6 +28,17 @@ pub(crate) struct EncodedBuf<B> {
 
 #[derive(Debug)]
 pub(crate) struct NotEof(u64);
+
+/// A body chunk past the declared `Content-Length`, by this many bytes: none of it is sent.
+#[derive(Debug)]
+pub(crate) struct PastEof(u64);
+
+/// Why a body written against a declared `Content-Length` cannot end as declared.
+#[derive(Debug)]
+pub(crate) enum LengthMismatch {
+    Short(NotEof),
+    Long(PastEof),
+}
 
 #[derive(Debug, PartialEq, Clone)]
 enum Kind {
@@ -74,9 +82,8 @@ impl PartialEq for ChunkedTrailers {
 #[derive(Debug)]
 enum BufKind<B> {
     Exact(B),
-    Limited(Take<B>),
     Chunked(Chain<Chain<ChunkSize, B>, StaticBuf>),
-    ChunkedEnd(StaticBuf),
+    Static(StaticBuf),
     Trailers(Chain<Chain<StaticBuf, Bytes>, StaticBuf>),
 }
 
@@ -145,13 +152,13 @@ impl Encoder {
         match self.kind {
             Kind::CloseDelimited | Kind::Length(0) => Ok(None),
             Kind::Chunked(_) => Ok(Some(EncodedBuf {
-                kind: BufKind::ChunkedEnd(b"0\r\n\r\n"),
+                kind: BufKind::Static(b"0\r\n\r\n"),
             })),
             Kind::Length(n) => Err(NotEof(n)),
         }
     }
 
-    pub(crate) fn encode<B>(&mut self, msg: B) -> EncodedBuf<B>
+    pub(crate) fn encode<B>(&mut self, msg: B) -> Result<EncodedBuf<B>, PastEof>
     where
         B: Buf,
     {
@@ -169,20 +176,17 @@ impl Encoder {
             Kind::Length(remaining) => {
                 trace!("sized write, len = {}", len);
                 if len as u64 > *remaining {
-                    let limit = *remaining as usize;
-                    *remaining = 0;
-                    BufKind::Limited(msg.take(limit))
-                } else {
-                    *remaining -= len as u64;
-                    BufKind::Exact(msg)
+                    return Err(PastEof(len as u64 - *remaining));
                 }
+                *remaining -= len as u64;
+                BufKind::Exact(msg)
             }
             Kind::CloseDelimited => {
                 trace!("close delimited write {}B", len);
                 BufKind::Exact(msg)
             }
         };
-        EncodedBuf { kind }
+        Ok(EncodedBuf { kind })
     }
 
     pub(crate) fn encode_trailers<B>(
@@ -225,7 +229,12 @@ impl Encoder {
         }
     }
 
-    pub(super) fn encode_and_end<B>(&self, msg: B, dst: &mut WriteBuf<EncodedBuf<B>>) -> bool
+    /// Write the last chunk, returning whether the connection may be kept alive.
+    pub(super) fn encode_and_end<B>(
+        &self,
+        msg: B,
+        dst: &mut WriteBuf<EncodedBuf<B>>,
+    ) -> Result<bool, LengthMismatch>
     where
         B: Buf,
     {
@@ -239,7 +248,7 @@ impl Encoder {
                     .chain(msg)
                     .chain(b"\r\n0\r\n\r\n" as &'static [u8]);
                 dst.buffer(buf);
-                !self.is_last
+                Ok(!self.is_last)
             }
             Kind::Length(remaining) => {
                 use std::cmp::Ordering;
@@ -248,22 +257,20 @@ impl Encoder {
                 match (len as u64).cmp(&remaining) {
                     Ordering::Equal => {
                         dst.buffer(msg);
-                        !self.is_last
+                        Ok(!self.is_last)
                     }
-                    Ordering::Greater => {
-                        dst.buffer(msg.take(remaining as usize));
-                        !self.is_last
-                    }
+                    Ordering::Greater => Err(LengthMismatch::Long(PastEof(len as u64 - remaining))),
                     Ordering::Less => {
+                        // What was declared still goes out, but the message never ends.
                         dst.buffer(msg);
-                        false
+                        Err(LengthMismatch::Short(NotEof(remaining - len as u64)))
                     }
                 }
             }
             Kind::CloseDelimited => {
                 trace!("close delimited write {}B", len);
                 dst.buffer(msg);
-                false
+                Ok(false)
             }
         }
     }
@@ -277,9 +284,8 @@ where
     fn remaining(&self) -> usize {
         match &self.kind {
             BufKind::Exact(b) => b.remaining(),
-            BufKind::Limited(b) => b.remaining(),
             BufKind::Chunked(b) => b.remaining(),
-            BufKind::ChunkedEnd(b) => b.remaining(),
+            BufKind::Static(b) => b.remaining(),
             BufKind::Trailers(b) => b.remaining(),
         }
     }
@@ -288,9 +294,8 @@ where
     fn chunk(&self) -> &[u8] {
         match &self.kind {
             BufKind::Exact(b) => b.chunk(),
-            BufKind::Limited(b) => b.chunk(),
             BufKind::Chunked(b) => b.chunk(),
-            BufKind::ChunkedEnd(b) => b.chunk(),
+            BufKind::Static(b) => b.chunk(),
             BufKind::Trailers(b) => b.chunk(),
         }
     }
@@ -299,9 +304,8 @@ where
     fn advance(&mut self, cnt: usize) {
         match &mut self.kind {
             BufKind::Exact(b) => b.advance(cnt),
-            BufKind::Limited(b) => b.advance(cnt),
             BufKind::Chunked(b) => b.advance(cnt),
-            BufKind::ChunkedEnd(b) => b.advance(cnt),
+            BufKind::Static(b) => b.advance(cnt),
             BufKind::Trailers(b) => b.advance(cnt),
         }
     }
@@ -310,9 +314,8 @@ where
     fn chunks_vectored<'t>(&'t self, dst: &mut [IoSlice<'t>]) -> usize {
         match &self.kind {
             BufKind::Exact(b) => b.chunks_vectored(dst),
-            BufKind::Limited(b) => b.chunks_vectored(dst),
             BufKind::Chunked(b) => b.chunks_vectored(dst),
-            BufKind::ChunkedEnd(b) => b.chunks_vectored(dst),
+            BufKind::Static(b) => b.chunks_vectored(dst),
             BufKind::Trailers(b) => b.chunks_vectored(dst),
         }
     }
@@ -384,18 +387,19 @@ impl fmt::Debug for ChunkSize {
     }
 }
 
-impl<B: Buf> From<B> for EncodedBuf<B> {
-    fn from(buf: B) -> Self {
+impl<B> EncodedBuf<B> {
+    /// Fixed bytes written as they are, such as an interim response.
+    pub(crate) const fn from_static(bytes: &'static [u8]) -> Self {
         Self {
-            kind: BufKind::Exact(buf),
+            kind: BufKind::Static(bytes),
         }
     }
 }
 
-impl<B: Buf> From<Take<B>> for EncodedBuf<B> {
-    fn from(buf: Take<B>) -> Self {
+impl<B: Buf> From<B> for EncodedBuf<B> {
+    fn from(buf: B) -> Self {
         Self {
-            kind: BufKind::Limited(buf),
+            kind: BufKind::Exact(buf),
         }
     }
 }
@@ -415,6 +419,25 @@ impl fmt::Display for NotEof {
 }
 
 impl std::error::Error for NotEof {}
+
+impl fmt::Display for PastEof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "body longer than its content-length by {} bytes", self.0)
+    }
+}
+
+impl std::error::Error for PastEof {}
+
+impl fmt::Display for LengthMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Short(error) => error.fmt(f),
+            Self::Long(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for LengthMismatch {}
 
 #[cfg(test)]
 mod tests {
@@ -450,12 +473,12 @@ mod tests {
         let mut dst = Vec::new();
 
         let msg1 = b"foo bar".as_ref();
-        let buf1 = encoder.encode(msg1);
+        let buf1 = encoder.encode(msg1).unwrap();
         dst.put(buf1);
         assert_eq!(dst, b"7\r\nfoo bar\r\n");
 
         let msg2 = b"baz quux herp".as_ref();
-        let buf2 = encoder.encode(msg2);
+        let buf2 = encoder.encode(msg2).unwrap();
         dst.put(buf2);
 
         assert_eq!(dst, b"7\r\nfoo bar\r\nD\r\nbaz quux herp\r\n");
@@ -476,15 +499,18 @@ mod tests {
         let mut dst = Vec::new();
 
         let msg1 = b"foo bar".as_ref();
-        let buf1 = encoder.encode(msg1);
+        let buf1 = encoder.encode(msg1).unwrap();
         dst.put(buf1);
 
         assert_eq!(dst, b"foo bar");
         assert!(!encoder.is_eof());
         encoder.end::<()>().unwrap_err();
 
-        let msg2 = b"baz".as_ref();
-        let buf2 = encoder.encode(msg2);
+        // a chunk past the declared length is refused whole
+        encoder.encode(b"baz".as_ref()).unwrap_err();
+        assert_eq!(dst, b"foo bar");
+
+        let buf2 = encoder.encode(b"b".as_ref()).unwrap();
         dst.put(buf2);
 
         assert_eq!(dst.len(), max_len);
@@ -499,7 +525,7 @@ mod tests {
         let mut dst = Vec::new();
 
         let msg1 = b"foo bar".as_ref();
-        let buf1 = encoder.encode(msg1);
+        let buf1 = encoder.encode(msg1).unwrap();
         dst.put(buf1);
 
         assert_eq!(dst, b"foo bar");
@@ -507,7 +533,7 @@ mod tests {
         encoder.end::<()>().unwrap();
 
         let msg2 = b"baz".as_ref();
-        let buf2 = encoder.encode(msg2);
+        let buf2 = encoder.encode(msg2).unwrap();
         dst.put(buf2);
 
         assert_eq!(dst, b"foo barbaz");

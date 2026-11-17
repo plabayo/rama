@@ -514,10 +514,12 @@ where
                                     resp.client_max_window_bits = request_pmd
                                         .client_max_window_bits
                                         .map(|client_bits_offer| {
+                                            // the offered value is a hint, and zlib compresses
+                                            // with at least a 9-bit window (RFC 7692 §7.1.2.2)
                                             let offer = if client_bits_offer == 0 {
                                                 15
                                             } else {
-                                                client_bits_offer.clamp(8, 15)
+                                                client_bits_offer.clamp(9, 15)
                                             };
                                             let cap =
                                                 allowed_pmd.client_max_window_bits.unwrap_or(offer);
@@ -1399,6 +1401,70 @@ mod tests {
         let accepted =
             negotiated_extensions(&acceptor, r#"x-foo; p="a, permessage-deflate, b""#).await;
         assert_eq!(accepted, None);
+    }
+
+    /// A client window-bits offer meets an acceptor cap: the handshake succeeds or the
+    /// acceptor declines, and both sides settle on the same windows.
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn client_and_acceptor_agree_on_client_window_bits() {
+        use rama_http::headers::{HeaderMapExt as _, SecWebSocketExtensions};
+
+        for client_bits in [None, Some(0), Some(8), Some(9), Some(15)] {
+            for server_bits in [None, Some(8), Some(9), Some(15)] {
+                let offer = SecWebSocketExtensions::per_message_deflate_with_config(
+                    PerMessageDeflateConfig {
+                        client_max_window_bits: client_bits,
+                        ..Default::default()
+                    },
+                );
+                let acceptor = WebSocketAcceptor::new().with_per_message_deflate_with_config(
+                    PerMessageDeflateConfig {
+                        client_max_window_bits: server_bits,
+                        ..Default::default()
+                    },
+                );
+                let mut request = Request::builder()
+                    .uri("https://example.test/")
+                    .method(Method::CONNECT)
+                    .version(Version::HTTP_2)
+                    .extension(Protocol::from_static("websocket"))
+                    .header("Sec-WebSocket-Version", "13")
+                    .body(Body::empty())
+                    .unwrap();
+                request.headers_mut().typed_insert(offer.clone());
+                let UpgradeResponse {
+                    response,
+                    extensions,
+                    ..
+                } = acceptor.serve(request).await.unwrap();
+                let case = format!("client {client_bits:?}, acceptor {server_bits:?}");
+                let accepted = crate::handshake::client::validate_http_server_response(
+                    &response,
+                    None,
+                    None,
+                    Some(offer),
+                )
+                .unwrap_or_else(|err| panic!("{case}: {err}"));
+                match (extensions.get_ref::<Extension>(), accepted.extension) {
+                    (None, None) => {}
+                    (
+                        Some(Extension::PerMessageDeflate(server)),
+                        Some(Extension::PerMessageDeflate(client)),
+                    ) => {
+                        assert_eq!(
+                            server.client_max_window_bits, client.client_max_window_bits,
+                            "{case}"
+                        );
+                        assert_eq!(
+                            server.server_max_window_bits, client.server_max_window_bits,
+                            "{case}"
+                        );
+                    }
+                    other => panic!("{case}: sides disagree: {other:?}"),
+                }
+            }
+        }
     }
 
     #[cfg(feature = "compression")]

@@ -100,7 +100,7 @@ pub const HEADER_SIZE: usize =
     std::mem::size_of::<u32>();
 
 // The default maximum uncompressed size in bytes for a message. Defaults to 4MB.
-const DEFAULT_MAX_RECV_MESSAGE_SIZE: usize = mib(4);
+pub(crate) const DEFAULT_MAX_RECV_MESSAGE_SIZE: usize = mib(4);
 const DEFAULT_MAX_SEND_MESSAGE_SIZE: usize = usize::MAX;
 
 /// Trait that knows how to encode and decode gRPC messages.

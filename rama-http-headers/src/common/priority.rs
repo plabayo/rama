@@ -1,7 +1,7 @@
 //! Extensible HTTP priorities (RFC 9218). Unknown dictionary members are validated and ignored.
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
-use rama_http_types::structured_fields::{BareItem, DictionaryValue, parse_dictionary};
+use rama_http_types::utils::structured_fields::{BareItem, DictionaryValue, parse_dictionary};
 use rama_http_types::{HeaderName, HeaderValue};
 
 /// HTTP urgency and incremental-delivery preference, independent of protocol version.

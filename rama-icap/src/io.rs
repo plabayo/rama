@@ -3,19 +3,17 @@
 use core::fmt;
 use std::{
     io,
-    pin::pin,
     sync::atomic::{AtomicBool, Ordering},
-    task::Poll,
     time::Duration,
 };
 
 use rama_core::{
     bytes::{Buf as _, Bytes, BytesMut},
     extensions::{Extensions, ExtensionsRef},
-    futures::poll,
-    graceful::{Scope, WeakScope, scope_context},
-    io::Io,
+    graceful::{RunCutoff, WeakScope, scope_context},
+    io::{Io, shutdown_within},
 };
+use rama_utils::octets::kib;
 use tokio::io::{
     AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadHalf, WriteHalf,
 };
@@ -34,10 +32,10 @@ use crate::{
 };
 
 /// Default number of bytes reserved for each socket read.
-pub const DEFAULT_READ_BUFFER_BYTES: usize = 8 * 1024;
+pub const DEFAULT_READ_BUFFER_BYTES: usize = kib(8);
 
 /// Default maximum bytes in encapsulated HTTP header sections.
-pub const DEFAULT_MAX_ENCAPSULATED_HEADER_BYTES: usize = 128 * 1024;
+pub const DEFAULT_MAX_ENCAPSULATED_HEADER_BYTES: usize = kib(128);
 
 /// Default time a peer may hold the write shutdown that closes a connection.
 ///
@@ -365,40 +363,19 @@ where
     /// fails, so the owner records it and drops a connection it could not close in order.
     pub(crate) async fn close(&mut self) -> Result<(), Error> {
         let scope = scope_context(&self.extensions).unwrap_or_else(WeakScope::detached);
-        if scope.is_aborted() {
-            return Err(close_interrupted());
-        }
         let grace = self.read.options.shutdown_grace;
-        let mut shutdown = pin!(self.write.shutdown());
-        // A close that needs no peer ends here, with nothing to bound.
-        if let Poll::Ready(closed) = poll!(shutdown.as_mut()) {
-            return closed;
-        }
-        // A closed scope takes no holder: the close then runs below no parent.
-        let held = scope.try_hold().unwrap_or_else(|_closed| Scope::detached());
-        // The hard phase is watched on the scope itself too: a scope that took no holder
-        // still reaches it.
-        let ended = tokio::select! {
-            biased;
-            () = scope.aborted() => None,
-            ended = held.run_until_aborted_within(grace, shutdown) => ended,
-        };
-        match ended {
-            Some(closed) => closed,
-            None if scope.is_aborted() => Err(close_interrupted()),
-            None => Err(Error::Io(io::Error::new(
+        match shutdown_within(&mut self.write.io, &scope, grace).await {
+            Ok(closed) => closed.map_err(Into::into),
+            Err(RunCutoff::Aborted) => Err(Error::Io(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "ICAP write shutdown cut by the connection's scope",
+            ))),
+            Err(RunCutoff::TimedOut) => Err(Error::Io(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "ICAP write shutdown held by the peer",
             ))),
         }
     }
-}
-
-fn close_interrupted() -> Error {
-    Error::Io(io::Error::new(
-        io::ErrorKind::Interrupted,
-        "ICAP write shutdown cut by the connection's scope",
-    ))
 }
 
 impl<R> FramedRead<R>
@@ -901,10 +878,6 @@ where
 
     pub(crate) async fn flush(&mut self) -> Result<(), Error> {
         self.io.flush().await.map_err(Into::into)
-    }
-
-    pub(crate) async fn shutdown(&mut self) -> Result<(), Error> {
-        self.io.shutdown().await.map_err(Into::into)
     }
 }
 

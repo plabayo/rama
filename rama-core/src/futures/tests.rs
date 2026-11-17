@@ -1,4 +1,4 @@
-use super::{DelayStream, FutureExt as _, GracefulStream, StreamExt as _, stream};
+use super::{DelayStream, FutureExt as _, GracefulStream, StreamExt as _, maybe, stream};
 
 use std::time::Duration;
 use tokio::time;
@@ -61,4 +61,19 @@ async fn graceful_stream_stops_after_cancel_even_if_stream_has_more_items() {
     _ = tx.send(());
     assert_eq!(s.next().await, None);
     assert_eq!(s.next().await, None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn maybe_resolves_some() {
+    assert_eq!(maybe(Some(async { 7u8 })).await, 7);
+}
+
+#[tokio::test(start_paused = true)]
+async fn maybe_pends_on_none() {
+    let none: Option<core::future::Ready<()>> = None;
+    assert!(
+        time::timeout(Duration::from_hours(1), maybe(none))
+            .await
+            .is_err()
+    );
 }

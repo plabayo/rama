@@ -4,9 +4,9 @@
 //! captures that differ only in that draw are one value and a selection can draw
 //! again. Reserved identifiers a client keeps constant are never slots.
 
-use rama_quic_proto::Version;
+use rama_http::proto::h3::FrameType;
+use rama_quic_proto::{Version, transport_parameters::TransportParameterId};
 
-const MAXIMUM_VARINT: u64 = (1 << 62) - 1;
 /// Fewer ordinal bits than this do not show a generated identifier.
 const MINIMUM_RUN: u8 = 15;
 const MAXIMUM_ORDINAL_BITS: u8 = 4;
@@ -14,20 +14,17 @@ const RANGED: u8 = MAXIMUM_ORDINAL_BITS + 1;
 
 /// Reserved identifiers of the form `base + step * ordinal`.
 #[derive(Debug, Clone, Copy)]
-pub(in crate::profile) struct ReservedFamily {
-    base: u64,
-    step: u64,
+pub(in crate::profile) enum ReservedFamily {
+    TransportParameters,
+    H3Frames,
 }
 
 /// QUIC transport parameters reserved to exercise unknown-parameter handling.
 pub(in crate::profile) const TRANSPORT_PARAMETERS: ReservedFamily =
-    ReservedFamily { base: 27, step: 31 };
+    ReservedFamily::TransportParameters;
 
 /// HTTP/3 frame types reserved to exercise unknown-frame handling.
-pub(in crate::profile) const H3_FRAMES: ReservedFamily = ReservedFamily {
-    base: 0x21,
-    step: 0x1f,
-};
+pub(in crate::profile) const H3_FRAMES: ReservedFamily = ReservedFamily::H3Frames;
 
 /// How a client generates one reserved identifier and its payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,18 +65,19 @@ impl ReservedLength {
 }
 
 impl ReservedFamily {
-    fn maximum_ordinal(self) -> u64 {
-        (MAXIMUM_VARINT - self.base) / self.step
-    }
-
     /// Position of a reserved identifier within its family.
     pub(in crate::profile) fn ordinal(self, id: u64) -> Option<u64> {
-        let offset = id.checked_sub(self.base)?;
-        (id <= MAXIMUM_VARINT && offset.is_multiple_of(self.step)).then_some(offset / self.step)
+        match self {
+            Self::TransportParameters => TransportParameterId::from(id).reserved_ordinal(),
+            Self::H3Frames => FrameType::new(id).reserved_ordinal(),
+        }
     }
 
     pub(in crate::profile) fn id(self, ordinal: u64) -> Option<u64> {
-        (ordinal <= self.maximum_ordinal()).then(|| self.base + self.step * ordinal)
+        match self {
+            Self::TransportParameters => TransportParameterId::reserved(ordinal).map(u64::from),
+            Self::H3Frames => FrameType::reserved(ordinal).map(FrameType::value),
+        }
     }
 
     /// The slot's ordinal is a run of ones from the length's bit up to bit `bits - 2`,
@@ -112,14 +110,27 @@ impl ReservedFamily {
 // The slot is a value clients do not hardcode, unlike the repeated-byte members of the family.
 pub(in crate::profile) const VERSION_SLOT: Version = Version::from_u32(0x1a2a_3a4a);
 
-/// A member of the reserved version family chosen by sixteen free bits.
-pub(in crate::profile) fn reserved_version(random: u16) -> Version {
-    let random = u32::from(random);
-    Version::from_u32(
-        0x0a0a_0a0a
-            | (random & 0xf) << 4
-            | (random & 0xf0) << 8
-            | (random & 0xf00) << 12
-            | (random & 0xf000) << 16,
-    )
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Embedded profiles hold identifiers drawn from these families, so their values are pinned.
+    #[test]
+    fn families_keep_their_identifiers() {
+        let maximum = (1 << 62) - 1;
+        for (family, base, step) in [(TRANSPORT_PARAMETERS, 27, 31), (H3_FRAMES, 0x21, 0x1f)] {
+            let maximum_ordinal = (maximum - base) / step;
+            for ordinal in [0, 1, 1 << 40, maximum_ordinal] {
+                let id = base + step * ordinal;
+                assert_eq!(family.id(ordinal), Some(id));
+                assert_eq!(family.ordinal(id), Some(ordinal));
+            }
+            assert_eq!(family.id(maximum_ordinal + 1), None);
+            assert_eq!(family.ordinal(base + 1), None);
+            assert_eq!(family.ordinal(base - 1), None);
+        }
+        assert_eq!(Version::reserved(0).as_u32(), 0x0a0a_0a0a);
+        assert_eq!(Version::reserved(0x1234).as_u32(), 0x1a2a_3a4a);
+        assert_eq!(Version::reserved(0xffff).as_u32(), 0xfafa_fafa);
+    }
 }

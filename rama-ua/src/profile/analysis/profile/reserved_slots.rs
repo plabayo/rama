@@ -23,7 +23,6 @@ use crate::profile::{
 const MINIMUM_GENERATED: usize = 16;
 /// One bit per count of low ordinal bits a payload length may follow.
 const COUPLINGS: u8 = 0b1_1110;
-const VERSION_FREE_BITS: u32 = 0xf0f0_f0f0;
 /// Fewer distinct payload lengths than this do not show that a client draws the length.
 const MINIMUM_LENGTHS: u32 = 4;
 /// Marks a payload too long to count among drawn lengths.
@@ -170,8 +169,8 @@ impl Versions {
         let any = versions.iter().fold(0, |any, version| any | version);
         let all = versions.iter().fold(u32::MAX, |all, version| all & version);
         (versions.len() >= MINIMUM_GENERATED
-            && any & VERSION_FREE_BITS == VERSION_FREE_BITS
-            && all & VERSION_FREE_BITS == 0)
+            && any & Version::RESERVED_FREE_BITS == Version::RESERVED_FREE_BITS
+            && all & Version::RESERVED_FREE_BITS == 0)
             .then_some(versions)
     }
 }

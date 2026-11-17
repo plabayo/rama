@@ -373,6 +373,21 @@ pub struct Request {
     pub comment: Option<ArcStr>,
 }
 
+/// Convert HAR header objects into a [`HeaderMap`], refusing more names than it can hold.
+fn har_headers_into_header_map(har_headers: Vec<Header>) -> Result<HeaderMap, BoxError> {
+    let mut headers = HeaderMap::new();
+    for header in har_headers {
+        headers
+            .try_append(
+                HeaderName::from_str(&header.name).context("convert http header name")?,
+                crate::HeaderValue::from_maybe_shared(header.value)
+                    .context("convert http header value")?,
+            )
+            .context("HAR headers exceed the header map size limit")?;
+    }
+    Ok(headers)
+}
+
 impl TryFrom<Request> for crate::Request {
     type Error = BoxError;
 
@@ -387,14 +402,7 @@ impl TryFrom<Request> for crate::Request {
             crate::Body::empty()
         };
 
-        let mut headers = HeaderMap::with_capacity(har_request.headers.len());
-        for header in har_request.headers {
-            headers.append(
-                HeaderName::from_str(&header.name).context("convert http header name")?,
-                crate::HeaderValue::from_maybe_shared(header.value)
-                    .context("convert http header value")?,
-            );
-        }
+        let headers = har_headers_into_header_map(har_request.headers)?;
 
         let builder = crate::Request::builder()
             .method(
@@ -581,14 +589,7 @@ impl TryFrom<Response> for crate::Response {
             None => crate::Body::empty(),
         };
 
-        let mut headers = HeaderMap::with_capacity(har_response.headers.len());
-        for header in har_response.headers {
-            headers.append(
-                HeaderName::from_str(&header.name).context("convert http header name")?,
-                crate::HeaderValue::from_maybe_shared(header.value)
-                    .context("convert http header value")?,
-            );
-        }
+        let headers = har_headers_into_header_map(har_response.headers)?;
 
         let builder = crate::Response::builder().status(
             crate::StatusCode::from_u16(har_response.status).context("convert HAR status code")?,
@@ -886,6 +887,68 @@ mod tests {
     use std::assert_matches;
 
     use super::*;
+
+    fn har_headers(count: usize, distinct: bool) -> Vec<Header> {
+        (0..count)
+            .map(|i| Header {
+                name: if distinct {
+                    format_smolstr!("x-h-{i}").as_str().into()
+                } else {
+                    "x-h".into()
+                },
+                value: "v".into(),
+                comment: None,
+            })
+            .collect()
+    }
+
+    fn har_request(headers: Vec<Header>) -> Request {
+        Request {
+            method: "GET".into(),
+            url: "http://example.com/".into(),
+            http_version: HttpVersion::Http11,
+            cookies: Vec::new(),
+            headers,
+            query_string: Vec::new(),
+            post_data: None,
+            headers_size: -1,
+            body_size: -1,
+            comment: None,
+        }
+    }
+
+    fn har_response(headers: Vec<Header>) -> Response {
+        serde_json::from_value::<Response>(serde_json::json!({
+            "status": 200,
+            "statusText": "OK",
+            "httpVersion": "HTTP/1.1",
+            "cookies": [],
+            "headers": [],
+            "content": { "size": 0, "mimeType": null },
+            "redirectURL": null,
+            "headersSize": -1,
+            "bodySize": -1,
+        }))
+        .map(|mut res| {
+            res.headers = headers;
+            res
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn har_import_with_many_values_of_one_header_succeeds() {
+        let req = crate::Request::try_from(har_request(har_headers(24_577, false))).unwrap();
+        assert_eq!(req.headers().get_all("x-h").iter().count(), 24_577);
+        let res = crate::Response::try_from(har_response(har_headers(24_577, false))).unwrap();
+        assert_eq!(res.headers().get_all("x-h").iter().count(), 24_577);
+    }
+
+    #[test]
+    fn har_import_past_header_map_limit_is_an_error() {
+        crate::Request::try_from(har_request(har_headers(24_577, true))).unwrap_err();
+        crate::Response::try_from(har_response(har_headers(24_577, true))).unwrap_err();
+    }
 
     #[test]
     fn into_har_headers_preserves_original_header_name_casing() {

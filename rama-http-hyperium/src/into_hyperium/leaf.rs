@@ -60,7 +60,7 @@ impl TryIntoHyperiumHttp for HeaderMap {
     fn try_into_hyperium_http(self) -> Result<http::HeaderMap, http::Error> {
         // Both are byte-identical forks; round-trip each name/value through its
         // bytes, preserving multi-value ordering and the sensitivity flag.
-        let mut out = http::HeaderMap::with_capacity(self.len());
+        let mut out = http::HeaderMap::with_capacity(self.keys_len());
         let mut last: Option<http::header::HeaderName> = None;
         for (name, hv) in self {
             let mut out_hv = http::header::HeaderValue::from_bytes(hv.as_bytes())?;

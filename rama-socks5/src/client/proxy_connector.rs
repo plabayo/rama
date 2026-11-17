@@ -538,7 +538,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rama_core::{ServiceInput, extensions::Extensions, service::service_fn};
+    use rama_core::{ServiceInput, extensions::Extensions, io::AbortIo, service::service_fn};
     use rama_net::{
         AuthorityInputExt, ConnectorTransportProtocolInputExt, Protocol, ProtocolInputExt,
         address::HostWithPort,
@@ -547,7 +547,14 @@ mod tests {
             pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
         },
     };
-    use std::{convert::Infallible, sync::Arc, time::Duration};
+    use std::{
+        convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
@@ -763,6 +770,71 @@ mod tests {
             .await
             .expect("SOCKS peer timed out")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_tunnel_aborts_the_proxy_stream() {
+        let (io, mut peer) = tokio::io::duplex(4096);
+        let peer_task = tokio::spawn(async move {
+            assert_eq!(peer.read_u8().await.unwrap(), 5);
+            let methods_len = peer.read_u8().await.unwrap();
+            let mut methods = vec![0; usize::from(methods_len)];
+            peer.read_exact(&mut methods).await.unwrap();
+            peer.write_all(&[5, 0]).await.unwrap();
+
+            let mut head = [0; 4];
+            peer.read_exact(&mut head).await.unwrap();
+            let host_len = peer.read_u8().await.unwrap();
+            let mut host = vec![0; usize::from(host_len)];
+            peer.read_exact(&mut host).await.unwrap();
+            peer.read_u16().await.unwrap();
+            peer.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 80])
+                .await
+                .unwrap();
+        });
+        let aborted = Arc::new(AtomicBool::new(false));
+        let io = Arc::new(parking_lot::Mutex::new(Some(io)));
+        let inner = service_fn({
+            let aborted = aborted.clone();
+            move |input: ConnectRequest| {
+                let io = io.lock().take().unwrap();
+                let aborted = aborted.clone();
+                async move {
+                    let conn = ServiceInput::new(io);
+                    conn.extensions().insert(AbortIo::new(move || {
+                        aborted.store(true, Ordering::Release);
+                    }));
+                    Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
+                }
+            }
+        });
+        let connector = Socks5ProxyConnector::optional(inner);
+        #[cfg(feature = "dns")]
+        let connector = connector.with_dns_address_resolver(std::net::Ipv4Addr::LOCALHOST);
+        let input = ConnectRequest::new(HostWithPort::example_domain_http())
+            .with_application_protocol(Protocol::HTTP);
+        input.extensions.insert(ProxyRoute::Proxy(
+            "socks5://proxy.example:1080".parse().unwrap(),
+        ));
+        #[cfg(feature = "dns")]
+        input.extensions.insert(DnsResolveIpMode::SingleIpV4);
+
+        let established = tokio::time::timeout(Duration::from_secs(2), connector.connect(input))
+            .await
+            .expect("SOCKS handshake timed out")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), peer_task)
+            .await
+            .expect("SOCKS peer timed out")
+            .unwrap();
+
+        established
+            .conn
+            .extensions()
+            .get_arc::<AbortIo>()
+            .expect("the tunnel fronts the proxy stream")
+            .abort();
+        assert!(aborted.load(Ordering::Acquire));
     }
 
     #[tokio::test]

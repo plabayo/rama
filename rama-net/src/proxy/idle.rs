@@ -3,7 +3,12 @@
 use std::pin::Pin;
 use std::time::Duration;
 
+use parking_lot::Mutex;
+use rama_utils::time::deadline_after;
 use tokio::time::{Instant, Sleep};
+
+/// The far future of a tokio sleep: a bound below it keeps every reset an unchecked add.
+const MAX_TIMEOUT: Duration = Duration::from_hours(24 * 365 * 30);
 
 /// A resettable idle deadline.
 ///
@@ -13,6 +18,10 @@ use tokio::time::{Instant, Sleep};
 ///
 /// If the inner [`Sleep`] elapses before [`reset`](IdleGuard::reset) is called,
 /// the idle window has lapsed.
+///
+/// When activity is observed elsewhere, at a rate where resetting a timer per event
+/// costs too much, record it on an [`IdleActivity`] and poll [`IdleGuard::expired`]
+/// instead: the timer is only re-armed when it fires.
 ///
 /// `IdleGuard` is intended for cases where the watched activity does not itself
 /// produce values that can be selected on (e.g. byte progress observed inside
@@ -33,15 +42,32 @@ impl core::fmt::Debug for IdleGuard {
 
 impl IdleGuard {
     /// Create a new [`IdleGuard`] that fires after `timeout` of inactivity.
+    ///
+    /// Timeouts beyond thirty years are capped there, tokio's own far future.
     #[must_use]
     pub fn new(timeout: Duration) -> Self {
+        let timeout = timeout.min(MAX_TIMEOUT);
+        Self::until(deadline_after(Instant::now(), timeout), timeout)
+    }
+
+    /// Create an [`IdleGuard`] that fires `timeout` after the last activity recorded on
+    /// `activity`, for use with [`IdleGuard::expired`].
+    ///
+    /// Timeouts beyond thirty years are capped there, tokio's own far future.
+    #[must_use]
+    pub fn for_activity(timeout: Duration, activity: &IdleActivity) -> Self {
+        let timeout = timeout.min(MAX_TIMEOUT);
+        Self::until(activity.deadline(timeout), timeout)
+    }
+
+    fn until(deadline: Instant, timeout: Duration) -> Self {
         Self {
             timeout,
-            sleep: Box::pin(tokio::time::sleep(timeout)),
+            sleep: Box::pin(tokio::time::sleep_until(deadline)),
         }
     }
 
-    /// The configured idle timeout.
+    /// The configured idle timeout, capped at thirty years.
     #[must_use]
     pub fn timeout(&self) -> Duration {
         self.timeout
@@ -51,6 +77,7 @@ impl IdleGuard {
     /// has been observed, before re-entering the select that polls
     /// [`IdleGuard::tick`].
     pub fn reset(&mut self) {
+        // Capped like a tokio sleep, which adds its far future to now the same way.
         let deadline = Instant::now() + self.timeout;
         self.sleep.as_mut().reset(deadline);
     }
@@ -62,6 +89,58 @@ impl IdleGuard {
     /// you want to keep waiting.
     pub fn tick(&mut self) -> &mut Pin<Box<Sleep>> {
         &mut self.sleep
+    }
+
+    /// Completes once `timeout` passed since the last activity recorded on `activity`.
+    ///
+    /// Cancel safe: dropping the future keeps the deadline, so it can be polled again
+    /// from every iteration of a `tokio::select!` loop.
+    pub async fn expired(&mut self, activity: &IdleActivity) {
+        loop {
+            self.sleep.as_mut().await;
+            let deadline = activity.deadline(self.timeout);
+            if deadline <= Instant::now() {
+                return;
+            }
+            self.sleep.as_mut().reset(deadline);
+        }
+    }
+}
+
+/// When a flow was last active, recorded from any task and read by an [`IdleGuard`]
+/// when its deadline fires.
+#[derive(Debug)]
+pub struct IdleActivity {
+    // An uncontended lock costs less per record than an atomic offset from an epoch.
+    last: Mutex<Instant>,
+}
+
+impl IdleActivity {
+    /// Create an [`IdleActivity`] whose last activity is now.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            last: Mutex::new(Instant::now()),
+        }
+    }
+
+    /// Record activity now.
+    #[inline]
+    pub fn record(&self) {
+        let now = Instant::now();
+        *self.last.lock() = now;
+    }
+
+    /// `timeout` after the last recorded activity, saturating far in the future.
+    #[must_use]
+    pub fn deadline(&self, timeout: Duration) -> Instant {
+        deadline_after(*self.last.lock(), timeout)
+    }
+}
+
+impl Default for IdleActivity {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -101,5 +180,52 @@ mod tests {
         // Advance past the reset deadline.
         tokio::time::advance(Duration::from_millis(30)).await;
         guard.tick().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn activity_just_before_the_deadline_postpones_expiry() {
+        let timeout = Duration::from_secs(10);
+        let activity = IdleActivity::new();
+        let mut guard = IdleGuard::for_activity(timeout, &activity);
+        let before_deadline = Duration::from_millis(9_999);
+        let start = Instant::now();
+        tokio::time::sleep(before_deadline).await;
+        activity.record();
+        guard.expired(&activity).await;
+        assert_eq!(start.elapsed(), before_deadline + timeout);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expiry_fires_shortly_after_the_last_activity() {
+        let timeout = Duration::from_millis(50);
+        let activity = IdleActivity::new();
+        let mut guard = IdleGuard::for_activity(timeout, &activity);
+        for _ in 0..3 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            activity.record();
+        }
+        let last = Instant::now();
+        guard.expired(&activity).await;
+        let idle = last.elapsed();
+        assert!(idle >= timeout, "expired early: {idle:?}");
+        assert!(
+            idle < timeout + Duration::from_millis(40),
+            "expired late: {idle:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_huge_timeout_neither_panics_nor_expires() {
+        let activity = IdleActivity::new();
+        let mut guard = IdleGuard::for_activity(Duration::MAX, &activity);
+        activity.record();
+        guard.reset();
+        let mut fresh = IdleGuard::new(Duration::MAX);
+        tokio::select! {
+            biased;
+            () = guard.expired(&activity) => panic!("a huge timeout expired"),
+            () = fresh.tick() => panic!("a huge timeout elapsed"),
+            () = tokio::time::sleep(Duration::from_hours(24 * 365)) => {}
+        }
     }
 }

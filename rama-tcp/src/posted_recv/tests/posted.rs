@@ -638,7 +638,7 @@ async fn an_aborted_posted_recv_resets_its_peer() {
             received.end.unwrap();
         }
         let peer = tokio::spawn(peer_saw(accepted));
-        let handle = client.extensions().self_get_arc::<AbortIo>().unwrap();
+        let handle = client.extensions().get_arc::<AbortIo>().unwrap();
         if abort {
             handle.abort();
         }

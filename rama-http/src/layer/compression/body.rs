@@ -22,7 +22,8 @@ use crate::{
     HeaderMap,
     layer::util::compression::{
         AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
-        brotli_window_bits, compressed_body_poll_frame, impl_decorate_async_read,
+        brotli_encoder_params, compressed_body_poll_frame, impl_decorate_async_read,
+        zstd_encoder_params,
     },
 };
 
@@ -165,45 +166,14 @@ impl_decorate_async_read!(ZlibEncoder: |input, quality| {
 });
 
 impl_decorate_async_read!(BrotliEncoder: |input, quality, body_len| {
-    // The brotli crate used under the hood here has a default compression level of 11,
-    // which is the max for brotli. This causes extremely slow compression times, so we
-    // manually set a default of 4 here.
-    //
-    // A common default of established servers for on-the-fly brotli compression.
-    let level = match quality {
-        CompressionLevel::Default => async_compression::Level::Precise(4),
-        other => other.into_async_compression(),
-    };
-    let params = async_compression::brotli::EncoderParams::default().quality(level);
-    let params = match body_len.and_then(brotli_window_bits) {
-        Some(bits) => params.window_size(bits),
-        None => params,
-    };
-    BrotliEncoder::with_params(input, params)
+    BrotliEncoder::with_params(input, brotli_encoder_params(quality, body_len))
 });
 
 impl_decorate_async_read!(ZstdEncoder: |input, quality| {
-    // See https://issues.chromium.org/issues/41493659:
-    //  "For memory usage reasons, Chromium limits the window size to 8MB"
-    // See https://datatracker.ietf.org/doc/html/rfc8878#name-window-descriptor
-    //  "For improved interoperability, it's recommended for decoders to support values
-    //  of Window_Size up to 8 MB and for encoders not to generate frames requiring a
-    //  Window_Size larger than 8 MB."
-    // Level 17 in zstd (as of v1.5.6) is the first level with a window size of 8 MB (2^23):
-    // https://github.com/facebook/zstd/blob/v1.5.6/lib/compress/clevels.h#L25-L51
-    // Set the parameter for all levels >= 17. This will either have no effect (but reduce
-    // the risk of future changes in zstd) or limit the window log to 8MB.
-    let needs_window_limit = match quality {
-        CompressionLevel::Best => true, // level 20
-        CompressionLevel::Precise(level) => level >= 17,
-        CompressionLevel::Default | CompressionLevel::Fastest => false,
-    };
-    // The parameter is not set for levels below 17 as it will increase the window size
-    // for those levels.
-    if needs_window_limit {
-        let params = [async_compression::zstd::CParameter::window_log(23)];
-        ZstdEncoder::with_quality_and_params(input, quality.into_async_compression(), &params)
-    } else {
-        ZstdEncoder::with_quality(input, quality.into_async_compression())
-    }
+    let (level, window) = zstd_encoder_params(quality);
+    ZstdEncoder::with_quality_and_params(
+        input,
+        async_compression::Level::Precise(level),
+        window.as_slice(),
+    )
 });

@@ -37,12 +37,12 @@
 //! ```
 
 use rama_core::telemetry::tracing;
-use rama_utils::collections::smallvec::{IntoIter as SmallVecIntoIter, SmallVec};
-
-use crate::{
-    HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Version,
-    header::{self, is_token as is_http_token},
+use rama_utils::{
+    byte_set::is_http_token,
+    collections::smallvec::{IntoIter as SmallVecIntoIter, SmallVec},
 };
+
+use crate::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Version, header};
 
 /// Connection-specific fields prohibited in both HTTP/2 and HTTP/3.
 ///

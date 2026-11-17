@@ -75,13 +75,13 @@ pub(super) fn seconds_value(seconds: Seconds) {
 
 pub(super) fn after(value: After) {
     debug(&value);
-    sink(HeaderValue::try_from(&value));
+    sink(HeaderValue::from(&value));
     match value {
         After::DateTime(date) => {
             debug(&date);
             display(&date);
             sink(SystemTime::from(date));
-            sink(HeaderValue::try_from(&date));
+            sink(HeaderValue::from(&date));
         }
         After::Delay(seconds) => seconds_value(seconds),
     }

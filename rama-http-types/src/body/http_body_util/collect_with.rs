@@ -183,7 +183,7 @@ mod tests {
     use crate::body::util::{BodyExt, CollectErrorKind};
     use crate::{Body, HeaderMap, body::Frame};
     use bytes::Bytes;
-    use rama_core::error::BoxError;
+    use rama_core::error::{BoxError, BoxErrorExt as _};
     use rama_core::futures::{StreamExt, stream};
     use std::assert_matches;
     use std::{future::Future as _, pin::Pin, task::Poll, time::Duration};
@@ -332,8 +332,10 @@ mod tests {
 
     #[tokio::test]
     async fn collect_with_stream_error_keeps_read_no_remainder() {
-        let items: Vec<Result<Bytes, BoxError>> =
-            vec![Ok(Bytes::from_static(b"hi")), Err(BoxError::from("boom"))];
+        let items: Vec<Result<Bytes, BoxError>> = vec![
+            Ok(Bytes::from_static(b"hi")),
+            Err(BoxError::from_static_str("boom")),
+        ];
         let body = Body::from_stream(stream::iter(items));
         let err = body.collect_with(CollectOptions::new()).await.unwrap_err();
         assert!(err.is_stream_error());
@@ -345,7 +347,7 @@ mod tests {
     async fn plain_collect_preserves_read_bytes_on_stream_error() {
         let items: Vec<Result<Bytes, BoxError>> = vec![
             Ok(Bytes::from_static(b"partial")),
-            Err(BoxError::from("boom")),
+            Err(BoxError::from_static_str("boom")),
         ];
         let body = Body::from_stream(stream::iter(items));
         let err = body.collect().await.unwrap_err();

@@ -195,10 +195,7 @@ fn decode(value: &CanonicalValue, bytes: usize) -> Result<DecodedCapture<'_>, Pr
             ..JointCaptureLimits::default()
         },
         #[cfg(feature = "tls")]
-        tls: TlsCaptureLimits {
-            bytes,
-            elements: bytes,
-        },
+        tls: TlsCaptureLimits::uniform(bytes),
     };
     let decoded = DecodedCapture::from_canonical(value, &limits)?;
     if matches!(decoded, DecodedCapture::Canonical { .. }) {

@@ -7,10 +7,10 @@ use crate::std::string::String;
 use crate::std::vec::Vec;
 
 use super::{ForwardedProtocol, ForwardedVersion, NodeId};
-use crate::address::{Domain, HostWithOptPort};
-use crate::address::{Host, HostWithPort, SocketAddress};
+use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
 
 use rama_core::error::BoxError;
+use rama_utils::byte_set::is_http_token;
 
 mod parser;
 #[doc(inline)]
@@ -375,6 +375,24 @@ impl fmt::Display for ForwardedElement {
         if let Some(ref proto) = self.proto {
             write!(f, "{separator}proto=")?;
             proto.fmt(f)?;
+            separator = ";";
+        }
+
+        for (key, ext) in self.extensions.iter().flatten() {
+            write!(f, "{separator}{key}=")?;
+            if ext.quoted || !is_http_token(ext.value.as_bytes()) {
+                f.write_str("\"")?;
+                for c in ext.value.chars() {
+                    if c == '"' || c == '\\' {
+                        f.write_str("\\")?;
+                    }
+                    write!(f, "{c}")?;
+                }
+                f.write_str("\"")?;
+            } else {
+                f.write_str(&ext.value)?;
+            }
+            separator = ";";
         }
 
         Ok(())
@@ -433,6 +451,26 @@ impl core::str::FromStr for ForwardedAuthority {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_round_trips_through_the_parser() {
+        for input in [
+            "for=_a;ext=x",
+            r#"for=_a;ext="x\"y""#,
+            r#"for=_a;ext="a;b,c""#,
+            r#"for=_a;ext="""#,
+            r#"for="[::1]:80";by=unknown;host="[::1]";proto=https"#,
+            r#"for="_hidden:_p""#,
+            "for=_a;Ext=x;other=y",
+        ] {
+            let el: ForwardedElement = input.parse().unwrap();
+            let shown = el.to_string();
+            let reparsed: ForwardedElement = shown
+                .parse()
+                .unwrap_or_else(|err| panic!("{input} -> {shown}: {err}"));
+            assert_eq!(reparsed, el, "{input} -> {shown}");
+        }
+    }
 
     #[test]
     fn test_forwarded_element_parse_invalid() {

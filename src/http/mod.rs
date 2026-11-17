@@ -10,7 +10,7 @@ pub use ::rama_http::{
     CaptureHandle, CaptureLimit, CaptureOutcome, CapturedBody, HeaderMap, HeaderName, HeaderValue,
     HttpError, HttpResult, InfiniteReader, Method, Request, Response, StatusCode, StreamingBody,
     Version, body, conn, convert, datagram, fingerprint, header, headers, io, layer, matcher, mime,
-    opentelemetry, proto, protocols, request, response, service, sse, structured_fields, utils,
+    opentelemetry, proto, protocols, request, response, service, sse, utils,
 };
 
 /// HTTP proxy types, request utilities, and MITM support.

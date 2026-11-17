@@ -167,7 +167,7 @@ async fn a_configured_session_store_does_not_change_a_fresh_captured_offer() {
 
 #[tokio::test]
 async fn outer_adapter_preserves_native_trust_and_negotiated_alpn() {
-    let connection = established(None).await;
+    let connection = Box::pin(established(None)).await;
     #[cfg(not(feature = "http"))]
     {
         let request = input();

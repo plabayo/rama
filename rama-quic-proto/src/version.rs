@@ -60,6 +60,22 @@ impl Version {
         self.0 & 0x0f0f_0f0f == 0x0a0a_0a0a
     }
 
+    /// The bits a reserved version leaves free; the others are fixed to `0x?a?a?a?a`.
+    pub const RESERVED_FREE_BITS: u32 = 0xf0f0_f0f0;
+
+    /// The reserved version whose free bits, high nibble first, are those of `free_bits`.
+    #[must_use]
+    pub const fn reserved(free_bits: u16) -> Self {
+        let bits = free_bits as u32;
+        Self(
+            0x0a0a_0a0a
+                | (bits & 0xf) << 4
+                | (bits & 0xf0) << 8
+                | (bits & 0xf00) << 12
+                | (bits & 0xf000) << 16,
+        )
+    }
+
     /// Whether this is a standardized version this crate implements.
     #[must_use]
     pub const fn is_standard(self) -> bool {
@@ -333,6 +349,21 @@ pub static V2_WIRE: Wire = Wire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_versions_spread_their_free_bits() {
+        for free_bits in [0, 1, 0x1234, 0xffff] {
+            let version = Version::reserved(free_bits);
+            assert!(version.is_reserved());
+            let spread = version.as_u32() & Version::RESERVED_FREE_BITS;
+            let gathered = (spread >> 4 & 0xf)
+                | (spread >> 8 & 0xf0)
+                | (spread >> 12 & 0xf00)
+                | (spread >> 16 & 0xf000);
+            assert_eq!(gathered, u32::from(free_bits));
+        }
+        assert_ne!(Version::reserved(1), Version::reserved(2));
+    }
 
     #[test]
     fn reserved_versions_follow_the_greasing_pattern() {

@@ -1,11 +1,16 @@
 use super::{
     DirSource, DirectoryServeMode, HiddenPathFilter, ServeDirSymlinkPolicy, ServeVariant,
-    headers::{IfModifiedSince, IfUnmodifiedSince, LastModified, etag_from_metadata},
+    headers::etag_from_metadata,
 };
-use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch, IfRange};
+use crate::headers::{
+    ETag, HeaderMapExt as _, IfMatch, IfModifiedSince, IfNoneMatch, IfRange, IfUnmodifiedSince,
+    LastModified,
+};
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::service::fs::AsyncReadBody;
-use crate::{Body, HeaderValue, Method, Request, body::util::BodyExt as _, header};
+use crate::{
+    Body, HeaderMap, HeaderValue, Method, body::util::BodyExt as _, header, request::Parts,
+};
 use http_range_header::{RangeInvalid, RangeUnsatisfiableError};
 use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing;
@@ -57,6 +62,7 @@ pub(super) enum OpenFileOutput {
         last_modified: Option<LastModified>,
     },
     InvalidFilename,
+    NotAcceptable,
 }
 
 pub(super) enum RangeError {
@@ -160,17 +166,43 @@ impl FileRequestExtent {
 }
 
 /// What a request asks of the file it resolves to.
-struct FileRequest {
+pub(super) struct FileRequest {
     preconditions: Preconditions,
-    range_header: Option<Box<str>>,
+    range_header: Option<HeaderValue>,
     is_head: bool,
     ignore_multi_range_requests: bool,
     buf_chunk_size: usize,
     precompression_configured: bool,
     negotiated_encodings: Vec<QualityValue<Encoding>>,
+    enforce_not_acceptable: bool,
 }
 
 impl FileRequest {
+    pub(super) fn new(
+        parts: &Parts,
+        negotiated_encodings: Vec<QualityValue<Encoding>>,
+        ignore_multi_range_requests: bool,
+        buf_chunk_size: usize,
+        precompression_configured: bool,
+        enforce_not_acceptable: bool,
+    ) -> Self {
+        Self {
+            preconditions: Preconditions::from_headers(&parts.headers),
+            range_header: parts.headers.get(header::RANGE).cloned(),
+            is_head: parts.method == Method::HEAD,
+            ignore_multi_range_requests,
+            buf_chunk_size,
+            precompression_configured,
+            negotiated_encodings,
+            enforce_not_acceptable,
+        }
+    }
+
+    /// Whether the client rejected every variant, given the negotiated encoding of the file found.
+    fn not_acceptable(&self, encoding: Option<Encoding>) -> bool {
+        self.enforce_not_acceptable && encoding.is_none()
+    }
+
     /// Evaluates preconditions and the range of a file with the given validators and size.
     fn decide(
         &self,
@@ -185,9 +217,12 @@ impl FileRequest {
         {
             return Err(output);
         }
-        let range_header = self
-            .preconditions
-            .applicable_range(self.range_header.as_deref(), etag.as_ref());
+        let range_header = self.preconditions.applicable_range(
+            self.range_header
+                .as_ref()
+                .and_then(|value| value.to_str().ok()),
+            etag.as_ref(),
+        );
         let range = try_parse_range(range_header, size, self.ignore_multi_range_requests);
         Ok(Decided {
             last_modified,
@@ -225,31 +260,14 @@ struct Decided {
 
 /// Open a file for serving, handling both filesystem and embedded sources.
 /// Supports precompressed variants, range requests, and conditional headers.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper; each arg has a distinct role and grouping them into a struct adds more noise than it removes"
-)]
 pub(super) async fn open_file(
     variant: ServeVariant,
     path_to_file: PathBuf,
-    req: Request,
-    negotiated_encodings: Vec<QualityValue<Encoding>>,
-    range_header: Option<&str>,
-    ignore_multi_range_requests: bool,
-    buf_chunk_size: usize,
+    uri: Uri,
+    request: FileRequest,
     source: &DirSource,
-    precompression_configured: bool,
     access: PathAccess<'_>,
 ) -> io::Result<OpenFileOutput> {
-    let request = FileRequest {
-        preconditions: Preconditions::from_request(&req),
-        range_header: range_header.map(Into::into),
-        is_head: req.method() == Method::HEAD,
-        ignore_multi_range_requests,
-        buf_chunk_size,
-        precompression_configured,
-        negotiated_encodings,
-    };
     match source {
         DirSource::Filesystem(root) => {
             let lookup = FilesystemLookup {
@@ -257,22 +275,14 @@ pub(super) async fn open_file(
                 symlink_policy: access.symlink_policy,
                 hidden: access.hidden.clone(),
             };
-            let (parts, _) = req.into_parts();
             // One blocking call resolves, opens and, when small, reads the file.
-            tokio::task::spawn_blocking(move || {
-                lookup.open(variant, path_to_file, &parts.uri, &request)
-            })
-            .await
-            .map_err(io::Error::other)?
+            tokio::task::spawn_blocking(move || lookup.open(variant, path_to_file, &uri, &request))
+                .await
+                .map_err(io::Error::other)?
         }
-        DirSource::Embedded(base) => open_embedded(
-            base,
-            variant,
-            path_to_file,
-            req.uri(),
-            &request,
-            access.hidden,
-        ),
+        DirSource::Embedded(base) => {
+            open_embedded(base, variant, path_to_file, &uri, &request, access.hidden)
+        }
     }
 }
 
@@ -422,6 +432,9 @@ fn open_embedded(
         Ok(decided) => decided,
         Err(output) => return Ok(output),
     };
+    if request.not_acceptable(maybe_encoding) {
+        return Ok(OpenFileOutput::NotAcceptable);
+    }
     let extent = if request.is_head {
         FileRequestExtent::Head(content_length)
     } else {
@@ -519,23 +532,7 @@ impl FilesystemLookup {
             ServeVariant::SingleFile { mime } => mime,
         };
 
-        if request.is_head {
-            let (meta, maybe_encoding) =
-                match Self::with_fallback(path_to_file, request, |path| self.metadata(path)) {
-                    Ok(result) => result,
-                    Err(err) if is_invalid_filename_error(&err) => {
-                        return Ok(OpenFileOutput::InvalidFilename);
-                    }
-                    Err(err) => return Err(err),
-                };
-            let decided = match request.decide(meta.len(), meta.modified().ok()) {
-                Ok(decided) => decided,
-                Err(output) => return Ok(output),
-            };
-            let extent = FileRequestExtent::Head(meta.len());
-            return Ok(request.opened(extent, mime, maybe_encoding, decided));
-        }
-
+        // HEAD opens the file like GET so both resolve to the same outcome.
         let (mut file, maybe_encoding) =
             match Self::with_fallback(path_to_file, request, |path| self.open_file(path)) {
                 Ok(result) => result,
@@ -545,11 +542,25 @@ impl FilesystemLookup {
                 Err(err) => return Err(err),
             };
         let meta = file.metadata()?;
+        if request.is_head {
+            let decided = match request.decide(meta.len(), meta.modified().ok()) {
+                Ok(decided) => decided,
+                Err(output) => return Ok(output),
+            };
+            if request.not_acceptable(maybe_encoding) {
+                return Ok(OpenFileOutput::NotAcceptable);
+            }
+            let extent = FileRequestExtent::Head(meta.len());
+            return Ok(request.opened(extent, mime, maybe_encoding, decided));
+        }
         if meta.len() > READ_WHOLE_MAX_LEN {
             let decided = match request.decide(meta.len(), meta.modified().ok()) {
                 Ok(decided) => decided,
                 Err(output) => return Ok(output),
             };
+            if request.not_acceptable(maybe_encoding) {
+                return Ok(OpenFileOutput::NotAcceptable);
+            }
             if let Some(Ok(range)) = decided.range.as_ref() {
                 file.seek(SeekFrom::Start(*range.start()))?;
             }
@@ -562,9 +573,14 @@ impl FilesystemLookup {
             Ok(decided) => decided,
             Err(output) => return Ok(output),
         };
+        if request.not_acceptable(maybe_encoding) {
+            return Ok(OpenFileOutput::NotAcceptable);
+        }
         let range = decided.range.as_ref().and_then(|range| range.as_ref().ok());
         let extent = read_small_file(&mut file, meta.len(), range)?;
-        if let FileRequestExtent::Loaded(contents) = &extent {
+        if let FileRequestExtent::Loaded(contents) = &extent
+            && contents.len() as u64 != meta.len()
+        {
             // Whole reads, including a short range's fallback, determine the
             // actual served size when a file shrank after its metadata lookup.
             decided = match request.decide(contents.len() as u64, meta.modified().ok()) {
@@ -612,9 +628,18 @@ impl FilesystemLookup {
         std::fs::metadata(path)
     }
 
+    /// Opens `path` when it is a regular file; anything else is reported as missing.
     fn open_file(&self, path: &Path) -> io::Result<File> {
         self.check_access(path)?;
-        File::open(path)
+        // checked before opening, as opening a fifo or device can block or have side effects
+        if !std::fs::metadata(path)?.is_file() {
+            return Err(not_a_file_error());
+        }
+        let file = File::open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(not_a_file_error());
+        }
+        Ok(file)
     }
 
     /// Enforces the symlink and hidden-entry policies on a request-supplied path.
@@ -735,6 +760,11 @@ fn reject_symlink(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Reported as missing so a directory or special file falls back like an absent variant.
+fn not_a_file_error() -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, "not a regular file")
+}
+
 /// Check if an IO error indicates an invalid filename.
 fn is_invalid_filename_error(err: &io::Error) -> bool {
     matches!(
@@ -773,19 +803,13 @@ enum IfRangeCondition {
 }
 
 impl Preconditions {
-    fn from_request(req: &Request) -> Self {
+    fn from_headers(headers: &HeaderMap) -> Self {
         Self {
-            if_match: req.headers().typed_get::<IfMatch>(),
-            if_unmodified_since: req
-                .headers()
-                .get(header::IF_UNMODIFIED_SINCE)
-                .and_then(IfUnmodifiedSince::from_header_value),
-            if_none_match: req.headers().typed_get::<IfNoneMatch>(),
-            if_modified_since: req
-                .headers()
-                .get(header::IF_MODIFIED_SINCE)
-                .and_then(IfModifiedSince::from_header_value),
-            if_range: match req.headers().typed_try_get::<IfRange>() {
+            if_match: headers.typed_get::<IfMatch>(),
+            if_unmodified_since: headers.typed_get::<IfUnmodifiedSince>(),
+            if_none_match: headers.typed_get::<IfNoneMatch>(),
+            if_modified_since: headers.typed_get::<IfModifiedSince>(),
+            if_range: match headers.typed_try_get::<IfRange>() {
                 Ok(None) => IfRangeCondition::Absent,
                 Ok(Some(if_range)) => IfRangeCondition::Valid(if_range),
                 Err(_) => IfRangeCondition::Invalid,
@@ -828,7 +852,7 @@ impl Preconditions {
             // Step 2: If-Unmodified-Since (only when If-Match is absent). RFC 9110 §13.1.4:
             // ignored when no modification date is available.
             let passes = last_modified
-                .map(|lm| since.precondition_passes(lm))
+                .map(|lm| since.precondition_passes((*lm).into()))
                 .unwrap_or(true);
             if !passes {
                 return Some(OpenFileOutput::PreconditionFailed);
@@ -844,19 +868,19 @@ impl Preconditions {
             if !passes {
                 return Some(OpenFileOutput::NotModified {
                     etag: etag.cloned(),
-                    last_modified: last_modified.cloned(),
+                    last_modified: last_modified.copied(),
                 });
             }
         } else if let Some(since) = &self.if_modified_since {
             // Step 4: If-Modified-Since (only when If-None-Match is absent). No last-modified
             // date means it is treated as modified (serve normally).
             let unmodified = last_modified
-                .map(|lm| !since.is_modified(lm))
+                .map(|lm| !since.is_modified((*lm).into()))
                 .unwrap_or(false);
             if unmodified {
                 return Some(OpenFileOutput::NotModified {
                     etag: etag.cloned(),
-                    last_modified: last_modified.cloned(),
+                    last_modified: last_modified.copied(),
                 });
             }
         }

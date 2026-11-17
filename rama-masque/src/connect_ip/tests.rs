@@ -2,7 +2,7 @@ use super::{policy::PolicyIndex, *};
 use crate::budget::{DatagramRate, TunnelBudget};
 use crate::limits::TunnelLimits;
 use rama_core::{
-    Service, ServiceInput,
+    Layer as _, Service, ServiceInput,
     bytes::Bytes,
     error::BoxError,
     extensions::ExtensionsRef as _,
@@ -11,19 +11,25 @@ use rama_core::{
     service::service_fn,
 };
 use rama_http::{
-    Request, StatusCode, Version,
+    Method, Request, Response, StatusCode, Version,
     datagram::{
         DatagramTransport, HttpDatagramSession, NativeDatagramChannel, NativeDatagrams,
         NativeRecvError, NativeSendError, NativeSendPolicy, NativeSendReady,
     },
     headers::{HeaderMapExt as _, ProxyErrorType, ProxyStatus, ProxyStatusEntry},
+    io::upgrade::handle_upgrade,
+    layer::upgrade::{LazyHttpProxyConnectReplyService, UpgradeLayer, Upgraded},
+    matcher::MethodMatcher,
 };
+use rama_http_backend::server::HttpServer;
+use rama_http_core::client::conn as client_conn;
 use rama_net::{
     address::ip::ipnet::IpNet,
     ip::{
         IpPacket, IpProtocol, Ipv4Header, Ipv6Header,
         icmp::{IcmpErrorKind, encode_icmp_error},
     },
+    uri::Uri,
     user::UserId,
 };
 use rama_utils::rate::Rate;
@@ -2397,4 +2403,90 @@ fn typed_scope_normalizes_target_and_protocol_is_optional() {
     let scope = scope.with_protocol(IpProtocol::new(0));
     assert_eq!(scope.protocol, Some(IpProtocol::new(0)));
     assert_eq!(scope.maybe_with_protocol(None).protocol, None);
+}
+
+#[tokio::test]
+async fn cleartext_request_inside_tunnel_on_tls_listener_is_refused() {
+    let template = ConnectIpTemplate::try_new("https://proxy.example/vpn").unwrap();
+    let admitted = Arc::new(AtomicUsize::new(0));
+    let connect_ip = ConnectIpService::new(
+        template.clone(),
+        service_fn({
+            let admitted = admitted.clone();
+            move |_r: ConnectIpRequest| {
+                let admitted = admitted.clone();
+                async move {
+                    admitted.fetch_add(1, Ordering::Relaxed);
+                    Err::<ConnectIpSessionConfig, _>(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "admission reached",
+                    ))
+                }
+            }
+        }),
+        service_fn(async |_s: ConnectIpSession| Ok::<_, Infallible>(())),
+        WeakScope::detached(),
+    );
+    let inner = service_fn(move |upgraded: Upgraded| {
+        let connect_ip = connect_ip.clone();
+        async move {
+            HttpServer::new_http1(WeakScope::detached())
+                .serve(upgraded, connect_ip)
+                .await
+        }
+    });
+    let proxy = UpgradeLayer::new_with_services(
+        WeakScope::detached(),
+        MethodMatcher::CONNECT,
+        LazyHttpProxyConnectReplyService::new(),
+        inner,
+    )
+    .into_layer(service_fn(async |_req: Request| {
+        Ok::<_, Infallible>(Response::new(rama_http::Body::empty()))
+    }));
+
+    // The proxy connection was accepted on a TLS listener.
+    let (client_io, server_io) = tokio::io::duplex(65536);
+    let server_io = ServiceInput::new(server_io);
+    server_io
+        .extensions
+        .insert(rama_tls::SecureTransport::default());
+    tokio::spawn(async move {
+        HttpServer::new_http1(WeakScope::detached())
+            .serve(server_io, proxy)
+            .await
+    });
+
+    let (mut sender, conn) = client_conn::http1::handshake(ServiceInput::new(client_io))
+        .await
+        .unwrap();
+    tokio::spawn(conn.with_upgrades());
+    let connect = Request::builder()
+        .method(Method::CONNECT)
+        .uri(Uri::parse_authority_form("proxy.example:80").unwrap())
+        .body(rama_http::Body::empty())
+        .unwrap();
+    let response = timeout(Duration::from_secs(5), sender.send_request(connect))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let tunnel = timeout(Duration::from_secs(5), handle_upgrade(&response))
+        .await
+        .unwrap()
+        .unwrap();
+
+    // CONNECT-IP sent in cleartext inside the tunnel.
+    let (mut sender, conn) = client_conn::http1::handshake(tunnel).await.unwrap();
+    tokio::spawn(conn.with_upgrades());
+    let request = template
+        .request(&ConnectIpScope::default(), Version::HTTP_11)
+        .unwrap();
+    let response = timeout(Duration::from_secs(5), sender.send_request(request))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(admitted.load(Ordering::Relaxed), 0);
 }

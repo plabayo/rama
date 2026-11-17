@@ -91,7 +91,6 @@ mod tests {
         for authority in [
             "",
             "user@example.net",
-            "::1",
             "[::1",
             "example.net/path",
             "example.net:65536",
@@ -105,6 +104,14 @@ mod tests {
         }
         let value = HeaderValue::from_static("example.net");
         AltUsed::decode(&mut [&value, &value].into_iter()).unwrap_err();
+    }
+
+    #[test]
+    fn unbracketed_ipv6_is_an_address_without_port() {
+        let value = HeaderValue::from_static("::1");
+        let decoded = AltUsed::decode(&mut std::iter::once(&value)).unwrap();
+        assert_eq!(decoded.to_string(), "[::1]");
+        assert_eq!(decoded.0.port.as_u16(), None);
     }
 
     #[test]

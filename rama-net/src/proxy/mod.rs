@@ -15,4 +15,4 @@ pub use forward::{
 
 mod idle;
 #[doc(inline)]
-pub use idle::IdleGuard;
+pub use idle::{IdleActivity, IdleGuard};

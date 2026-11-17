@@ -30,5 +30,16 @@ pub use zip::{TryZip, Zip, try_zip, zip};
 mod graceful;
 pub use graceful::GracefulStream;
 
+/// Await `future` if there is one, else stay pending forever.
+///
+/// Unlike [`future::OptionFuture`], which resolves to `None`, this suits a
+/// `select!` branch that must never fire while its future is absent.
+pub async fn maybe<F: Future>(future: Option<F>) -> F::Output {
+    match future {
+        Some(future) => future.await,
+        None => core::future::pending().await,
+    }
+}
+
 #[cfg(all(test, feature = "std"))]
 mod tests;

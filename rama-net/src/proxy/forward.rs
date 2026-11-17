@@ -1,7 +1,5 @@
 use std::{
-    pin::pin,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    task::Poll,
     time::{Duration, Instant},
 };
 
@@ -17,11 +15,10 @@ use rama_core::telemetry::tracing;
 use rama_core::{
     Service,
     extensions::ExtensionsRef,
-    futures::poll,
-    io::{AbortIo, BridgeIo, Io},
+    futures::maybe,
+    io::{AbortIo, BridgeIo, Io, shutdown_within},
 };
-use rama_utils::macros::generate_set_and_with;
-use rama_utils::octets::kib;
+use rama_utils::{macros::generate_set_and_with, octets::kib, time::deadline_after};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Notify;
@@ -294,7 +291,6 @@ where
                 match outcome.reason {
                     BridgeCloseReason::IdleTimeout
                     | BridgeCloseReason::FirstByteTimeout
-                    | BridgeCloseReason::PeekTimeout
                     | BridgeCloseReason::HandlerDeadline
                     | BridgeCloseReason::PausedTimeout
                     | BridgeCloseReason::MaxLifetime => {
@@ -473,15 +469,9 @@ impl Stop {
     where
         W: tokio::io::AsyncWrite + Unpin,
     {
-        if self.scope.is_aborted() {
-            return None;
-        }
-        let mut shutdown = pin!(writer.shutdown());
-        // A close that needs no peer ends here, with nothing to bound.
-        if let Poll::Ready(closed) = poll!(shutdown.as_mut()) {
-            return Some(closed);
-        }
-        self.scope.run_until_aborted_within(grace, shutdown).await
+        shutdown_within(writer, &self.scope.clone_weak(), grace)
+            .await
+            .ok()
     }
 }
 
@@ -694,12 +684,12 @@ impl<'a> Draining<'a> {
         written: &'a AtomicU64,
     ) -> Self {
         let now = tokio::time::Instant::now();
-        let give_up = after(now, window.total);
+        let give_up = deadline_after(now, window.total);
         Self {
             reason,
             error,
             deadline: Box::pin(tokio::time::sleep_until(
-                after(now, window.idle).min(give_up),
+                deadline_after(now, window.idle).min(give_up),
             )),
             give_up,
             written,
@@ -718,7 +708,7 @@ impl<'a> Draining<'a> {
         self.seen = written;
         self.deadline
             .as_mut()
-            .reset(after(now, idle).min(self.give_up));
+            .reset(deadline_after(now, idle).min(self.give_up));
         true
     }
 
@@ -735,13 +725,6 @@ impl<'a> Draining<'a> {
             self.finish()
         }
     }
-}
-
-/// `instant + duration`, or a far-off instant if that does not fit.
-fn after(instant: tokio::time::Instant, duration: Duration) -> tokio::time::Instant {
-    instant
-        .checked_add(duration)
-        .unwrap_or_else(|| instant + Duration::from_secs(86_400 * 365 * 30))
 }
 
 /// A write or half-close error saying the peer is gone, rather than that we
@@ -864,12 +847,7 @@ where
             () = cancelled => {
                 return (BridgeCloseReason::Shutdown, draining.map(|d| d.error));
             }
-            () = async {
-                match draining.as_mut() {
-                    Some(d) => d.deadline.as_mut().await,
-                    None => std::future::pending().await,
-                }
-            } => {
+            () = maybe(draining.as_mut().map(|d| d.deadline.as_mut())) => {
                 if draining
                     .as_mut()
                     .is_some_and(|d| d.extend(drain_window.idle))
@@ -880,12 +858,7 @@ where
                     return d.finish();
                 }
             }
-            _ = async {
-                match idle.as_mut() {
-                    Some(g) => g.tick().await,
-                    None => std::future::pending().await,
-                }
-            } => {
+            () = maybe(idle.as_mut().map(IdleGuard::tick)) => {
                 let cur = progress.load(Ordering::Relaxed);
                 if cur != last_progress {
                     last_progress = cur;
@@ -896,12 +869,10 @@ where
                 }
                 return draining.map_or((BridgeCloseReason::IdleTimeout, None), Draining::finish);
             }
-            _ = async {
-                match &mut first_byte {
-                    FirstByteWindow::Armed(s) => s.as_mut().await,
-                    _ => std::future::pending().await,
-                }
-            } => {
+            () = maybe(match &mut first_byte {
+                FirstByteWindow::Armed(s) => Some(s.as_mut()),
+                _ => None,
+            }) => {
                 // re-check here is needed in case it changed during the await
                 if first_byte_seen.load(Ordering::Relaxed)
                     || upstream_eof_seen.load(Ordering::Relaxed)
@@ -911,12 +882,7 @@ where
                 }
                 return draining.map_or((BridgeCloseReason::FirstByteTimeout, None), Draining::finish);
             }
-            _ = async {
-                match pending_client_window {
-                    Some(_) => client_spoke.notified().await,
-                    None => std::future::pending().await,
-                }
-            } => {
+            () = maybe(pending_client_window.map(|_| client_spoke.notified())) => {
                 // Client just sent its first byte: start the window from here
                 if let Some(d) = pending_client_window {
                     first_byte = FirstByteWindow::Armed(Box::pin(tokio::time::sleep(d)));
@@ -1115,8 +1081,8 @@ struct Aborts {
 impl Aborts {
     fn new(left: &impl ExtensionsRef, right: &impl ExtensionsRef) -> Self {
         Self {
-            left: left.extensions().self_get_arc(),
-            right: right.extensions().self_get_arc(),
+            left: left.extensions().get_arc(),
+            right: right.extensions().get_arc(),
             triggered: AtomicBool::new(false),
             deferred: AtomicBool::new(false),
         }
@@ -1179,8 +1145,9 @@ where
         return;
     }
     let started = Instant::now();
-    let give_up = after(started, linger.timeout());
-    let deadline = |last_data: Instant| after(last_data, linger.idle_timeout()).min(give_up);
+    let give_up = deadline_after(started, linger.timeout());
+    let deadline =
+        |last_data: Instant| deadline_after(last_data, linger.idle_timeout()).min(give_up);
     let mut last_data = started;
     let mut discarded: u64 = 0;
     let mut buf = vec![0u8; LINGER_BUF_SIZE];
@@ -1272,7 +1239,8 @@ mod tests {
 
     use super::*;
 
-    use rama_core::{ServiceInput, graceful::attach_scope};
+    use crate::stream::NestedConnection;
+    use rama_core::{ServiceInput, extensions::NoConnectionTransfer, graceful::attach_scope};
 
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex},
@@ -2252,6 +2220,19 @@ mod tests {
         .await
         .expect("the relayed data was never flushed");
         bridge.abort();
+    }
+
+    /// A connection nested on a stream is reset through that stream.
+    #[tokio::test]
+    async fn a_failure_resets_a_nested_connection_on_the_other_side() {
+        let (left, left_counts) = side(ReadEnd::Fail(std::io::ErrorKind::ConnectionReset), true);
+        let (right, right_counts) = side(ReadEnd::Pend, true);
+        let right = NestedConnection::new(right, &NoConnectionTransfer);
+        _ = IoForwardService::default()
+            .serve(BridgeIo(left, right))
+            .await;
+        assert_eq!(left_counts.get(), (0, 1));
+        assert_eq!(right_counts.get(), (0, 1));
     }
 
     /// RFC 9113 §8.5, RFC 9114 §4.4: a failed side is reflected as a reset of both sides,

@@ -36,7 +36,7 @@ mod sync;
 pub use cause::Cause;
 pub use context::{ScopeClosed, attach_scope, enter_scope, enter_scope_with, scope_context};
 pub use join::{JoinAborted, Joined};
-pub use scope::{Aborted, Cancelled, Drained, Scope, WeakScope};
+pub use scope::{Aborted, Cancelled, Drained, RunCutoff, Scope, WeakScope};
 pub use signal::default_signal;
 
 #[cfg(test)]

@@ -46,7 +46,7 @@ use rama_net::{
 use rama_tls::client::{
     ClientAuth, ClientHandshake, DynTlsServerCertChainPolicy, ServerTrustSource, ServerVerifyMode,
     TlsClientConfig, TlsPoolId, TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
-    target_ech_config, target_ech_required,
+    resolve_target_ech,
 };
 use rama_tls::{ExtensionId, KeyLogIntent, SignatureScheme, SupportedGroup};
 use rama_utils::macros::generate_set_and_with;
@@ -413,8 +413,9 @@ impl TlsConnectorData {
         } else {
             extensions
         };
-        let config = target_ech_config(effective, target, true)?;
-        self.ech_required = target_ech_required(effective, target, true)?;
+        let resolution = resolve_target_ech(effective, target, true)?;
+        let config = resolution.config;
+        self.ech_required = resolution.required;
         if config.is_none() && self.ech_configured.is_some() {
             return Err(BoxError::from_static_str(
                 "prepared ECH configuration conflicts with the target or disabled intent",

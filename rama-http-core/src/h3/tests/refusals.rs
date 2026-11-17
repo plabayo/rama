@@ -5,8 +5,9 @@ use crate::{
     h3::{
         Error, RateBudget, client,
         connection::Config,
+        frame::{FrameDecoder, FrameEvent},
         push::Pushes,
-        qpack::{Encoder, EncoderConfig, ErrorScope},
+        qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig, ErrorScope},
         server,
     },
     server::conn::HeaderReadTimeout,
@@ -23,6 +24,7 @@ use rama_http_types::{
 use rama_net::uri::Uri;
 use rama_quic::{Connection as QuicConnection, ConnectionError, RecvStream};
 use rama_quic_proto::{VarInt, coding::Codec as _};
+use rama_utils::rate::Rate;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     sync::Notify,
@@ -33,8 +35,13 @@ type Server = server::Connection<QuicConnection>;
 type Responder = server::SendResponse<QuicConnection>;
 type Client = client::SendRequest<Body, QuicConnection>;
 
+/// A request head as a raw peer sends it, past any limit its receiver has.
 fn head(fields: &[(&str, &str)]) -> Bytes {
-    let fields = Encoder::before_peer_settings(EncoderConfig::default())
+    let config = EncoderConfig {
+        max_field_section_size: usize::MAX,
+        ..EncoderConfig::default()
+    };
+    let fields = Encoder::before_peer_settings(config)
         .encode(0, fields.iter().copied())
         .unwrap();
     let mut bytes = BytesMut::new();
@@ -89,6 +96,136 @@ async fn malformed_request(pair: &Pair, server: &mut Server) -> Error {
         );
     }
     error
+}
+
+/// The status of the response a raw peer read off its request stream, if any.
+async fn answered_status(recv: &mut RecvStream) -> Option<Box<str>> {
+    let wire = recv.read_to_end(4096).await.ok()?;
+    let mut frames = FrameDecoder::new(4096);
+    frames.feed(&wire).unwrap();
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    while let Some(event) = frames.poll().unwrap() {
+        if let FrameEvent::Headers(section) = event {
+            let fields = decoder.decode_field_section(0, section).unwrap().unwrap();
+            let status = fields
+                .iter()
+                .find(|field| field.name.as_ref() == b":status")?;
+            return Some(String::from_utf8_lossy(&status.value).into());
+        }
+    }
+    None
+}
+
+/// A malformed request head of each kind is answered with 400 before its stream ends.
+#[tokio::test(start_paused = true)]
+async fn malformed_requests_are_answered_with_400() {
+    timeout(LIMIT, async {
+        let (pair, mut server) = raw_peer(None, Config::default()).await;
+        let with = |name, value| {
+            let mut fields = VALID_HEAD.to_vec();
+            fields.push((name, value));
+            fields
+        };
+        let cases: [(&str, Vec<(&str, &str)>); 10] = [
+            ("outer whitespace", with("x-a", " v")),
+            ("invalid value", with("x-b", "a\x01b")),
+            ("invalid name", with("X-C", "v")),
+            ("connection-specific", with("connection", "close")),
+            ("te", with("te", "gzip")),
+            (
+                "pseudo after regular",
+                vec![
+                    (":method", "GET"),
+                    (":scheme", "https"),
+                    ("x-a", "v"),
+                    (":authority", "localhost"),
+                    (":path", "/"),
+                ],
+            ),
+            ("repeated pseudo", with(":path", "/")),
+            ("missing method", VALID_HEAD[1..].to_vec()),
+            ("status in request", with(":status", "200")),
+            ("content-length", with("content-length", "abc")),
+        ];
+        for (case, fields) in cases {
+            let (mut send, mut recv) = pair.client.open_bi().await.unwrap();
+            send.write_chunk(head(&fields)).await.unwrap();
+            let error = server
+                .accept()
+                .await
+                .unwrap()
+                .resolve()
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(error.scope(), ErrorScope::Stream, "{case}");
+            assert_eq!(error.code(), Code::H3_MESSAGE_ERROR, "{case}");
+            assert_eq!(
+                answered_status(&mut recv).await.as_deref(),
+                Some("400"),
+                "{case}"
+            );
+        }
+        assert_eq!(server.refused_streams(), 10);
+        assert!(served(&pair, &mut server).await);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// By default a request head of 1 MiB or 4096 field lines is served; one past either is
+/// answered with 431 before its stream ends.
+#[tokio::test(start_paused = true)]
+async fn default_header_limits_h3() {
+    timeout(LIMIT, async {
+        let (pair, mut server) = raw_peer(None, Config::default()).await;
+        // (field lines, value length, accepted)
+        for (lines, value_len, accepted) in [
+            (4092, 1, true),
+            (4093, 1, false),
+            (1, 1_048_000, true),
+            (1, 1_049_000, false),
+        ] {
+            let value = "v".repeat(value_len);
+            let names: Vec<String> = (0..lines).map(|i| format!("x-{i}")).collect();
+            let mut fields = VALID_HEAD.to_vec();
+            fields.extend(names.iter().map(|name| (name.as_str(), value.as_str())));
+            let (mut send, mut recv) = pair.client.open_bi().await.unwrap();
+            let head = head(&fields);
+            // A head past the stream window is only taken in while the server reads it.
+            let sent = spawn(async move {
+                _ = send.write_chunk(head).await;
+                _ = send.finish();
+                send
+            });
+            let resolved = server.accept().await.unwrap().resolve().await;
+            let case = format!("{lines} x {value_len}");
+            if accepted {
+                let (_request, responder) = resolved.expect(&case);
+                assert!(answered(&mut recv, responder).await, "{case}");
+            } else {
+                let error = resolved.err().expect(&case);
+                assert_eq!(error.scope(), ErrorScope::Stream, "{case}");
+                assert!(
+                    matches!(
+                        error.code(),
+                        Code::H3_EXCESSIVE_LOAD | Code::QPACK_DECOMPRESSION_FAILED
+                    ),
+                    "{case}"
+                );
+                assert_eq!(
+                    answered_status(&mut recv).await.as_deref(),
+                    Some("431"),
+                    "{case}"
+                );
+            }
+            drop(sent.await.unwrap());
+        }
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }
 
 /// The peer sends a complete request that the server accepts.
@@ -220,7 +357,11 @@ async fn a_stream_refused_for_a_local_limit_is_charged_once() {
 #[tokio::test(start_paused = true)]
 async fn a_spent_refused_stream_budget_is_regained_over_time() {
     timeout(LIMIT, async {
-        let (pair, mut server) = raw_peer(Some(RateBudget::new(2, 1)), Config::default()).await;
+        let (pair, mut server) = raw_peer(
+            Some(RateBudget::rated(Rate::per_sec(1), 2)),
+            Config::default(),
+        )
+        .await;
         let start = Instant::now();
         for _ in 0..2 {
             let error = malformed_request(&pair, &mut server).await;
@@ -270,7 +411,7 @@ async fn drip_survived(budget: RateBudget, sent: u64) -> u64 {
 #[tokio::test(start_paused = true)]
 async fn only_a_ceiling_ends_a_steady_drip_below_the_rate() {
     timeout(Duration::from_mins(5), async {
-        let budget = RateBudget::new(2, 1);
+        let budget = RateBudget::rated(Rate::per_sec(1), 2);
         assert_eq!(drip_survived(budget, 12).await, 12);
         assert_eq!(drip_survived(budget.with_ceiling(5), 12).await, 5);
     })

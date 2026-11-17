@@ -87,11 +87,6 @@ const LABEL_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b
 /// label, kept separate so the two grammars can drift independently.
 const PATTERN_NAME_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"_-");
 
-/// RFC 9110 `tchar`, used by HTTP methods and other token-valued fields.
-#[cfg(feature = "std")]
-const HTTP_TOKEN_BYTE_SET: [bool; 256] =
-    set_each(set_ascii_alphanum([false; 256]), b"!#$%&'*+-.^_`|~");
-
 /// `true` when `table` accepts no byte `>= 0x80`.
 const fn accepts_only_ascii(table: &[bool; 256]) -> bool {
     let mut b = 0x80;
@@ -125,12 +120,6 @@ const _: () = {
 #[inline(always)]
 pub(crate) const fn is_control_byte(b: u8) -> bool {
     CONTROL_BYTE_SET[b as usize]
-}
-
-#[cfg(feature = "std")]
-#[inline(always)]
-pub(crate) const fn is_http_token_byte(b: u8) -> bool {
-    HTTP_TOKEN_BYTE_SET[b as usize]
 }
 
 /// `Some(b)` when `%h1h2` pct-decodes to a control byte `b` (smuggling

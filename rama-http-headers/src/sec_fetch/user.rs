@@ -1,6 +1,6 @@
 use rama_http_types::{
     HeaderName, HeaderValue,
-    structured_fields::{BareItem, parse_item},
+    utils::structured_fields::{BareItem, parse_item},
 };
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::single_value};

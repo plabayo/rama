@@ -41,7 +41,7 @@ mod meta;
 pub use meta::{
     DatagramCapabilities, DatagramError, DatagramFeature, DatagramMetadata, EcnCodepoint,
     InvalidDatagramMetadata, MAX_UDP_PAYLOAD_IPV4, MAX_UDP_PAYLOAD_IPV6, ReceiveTimestamp,
-    SendFailure,
+    SendFailure, is_datagram_too_large,
 };
 
 #[cfg(any(test, feature = "test-utils"))]

@@ -22,7 +22,7 @@ use hickory_resolver::{
 
 use rama_core::{
     bytes::Bytes,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, BoxErrorExt as _, ErrorContext},
     futures::Stream,
 };
 use rama_core::{futures::async_stream::stream_fn, telemetry::tracing};
@@ -493,7 +493,7 @@ fn decode_hickory_service_binding(
             ),
             SvcParamValue::Alpn(protocols) => SvcParam::Alpn(
                 AlpnList::from_protocols(protocols.0.iter().map(String::as_str))
-                    .ok_or_else(|| BoxError::from("invalid Hickory ALPN value"))?,
+                    .ok_or_else(|| BoxError::from_static_str("invalid Hickory ALPN value"))?,
             ),
             SvcParamValue::NoDefaultAlpn => SvcParam::NoDefaultAlpn,
             SvcParamValue::Port(port) => SvcParam::Port(*port),
@@ -512,7 +512,7 @@ fn decode_hickory_service_binding(
             },
         };
         if param.key() != key {
-            return Err(BoxError::from(
+            return Err(BoxError::from_static_str(
                 "Hickory service parameter key/value mismatch",
             ));
         }

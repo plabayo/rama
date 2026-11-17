@@ -3,7 +3,9 @@ use std::{convert::Infallible, io};
 use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing;
 use rama_core::{Service, error::BoxError};
-use rama_http_headers::{AcceptRanges, ContentType, HeaderMapExt as _, HttpResponseBuilderExt};
+use rama_http_headers::{
+    AcceptRanges, ContentRange, ContentType, HeaderMapExt as _, HttpResponseBuilderExt,
+};
 
 use super::open_file::{FileOpened, OpenFileOutput, RangeError};
 use crate::headers::encoding::Encoding;
@@ -49,6 +51,13 @@ where
             }
         }
 
+        Ok(OpenFileOutput::NotAcceptable) => {
+            let mut res = response_with_status(StatusCode::NOT_ACCEPTABLE);
+            res.headers_mut()
+                .insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+            Ok(res)
+        }
+
         Ok(OpenFileOutput::PreconditionFailed) => {
             Ok(response_with_status(StatusCode::PRECONDITION_FAILED))
         }
@@ -63,10 +72,8 @@ where
             if let Some(etag) = etag {
                 res.headers_mut().typed_insert(etag);
             }
-            if let Some(last_modified) = last_modified
-                && let Ok(value) = HeaderValue::try_from(last_modified.0.to_string())
-            {
-                res.headers_mut().insert(header::LAST_MODIFIED, value);
+            if let Some(last_modified) = last_modified {
+                res.headers_mut().typed_insert(last_modified);
             }
             Ok(res)
         }
@@ -151,7 +158,7 @@ fn build_response(output: FileOpened) -> Response {
     }
 
     if let Some(last_modified) = output.last_modified {
-        builder = builder.header(header::LAST_MODIFIED, last_modified.0.to_string());
+        builder = builder.typed_header(last_modified);
     }
 
     if let Some(etag) = output.etag {
@@ -168,11 +175,11 @@ fn build_response(output: FileOpened) -> Response {
                 range.end() - range.start() + 1
             };
 
+            let Ok(content_range) = ContentRange::bytes(range, size) else {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            };
             builder
-                .header(
-                    header::CONTENT_RANGE,
-                    format!("bytes {}-{}/{}", range.start(), range.end(), size),
-                )
+                .typed_header(content_range)
                 .header(header::CONTENT_LENGTH, content_length)
                 .status(StatusCode::PARTIAL_CONTENT)
                 .body(body)
@@ -184,7 +191,7 @@ fn build_response(output: FileOpened) -> Response {
 
         Some(Err(RangeError::MultipleRangesNotSupported)) => {
             let mut response = builder
-                .header(header::CONTENT_RANGE, format!("bytes */{size}"))
+                .typed_header(ContentRange::unsatisfied_bytes(size))
                 .status(StatusCode::RANGE_NOT_SATISFIABLE)
                 .body(Body::from(Bytes::from(
                     "Cannot serve multipart range requests",
@@ -200,7 +207,7 @@ fn build_response(output: FileOpened) -> Response {
 
         Some(Err(RangeError::Unsatisfiable)) => {
             let mut response = builder
-                .header(header::CONTENT_RANGE, format!("bytes */{size}"))
+                .typed_header(ContentRange::unsatisfied_bytes(size))
                 .status(StatusCode::RANGE_NOT_SATISFIABLE)
                 .body(Body::empty())
                 .unwrap_or_else(|err| {

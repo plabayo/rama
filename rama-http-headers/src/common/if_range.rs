@@ -1,7 +1,5 @@
 use std::time::SystemTime;
 
-use rama_core::error::BoxError;
-use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
 
 use super::{ETag, LastModified};
@@ -64,12 +62,7 @@ impl crate::HeaderDecode for IfRange {
 
 impl crate::HeaderEncode for IfRange {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        match HeaderValue::try_from(&self.0) {
-            Ok(value) => values.extend(::std::iter::once(value)),
-            Err(err) => {
-                tracing::debug!("failed to encode if-range value as header: {err}");
-            }
-        }
+        values.extend(::std::iter::once(HeaderValue::from(&self.0)));
     }
 }
 
@@ -125,13 +118,11 @@ impl TryFromValues for IfRange_ {
     }
 }
 
-impl<'a> TryFrom<&'a IfRange_> for HeaderValue {
-    type Error = BoxError;
-
-    fn try_from(if_range: &'a IfRange_) -> Result<Self, Self::Error> {
+impl<'a> From<&'a IfRange_> for HeaderValue {
+    fn from(if_range: &'a IfRange_) -> Self {
         match *if_range {
-            IfRange_::EntityTag(ref tag) => Ok(tag.into()),
-            IfRange_::Date(ref date) => date.try_into(),
+            IfRange_::EntityTag(ref tag) => tag.into(),
+            IfRange_::Date(ref date) => date.into(),
         }
     }
 }

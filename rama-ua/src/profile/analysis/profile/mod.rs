@@ -135,18 +135,12 @@ fn slot(
             OrderNamespace::QuicVersion => CapturedSlotKind::QuicVersions,
         },
         #[cfg(feature = "tls")]
-        CanonicalDomain::Tls => match TlsCapture::from_canonical(
-            value,
-            TlsCaptureLimits {
-                elements: maximum,
-                bytes: maximum,
-            },
-        )?
-        .transport
-        {
-            TlsCaptureTransport::Tcp => CapturedSlotKind::TcpTls,
-            TlsCaptureTransport::Quic => CapturedSlotKind::QuicTls,
-        },
+        CanonicalDomain::Tls => {
+            match TlsCapture::from_canonical(value, TlsCaptureLimits::uniform(maximum))?.transport {
+                TlsCaptureTransport::Tcp => CapturedSlotKind::TcpTls,
+                TlsCaptureTransport::Quic => CapturedSlotKind::QuicTls,
+            }
+        }
         _ => {
             return Err(ProfileDataError::Invalid(
                 "profile evidence component domain",
@@ -157,14 +151,10 @@ fn slot(
 
 #[cfg(feature = "tls")]
 fn resumes_session(slot: &CapturedSlot, maximum: usize) -> Result<bool, ProfileDataError> {
-    Ok(TlsCapture::from_canonical(
-        &slot.value,
-        TlsCaptureLimits {
-            elements: maximum,
-            bytes: maximum,
-        },
-    )?
-    .resumes_session())
+    Ok(
+        TlsCapture::from_canonical(&slot.value, TlsCaptureLimits::uniform(maximum))?
+            .resumes_session(),
+    )
 }
 
 #[cfg(not(feature = "tls"))]

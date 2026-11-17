@@ -2874,7 +2874,6 @@ impl TcpPerFlowSignals {
             BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight => return,
             BridgeCloseReason::PausedTimeout
             | BridgeCloseReason::IdleTimeout
-            | BridgeCloseReason::PeekTimeout
             | BridgeCloseReason::HandlerDeadline
             | BridgeCloseReason::FirstByteTimeout
             | BridgeCloseReason::MaxLifetime => libc::ETIMEDOUT,

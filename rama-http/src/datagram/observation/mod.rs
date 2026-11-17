@@ -18,7 +18,9 @@ pub trait CapsuleObserver: Send + Sync + 'static {
 
 /// An optional upgraded-I/O extension selecting a Capsule metadata observer.
 /// Works on reliable streams even when no native HTTP Datagram carrier is available.
+/// It is connection scoped, so a session nested inside the tunnel never reports as the tunnel.
 #[derive(Clone, Extension)]
+#[extension(scope(connection))]
 pub struct CapsuleObservation {
     observer: Arc<dyn CapsuleObserver>,
 }

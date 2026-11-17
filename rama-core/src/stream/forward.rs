@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use rama_error::{BoxError, ErrorExt};
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{macros::generate_set_and_with, time::deadline_after};
 
 use crate::Service;
 use crate::graceful::WeakScope;
@@ -53,9 +53,6 @@ pub enum BridgeCloseReason {
     WriteErrorLeft,
     /// Write to the right half failed.
     WriteErrorRight,
-    /// A protocol-peek read deadline elapsed before the peek completed.
-    /// Used by tproxy bridges that peek the first bytes for protocol detection.
-    PeekTimeout,
     /// The flow handler did not produce a decision within the configured
     /// deadline. The flow was rejected (or passed through, depending on
     /// configuration) without bridging.
@@ -95,7 +92,6 @@ impl core::fmt::Display for BridgeCloseReason {
             Self::ReadErrorRight => "read_error_right",
             Self::WriteErrorLeft => "write_error_left",
             Self::WriteErrorRight => "write_error_right",
-            Self::PeekTimeout => "peek_timeout",
             Self::HandlerDeadline => "handler_deadline",
             Self::PausedTimeout => "paused_timeout",
             Self::FirstByteTimeout => "first_byte_timeout",
@@ -118,7 +114,6 @@ impl BridgeCloseReason {
             Self::ReadErrorRight => 6,
             Self::WriteErrorLeft => 7,
             Self::WriteErrorRight => 8,
-            Self::PeekTimeout => 9,
             Self::HandlerDeadline => 10,
             Self::PausedTimeout => 11,
             Self::FirstByteTimeout => 12,
@@ -303,7 +298,7 @@ where
                 if progress != last_progress {
                     last_progress = progress;
                     if let (Some(d), Some(s)) = (idle_timeout, idle.as_mut()) {
-                        s.as_mut().reset(tokio::time::Instant::now() + d);
+                        s.as_mut().reset(deadline_after(tokio::time::Instant::now(), d));
                     }
                     continue;
                 }
@@ -664,6 +659,34 @@ mod tests {
             BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight,
             "expected EOF reason, got {reason}",
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unrepresentable_idle_timeout_rearms_without_panicking() {
+        let (mut a_user, a_proxy) = duplex_pair::<u32>();
+        let (mut b_user, b_proxy) = duplex_pair::<u32>();
+
+        let scope = Scope::new();
+        let svc = StreamForwardService::new()
+            .with_idle_timeout(Duration::MAX)
+            .with_scope(scope.clone_weak());
+        let task = tokio::spawn(async move {
+            svc.serve(StreamBridge::new(a_proxy, b_proxy))
+                .await
+                .unwrap()
+        });
+
+        a_user.send(1).await.unwrap();
+        assert_eq!(b_user.next().await.unwrap().unwrap(), 1);
+
+        // The paused clock jumps past the first idle tick, which rearms after the progress.
+        tokio::time::sleep(Duration::from_hours(24 * 365 * 40)).await;
+        assert!(!task.is_finished());
+        a_user.send(2).await.unwrap();
+        assert_eq!(b_user.next().await.unwrap().unwrap(), 2);
+
+        scope.abort(Cause::Owner);
+        assert_eq!(task.await.unwrap(), BridgeCloseReason::Shutdown);
     }
 
     #[tokio::test]

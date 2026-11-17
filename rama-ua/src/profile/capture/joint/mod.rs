@@ -94,6 +94,12 @@ pub enum CapturedSlotKind {
 }
 
 impl CapturedSlotKind {
+    /// Whether this slot holds the effective ClientHello of a connection.
+    #[cfg(feature = "tls")]
+    pub(in crate::profile) fn is_effective_tls(self) -> bool {
+        matches!(self, Self::TcpTls | Self::QuicTls)
+    }
+
     pub(in crate::profile) fn tag(self) -> u16 {
         match self {
             Self::Headers => 0,
@@ -219,10 +225,7 @@ impl CapturedSlot {
         ) {
             #[cfg(feature = "tls")]
             {
-                let limits = TlsCaptureLimits {
-                    elements: maximum_bytes,
-                    bytes: maximum_bytes,
-                };
+                let limits = TlsCaptureLimits::uniform(maximum_bytes);
                 return TlsCapture::from_canonical(&self.value, limits)?.structural(limits);
             }
 
@@ -294,13 +297,7 @@ fn validate_slot(
             let capture = if structural {
                 decode_tls_structure(&slot.value, maximum)?
             } else {
-                TlsCapture::from_canonical(
-                    &slot.value,
-                    TlsCaptureLimits {
-                        elements: maximum,
-                        bytes: maximum,
-                    },
-                )?
+                TlsCapture::from_canonical(&slot.value, TlsCaptureLimits::uniform(maximum))?
             };
             if !matches!(
                 (slot.kind, capture.transport),
@@ -487,11 +484,7 @@ fn validate_ech_pair(
     structural: bool,
     maximum: usize,
 ) -> Result<(), ProfileDataError> {
-    let Some(outer) = joint
-        .slots
-        .iter()
-        .find(|slot| slot.kind == CapturedSlotKind::TlsOuter)
-    else {
+    let Some(outer) = joint.ech_outer_slot() else {
         // Older evidence may contain an unpaired inner; selection must not use
         // it as an ordinary wire offer.
         return Ok(());
@@ -500,28 +493,13 @@ fn validate_ech_pair(
         if structural {
             decode_tls_structure(&slot.value, maximum)
         } else {
-            TlsCapture::from_canonical(
-                &slot.value,
-                TlsCaptureLimits {
-                    elements: maximum,
-                    bytes: maximum,
-                },
-            )
+            TlsCapture::from_canonical(&slot.value, TlsCaptureLimits::uniform(maximum))
         }
     };
     let outer = decode(outer)?;
-    let inner = joint
-        .slots
-        .iter()
-        .find(|slot| {
-            matches!(
-                slot.kind,
-                CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
-            )
-        })
-        .ok_or(ProfileDataError::Invalid(
-            "ECH outer without effective TLS companion",
-        ))?;
+    let inner = joint.effective_tls_slot().ok_or(ProfileDataError::Invalid(
+        "ECH outer without effective TLS companion",
+    ))?;
     let inner = decode(inner)?;
     fn ech(capture: &TlsCapture) -> Option<&TlsCapturedExtensionValue> {
         capture
@@ -640,6 +618,42 @@ pub(in crate::profile) fn joint_slot_values(
 }
 
 impl JointCapture {
+    /// The wire outer ClientHello paired with the effective one, if ECH was accepted.
+    #[cfg(feature = "tls")]
+    pub(in crate::profile) fn ech_outer_slot(&self) -> Option<&CapturedSlot> {
+        self.slots
+            .iter()
+            .find(|slot| slot.kind == CapturedSlotKind::TlsOuter)
+    }
+
+    /// The effective ClientHello: the decrypted inner when ECH was accepted.
+    #[cfg(feature = "tls")]
+    pub(in crate::profile) fn effective_tls_slot(&self) -> Option<&CapturedSlot> {
+        self.slots.iter().find(|slot| slot.kind.is_effective_tls())
+    }
+
+    /// Transform the ClientHello as sent on the wire: the outer of an ECH pair, with
+    /// its inner regenerated as [`Self::map_ech_pair`] does, else every effective one.
+    #[cfg(feature = "tls")]
+    pub(in crate::profile) fn map_wire_tls(
+        &mut self,
+        limits: TlsCaptureLimits,
+        mut map: impl FnMut(&mut TlsCapture),
+    ) -> Result<(), ProfileDataError> {
+        if self.ech_outer_slot().is_some() {
+            self.map_ech_pair(limits, map)?;
+            return Ok(());
+        }
+        for slot in &mut self.slots {
+            if slot.kind.is_effective_tls() {
+                let mut capture = TlsCapture::from_canonical(&slot.value, limits)?;
+                map(&mut capture);
+                slot.value = capture.canonical(limits)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Transform an outer order and regenerate its correlated native inner.
     /// For unsupported pairs only the outer changes; captured inner evidence is
     /// retained and the backend reports the mismatch during replay preparation.
@@ -659,12 +673,7 @@ impl JointCapture {
         let inner_index = self
             .slots
             .iter()
-            .position(|slot| {
-                matches!(
-                    slot.kind,
-                    CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
-                )
-            })
+            .position(|slot| slot.kind.is_effective_tls())
             .ok_or(ProfileDataError::Invalid(
                 "ECH pair missing effective hello",
             ))?;
@@ -751,10 +760,7 @@ pub(in crate::profile) fn normalize_stored_structure(
         HEADER_STRUCTURE_DOMAIN => normalize_header_structure(value, maximum),
         #[cfg(feature = "tls")]
         CanonicalDomain::TlsStructure => {
-            decode_tls_structure(value, maximum)?.structural(TlsCaptureLimits {
-                elements: maximum,
-                bytes: maximum,
-            })
+            decode_tls_structure(value, maximum)?.structural(TlsCaptureLimits::uniform(maximum))
         }
         CanonicalDomain::JointStructure => {
             let limits = JointCaptureLimits {
@@ -776,12 +782,8 @@ pub(in crate::profile) fn normalize_stored_structure(
                     CapturedSlotKind::TcpTls
                     | CapturedSlotKind::QuicTls
                     | CapturedSlotKind::TlsOuter => {
-                        slot.value = decode_tls_structure(&slot.value, maximum)?.structural(
-                            TlsCaptureLimits {
-                                elements: maximum,
-                                bytes: maximum,
-                            },
-                        )?;
+                        slot.value = decode_tls_structure(&slot.value, maximum)?
+                            .structural(TlsCaptureLimits::uniform(maximum))?;
                     }
                     _ => {}
                 }

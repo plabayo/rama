@@ -12,6 +12,8 @@ mod connect_request;
 pub use connect_request::{HttpConnectRequestAdapter, HttpConnectRequestAdapterLayer};
 
 mod conn;
+#[cfg(feature = "quic")]
+pub(crate) use conn::ResponseLimits;
 #[doc(inline)]
 pub use conn::{
     HttpConnector, HttpConnectorLayer, MaxInformationalResponses, RefusedStreamBudget,

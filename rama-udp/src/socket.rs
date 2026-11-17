@@ -39,20 +39,7 @@ pub async fn bind_udp_socket_with_connect(
     address: impl Into<HostWithPort>,
     extensions: Option<&Extensions>,
 ) -> Result<UdpSocket, BoxError> {
-    let HostWithPort { host, port } = address.into();
-    let ip = host
-        .try_as_ip()
-        .context("udp connector target host is not an IP address")?;
-
-    let mode = extensions
-        .and_then(|ext| ext.get_ref().copied())
-        .unwrap_or(ConnectIpMode::Dual);
-    let ip = mode
-        .validate_ip(ip)
-        .context_field("host", host)
-        .context_field("port", port)?;
-
-    let address: SocketAddr = (ip, port).into();
+    let address = udp_connect_target(address, extensions)?;
     let bind_address = if address.is_ipv4() {
         SocketAddress::default_ipv4(0)
     } else {
@@ -66,6 +53,27 @@ pub async fn bind_udp_socket_with_connect(
         .context_field("address", address)?;
     tracing::trace!("udp socket connected to IP address: {address}");
     Ok(socket)
+}
+
+/// The canonical IP peer a UDP socket connects to, validated against the IP connect mode.
+pub(crate) fn udp_connect_target(
+    address: impl Into<HostWithPort>,
+    extensions: Option<&Extensions>,
+) -> Result<SocketAddr, BoxError> {
+    let HostWithPort { host, port } = address.into();
+    let ip = host
+        .try_as_ip()
+        .context("udp connector target host is not an IP address")?;
+
+    let mode = extensions
+        .and_then(|ext| ext.get_ref().copied())
+        .unwrap_or(ConnectIpMode::Dual);
+    let ip = mode
+        .validate_ip(ip)
+        .context_field("host", host)
+        .context_field("port", port)?;
+
+    Ok((ip, port).into())
 }
 
 /// Creates a new [`UdpSocket`], which will be bound to the specified address.

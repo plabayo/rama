@@ -19,6 +19,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "http_date"
+path = "fuzz_targets/http_date.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "h3_state"
 path = "fuzz_targets/h3_state.rs"
 test = false

@@ -11,11 +11,11 @@ use rama::{
     error::BoxError,
     io::BridgeIo,
     net::client::ConnectRequest,
-    net::{socket::SocketOptions, stream::Socket as _},
+    net::{availability::NetworkChanges, socket::SocketOptions, stream::Socket as _},
     service::service_fn,
     udp::proxy::{
         DatagramForwardService, DatagramRecovery, DatagramRecoveryConfig,
-        DatagramRecoveryFailureAction, DatagramRecoverySignal, EcnPolicy, Peer, UdpConnector,
+        DatagramRecoveryFailureAction, EcnPolicy, Peer, UdpConnector,
     },
     udp::{
         DatagramCapabilities, DatagramError, DatagramSender, DatagramSenderExt as _,
@@ -287,7 +287,7 @@ fn forwarding_recovery_idle(bencher: divan::Bencher, enabled: bool) {
             let _client = client;
             if enabled {
                 let recovery = DatagramRecovery::new(
-                    DatagramRecoverySignal::new(),
+                    NetworkChanges::new(),
                     DatagramRecoveryConfig {
                         preparation_timeout: Duration::from_secs(5),
                         unavailable_timeout: Duration::from_secs(5),

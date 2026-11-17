@@ -1,11 +1,7 @@
-use super::{DatagramBridgeInput, DatagramToProxyBridge};
+use super::{DatagramBridgeInput, DatagramToProxyBridge, connect_egress};
 use crate::DatagramSocket;
 use crate::proxy::{DatagramForwardService, DatagramRecovery, Peer};
-use rama_core::{
-    Service,
-    error::{BoxError, ErrorContext as _},
-    io::BridgeIo,
-};
+use rama_core::{Fork as _, Service, error::BoxError, io::BridgeIo};
 use rama_net::client::{ConnectRequest, ConnectorService};
 use std::{future::Future, pin::Pin};
 
@@ -44,19 +40,10 @@ where
                 // Subscribe before connecting so a routing change during initial preparation is retained.
                 let changes = self.recovery.signal.subscribe();
                 let request = self.bridge.connect_request(input.ingress())?;
-                let mut initial = request.clone();
-                initial.extensions = request.extensions.fork();
-                let connected = self
-                    .bridge
-                    .connector
-                    .connect(initial)
-                    .await
-                    .into_box_error()?;
-                let factory = ReplacementConnector {
-                    connector: self.bridge.connector.clone(),
-                    request,
-                };
-                let BridgeIo(ingress, egress) = input.bridge(connected.conn).into();
+                let connected = connect_egress(&self.bridge.connector, request.fork()).await?;
+                let factory =
+                    DatagramReplacementConnector::new(self.bridge.connector.clone(), request);
+                let BridgeIo(ingress, egress) = input.bridge(connected).into();
                 self.bridge
                     .inner
                     .forward_recovering(
@@ -71,12 +58,25 @@ where
     }
 }
 
-struct ReplacementConnector<C> {
+/// Connects a replacement egress through the connector and request of the original one.
+///
+/// Every attempt forks the request's extensions, so what one attempt records never reaches
+/// the next or the original request. The destination is the request's; network observations
+/// never select another.
+#[derive(Debug, Clone)]
+pub struct DatagramReplacementConnector<C> {
     connector: C,
     request: ConnectRequest,
 }
 
-impl<C> Service<()> for ReplacementConnector<C>
+impl<C> DatagramReplacementConnector<C> {
+    /// Replace egress sockets made by `connector` for `request`.
+    pub fn new(connector: C, request: ConnectRequest) -> Self {
+        Self { connector, request }
+    }
+}
+
+impl<C> Service<()> for DatagramReplacementConnector<C>
 where
     C: ConnectorService<ConnectRequest, Connection: DatagramSocket>,
 {
@@ -84,8 +84,6 @@ where
     type Error = BoxError;
 
     async fn serve(&self, (): ()) -> Result<Self::Output, BoxError> {
-        let mut request = self.request.clone();
-        request.extensions = self.request.extensions.fork();
-        Ok(self.connector.connect(request).await.into_box_error()?.conn)
+        connect_egress(&self.connector, self.request.fork()).await
     }
 }

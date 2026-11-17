@@ -7,7 +7,7 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use crate::server::conn::timeout::{HeadBudget, LazyDeadline, deadline_after};
+use crate::server::conn::timeout::{HeadBudget, LazyDeadline};
 use rama_core::bytes::Bytes;
 use rama_http_types::{
     HeaderMap,
@@ -15,6 +15,7 @@ use rama_http_types::{
     proto::h3::{Code, FrameType, VarInt},
 };
 use rama_net::uri::Uri;
+use rama_utils::time::deadline_after;
 use tokio::time::{Instant, Sleep};
 
 use super::{

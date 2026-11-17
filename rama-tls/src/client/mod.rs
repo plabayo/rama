@@ -49,7 +49,8 @@ pub mod ech_discovery;
 
 mod ech;
 pub use ech::{
-    EchRequirement, EchRetryConfig, TlsEchAccepted, target_ech_config, target_ech_required,
+    EchRequirement, EchRetryConfig, TargetEchResolution, TlsEchAccepted, resolve_target_ech,
+    target_ech_required,
 };
 
 mod config;
@@ -136,9 +137,10 @@ pub struct NegotiatedTlsAlgorithms {
 
 /// Server identity authenticated by the effective TLS verification policy.
 ///
-/// Published only after a successful client handshake. `None` explicitly
-/// shadows older connection metadata when verification was disabled; negotiated
-/// ALPN or a received certificate alone does not prove server authentication.
+/// Published only after a successful client handshake. `None` means that
+/// handshake authenticated no server identity: verification was disabled or
+/// there was no server name to verify against. Negotiated ALPN or a received
+/// certificate alone does not prove server authentication.
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(tls), scope(connection))]
 pub struct TlsServerAuthentication(pub Option<rama_net::address::Host>);

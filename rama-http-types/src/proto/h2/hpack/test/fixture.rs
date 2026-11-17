@@ -71,6 +71,7 @@ fn test_story(story: &Value) {
             buf.extend_from_slice(&case.wire);
             decoder
                 .decode(&mut Cursor::new(&mut buf), |e| {
+                    let e = e.unwrap();
                     let (name, value) = expect.remove(0);
                     assert_eq!(name, key_str(&e));
                     assert_eq!(value, value_str(&e));
@@ -108,7 +109,7 @@ fn test_story(story: &Value) {
 
             decoder
                 .decode(&mut Cursor::new(&mut buf), |e| {
-                    assert_eq!(e, input.remove(0).reify().unwrap());
+                    assert_eq!(e.unwrap(), input.remove(0).reify().unwrap());
                     ControlFlow::Continue(())
                 })
                 .unwrap();

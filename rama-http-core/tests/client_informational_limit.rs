@@ -10,6 +10,7 @@ use rama_http_core::{
     h2::{Error as H2Error, RateBudget, Reason, server as h2_server},
 };
 use rama_http_types::Response;
+use rama_utils::rate::Rate;
 use std::{error::Error as _, time::Duration};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream},
@@ -327,7 +328,7 @@ async fn h2_refusals_within_the_budget_leave_the_connection_alone() {
 async fn h2_protocol_errors_within_the_budget_leave_the_connection_alone() {
     timeout(LIMIT, async {
         let mut session = H2Session::new(|builder| {
-            builder.set_refused_stream_budget(RateBudget::new(3, 1));
+            builder.set_refused_stream_budget(RateBudget::rated(Rate::per_sec(1), 3));
         })
         .await;
         let (sibling, mut answer_sibling) = session.send().await;
@@ -372,7 +373,7 @@ async fn h2_refusals_past_the_budget_close_the_connection() {
 async fn h2_protocol_errors_past_the_budget_close_the_connection() {
     timeout(LIMIT, async {
         let mut session = H2Session::new(|builder| {
-            builder.set_refused_stream_budget(RateBudget::new(2, 1));
+            builder.set_refused_stream_budget(RateBudget::rated(Rate::per_sec(1), 2));
         })
         .await;
         let (sibling, _answer_sibling) = session.send().await;
@@ -396,7 +397,7 @@ async fn h2_protocol_errors_past_the_budget_close_the_connection() {
 async fn h2_refused_stream_budget_refills_over_time() {
     timeout(Duration::from_mins(5), async {
         let mut session = H2Session::new(|builder| {
-            builder.set_refused_stream_budget(RateBudget::new(2, 1));
+            builder.set_refused_stream_budget(RateBudget::rated(Rate::per_sec(1), 2));
         })
         .await;
         for wait in [Duration::from_secs(2), Duration::from_mins(1)] {
@@ -484,7 +485,7 @@ async fn h2_drip_survived(budget: RateBudget, drip: usize) -> usize {
 #[tokio::test(start_paused = true)]
 async fn h2_only_a_ceiling_ends_a_steady_drip_below_the_rate() {
     timeout(Duration::from_mins(5), async {
-        let budget = RateBudget::new(2, 1);
+        let budget = RateBudget::rated(Rate::per_sec(1), 2);
         assert_eq!(h2_drip_survived(budget, 40).await, 40);
         assert_eq!(h2_drip_survived(budget.with_ceiling(7), 40).await, 7);
     })

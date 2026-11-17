@@ -127,7 +127,14 @@ impl<S: AsyncWrite> AsyncWrite for NestedConnection<S> {
 mod tests {
     use super::*;
     use crate::client::pool::{ConnectionReusePolicy, ReuseKey};
-    use rama_core::extensions::{Extension, NoConnectionTransfer};
+    use rama_core::{
+        extensions::{Extension, NoConnectionTransfer},
+        io::AbortIo,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     #[derive(Debug)]
     struct AlwaysReusable;
@@ -235,5 +242,26 @@ mod tests {
             inner.extensions().get_ref::<NegotiatedAlpn>(),
             Some(&NegotiatedAlpn(2))
         );
+    }
+
+    #[test]
+    fn nested_connection_answers_with_the_wrapped_stream_abort() {
+        let proxy = FakeStream {
+            extensions: Extensions::new(),
+        };
+        let aborted = Arc::new(AtomicBool::new(false));
+        proxy.extensions.insert(AbortIo::new({
+            let aborted = aborted.clone();
+            move || aborted.store(true, Ordering::Release)
+        }));
+
+        let nested = NestedConnection::new(proxy, &NoConnectionTransfer);
+
+        let abort = nested
+            .extensions()
+            .get_arc::<AbortIo>()
+            .expect("the nested connection fronts the same stream");
+        abort.abort();
+        assert!(aborted.load(Ordering::Acquire));
     }
 }

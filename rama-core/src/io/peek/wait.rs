@@ -1,15 +1,17 @@
-use std::{error::Error, fmt, future::pending, io, num::NonZeroUsize, pin::pin};
+use std::{error::Error, fmt, future::ready, io, num::NonZeroUsize, pin::pin};
 
+use rama_utils::macros::nonzero;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
 use super::{PeekEgressPredicate, PeekStopReason, PeekVerdict};
 use crate::{
     bytes::{BufMut, Bytes},
+    futures::maybe,
     graceful::{Cause, WeakScope},
 };
 
 /// Default maximum number of egress bytes a peek inspects.
-pub const DEFAULT_EGRESS_PEEK_MAX_SIZE: usize = 64;
+pub const DEFAULT_EGRESS_PEEK_MAX_SIZE: NonZeroUsize = nonzero!(64);
 
 /// Bytes reserved per egress read, so a large egress limit is not allocated up front.
 const EGRESS_READ_CHUNK: usize = 64;
@@ -215,12 +217,6 @@ pub struct PeekCutoffError {
 }
 
 impl PeekCutoffError {
-    /// A peek failed by `cutoff`, for a peeker that waits without a [`PeekWaiter`].
-    #[must_use]
-    pub const fn new(cutoff: PeekCutoff, cause: Option<Cause>) -> Self {
-        Self { cutoff, cause }
-    }
-
     /// The cutoff that failed the peek.
     #[must_use]
     pub const fn cutoff(&self) -> PeekCutoff {
@@ -272,6 +268,16 @@ pub enum PeekRead {
     Error(io::Error),
     /// A [`PeekCutoff`] stopped the peek, see [`PeekWaiter::check`].
     Cutoff(PeekCutoff),
+}
+
+impl PeekRead {
+    fn from_wait(read: Result<io::Result<usize>, PeekCutoff>) -> Self {
+        match read {
+            Ok(Ok(n)) => Self::Read(n),
+            Ok(Err(err)) => Self::Error(err),
+            Err(cutoff) => Self::Cutoff(cutoff),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -413,21 +419,18 @@ impl<'a> PeekWaiter<'a> {
         }
     }
 
-    /// The egress bytes read so far, to be replayed to the service that follows.
-    #[must_use]
-    pub fn egress_prefix(&self) -> &[u8] {
-        self.egress
-            .as_ref()
-            .map(|egress| egress.buffer.as_slice())
-            .unwrap_or_default()
-    }
-
-    /// Take the egress bytes read so far, ending the borrow of the egress.
-    #[must_use]
-    pub fn into_egress_prefix(self) -> Bytes {
-        self.egress
+    /// End the peek: the error of a cutoff for which the policy selected
+    /// [`PeekAction::Fail`], see [`Self::check`], or else the egress bytes
+    /// read, to be replayed to the service that follows.
+    pub fn finish<E>(self) -> Result<Bytes, E>
+    where
+        E: From<PeekCutoffError>,
+    {
+        self.check()?;
+        Ok(self
+            .egress
             .map(|egress| Bytes::from(egress.buffer))
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
     /// Read into `buf` unless a cutoff stops the peek first.
@@ -437,28 +440,33 @@ impl<'a> PeekWaiter<'a> {
     where
         R: AsyncRead + Unpin + ?Sized,
     {
-        self.wait_for_read(reader.read(buf), peeked).await
+        PeekRead::from_wait(self.wait_for(reader.read(buf), peeked).await)
     }
 
-    pub(super) async fn read_buf<R, B>(
-        &mut self,
-        reader: &mut R,
-        buf: &mut B,
-        peeked: usize,
-    ) -> PeekRead
+    /// Read into the spare capacity of `buf` unless a cutoff stops the peek first.
+    ///
+    /// `peeked` is the number of ingress bytes this peek holds so far.
+    pub async fn read_buf<R, B>(&mut self, reader: &mut R, buf: &mut B, peeked: usize) -> PeekRead
     where
         R: AsyncRead + Unpin + ?Sized,
         B: BufMut + ?Sized,
     {
-        self.wait_for_read(reader.read_buf(buf), peeked).await
+        PeekRead::from_wait(self.wait_for(reader.read_buf(buf), peeked).await)
     }
 
-    async fn wait_for_read(
-        &mut self,
-        read: impl Future<Output = io::Result<usize>>,
-        peeked: usize,
-    ) -> PeekRead {
-        let mut read = pin!(read);
+    /// Await `input` unless a cutoff stops the peek first, for peekers whose
+    /// input is not an [`AsyncRead`].
+    ///
+    /// `input` wins over a cutoff that is ready at the same time, and the
+    /// egress is read while `input` is pending. `peeked` is the progress of
+    /// the peek so far, `0` meaning idle: a cutoff for which the policy selects
+    /// [`PeekAction::Wait`] is ignored until that progress changes. After a
+    /// cutoff, [`Self::check`] returns the error if the policy fails the peek.
+    pub async fn wait_for<F>(&mut self, input: F, peeked: usize) -> Result<F::Output, PeekCutoff>
+    where
+        F: Future,
+    {
+        let mut input = pin!(input);
         let progress = PeekProgress::from_peeked(peeked);
         loop {
             let Self {
@@ -492,16 +500,11 @@ impl<'a> PeekWaiter<'a> {
 
             let cutoff = tokio::select! {
                 biased;
-                result = &mut read => {
-                    return match result {
-                        Ok(n) => PeekRead::Read(n),
-                        Err(err) => PeekRead::Error(err),
-                    };
-                }
-                () = aborted(scope) => PeekCutoff::Aborted,
-                cutoff = ready_cutoff(egress_cutoff) => cutoff,
-                () = cancelled(cancel_scope) => PeekCutoff::Cancelled,
-                cutoff = egress_step(egress_reading) => match cutoff {
+                output = &mut input => return Ok(output),
+                () = maybe(scope.map(WeakScope::aborted)) => PeekCutoff::Aborted,
+                cutoff = maybe(egress_cutoff.map(ready)) => cutoff,
+                () = maybe(cancel_scope.map(WeakScope::cancelled)) => PeekCutoff::Cancelled,
+                cutoff = maybe(egress_reading.map(PeekEgress::step)) => match cutoff {
                     Some(cutoff) => cutoff,
                     None => continue,
                 },
@@ -518,10 +521,10 @@ impl<'a> PeekWaiter<'a> {
                     };
                     *waived = Some(progress);
                 }
-                PeekAction::Fallback => return PeekRead::Cutoff(cutoff),
+                PeekAction::Fallback => return Err(cutoff),
                 PeekAction::Fail => {
                     self.failed = Some(cutoff);
-                    return PeekRead::Cutoff(cutoff);
+                    return Err(cutoff);
                 }
             }
         }
@@ -541,33 +544,5 @@ impl<'a> PeekWaiter<'a> {
             PeekCutoff::EgressMismatch | PeekCutoff::EgressClosed => None,
         });
         Err(PeekCutoffError { cutoff, cause }.into())
-    }
-}
-
-async fn ready_cutoff(cutoff: Option<PeekCutoff>) -> PeekCutoff {
-    match cutoff {
-        Some(cutoff) => cutoff,
-        None => pending().await,
-    }
-}
-
-async fn aborted(scope: Option<&WeakScope>) {
-    match scope {
-        Some(scope) => scope.aborted().await,
-        None => pending().await,
-    }
-}
-
-async fn cancelled(scope: Option<&WeakScope>) {
-    match scope {
-        Some(scope) => scope.cancelled().await,
-        None => pending().await,
-    }
-}
-
-async fn egress_step(egress: Option<&mut PeekEgress<'_>>) -> Option<PeekCutoff> {
-    match egress {
-        Some(egress) => egress.step().await,
-        None => pending().await,
     }
 }

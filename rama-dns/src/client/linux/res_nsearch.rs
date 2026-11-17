@@ -11,7 +11,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::address::Domain;
-use rama_utils::octets::kib;
+use rama_utils::{octets::kib, time::deadline_after as instant_deadline_after};
 
 use libc::c_int;
 use tokio::sync::mpsc;
@@ -232,7 +232,7 @@ fn lookup_record_packet(
     timeout: Duration,
 ) -> Result<Option<Vec<u8>>, BoxError> {
     let max_response_size = response_buffer_limit(response_buffer_size)?;
-    let deadline = Instant::now() + budget;
+    let deadline = instant_deadline_after(Instant::now(), budget);
     let mut state = ffi::ResState::new()?;
     #[cfg(test)]
     stub_tests::use_stub(&mut state, domain.as_str());

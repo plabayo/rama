@@ -46,6 +46,10 @@ pin_project_lite::pin_project! {
 
 /// A configuration builder for HTTP/1 server connections.
 ///
+/// Adds no `Server` or `Date` response fields: use
+/// `rama_http::layer::required_header::AddRequiredResponseHeadersLayer` or your own layer.
+/// Core relays responses as-is; header policy lives in layers.
+///
 /// **Note**: The default values of options are *not considered stable*. They
 /// are subject to change at any time.
 ///
@@ -81,7 +85,6 @@ pub struct Builder {
     h1_writev: Option<bool>,
     max_buf_size: Option<usize>,
     pipeline_flush: bool,
-    date_header: bool,
     strict_connect_framing: bool,
 }
 
@@ -288,7 +291,6 @@ impl Builder {
             h1_writev: None,
             max_buf_size: None,
             pipeline_flush: false,
-            date_header: true,
             strict_connect_framing: false,
         }
     }
@@ -378,11 +380,9 @@ impl Builder {
         /// If server receives more headers than the buffer size, it responds to the client with
         /// "431 Request Header Fields Too Large".
         ///
-        /// Note that headers is allocated on the stack by default, which has higher performance. After
-        /// setting this value, headers will be allocated in heap memory, that is, heap memory
-        /// allocation will occur for each request, and there will be a performance drop of about 5%.
+        /// Up to 100 headers are parsed on the stack; a head with more takes heap memory.
         ///
-        /// Default is `100`.
+        /// Default is `4096`.
         pub fn max_headers(mut self, val: Option<usize>) -> Self {
             self.h1_max_headers = val;
             self
@@ -397,8 +397,7 @@ impl Builder {
         ///
         /// This also bounds the size of chunked trailers.
         ///
-        /// Default is `None`: the head is only bounded by the maximum buffer size,
-        /// and trailers by 16 KiB.
+        /// Default is `None`: a head of 1 MiB, and trailers of 16 KiB.
         pub fn max_header_size(mut self, val: Option<usize>) -> Self {
             self.h1_max_header_size = val;
             self
@@ -479,9 +478,10 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the maximum buffer size for the connection.
+        /// Set the maximum buffer size for the connection, also bounding a head being read.
         ///
-        /// Default is ~400kb.
+        /// Default is ~400kb, and ~1 MiB while a head arrives, so that the max header size
+        /// is what refuses one.
         ///
         /// # Error
         ///
@@ -492,18 +492,6 @@ impl Builder {
             }
             self.max_buf_size = max;
             Ok(self)
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set whether the `date` header should be included in HTTP responses.
-        ///
-        /// Note that including the `date` header is recommended by RFC 7231.
-        ///
-        /// Default is `true`.
-        pub fn auto_date_header(mut self, enabled: bool) -> Self {
-            self.date_header = enabled;
-            self
         }
     }
 
@@ -590,9 +578,6 @@ impl Builder {
         conn.set_flush_pipeline(self.pipeline_flush);
         if let Some(max) = self.max_buf_size {
             conn.set_max_buf_size(max);
-        }
-        if !self.date_header {
-            conn.disable_date_header();
         }
         if self.strict_connect_framing {
             conn.set_strict_connect_framing();
@@ -695,6 +680,10 @@ where
 #[cfg(test)]
 mod tests {
     use crate::service::VoidHttpService;
+    use rama_core::{ServiceInput, service::service_fn};
+    use rama_http_types::body::util::BodyExt as _;
+    use rama_utils::octets::kib;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpStream;
 
     use super::*;
@@ -708,10 +697,6 @@ mod tests {
 
     #[test]
     fn large_keep_alive_uploads_work_without_a_time_driver() {
-        use rama_core::{ServiceInput, service::service_fn};
-        use rama_http_types::body::util::BodyExt as _;
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -758,6 +743,79 @@ mod tests {
                 drop(client);
                 server.await.unwrap();
             });
+    }
+
+    #[test]
+    fn continue_after_a_queued_pipelined_response_body_keeps_it_intact() {
+        const BIG: usize = kib(64);
+
+        for pipeline_flush in [false, true] {
+            for expect in [false, true] {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let (mut client, server_io) = tokio::io::duplex(4096);
+                        let server = tokio::spawn(async move {
+                            Builder::new()
+                                .with_pipeline_flush(pipeline_flush)
+                                .serve_connection(
+                                    ServiceInput::new(server_io),
+                                    service_fn(|request: Request<IncomingBody>| async move {
+                                        if request.method() == rama_http::Method::GET {
+                                            return Ok::<_, Infallible>(Response::new(Body::from(
+                                                vec![b'r'; BIG],
+                                            )));
+                                        }
+                                        let body = request.into_body().collect().await.unwrap();
+                                        assert_eq!(body.to_bytes(), "abc");
+                                        Ok(Response::new(Body::from("ok")))
+                                    }),
+                                )
+                                .await
+                                .unwrap();
+                        });
+                        let extra = if expect {
+                            "expect: 100-continue\r\n"
+                        } else {
+                            ""
+                        };
+                        client
+                            .write_all(
+                                format!(
+                                    "GET /big HTTP/1.1\r\nhost: test\r\n\r\n\
+                                     POST /up HTTP/1.1\r\nhost: test\r\ncontent-length: 3\r\n\
+                                     {extra}connection: close\r\n\r\nabc"
+                                )
+                                .as_bytes(),
+                            )
+                            .await
+                            .unwrap();
+                        let mut wire = Vec::new();
+                        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut wire))
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        server.await.unwrap();
+
+                        let head_end = wire.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+                        assert!(wire.starts_with(b"HTTP/1.1 200 OK\r\n"));
+                        let (body, mut rest) = wire[head_end..].split_at(BIG);
+                        assert!(body.iter().all(|b| *b == b'r'), "first body was corrupted");
+                        if expect {
+                            rest = rest
+                                .strip_prefix(b"HTTP/1.1 100 Continue\r\n\r\n".as_slice())
+                                .unwrap();
+                        }
+                        assert!(
+                            rest.starts_with(b"HTTP/1.1 200 OK\r\n") && rest.ends_with(b"ok"),
+                            "{}",
+                            String::from_utf8_lossy(rest)
+                        );
+                    });
+            }
+        }
     }
 }
 

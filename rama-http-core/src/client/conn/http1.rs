@@ -490,11 +490,9 @@ impl Builder {
         /// If client receives more headers than the buffer size, the error "message header too large"
         /// is returned.
         ///
-        /// Note that headers is allocated on the stack by default, which has higher performance. After
-        /// setting this value, headers will be allocated in heap memory, that is, heap memory
-        /// allocation will occur for each response, and there will be a performance drop of about 5%.
+        /// Up to 100 headers are parsed on the stack; a head with more takes heap memory.
         ///
-        /// Default is 100.
+        /// Default is 4096.
         pub fn max_headers(mut self, val: usize) -> Self {
             self.h1_max_headers = Some(val);
             self
@@ -509,8 +507,7 @@ impl Builder {
         ///
         /// This also bounds the size of chunked trailers.
         ///
-        /// Default is `None`: the head is only bounded by the maximum buffer size,
-        /// and trailers by 16 KiB.
+        /// Default is `None`: a head of 1 MiB, and trailers of 16 KiB.
         pub fn max_header_size(mut self, val: Option<usize>) -> Self {
             self.h1_max_header_size = val;
             self
@@ -544,9 +541,10 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the maximum buffer size for the connection.
+        /// Set the maximum buffer size for the connection, also bounding a head being read.
         ///
-        /// Default is ~400kb.
+        /// Default is ~400kb, and ~1 MiB while a head arrives, so that the max header size
+        /// is what refuses one.
         ///
         /// Note that setting this option unsets the `read_exact_buf_size` option.
         ///

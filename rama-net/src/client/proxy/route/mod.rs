@@ -128,7 +128,7 @@ impl From<ProxyAddress> for ProxyRoute {
 /// Custom connectors must follow the same contract. Request metadata must never
 /// be used to infer an established proxy connection.
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
-#[extension(tags(net, proxy))]
+#[extension(tags(net, proxy), scope(connection))]
 #[non_exhaustive]
 pub enum EstablishedProxyRoute {
     /// A route was requested, but the connection was established without a proxy.
@@ -301,6 +301,7 @@ impl<'a> IntoIterator for &'a ProxyRoutes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::extensions::NoConnectionTransfer;
 
     #[derive(Debug)]
     struct IntoProxyAddress(ProxyAddress);
@@ -374,6 +375,19 @@ mod tests {
             );
             assert!(!EstablishedProxyRoute::Tunnel(proxy).is_http_forward());
         }
+    }
+
+    #[test]
+    fn a_nested_connection_states_its_own_route() {
+        let proxy_leg = Extensions::new();
+        proxy_leg.insert(EstablishedProxyRoute::Forward(proxy_address("selected")));
+
+        let tunnel = proxy_leg.fork_nested_connection(&NoConnectionTransfer);
+        assert_eq!(tunnel.get_ref::<EstablishedProxyRoute>(), None);
+
+        let route = EstablishedProxyRoute::Tunnel(proxy_address("selected"));
+        tunnel.insert(route.clone());
+        assert_eq!(tunnel.get_ref::<EstablishedProxyRoute>(), Some(&route));
     }
 
     #[test]

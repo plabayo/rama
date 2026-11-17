@@ -49,7 +49,6 @@ use rama_core::error::BoxError;
 use rama_core::extensions::Extension;
 use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsRef;
-use rama_core::io::AbortIo;
 use rama_core::io::Io;
 use rama_core::io::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
@@ -87,9 +86,10 @@ impl fmt::Debug for OpaqueGuard {
 ///
 /// Custom carriers publish it on their I/O's extensions. The callback must abort at once,
 /// without waiting for a later write or drop, and both directions must fail afterwards.
-/// Share it through [`Extensions::get_arc`].
+/// Share it through [`Extensions::get_arc`]. It is connection scoped, so a connection
+/// nested inside the tunnel never aborts the tunnel's own stream through it.
 #[derive(Extension)]
-#[extension(tags(http))]
+#[extension(tags(http), scope(connection))]
 pub struct OnMalformedMessage(Box<dyn Fn() + Send + Sync>);
 
 impl OnMalformedMessage {
@@ -228,10 +228,6 @@ impl Upgraded {
         extensions.insert(StreamTransformed {
             by: "rama-http::Upgraded",
         });
-        // The upgraded stream aborts as the io it wraps; a fork hides the io's own store.
-        if let Some(abort) = io.extensions().self_get_arc::<AbortIo>() {
-            extensions.insert_arc(abort);
-        }
         Self {
             extensions,
             io: Rewind::new_buffered(Box::new(io), read_buf),

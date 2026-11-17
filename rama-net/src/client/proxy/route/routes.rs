@@ -10,7 +10,10 @@ use rama_core::{
     extensions::{ExtensionsRef, FromExtensions},
     telemetry::tracing,
 };
-use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+use rama_utils::{
+    macros::{define_inner_service_accessors, generate_set_and_with},
+    time::deadline_after,
+};
 use tokio::time::Instant;
 
 use super::{ProxyRoute, ProxyRouteIndex, ProxyRoutes};
@@ -434,7 +437,9 @@ impl<S> ProxyRoutesConnector<S> {
         S: ConnectorService<Input>,
         Input: Fork + ExtensionsRef + Send + 'static,
     {
-        let deadline = self.timeout.map(|timeout| Instant::now() + timeout);
+        let deadline = self
+            .timeout
+            .map(|timeout| deadline_after(Instant::now(), timeout));
         self.connect_routes(input, routes, route_contexts, deadline)
             .await
     }
@@ -595,6 +600,22 @@ mod tests {
             assert!(established.input.extensions.contains::<AttemptMarker>());
             assert!(!original_extensions.contains::<AttemptMarker>());
         }
+    }
+
+    #[tokio::test]
+    async fn an_unrepresentable_overall_timeout_still_connects() {
+        let inner = service_fn(|input: ConnectRequest| async move {
+            Ok::<_, Infallible>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        });
+        let connector = ProxyRoutesConnector::new(inner).with_timeout(Duration::MAX);
+        let input = ConnectRequest::new(HostWithPort::example_domain_http());
+        input
+            .extensions
+            .insert(ProxyRoutes::new([proxy("a"), proxy("b")]));
+        connector.serve(input).await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]

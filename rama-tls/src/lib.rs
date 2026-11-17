@@ -192,9 +192,12 @@ mod tunnel_tests {
 }
 
 #[derive(Debug, Clone, Default, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 /// Metadata that can be added to the [`Extensions`]
 /// of a transport layer to signal that the transport is secure.
+///
+/// It is a fact about one connection: a connection nested on top of it, such
+/// as a tunnel accepted by a proxy, is not secured by it.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct SecureTransport {

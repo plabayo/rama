@@ -1,4 +1,4 @@
-use rama_http_types::HeaderName;
+use rama_http_types::{HeaderName, header::MaxSizeReached};
 
 pub(crate) use self::as_encoding_agnostic_metadata_key::AsEncodingAgnosticMetadataKey;
 pub(crate) use self::as_metadata_key::AsMetadataKey;
@@ -574,9 +574,37 @@ impl MetadataMap {
         key.remove(self)
     }
 
-    pub(crate) fn merge(&mut self, other: Self) {
-        self.headers.extend(other.headers);
+    /// Merge `other` into `self`, with `other` entries replacing same-named ones.
+    ///
+    /// Fails, leaving `self` partially merged, when the merged map would exceed
+    /// the maximum number of distinct names a [`rama_http_types::HeaderMap`] holds.
+    pub(crate) fn try_merge(&mut self, other: Self) -> Result<(), MaxSizeReached> {
+        try_extend_replacing(&mut self.headers, other.headers)
     }
+}
+
+/// Move `source` into `target`, with `source` values replacing same-named ones.
+///
+/// Fails instead of panicking once `target` would exceed the header map size limit.
+pub(crate) fn try_extend_replacing(
+    target: &mut rama_http_types::HeaderMap,
+    source: rama_http_types::HeaderMap,
+) -> Result<(), MaxSizeReached> {
+    let mut last_name: Option<HeaderName> = None;
+    for (name, value) in source {
+        match name {
+            Some(name) => {
+                target.try_insert(name.clone(), value)?;
+                last_name = Some(name);
+            }
+            None => {
+                if let Some(name) = last_name.as_ref() {
+                    target.try_append(name, value)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // ===== impl Iter =====
@@ -1557,6 +1585,40 @@ mod as_encoding_agnostic_metadata_key {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn distinct_names(prefix: &str, count: usize) -> MetadataMap {
+        let mut headers = rama_http_types::HeaderMap::new();
+        for i in 0..count {
+            let name = HeaderName::try_from(format!("{prefix}-{i}")).unwrap();
+            headers
+                .try_append(name, rama_http_types::HeaderValue::from_static("v"))
+                .unwrap();
+        }
+        MetadataMap::from_headers(headers)
+    }
+
+    #[test]
+    fn merge_past_header_map_limit_is_an_error() {
+        let mut parts = distinct_names("x-head", 1);
+        let trailers = distinct_names("x-trailer", 24_576);
+        parts.try_merge(trailers).unwrap_err();
+    }
+
+    #[test]
+    fn merge_replaces_same_named_values_and_keeps_others() {
+        let mut parts = MetadataMap::new();
+        parts.insert("x-a", "1".parse().unwrap());
+        parts.append("x-b", "1".parse().unwrap());
+        let mut trailers = MetadataMap::new();
+        trailers.insert("x-b", "2".parse().unwrap());
+        trailers.append("x-b", "3".parse().unwrap());
+        trailers.insert("x-c", "4".parse().unwrap());
+        parts.try_merge(trailers).unwrap();
+        assert_eq!(parts.get("x-a").unwrap(), "1");
+        let b: Vec<_> = parts.get_all("x-b").iter().collect();
+        assert_eq!(b, ["2", "3"]);
+        assert_eq!(parts.get("x-c").unwrap(), "4");
+    }
 
     #[test]
     fn test_from_headers_takes_http_headers() {

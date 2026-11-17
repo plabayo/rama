@@ -1,6 +1,5 @@
 use std::time::SystemTime;
 
-use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
 
 use crate::util::HttpDate;
@@ -53,12 +52,7 @@ impl crate::HeaderDecode for Expires {
 
 impl crate::HeaderEncode for Expires {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        match HeaderValue::try_from(&self.0) {
-            Ok(value) => values.extend(::std::iter::once(value)),
-            Err(err) => {
-                tracing::debug!("failed to encode expires value as header: {err}");
-            }
-        }
+        values.extend(::std::iter::once(HeaderValue::from(&self.0)));
     }
 }
 

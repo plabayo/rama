@@ -13,8 +13,12 @@ use rama_core::{
     service::service_fn,
 };
 use rama_http::{
-    HeaderName, Method, Request, Version,
-    conn::{H2ClientContextParams, TargetHttpVersion},
+    Body, HeaderName, Method, Request, Response, Version,
+    conn::{
+        EstablishedHttpService, H2ClientContextParams, HttpOrigin, HttpServiceCandidate,
+        HttpServiceSource, TargetHttpVersion,
+    },
+    layer::alt_svc::{AltSvc, SendAltUsed},
     proto::h3::{ClientSettingsProfile, SettingId, Settings},
 };
 use rama_net::{
@@ -41,7 +45,10 @@ use crate::{
         },
         capture::{
             completeness::ProfileCaptureCompleteness,
-            headers::{HeaderCapture, HeaderCapturePolicy, HeaderOccurrence, HeaderValueSource},
+            headers::{
+                HeaderCapture, HeaderCapturePolicy, HeaderOccurrence, HeaderValueSource,
+                RequestBinding,
+            },
             http2::{H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting},
             joint::{
                 CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
@@ -259,12 +266,16 @@ fn database_with(clients: &[&str], request: impl Fn() -> CanonicalValue) -> Arc<
 }
 
 fn emulation_context() -> EmulationContext {
+    emulation_context_from(&database())
+}
+
+fn emulation_context_from(database: &UserAgentDatabase) -> EmulationContext {
     let required = CapabilitySet {
         h2: true,
         tls_tcp: true,
         ..CapabilitySet::default()
     };
-    let selected = database()
+    let selected = database
         .select(
             &SelectionRequest {
                 client: ProfileSelector {
@@ -1178,4 +1189,109 @@ async fn request_variant_pins_override_only_the_current_selection() {
     request.extensions().insert(requested);
     assert_eq!(service.serve(request).await.unwrap(), requested);
     assert_eq!(service.serve(h2_request()).await.unwrap(), configured);
+}
+
+/// Echoes the dispatched request head into the response.
+#[derive(ExtensionsRef)]
+struct HeadEchoSink {
+    extensions: Extensions,
+}
+
+impl rama_core::Service<Request<()>> for HeadEchoSink {
+    type Output = Response;
+    type Error = Infallible;
+
+    async fn serve(&self, req: Request<()>) -> Result<Self::Output, Self::Error> {
+        let mut response = Response::new(Body::empty());
+        if req.extensions().contains::<SendAltUsed>() {
+            response.extensions().insert(SendAltUsed::new());
+        }
+        *response.headers_mut() = req.headers().clone();
+        Ok(response)
+    }
+}
+
+#[tokio::test]
+async fn captured_alt_used_is_filled_by_the_alt_svc_layer_at_its_captured_position() {
+    let alt_used = || HeaderOccurrence {
+        name: HeaderName::from_static("alt-used"),
+        occurrence: 0,
+        sensitive: false,
+        representation: None,
+        value: HeaderValueSource::Request(RequestBinding::Authority),
+    };
+    for captured in [true, false] {
+        let database = database_with(&["test-browser"], move || {
+            let mut fields = vec![profile_header("user-agent", "captured-browser")];
+            if captured {
+                fields.push(alt_used());
+            }
+            fields.push(profile_header("accept", "*/*"));
+            request_variant(fields)
+        });
+        let context = emulation_context_from(&database);
+        let connection = context
+            .selected
+            .connection(
+                &ConnectionContext::default(),
+                context.seed,
+                context.connection_key,
+            )
+            .unwrap();
+        let sink = HeadEchoSink {
+            extensions: Extensions::new(),
+        };
+        sink.extensions().insert(connection);
+        sink.extensions().insert(TargetHttpVersion(Version::HTTP_2));
+        sink.extensions().insert(EstablishedHttpService::new(
+            HttpOrigin::new(Protocol::HTTPS, "example.com:443".parse().unwrap()).unwrap(),
+            HttpServiceCandidate::new(
+                ApplicationProtocol::HTTP_2,
+                "alternative.example:8443".parse().unwrap(),
+            )
+            .with_source(HttpServiceSource::AltSvc),
+        ));
+        let request = h2_request();
+        context.publish(request.extensions());
+
+        let response = ProfileEmulateHttpRequestModifier::new(AltSvc::passthrough(sink))
+            .serve(request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.extensions().contains::<SendAltUsed>(), captured);
+        let headers: Vec<(String, String)> = response
+            .headers()
+            .ordered_iter()
+            .map(|(name, value)| (name.as_str().to_owned(), value.to_str().unwrap().to_owned()))
+            .collect();
+        let expected: Vec<(String, String)> = if captured {
+            vec![
+                ("user-agent".into(), "captured-browser".into()),
+                ("alt-used".into(), "alternative.example:8443".into()),
+                ("accept".into(), "*/*".into()),
+            ]
+        } else {
+            vec![
+                ("user-agent".into(), "captured-browser".into()),
+                ("accept".into(), "*/*".into()),
+            ]
+        };
+        assert_eq!(headers, expected, "captured alt-used {captured}");
+    }
+}
+
+#[test]
+fn ordering_more_repeated_values_than_a_map_has_room_for_names_does_not_panic() {
+    let repeated = 30_000;
+    let mut headers = HeaderMap::new();
+    headers.append("x-first", HeaderValue::from_static("1"));
+    for _ in 0..repeated {
+        headers.append("x-repeated", HeaderValue::from_static("1"));
+    }
+    let order = InputHeaderOrder(Box::new([HeaderName::from_static("x-repeated")]));
+    let ordered = ordered_headers(&headers, Some(&order));
+    assert_eq!(ordered.get_all("x-repeated").iter().count(), repeated);
+    let first = ordered.into_ordered_iter().next().unwrap().0;
+    assert_eq!(first, "x-repeated");
 }

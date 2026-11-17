@@ -34,6 +34,8 @@ More client examples:
   a blocking HTTPS client that creates and owns its runtime thread;
 - [/examples/src/http_pooled_client.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_pooled_client.rs):
   an example demonstrating how to create a pooled HTTP client that can be used to make concurrent requests to the same host;
+- [/examples/src/http_proxy_db_exclude_broken.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_proxy_db_exclude_broken.rs):
+  a client that selects its proxy from an in-memory proxy database and stops selecting a proxy once a connection through it fails;
 
 ## Alternative services and custom connectors
 

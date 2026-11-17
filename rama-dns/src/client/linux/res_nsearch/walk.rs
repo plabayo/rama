@@ -18,6 +18,7 @@ use libc::c_int;
 use parking_lot::Mutex;
 use rama_core::error::BoxError;
 use rama_net::address::Domain;
+use rama_utils::time::deadline_after;
 
 use super::{
     DNS_HEADER_SIZE, INITIAL_RESPONSE_BUFFER_SIZE, LinuxDnsResolverError, MAX_NAMESERVERS,
@@ -429,7 +430,7 @@ pub(super) fn ask(
     max_response_size: usize,
     budget: Duration,
 ) -> Asked {
-    let deadline = Instant::now() + budget;
+    let deadline = deadline_after(Instant::now(), budget);
     if tries.tcp {
         return ask_over_tcp(
             state,
@@ -581,7 +582,7 @@ fn ask_over_tcp(
         let outcome = match exchange(
             server,
             &query.wire,
-            Instant::now() + left / remaining,
+            deadline_after(Instant::now(), left / remaining),
             max_response_size,
         ) {
             Ok(response) => query.outcome(response),

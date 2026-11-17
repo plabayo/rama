@@ -16,7 +16,8 @@ use super::{
 };
 use crate::{
     proto::{
-        DEFAULT_MAX_INFORMATIONAL_RESPONSES, DEFAULT_REFUSED_STREAM_BUDGET,
+        DEFAULT_MAX_HEADER_LIST_SIZE, DEFAULT_MAX_INFORMATIONAL_RESPONSES,
+        DEFAULT_REFUSED_STREAM_BUDGET,
         rate_budget::{RateBudget, RefusedStreams},
     },
     server::conn::{HeaderReadTimeout, IdleTimeout},
@@ -208,7 +209,8 @@ impl Default for Config {
             close_drain_timeout: std::time::Duration::from_secs(5),
             goaway_drain_timeout: Some(std::time::Duration::from_secs(1)),
             max_pushes: 0,
-            max_frame_size: kib(64),
+            // A field section of the default size limit fits, literals as sent.
+            max_frame_size: DEFAULT_MAX_HEADER_LIST_SIZE,
             read_chunk_size: kib(16),
             max_pending_uni_streams: 32,
             max_informational_responses: DEFAULT_MAX_INFORMATIONAL_RESPONSES,
@@ -242,7 +244,7 @@ impl Config {
         max_field_section_size: mib(1),
     };
 
-    /// Raise the QPACK decoder limits to what browsers advertise, so captured browser
+    /// Set the QPACK decoder limits to what browsers advertise, so captured browser
     /// SETTINGS fit: a 64 KiB dynamic table, 100 blocked streams and 256 KiB field sections.
     #[must_use]
     pub fn with_browser_qpack_decoder_limits(mut self) -> Self {

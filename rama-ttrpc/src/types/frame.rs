@@ -2,7 +2,7 @@ use std::fmt::Debug;
 use std::io::Result as IoResult;
 
 use prost::bytes::{Buf, BufMut, Bytes, BytesMut};
-use rama_utils::octets::mib;
+use rama_utils::octets::{kib, mib};
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
 use crate::types::encoding::{BufExt as _, DecodeError, Decodeable, Encodeable, InvalidInput};
@@ -14,7 +14,7 @@ use crate::types::protos::{Response, Status};
 const MAX_DATA_LENGTH: usize = mib(4);
 pub(crate) const HEADER_LENGTH: usize = 10;
 /// The first read allowance of a frame's data, doubled as more of it arrives.
-const READ_CHUNK: usize = 8 * 1024;
+const READ_CHUNK: usize = kib(8);
 
 #[derive(Clone, Debug)]
 pub struct Frame<Msg = FallibleBytesMessage> {

@@ -16,9 +16,9 @@ use rama_net::{
 use rama_utils::macros::define_inner_service_accessors;
 
 mod recovery;
-pub use recovery::DatagramForwardRecovery;
+pub use recovery::{DatagramForwardRecovery, DatagramReplacementConnector};
 
-use crate::{DatagramSocket, UdpPacketSocket, UdpSocketConfig, bind_udp_socket_with_connect};
+use crate::{DatagramSocket, UdpPacketSocket, UdpSocketConfig, socket::udp_connect_target};
 
 /// Connects a [`UdpPacketSocket`] to the request's IP target, configured by its
 /// [`UdpSocketConfig`]: its [`ConnectorTarget`] when set, else its authority. Resolving a
@@ -52,8 +52,13 @@ impl Service<ConnectRequest> for UdpConnector {
         let target = request
             .connector_target()
             .unwrap_or_else(|| request.authority.clone());
-        let socket = bind_udp_socket_with_connect(target, Some(&request.extensions)).await?;
-        let conn = self.config.wrap_tokio(socket)?;
+        let peer = udp_connect_target(target, Some(&request.extensions))?;
+        let conn = self
+            .config
+            .connect(peer)
+            .context("udp connector socket")
+            .context_field("peer", peer)?;
+        tracing::trace!("udp connector connected to IP address: {peer}");
         Ok(EstablishedClientConnection {
             input: request,
             conn,
@@ -209,18 +214,29 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let request = self.connect_request(input.ingress())?;
-        let target = request.authority.clone();
-        let EstablishedClientConnection { conn: egress, .. } = self
-            .connector
-            .connect(request)
-            .await
-            .context("connect datagram egress")
-            .context_field("target", target)?;
+        let egress = connect_egress(&self.connector, request).await?;
         self.inner
             .serve(input.bridge(egress))
             .await
             .into_box_error()
     }
+}
+
+/// Connect the egress of an association, naming its target on failure.
+async fn connect_egress<C>(
+    connector: &C,
+    request: ConnectRequest,
+) -> Result<C::Connection, BoxError>
+where
+    C: ConnectorService<ConnectRequest>,
+{
+    let target = request.authority.clone();
+    let EstablishedClientConnection { conn, .. } = connector
+        .connect(request)
+        .await
+        .context("connect datagram egress")
+        .context_field("target", target)?;
+    Ok(conn)
 }
 
 impl<S, C> DatagramToProxyBridge<S, C> {

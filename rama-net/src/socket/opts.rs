@@ -1,5 +1,17 @@
 //! Options and types in function of creating [`Socket`]s.
 
+#[cfg(any(
+    target_os = "ios",
+    target_os = "visionos",
+    target_os = "macos",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "illumos",
+    target_os = "solaris",
+    target_os = "linux",
+    target_os = "android",
+))]
+use core::num::NonZeroU32;
 #[cfg(target_os = "windows")]
 use std::os::windows::io::AsRawSocket as _;
 use std::{
@@ -443,6 +455,41 @@ pub struct SocketOptions {
     /// that particular interface are processed by the socket.
     /// Note that this only works for some socket types, particularly [`Domain::IPv4`] [`Socket`]s.
     pub device: Option<super::DeviceName>,
+
+    #[cfg(any(
+        target_os = "ios",
+        target_os = "visionos",
+        target_os = "macos",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "illumos",
+        target_os = "solaris",
+        target_os = "linux",
+        target_os = "android",
+    ))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(
+            target_os = "ios",
+            target_os = "visionos",
+            target_os = "macos",
+            target_os = "tvos",
+            target_os = "watchos",
+            target_os = "illumos",
+            target_os = "solaris",
+            target_os = "linux",
+            target_os = "android",
+        )))
+    )]
+    /// Bind the [`Socket`] to the network interface with this index.
+    ///
+    /// Only packets of that interface are processed by the [`Socket`],
+    /// and outgoing traffic leaves through it.
+    ///
+    /// Applied on Apple platforms (macOS, iOS, tvOS, watchOS, visionOS),
+    /// illumos and Solaris via `IP_BOUND_IF` / `IPV6_BOUND_IF`,
+    /// and on Linux and Android via `SO_BINDTOIFINDEX`.
+    pub interface_index: Option<NonZeroU32>,
 
     /// Set the value of the `SO_BROADCAST` option for this [`Socket`].
     ///
@@ -1394,6 +1441,22 @@ impl SocketOptions {
             }
         }
 
+        // Applied before the address bind so an interface-scoped address resolves on it.
+        #[cfg(any(
+            target_os = "ios",
+            target_os = "visionos",
+            target_os = "macos",
+            target_os = "tvos",
+            target_os = "watchos",
+            target_os = "illumos",
+            target_os = "solaris",
+            target_os = "linux",
+            target_os = "android",
+        ))]
+        if let Some(index) = self.interface_index {
+            bind_interface_index(&socket, domain, index)?;
+        }
+
         if let Some(addr) = self.address {
             let std_addr: SocketAddr = addr.into();
             let socket_addr: SockAddr = std_addr.into();
@@ -1406,6 +1469,28 @@ impl SocketOptions {
         }
 
         Ok(socket)
+    }
+}
+
+#[cfg(any(
+    target_os = "ios",
+    target_os = "visionos",
+    target_os = "macos",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "illumos",
+    target_os = "solaris",
+    target_os = "linux",
+    target_os = "android",
+))]
+fn bind_interface_index(socket: &Socket, domain: Domain, index: NonZeroU32) -> io::Result<()> {
+    match domain {
+        Domain::IPv4 => socket.bind_device_by_index_v4(Some(index)),
+        Domain::IPv6 => socket.bind_device_by_index_v6(Some(index)),
+        Domain::Unix => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "interface index binding requires an IP socket",
+        )),
     }
 }
 
@@ -1571,6 +1656,74 @@ mod tests {
         let built = options.try_build_socket(Domain::IPv4);
         REFUSE_ONLY_V6.set(false);
         assert!(built.is_ok(), "the option is never asked for on IPv4");
+    }
+
+    #[cfg(any(
+        target_os = "ios",
+        target_os = "visionos",
+        target_os = "macos",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "illumos",
+        target_os = "solaris",
+        target_os = "linux",
+        target_os = "android",
+    ))]
+    mod interface_index {
+        use std::net::{TcpListener, UdpSocket};
+
+        use super::*;
+        use crate::socket::{InterfaceFlags, interfaces};
+
+        fn loopback_interface_index() -> NonZeroU32 {
+            interfaces()
+                .unwrap()
+                .into_iter()
+                .find(|iface| iface.flags().contains(InterfaceFlags::LOOPBACK))
+                .and_then(|iface| iface.index())
+                .and_then(NonZeroU32::new)
+                .expect("the host has a loopback interface with an index")
+        }
+
+        /// A UDP socket bound to the loopback interface reports the binding and exchanges locally.
+        #[test]
+        fn binds_a_udp_socket_to_the_interface() {
+            let index = loopback_interface_index();
+            let mut options = udp_options(v4());
+            options.interface_index = Some(index);
+            let socket = options.try_build_socket(Domain::IPv4).unwrap();
+            assert_eq!(socket.device_index_v4().unwrap(), Some(index));
+
+            let peer = UdpSocket::bind(v4()).unwrap();
+            let socket: UdpSocket = socket.into();
+            socket.send_to(b"ping", peer.local_addr().unwrap()).unwrap();
+            let mut buf = [0u8; 4];
+            let (n, from) = peer.recv_from(&mut buf).unwrap();
+            assert_eq!(&buf[..n], b"ping");
+            assert_eq!(from, socket.local_addr().unwrap());
+
+            let mut options = udp_options(v6());
+            options.interface_index = Some(index);
+            let socket = options.try_build_socket(Domain::IPv6).unwrap();
+            assert_eq!(socket.device_index_v6().unwrap(), Some(index));
+        }
+
+        /// A TCP socket bound to the loopback interface reports the binding and connects locally.
+        #[test]
+        fn binds_a_tcp_socket_to_the_interface() {
+            let index = loopback_interface_index();
+            let listener = TcpListener::bind(v4()).unwrap();
+            let options = SocketOptions {
+                interface_index: Some(index),
+                ..SocketOptions::default_tcp()
+            };
+            let socket = options.try_build_socket(Domain::IPv4).unwrap();
+            assert_eq!(socket.device_index_v4().unwrap(), Some(index));
+            socket
+                .connect(&listener.local_addr().unwrap().into())
+                .unwrap();
+            listener.accept().unwrap();
+        }
     }
 
     /// `IPV6_HDRINCL` follows its own field, not the IPv4 `IP_HDRINCL` one.

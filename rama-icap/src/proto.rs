@@ -2,7 +2,9 @@
 
 use core::fmt;
 
-use crate::byte_sets::{is_field_value_byte, is_token_byte};
+use rama_utils::byte_set::is_http_token;
+
+use crate::byte_sets::is_field_value_byte;
 
 /// Standard ICAP header field names.
 pub mod header {
@@ -232,7 +234,7 @@ impl<'a> Method<'a> {
 
     /// Parse an ICAP method token.
     pub fn from_bytes(value: &'a [u8]) -> Result<Self, InvalidMethod> {
-        if !is_token(value) {
+        if !is_http_token(value) {
             return Err(InvalidMethod);
         }
 
@@ -340,7 +342,7 @@ pub struct ExtensionMethod<'a>(&'a str);
 impl<'a> ExtensionMethod<'a> {
     /// Construct an extension method token.
     pub fn new(value: &'a str) -> Result<Self, InvalidMethod> {
-        if !is_token(value.as_bytes()) || matches!(value, "REQMOD" | "RESPMOD" | "OPTIONS") {
+        if !is_http_token(value.as_bytes()) || matches!(value, "REQMOD" | "RESPMOD" | "OPTIONS") {
             return Err(InvalidMethod);
         }
         Ok(Self(value))
@@ -737,10 +739,6 @@ impl fmt::Display for InvalidEncapsulated {
 }
 
 impl core::error::Error for InvalidEncapsulated {}
-
-pub(crate) fn is_token(value: &[u8]) -> bool {
-    !value.is_empty() && value.iter().copied().all(is_token_byte)
-}
 
 #[cfg(test)]
 mod tests {

@@ -96,6 +96,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn header_maps_with_more_values_than_room_for_names_convert_both_ways() {
+        let repeated = 30_000;
+        let mut headers = http::HeaderMap::new();
+        for _ in 0..repeated {
+            headers.append("x-repeated", http::HeaderValue::from_static("1"));
+        }
+        let borrowed = (&headers).try_into_rama_http().unwrap();
+        assert_eq!(borrowed.get_all("x-repeated").iter().count(), repeated);
+        let owned = headers.try_into_rama_http().unwrap();
+        assert_eq!(owned.get_all("x-repeated").iter().count(), repeated);
+        let back = owned.try_into_hyperium_http().unwrap();
+        assert_eq!(back.get_all("x-repeated").iter().count(), repeated);
+    }
+
+    #[test]
     fn request_round_trip() {
         let hyper = http::Request::builder()
             .method("POST")

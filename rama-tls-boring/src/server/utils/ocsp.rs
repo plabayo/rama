@@ -21,7 +21,7 @@ use crate::core::{
     sign::Signer,
     x509::X509Ref,
 };
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_crypto::ocsp::{
     OcspCertId, OcspCertStatus, OcspSignatureAlgorithm, build_ocsp_response, parse_ocsp_request,
     sha1_hash_algorithm_der,
@@ -102,7 +102,7 @@ pub fn answer_ocsp_request(
     let req = info
         .certs
         .first()
-        .ok_or_else(|| BoxError::from("ocsp: request carried no CertID"))?;
+        .ok_or_else(|| BoxError::from_static_str("ocsp: request carried no CertID"))?;
 
     let issuer_name_der = issuer
         .subject_name()

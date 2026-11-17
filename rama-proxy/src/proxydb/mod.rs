@@ -545,27 +545,74 @@ mod memdb {
     use crate::proxydb::internal::ProxyDBErrorKind;
     use rama_net::transport::TransportProtocol;
     use rand::seq::{IteratorRandom as _, SliceRandom as _};
+    use std::sync::Arc;
+    use venndb::{Filter, RowSet, RuntimeColumn};
 
     /// A fast in-memory ProxyDatabase that is the default choice for Rama.
     ///
     /// Plural queries return a uniformly shuffled sample up to the requested
     /// limit, or every match when unbounded. Singular queries pick a random
     /// match without collecting the others first.
+    ///
+    /// Proxies can be flagged while the database is in use, e.g. to stop
+    /// selecting a proxy that is blocked or unhealthy, through the
+    /// [`ProxyRuntimeColumn`]s created with [`MemoryProxyDB::new_exclude_column`]
+    /// and [`MemoryProxyDB::new_require_column`].
     #[derive(Debug)]
     pub struct MemoryProxyDB {
+        inner: Arc<Inner>,
+        /// Every query keeps only the proxies of which the row in the column has this value.
+        runtime: Vec<(RuntimeColumn, bool)>,
+    }
+
+    #[derive(Debug)]
+    struct Inner {
         data: internal::ProxyDB,
         /// The proxies that can carry TCP and UDP traffic: worked out once per proxy,
         /// as it depends on more than a single property of it.
-        tcp: venndb::RowSet,
-        udp: venndb::RowSet,
+        tcp: RowSet,
+        udp: RowSet,
     }
 
     impl MemoryProxyDB {
         fn new(data: internal::ProxyDB) -> Self {
             Self {
-                tcp: data.column(|proxy| proxy.supports_transport(TransportProtocol::Tcp)),
-                udp: data.column(|proxy| proxy.supports_transport(TransportProtocol::Udp)),
-                data,
+                inner: Arc::new(Inner {
+                    tcp: data.column(|proxy| proxy.supports_transport(TransportProtocol::Tcp)),
+                    udp: data.column(|proxy| proxy.supports_transport(TransportProtocol::Udp)),
+                    data,
+                }),
+                runtime: Vec::new(),
+            }
+        }
+
+        /// Create a column of proxies that this database never selects,
+        /// starting out empty.
+        ///
+        /// Insert a proxy in it to stop selecting it, e.g. once it is found
+        /// to be blocked or unhealthy, and remove it to select it again.
+        /// The column can be changed at any time and from any task,
+        /// also after the database is handed to a [`ProxyDBLayer`](crate::ProxyDBLayer).
+        pub fn new_exclude_column(&mut self) -> ProxyRuntimeColumn {
+            self.new_runtime_column(false)
+        }
+
+        /// Create a column of proxies that this database is limited to,
+        /// starting out empty.
+        ///
+        /// Only the proxies inserted in it can be selected: as long as it is empty
+        /// no proxy is. The column can be changed at any time and from any task,
+        /// also after the database is handed to a [`ProxyDBLayer`](crate::ProxyDBLayer).
+        pub fn new_require_column(&mut self) -> ProxyRuntimeColumn {
+            self.new_runtime_column(true)
+        }
+
+        fn new_runtime_column(&mut self, value: bool) -> ProxyRuntimeColumn {
+            let rows = RuntimeColumn::new();
+            self.runtime.push((rows.clone(), value));
+            ProxyRuntimeColumn {
+                db: self.inner.clone(),
+                rows,
             }
         }
 
@@ -603,13 +650,37 @@ mod memdb {
         /// Return the number of proxies in the database.
         #[must_use]
         pub fn len(&self) -> usize {
-            self.data.len()
+            self.inner.data.len()
         }
 
-        /// Rerturns if the database is empty.
+        /// Returns if the database is empty.
         #[must_use]
         pub fn is_empty(&self) -> bool {
-            self.data.is_empty()
+            self.inner.data.is_empty()
+        }
+
+        /// Look up a proxy by id, which has to meet the filter, predicate and runtime columns.
+        fn get_by_id(
+            &self,
+            id: &NonEmptyStr,
+            ctx: &ProxyContext,
+            filter: &ProxyFilter,
+            predicate: &impl ProxyQueryPredicate,
+        ) -> Result<&Proxy, MemoryProxyDBQueryError> {
+            let data = &self.inner.data;
+            let (index, proxy) = data
+                .index_by_id(id)
+                .and_then(|index| Some((index, data.get(index)?)))
+                .ok_or_else(MemoryProxyDBQueryError::not_found)?;
+            let allowed = self
+                .runtime
+                .iter()
+                .all(|(rows, value)| rows.get(index) == *value);
+            if allowed && proxy.is_match(ctx, filter) && predicate.execute(proxy) {
+                Ok(proxy)
+            } else {
+                Err(MemoryProxyDBQueryError::mismatch())
+            }
         }
 
         #[expect(clippy::needless_pass_by_value)]
@@ -618,7 +689,7 @@ mod memdb {
             ctx: ProxyContext,
             filter: ProxyFilter,
         ) -> internal::ProxyDBQuery<'_> {
-            let mut query = self.data.query();
+            let mut query = self.inner.data.query();
 
             for pool_id in filter.pool_id.into_iter().flatten() {
                 query.pool_id(pool_id);
@@ -653,12 +724,121 @@ mod memdb {
             }
 
             // Which proxy kinds carry the transport is known per proxy: see `supports_transport`.
-            query.and(venndb::Filter::Is(match ctx.protocol {
-                TransportProtocol::Tcp => &self.tcp,
-                TransportProtocol::Udp => &self.udp,
+            query.and(Filter::Is(match ctx.protocol {
+                TransportProtocol::Tcp => &self.inner.tcp,
+                TransportProtocol::Udp => &self.inner.udp,
             }));
+            for (rows, value) in &self.runtime {
+                query.and(Filter::Runtime(rows, *value));
+            }
 
             query
+        }
+    }
+
+    /// A set of proxies of one [`MemoryProxyDB`] that can be changed
+    /// while the database is in use, from any task and without a lock.
+    ///
+    /// Created with [`MemoryProxyDB::new_exclude_column`], whose proxies are never
+    /// selected, or [`MemoryProxyDB::new_require_column`], which limits the selection
+    /// to its proxies. Every query of the database, including a lookup by
+    /// [`ProxyFilter::id`], takes the column as it is at that moment into account.
+    ///
+    /// The column holds on to the proxies of its database, so it can be used on its own,
+    /// e.g. once the database is handed to a [`ProxyDBLayer`](crate::ProxyDBLayer).
+    /// Clones are cheap and share the same proxies.
+    ///
+    /// A column belongs to exactly one database. When that database is replaced,
+    /// e.g. in a live update, create a column for the new database and carry the
+    /// proxies over with [`ProxyRuntimeColumn::extend_from`].
+    #[derive(Clone)]
+    pub struct ProxyRuntimeColumn {
+        db: Arc<Inner>,
+        rows: RuntimeColumn,
+    }
+
+    impl fmt::Debug for ProxyRuntimeColumn {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ProxyRuntimeColumn")
+                .field("len", &self.len())
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl ProxyRuntimeColumn {
+        fn index_of(&self, id: &str) -> Option<usize> {
+            self.db.data.index_by_id(id)
+        }
+
+        /// Insert the proxy with the given id.
+        ///
+        /// Returns `None` if the database has no proxy with that id,
+        /// otherwise `Some(true)` if this call inserted it and `Some(false)`
+        /// if it was already in the column. Of concurrent calls for the same proxy
+        /// only one gets `Some(true)`, e.g. to make that caller the one that
+        /// schedules its removal.
+        #[must_use = "the result tells whether the proxy exists and if this call inserted it"]
+        pub fn insert(&self, id: &str) -> Option<bool> {
+            let index = self.index_of(id)?;
+            Some(self.rows.claim(index))
+        }
+
+        /// Remove the proxy with the given id.
+        ///
+        /// Returns `None` if the database has no proxy with that id,
+        /// otherwise whether it was in the column.
+        pub fn remove(&self, id: &str) -> Option<bool> {
+            let index = self.index_of(id)?;
+            Some(self.rows.set(index, false))
+        }
+
+        /// Returns `true` if the proxy with the given id is in the column.
+        #[must_use]
+        pub fn contains(&self, id: &str) -> bool {
+            self.index_of(id).is_some_and(|index| self.rows.get(index))
+        }
+
+        /// The number of proxies in the column.
+        #[must_use]
+        pub fn len(&self) -> usize {
+            self.rows.count()
+        }
+
+        /// Returns `true` if no proxy is in the column.
+        #[must_use]
+        pub fn is_empty(&self) -> bool {
+            self.rows.iter().next().is_none()
+        }
+
+        /// Remove all proxies from the column.
+        pub fn clear(&self) {
+            self.rows.clear();
+        }
+
+        /// Iterate over the proxies in the column.
+        pub fn iter(&self) -> impl Iterator<Item = &Proxy> + '_ {
+            self.rows.iter().filter_map(|index| self.db.data.get(index))
+        }
+
+        /// Insert every proxy of `other`, typically a column of the database
+        /// this one replaces, that this column's database also has.
+        ///
+        /// Proxies are matched by id. Returns the number of proxies of `other`
+        /// found in this column's database, all of which are in this column afterwards.
+        ///
+        /// A proxy inserted in `other` after this call is not carried over: in a live update,
+        /// switch to the new column before `LiveUpdateProxyDBSetter::set`,
+        /// or run this again afterwards.
+        pub fn extend_from(&self, other: &Self) -> usize {
+            let mut carried = 0;
+            for index in other
+                .iter()
+                .filter_map(|proxy| self.db.data.index_by_id(&proxy.id))
+            {
+                self.rows.set(index, true);
+                carried += 1;
+            }
+            carried
         }
     }
 
@@ -673,16 +853,8 @@ mod memdb {
             limit: Option<NonZeroUsize>,
         ) -> Result<NonEmptyVec<Proxy>, Self::Error> {
             if let Some(id) = &filter.id {
-                match self.data.get_by_id(id) {
-                    None => Err(MemoryProxyDBQueryError::not_found()),
-                    Some(proxy) => {
-                        if proxy.is_match(&ctx, &filter) && predicate.execute(proxy) {
-                            Ok(NonEmptyVec::new(proxy.clone()))
-                        } else {
-                            Err(MemoryProxyDBQueryError::mismatch())
-                        }
-                    }
-                }
+                self.get_by_id(id, &ctx, &filter, &predicate)
+                    .map(|proxy| NonEmptyVec::new(proxy.clone()))
             } else {
                 let query = self.query_from_filter(ctx, filter);
                 let result = query
@@ -692,17 +864,17 @@ mod memdb {
                 // and none of them is copied unless it is returned.
                 let matches = result.iter().filter(|proxy| predicate.execute(proxy));
                 let mut rng = rand::rng();
-                let proxies = if let Some(limit) = limit {
+                let mut proxies = if let Some(limit) = limit {
                     matches
                         .sample(&mut rng, limit.get())
                         .into_iter()
                         .cloned()
                         .collect()
                 } else {
-                    let mut proxies = matches.cloned().collect::<Vec<_>>();
-                    proxies.shuffle(&mut rng);
-                    proxies
+                    matches.cloned().collect::<Vec<_>>()
                 };
+                // a sample has its elements in database order, and callers try candidates in the returned order
+                proxies.shuffle(&mut rng);
                 NonEmptyVec::collect(proxies).ok_or_else(MemoryProxyDBQueryError::not_found)
             }
         }
@@ -714,16 +886,7 @@ mod memdb {
             predicate: impl ProxyQueryPredicate,
         ) -> Result<Proxy, Self::Error> {
             if let Some(id) = &filter.id {
-                match self.data.get_by_id(id) {
-                    None => Err(MemoryProxyDBQueryError::not_found()),
-                    Some(proxy) => {
-                        if proxy.is_match(&ctx, &filter) && predicate.execute(proxy) {
-                            Ok(proxy.clone())
-                        } else {
-                            Err(MemoryProxyDBQueryError::mismatch())
-                        }
-                    }
-                }
+                self.get_by_id(id, &ctx, &filter, &predicate).cloned()
             } else {
                 // A random match, found without working out all of them
                 // if many proxies match the filter.
@@ -859,6 +1022,7 @@ mod memdb {
     }
 
     #[cfg(test)]
+    #[cfg(feature = "csv")]
     mod tests {
         use super::*;
         use itertools::Itertools;
@@ -1644,11 +1808,309 @@ mod memdb {
             }
         }
     }
+
+    #[cfg(test)]
+    mod runtime_column_tests {
+        use super::*;
+        use itertools::Itertools;
+        use std::collections::BTreeSet;
+
+        fn proxy(id: &str) -> Proxy {
+            Proxy {
+                id: NonEmptyStr::try_from(id).unwrap(),
+                address: "127.0.0.1:8080".parse().unwrap(),
+                tcp: true,
+                udp: false,
+                http: true,
+                https: false,
+                socks5: false,
+                socks5h: false,
+                datacenter: true,
+                residential: false,
+                mobile: false,
+                pool_id: None,
+                continent: None,
+                country: None,
+                state: None,
+                city: None,
+                carrier: None,
+                asn: None,
+            }
+        }
+
+        fn db(ids: &[&str]) -> MemoryProxyDB {
+            MemoryProxyDB::try_from_iter(ids.iter().map(|id| proxy(id))).unwrap()
+        }
+
+        fn tcp() -> ProxyContext {
+            ProxyContext {
+                protocol: TransportProtocol::Tcp,
+            }
+        }
+
+        fn by_id(id: &str) -> ProxyFilter {
+            ProxyFilter {
+                id: Some(NonEmptyStr::try_from(id).unwrap()),
+                ..Default::default()
+            }
+        }
+
+        async fn selectable(db: &impl ProxyDB<Error = MemoryProxyDBQueryError>) -> Vec<Box<str>> {
+            match db.get_proxies(tcp(), ProxyFilter::default(), None).await {
+                Ok(proxies) => proxies
+                    .iter()
+                    .map(|proxy| Box::from(proxy.id.as_ref()))
+                    .sorted()
+                    .collect(),
+                Err(err) => {
+                    assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::NotFound);
+                    Vec::new()
+                }
+            }
+        }
+
+        fn ids(column: &ProxyRuntimeColumn) -> BTreeSet<&str> {
+            column.iter().map(|proxy| proxy.id.as_ref()).collect()
+        }
+
+        #[tokio::test]
+        async fn excluded_proxy_is_never_selected() {
+            let mut db = db(&["a", "b"]);
+            let blocked = db.new_exclude_column();
+            assert_eq!(selectable(&db).await, ["a", "b"].map(Box::from));
+
+            assert_eq!(blocked.insert("a"), Some(true));
+            for _ in 0..50 {
+                let proxy = db.get_proxy(tcp(), ProxyFilter::default()).await.unwrap();
+                assert_eq!(proxy.id, "b");
+                let limited = db
+                    .get_proxies(tcp(), ProxyFilter::default(), NonZeroUsize::new(2))
+                    .await
+                    .unwrap();
+                assert_eq!(limited.len(), 1);
+                assert_eq!(limited.head.id, "b");
+            }
+            assert_eq!(selectable(&db).await, ["b"].map(Box::from));
+
+            let err = db.get_proxy(tcp(), by_id("a")).await.unwrap_err();
+            assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::Mismatch);
+            let err = db.get_proxies(tcp(), by_id("a"), None).await.unwrap_err();
+            assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::Mismatch);
+            assert_eq!(db.get_proxy(tcp(), by_id("b")).await.unwrap().id, "b");
+
+            assert_eq!(blocked.remove("a"), Some(true));
+            assert_eq!(selectable(&db).await, ["a", "b"].map(Box::from));
+            assert_eq!(db.get_proxy(tcp(), by_id("a")).await.unwrap().id, "a");
+        }
+
+        #[tokio::test]
+        async fn limited_plural_query_is_shuffled() {
+            let db = db(&["a", "b"]);
+            let mut firsts = BTreeSet::new();
+            for _ in 0..200 {
+                let proxies = db
+                    .get_proxies(tcp(), ProxyFilter::default(), NonZeroUsize::new(5))
+                    .await
+                    .unwrap();
+                assert_eq!(proxies.len(), 2);
+                firsts.insert(proxies.head.id);
+            }
+            assert_eq!(firsts.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn required_column_limits_selection_to_its_proxies() {
+            let mut db = db(&["a", "b", "c"]);
+            let allowed = db.new_require_column();
+
+            assert!(selectable(&db).await.is_empty());
+            let err = db
+                .get_proxy(tcp(), ProxyFilter::default())
+                .await
+                .unwrap_err();
+            assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::NotFound);
+            let err = db.get_proxy(tcp(), by_id("a")).await.unwrap_err();
+            assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::Mismatch);
+
+            assert_eq!(allowed.insert("b"), Some(true));
+            assert_eq!(allowed.insert("c"), Some(true));
+            assert_eq!(selectable(&db).await, ["b", "c"].map(Box::from));
+            assert_eq!(db.get_proxy(tcp(), by_id("c")).await.unwrap().id, "c");
+        }
+
+        #[tokio::test]
+        async fn exclude_and_require_columns_combine() {
+            let mut db = db(&["a", "b", "c"]);
+            let allowed = db.new_require_column();
+            let blocked = db.new_exclude_column();
+            assert_eq!(allowed.insert("a"), Some(true));
+            assert_eq!(allowed.insert("b"), Some(true));
+            assert_eq!(blocked.insert("b"), Some(true));
+            assert_eq!(blocked.insert("c"), Some(true));
+
+            assert_eq!(selectable(&db).await, ["a"].map(Box::from));
+            for _ in 0..20 {
+                let proxy = db.get_proxy(tcp(), ProxyFilter::default()).await.unwrap();
+                assert_eq!(proxy.id, "a");
+            }
+        }
+
+        #[tokio::test]
+        async fn unknown_id_changes_nothing() {
+            let mut db = db(&["a"]);
+            let blocked = db.new_exclude_column();
+
+            assert_eq!(blocked.insert("unknown"), None);
+            assert_eq!(blocked.insert(""), None);
+            assert_eq!(blocked.remove("unknown"), None);
+            assert!(!blocked.contains("unknown"));
+            assert!(blocked.is_empty());
+            assert_eq!(selectable(&db).await, ["a"].map(Box::from));
+        }
+
+        #[test]
+        fn insert_reports_the_call_that_inserted() {
+            let mut db = db(&["a", "b"]);
+            let blocked = db.new_exclude_column();
+
+            assert!(!blocked.contains("a"));
+            assert_eq!(blocked.insert("a"), Some(true));
+            assert_eq!(blocked.insert("a"), Some(false));
+            assert!(blocked.contains("a"));
+            assert!(!blocked.contains("b"));
+            assert_eq!(blocked.remove("a"), Some(true));
+            assert_eq!(blocked.remove("a"), Some(false));
+            assert_eq!(blocked.insert("a"), Some(true));
+        }
+
+        #[test]
+        fn concurrent_inserts_are_claimed_once() {
+            let mut db = db(&["a"]);
+            let blocked = db.new_exclude_column();
+            let claims = std::thread::scope(|scope| {
+                let threads = (0..8)
+                    .map(|_| scope.spawn(|| blocked.insert("a") == Some(true)))
+                    .collect::<Vec<_>>();
+                threads
+                    .into_iter()
+                    .map(|thread| thread.join().unwrap())
+                    .filter(|claimed| *claimed)
+                    .count()
+            });
+            assert_eq!(claims, 1);
+        }
+
+        #[test]
+        fn len_iter_and_clear() {
+            let mut db = db(&["a", "b", "c"]);
+            let blocked = db.new_exclude_column();
+            let clone = blocked.clone();
+            assert_eq!(blocked.len(), 0);
+            assert!(blocked.is_empty());
+            assert!(blocked.iter().next().is_none());
+
+            assert_eq!(clone.insert("c"), Some(true));
+            assert_eq!(blocked.insert("a"), Some(true));
+            assert_eq!(blocked.len(), 2);
+            assert!(!blocked.is_empty());
+            assert_eq!(ids(&blocked), BTreeSet::from(["a", "c"]));
+            assert_eq!(ids(&clone), ids(&blocked));
+
+            clone.clear();
+            assert_eq!(blocked.len(), 0);
+            assert!(blocked.is_empty());
+            assert!(!blocked.contains("a"));
+        }
+
+        #[tokio::test]
+        async fn extend_from_carries_over_the_shared_ids() {
+            let mut old = db(&["a", "b", "c"]);
+            let old_blocked = old.new_exclude_column();
+            assert_eq!(old_blocked.insert("a"), Some(true));
+            assert_eq!(old_blocked.insert("b"), Some(true));
+
+            // the new database has its rows in another order, without "a" and with "d"
+            let mut new = db(&["d", "c", "b"]);
+            let new_blocked = new.new_exclude_column();
+            assert_eq!(new_blocked.extend_from(&old_blocked), 1);
+            assert_eq!(ids(&new_blocked), BTreeSet::from(["b"]));
+            assert_eq!(selectable(&new).await, ["c", "d"].map(Box::from));
+
+            // the columns stay independent of each other
+            assert_eq!(old_blocked.remove("b"), Some(true));
+            assert!(new_blocked.contains("b"));
+            assert_eq!(new_blocked.extend_from(&old_blocked), 0);
+            assert_eq!(new_blocked.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn column_changed_from_another_task_is_seen_by_shared_db() {
+            let mut db = db(&["a", "b"]);
+            let blocked = db.new_exclude_column();
+            let db = Arc::new(db);
+
+            tokio::spawn({
+                let blocked = blocked.clone();
+                async move { blocked.insert("b") }
+            })
+            .await
+            .unwrap();
+            for _ in 0..20 {
+                let proxy = db.get_proxy(tcp(), ProxyFilter::default()).await.unwrap();
+                assert_eq!(proxy.id, "a");
+            }
+
+            std::thread::spawn(move || blocked.remove("b"))
+                .join()
+                .unwrap();
+            assert_eq!(selectable(&db).await, ["a", "b"].map(Box::from));
+        }
+
+        #[cfg(feature = "live-update")]
+        #[tokio::test]
+        async fn blocked_proxy_stays_blocked_across_live_update() {
+            let (reader, writer) = crate::proxy_db_updater();
+
+            let mut first = db(&["a", "b"]);
+            let blocked = first.new_exclude_column();
+            writer.set(first);
+            assert_eq!(blocked.insert("a"), Some(true));
+            for _ in 0..20 {
+                let proxy = reader
+                    .get_proxy(tcp(), ProxyFilter::default())
+                    .await
+                    .unwrap();
+                assert_eq!(proxy.id, "b");
+            }
+
+            let mut second = db(&["c", "b", "a"]);
+            let next_blocked = second.new_exclude_column();
+            assert_eq!(next_blocked.extend_from(&blocked), 1);
+            writer.set(second);
+
+            let mut seen = BTreeSet::new();
+            for _ in 0..100 {
+                let proxy = reader
+                    .get_proxy(tcp(), ProxyFilter::default())
+                    .await
+                    .unwrap();
+                seen.insert(proxy.id);
+            }
+            assert_eq!(
+                seen.iter().map(AsRef::as_ref).collect::<Vec<&str>>(),
+                ["b", "c"]
+            );
+            reader.get_proxy(tcp(), by_id("a")).await.unwrap_err();
+
+            assert_eq!(next_blocked.remove("a"), Some(true));
+            assert_eq!(reader.get_proxy(tcp(), by_id("a")).await.unwrap().id, "a");
+        }
+    }
 }
 
 #[cfg(feature = "memory-db")]
 #[cfg_attr(docsrs, doc(cfg(feature = "memory-db")))]
 pub use memdb::{
     MemoryProxyDB, MemoryProxyDBInsertError, MemoryProxyDBInsertErrorKind, MemoryProxyDBQueryError,
-    MemoryProxyDBQueryErrorKind,
+    MemoryProxyDBQueryErrorKind, ProxyRuntimeColumn,
 };

@@ -1,7 +1,12 @@
 //! HTTP/3 server stream admission and response sending.
+//!
+//! Adds no `Server` or `Date` response fields: use
+//! `rama_http::layer::required_header::AddRequiredResponseHeadersLayer` or your own layer.
+//! Core relays responses as-is; header policy lives in layers.
 
 use std::{
     future::{Future, pending, poll_fn},
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -10,6 +15,7 @@ use std::{
     time::Duration,
 };
 
+use pin_project_lite::pin_project;
 use rama_core::{
     bytes::BytesMut,
     error::BoxError,
@@ -34,7 +40,7 @@ use rama_quic_proto::{Side, VarInt, coding::Codec as _};
 use rama_utils::guard::DropGuard;
 use tokio::{
     sync::{Notify, Semaphore},
-    time::{Instant, timeout},
+    time::{Instant, Sleep, sleep, timeout},
 };
 
 use super::{
@@ -43,12 +49,15 @@ use super::{
     control::Role,
     datagram::{Association, DatagramDrops, Semantics},
     headers,
+    qpack::ErrorScope,
     quic::Writer,
     stream::{HEAD_TIMEOUT, HeadDeadline, Phase, Reader},
     transport::{self, RecvStream as _, SendStream as _, StreamHandle as _},
 };
 use crate::{
-    headers::{ResponseLength, is_tunnel_response, set_content_length_if_missing},
+    headers::{
+        ResponseLength, correct_content_length, is_tunnel_response, set_content_length_if_missing,
+    },
     server::conn::timeout::{Activity, ConnTimer, HeadBudget},
 };
 
@@ -229,6 +238,83 @@ pub fn handshake<C: transport::Connection>(
         },
         driver,
     ))
+}
+
+pin_project! {
+    /// Two-phase shutdown of a serving [`Connection`]: [`Self::announce`] tells the peer
+    /// to stop, requests keep being admitted until [`Self::elapsed`] completes, and
+    /// [`Self::shutdown`] then stops admission.
+    #[derive(Debug)]
+    pub struct ShutdownNotice {
+        announced: bool,
+        draining: bool,
+        #[pin]
+        notice: Sleep,
+    }
+}
+
+impl ShutdownNotice {
+    /// A notice that is not announced yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            announced: false,
+            draining: false,
+            notice: sleep(Duration::ZERO),
+        }
+    }
+
+    /// Whether the peer was told to stop.
+    #[must_use]
+    pub fn is_announced(&self) -> bool {
+        self.announced
+    }
+
+    /// Whether new request streams are still admitted.
+    #[must_use]
+    pub fn admits(&self) -> bool {
+        !self.draining
+    }
+
+    /// Tell the peer to stop and start the notice period; later calls do nothing.
+    pub fn announce<C: transport::Connection>(
+        self: Pin<&mut Self>,
+        connection: &mut Connection<C>,
+    ) -> Result<(), Error> {
+        let this = self.project();
+        if *this.announced {
+            return Ok(());
+        }
+        let period = connection.announce_shutdown()?;
+        this.notice.reset(Instant::now() + period);
+        *this.announced = true;
+        Ok(())
+    }
+
+    /// Complete once an announced notice period ended; pending before the
+    /// announcement and after [`Self::shutdown`].
+    pub async fn elapsed(self: Pin<&mut Self>) {
+        if !self.announced || self.draining {
+            return pending().await;
+        }
+        self.project().notice.await;
+    }
+
+    /// Stop admitting requests; see [`Connection::shutdown`].
+    pub fn shutdown<C: transport::Connection>(
+        self: Pin<&mut Self>,
+        connection: &mut Connection<C>,
+    ) -> Result<(), Error> {
+        connection.shutdown()?;
+        *self.project().draining = true;
+        Ok(())
+    }
+}
+
+impl Default for ShutdownNotice {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<C: transport::Connection> Connection<C> {
@@ -414,6 +500,42 @@ impl<C: transport::Connection> RequestStream<C> {
         Ok(())
     }
 
+    /// End the stream for a request head the peer got wrong, answering `status` first.
+    async fn refuse(&mut self, error: Error, status: Option<StatusCode>) -> Error {
+        let Some(status) = status else {
+            return self.reader.reject(error);
+        };
+        // Stop only the upload: the answer still goes out on the send direction.
+        let abort = self.reader.abort.take();
+        let error = self.reader.reject(error);
+        self.reader.abort = abort;
+        if error.scope() == ErrorScope::Stream {
+            self.answer(status).await;
+        }
+        error
+    }
+
+    /// Send a bodyless final response, keeping the stream until the peer has it.
+    async fn answer(&mut self, status: StatusCode) {
+        let mut response = Response::new(());
+        *response.status_mut() = status;
+        let Ok(bytes) = headers::encode_response(&self.reader.shared, self.reader.id, &response)
+        else {
+            return;
+        };
+        if self.writer.queue(FrameType::HEADERS, bytes).is_err()
+            || poll_fn(|cx| self.writer.poll_finish(cx)).await.is_err()
+        {
+            return;
+        }
+        let since = Instant::now();
+        tokio::select! {
+            result = self.writer.acknowledged() => if result.is_err() { return },
+            () = self.reader.shared.goaway_drain_expired(since) => {}
+        }
+        self.writer.mark_acknowledged();
+    }
+
     /// Decode and validate the request head, returning the common Incoming body.
     pub async fn resolve(
         mut self,
@@ -431,13 +553,17 @@ impl<C: transport::Connection> RequestStream<C> {
                 accepted: self.accepted,
                 budget: HeadBudget::new(&config, Some(self.connection.rtt())),
             });
-        let fields = match self.reader.headers_within(deadline).await {
+        // Only the upload stops while the head is read: a refusal may still be answered.
+        let abort = self.reader.abort.take();
+        let fields = self.reader.headers_within(deadline).await;
+        self.reader.abort = abort;
+        let fields = match fields {
             Ok(fields) => fields,
             Err(error) => {
                 if error == HEAD_TIMEOUT && !self.heads.earned() {
                     self.heads.stalled.notify_one();
                 }
-                return Err(self.reader.reject(error));
+                return Err(self.refuse(error, refusal_status(error)).await);
             }
         };
         let observation = self
@@ -446,7 +572,10 @@ impl<C: transport::Connection> RequestStream<C> {
             .request_observation(self.reader.id, &fields);
         let request = match headers::request_head(fields, extended_connect) {
             Ok(request) => request,
-            Err(error) => return Err(self.reader.reject(error.remote())),
+            Err(error) => {
+                let answer = request_refusal_status(error);
+                return Err(self.refuse(error.remote(), answer).await);
+            }
         };
         let received_early = self.reader.stream.is_0rtt();
         if !received_early
@@ -809,9 +938,17 @@ impl<C: transport::Connection> SendResponse<C> {
             }
         }
         let body = response.body();
+        let exact = body.size_hint().exact();
         let body_len = (self.method == Method::HEAD || !body.is_end_stream())
-            .then(|| body.size_hint().exact())
+            .then_some(exact)
             .flatten();
+        // A body that is sent frames itself: a declared length it does not have is rewritten.
+        if self.method != Method::HEAD
+            && let Some(len) = exact
+            && response_length.implied(Some(len)).is_some()
+        {
+            correct_content_length(response.headers_mut(), len);
+        }
         if let Some(len) = response_length.implied(body_len) {
             set_content_length_if_missing(response.headers_mut(), len);
         }
@@ -854,6 +991,28 @@ impl<C: transport::Connection> SendResponse<C> {
         } else {
             result.await
         }
+    }
+}
+
+/// The answer a server gives a request head it refuses for `error`, if any.
+fn refusal_status(error: Error) -> Option<StatusCode> {
+    (error.scope() == ErrorScope::Stream
+        && matches!(
+            error.code(),
+            Code::H3_EXCESSIVE_LOAD | Code::QPACK_DECOMPRESSION_FAILED
+        ))
+    // A head past the local field section, field line or frame limits; a single
+    // literal past the section limit is the stream-scoped decompression failure.
+    .then_some(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE)
+}
+
+/// The answer a server gives a request it cannot decode: malformed, or past its limits.
+fn request_refusal_status(error: Error) -> Option<StatusCode> {
+    if error.code() == Code::H3_MESSAGE_ERROR {
+        // RFC 9114 §4.1.2: a malformed request may be answered before its stream ends.
+        Some(StatusCode::BAD_REQUEST)
+    } else {
+        refusal_status(error)
     }
 }
 

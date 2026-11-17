@@ -347,6 +347,8 @@ def execute(args):
                         f"{transport}.port=={destination}",
                         "-o",
                         "tcp.relative_sequence_numbers:TRUE",
+                        "-o",
+                        "tcp.reassemble_out_of_order:TRUE",
                         "-T",
                         "pdml",
                     ],

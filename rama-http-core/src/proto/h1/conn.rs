@@ -64,7 +64,6 @@ where
                 h1_max_headers: None,
                 h1_max_header_size: None,
                 timer: ConnTimer::new(None, None),
-                date_header: true,
                 strict_connect_framing: false,
                 title_case_headers: false,
                 h09_responses: false,
@@ -180,10 +179,6 @@ where
         }
         let read = ready!(self.io.poll_read_from_io_limited(cx, max))?;
         Poll::Ready(Ok(self.io.discard_read_buf(max).max(read)))
-    }
-
-    pub(crate) fn disable_date_header(&mut self) {
-        self.state.date_header = false;
     }
 
     pub(crate) fn set_strict_connect_framing(&mut self) {
@@ -465,7 +460,12 @@ where
                 if matches!(self.state.writing, Writing::Init) {
                     trace!("automatically sending 100 Continue");
                     let cont = b"HTTP/1.1 100 Continue\r\n\r\n";
-                    self.io.headers_buf().extend_from_slice(cont);
+                    if self.io.can_headers_buf() {
+                        self.io.headers_buf().extend_from_slice(cont);
+                    } else {
+                        // A previous body is still queued and must leave first.
+                        self.io.buffer(EncodedBuf::from_static(cont));
+                    }
                 }
 
                 // And now recurse once in the Reading::Body state...
@@ -717,7 +717,6 @@ where
                 keep_alive: self.state.wants_keep_alive(),
                 req_method: &mut self.state.method,
                 title_case_headers: self.state.title_case_headers,
-                date_header: self.state.date_header,
                 strict_connect_framing: self.state.strict_connect_framing,
             },
             buf,
@@ -785,17 +784,24 @@ where
         // the user's headers be.
     }
 
-    pub(crate) fn write_body(&mut self, chunk: B) {
+    pub(crate) fn write_body(&mut self, chunk: B) -> crate::Result<()> {
         debug_assert!(self.can_write_body() && self.can_buffer_body());
         // empty chunks should be discarded at Dispatcher level
         debug_assert!(chunk.remaining() != 0);
 
         let state = match &mut self.state.writing {
             Writing::Body(encoder) => {
-                self.io.buffer(encoder.encode(chunk));
+                match encoder.encode(chunk) {
+                    Ok(encoded) => self.io.buffer(encoded),
+                    Err(past_eof) => {
+                        // The declared length is all the peer reads: the connection cannot go on.
+                        self.state.writing = Writing::Closed;
+                        return Err(crate::Error::new_body_write_aborted().with(past_eof));
+                    }
+                }
 
                 if !encoder.is_eof() {
-                    return;
+                    return Ok(());
                 }
 
                 if encoder.is_last() {
@@ -808,6 +814,7 @@ where
         };
 
         self.state.writing = state;
+        Ok(())
     }
 
     pub(crate) fn write_trailers(&mut self, trailers: &HeaderMap) {
@@ -837,26 +844,27 @@ where
         }
     }
 
-    pub(crate) fn write_body_and_end(&mut self, chunk: B) {
+    pub(crate) fn write_body_and_end(&mut self, chunk: B) -> crate::Result<()> {
         debug_assert!(self.can_write_body() && self.can_buffer_body());
         // empty chunks should be discarded at Dispatcher level
         debug_assert!(chunk.remaining() != 0);
 
         let state = match &mut self.state.writing {
-            Writing::Body(encoder) => {
-                let can_keep_alive = encoder.encode_and_end(chunk, self.io.write_buf());
-                if can_keep_alive {
-                    Writing::KeepAlive
-                } else {
-                    Writing::Closed
+            Writing::Body(encoder) => match encoder.encode_and_end(chunk, self.io.write_buf()) {
+                Ok(true) => Writing::KeepAlive,
+                Ok(false) => Writing::Closed,
+                Err(mismatch) => {
+                    self.state.writing = Writing::Closed;
+                    return Err(crate::Error::new_body_write_aborted().with(mismatch));
                 }
-            }
+            },
             Writing::Closed | Writing::KeepAlive | Writing::Init => {
                 unreachable!("write_body invalid state: {:?}", self.state.writing)
             }
         };
 
         self.state.writing = state;
+        Ok(())
     }
 
     pub(crate) fn end_body(&mut self) -> crate::Result<()> {
@@ -941,11 +949,7 @@ where
     }
 
     pub(crate) fn abort(&self) {
-        if let Some(abort) = self
-            .io
-            .extensions()
-            .self_get_ref::<rama_core::io::AbortIo>()
-        {
+        if let Some(abort) = self.io.extensions().get_ref::<rama_core::io::AbortIo>() {
             abort.abort();
         }
     }
@@ -1052,7 +1056,6 @@ struct State {
     h1_max_headers: Option<usize>,
     h1_max_header_size: Option<usize>,
     timer: ConnTimer,
-    date_header: bool,
     strict_connect_framing: bool,
     title_case_headers: bool,
     h09_responses: bool,
@@ -1289,6 +1292,7 @@ mod tests {
     use super::*;
     use crate::proto::RequestLine;
     use rama_core::extensions::Extensions;
+    use rama_utils::octets::kib;
     use std::assert_matches;
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -1717,13 +1721,40 @@ mod tests {
     }
 
     #[test]
+    fn continue_is_written_after_a_queued_body() {
+        let body = vec![b'r'; kib(64)];
+        let io = tokio_test::io::Builder::new()
+            .read(b"POST / HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\nabc")
+            .write(&body)
+            .write(b"HTTP/1.1 100 Continue\r\n\r\n")
+            .build();
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
+        conn.set_write_strategy_flatten();
+        _ = ready(poll_head(&mut conn))
+            .expect("request")
+            .expect("valid request");
+        // The body of the previous response is still queued when the handler reads.
+        conn.io.buffer(Bytes::from(body));
+
+        tokio_test::task::spawn(()).enter(|cx, _| {
+            let data = ready(conn.poll_read_body(cx))
+                .expect("body frame")
+                .expect("valid body")
+                .into_data()
+                .expect("data frame");
+            assert_eq!(data, "abc");
+            assert!(conn.poll_flush(cx).is_ready());
+        });
+    }
+
+    #[test]
     fn conn_writes_chunked_body() {
         let io = tokio_test::io::Builder::new()
             .write(b"7\r\nheaders\r\n0\r\n\r\n")
             .build();
         let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
         conn.state.writing = Writing::Body(Encoder::chunked());
-        conn.write_body(Bytes::from_static(b"headers"));
+        conn.write_body(Bytes::from_static(b"headers")).unwrap();
         conn.end_body().unwrap();
         tokio_test::task::spawn(()).enter(|cx, _| {
             assert!(conn.poll_flush(cx).is_ready());

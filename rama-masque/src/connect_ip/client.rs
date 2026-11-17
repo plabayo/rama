@@ -11,7 +11,10 @@ use rama_http::{
     HeaderMap, Request, Response, StreamingBody as _, Version, io::upgrade::handle_upgrade,
 };
 use rama_net::Protocol;
-use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+use rama_utils::{
+    macros::{define_inner_service_accessors, generate_set_and_with},
+    time::deadline_after,
+};
 
 /// Prepare a CONNECT-IP handshake from a configured endpoint and typed scope.
 ///
@@ -113,7 +116,7 @@ impl ConnectIpRequestBuilder {
             super::IpTarget::Any | super::IpTarget::Hostname(_) => Vec::new(),
         };
         let version = self.request.version();
-        let deadline = crate::time::expiration_at(tokio::time::Instant::now(), self.open_timeout);
+        let deadline = deadline_after(tokio::time::Instant::now(), self.open_timeout);
         let response = tokio::time::timeout_at(deadline, client.serve(self.request))
             .await
             .map_err(|_error| super::ConnectIpError::Timeout)?

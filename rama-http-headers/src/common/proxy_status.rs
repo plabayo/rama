@@ -11,7 +11,9 @@ use base64::{
 };
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
-use rama_http_types::structured_fields::{BareItem, ListEvent, ListMember, parse_list};
+use rama_http_types::utils::structured_fields::{
+    BareItem, ListEvent, ListMember, is_token, parse_list,
+};
 use rama_http_types::{HeaderName, HeaderValue, StatusCode};
 use rama_utils::collections::smallvec::{SmallVec, smallvec};
 
@@ -340,15 +342,6 @@ impl HeaderEncode for ProxyStatus {
             values.extend(std::iter::once(value));
         }
     }
-}
-
-/// RFC 9651 §3.3.4 Token.
-fn is_token(value: &str) -> bool {
-    let mut bytes = value.bytes();
-    bytes
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'*')
-        && bytes.all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~:/".contains(&b))
 }
 
 fn write_token_or_string(out: &mut String, value: &str) {

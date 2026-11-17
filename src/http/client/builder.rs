@@ -6,7 +6,8 @@ use super::{
 use crate::{
     Layer, Service,
     dns::client::{
-        DnsConnector, DnsConnectorLayer, GlobalDnsResolver, resolver::DnsAddressResolver,
+        DnsConnector, DnsConnectorLayer, GlobalDnsResolver,
+        resolver::{DnsAddressResolver, DnsResolver},
     },
     error::BoxError,
     extensions::ExtensionsRef,
@@ -50,6 +51,12 @@ use {
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
 
+#[cfg(feature = "quic")]
+use crate::{
+    dns::client::resolver::BoxDnsResolver,
+    http::layer::https_service::{HttpsService, HttpsServiceLayer},
+};
+
 #[cfg(all(feature = "masque", feature = "quic"))]
 use crate::{
     proxy::masque::connect_udp::ConnectUdpConnector, quic::client::QuicEndpointConnector,
@@ -70,17 +77,14 @@ pub struct EasyHttpConnectorBuilder<C = (), S = (), D = ()> {
 #[derive(Debug, Clone)]
 struct HttpsDiscovery {
     #[cfg(feature = "quic")]
-    layer: rama_http::layer::https_service::HttpsServiceLayer<
-        rama_dns::client::resolver::BoxDnsResolver,
-    >,
+    layer: HttpsServiceLayer<BoxDnsResolver>,
 }
 impl Default for HttpsDiscovery {
     fn default() -> Self {
         Self {
             #[cfg(feature = "quic")]
-            layer: rama_http::layer::https_service::HttpsServiceLayer::new().with_resolver(
-                rama_dns::client::resolver::BoxDnsResolver::new(GlobalDnsResolver::new()),
-            ),
+            layer: HttpsServiceLayer::new()
+                .with_resolver(BoxDnsResolver::new(GlobalDnsResolver::new())),
         }
     }
 }
@@ -212,7 +216,7 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
     }
 
     /// Share one resolver between transport address resolution and HTTPS discovery.
-    pub fn with_dns_resolver<R: rama_dns::client::resolver::DnsResolver + Clone>(
+    pub fn with_dns_resolver<R: DnsResolver + Clone>(
         self,
         resolver: R,
     ) -> EasyHttpConnectorBuilder<DnsConnector<T, R>, DnsStage, DnsConnectorLayer<R>> {
@@ -223,7 +227,7 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
             builder.discovery.layer = builder
                 .discovery
                 .layer
-                .with_resolver(rama_dns::client::resolver::BoxDnsResolver::new(resolver))
+                .with_resolver(BoxDnsResolver::new(resolver))
                 .with_enabled(true);
             builder
         };
@@ -825,10 +829,8 @@ impl<T, Body, D, const PROXY: bool>
 pub type MasqueQuicEndpoints<S> = QuicEndpointConnector<ConnectUdpConnector<S, UdpConnector>>;
 
 #[cfg(feature = "quic")]
-type SelectedConnector<T> = rama_http::layer::https_service::HttpsService<
-    HttpServiceConnector<ProxyRoutesConnector<T>>,
-    rama_dns::client::resolver::BoxDnsResolver,
->;
+type SelectedConnector<T> =
+    HttpsService<HttpServiceConnector<ProxyRoutesConnector<T>>, BoxDnsResolver>;
 #[cfg(not(feature = "quic"))]
 type SelectedConnector<T> = HttpServiceConnector<ProxyRoutesConnector<T>>;
 
@@ -958,14 +960,11 @@ impl<T> EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage> {
     /// Its lazy address source takes precedence over the transport resolver for
     /// matching HTTPS endpoints. Use `with_dns_resolver` to share one DNS policy.
     #[must_use]
-    pub fn with_https_resolver<R: rama_dns::client::resolver::DnsResolver>(
-        mut self,
-        resolver: R,
-    ) -> Self {
+    pub fn with_https_resolver<R: DnsResolver>(mut self, resolver: R) -> Self {
         let config = self.selected_connector_mut().config_mut();
         *config = config
             .clone()
-            .with_resolver(rama_dns::client::resolver::BoxDnsResolver::new(resolver))
+            .with_resolver(BoxDnsResolver::new(resolver))
             .with_enabled(true);
         self
     }
@@ -975,11 +974,7 @@ impl<T> EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage> {
     #[must_use]
     pub fn configure_https_discovery(
         mut self,
-        configure: impl FnOnce(
-            &mut rama_http::layer::https_service::HttpsServiceLayer<
-                rama_dns::client::resolver::BoxDnsResolver,
-            >,
-        ),
+        configure: impl FnOnce(&mut HttpsServiceLayer<BoxDnsResolver>),
     ) -> Self {
         configure(self.selected_connector_mut().config_mut());
         self
@@ -1383,6 +1378,8 @@ mod tests {
     use crate::http::Body;
     use rama_utils::octets::kib;
 
+    #[cfg(feature = "quic")]
+    use rama_core::error::BoxErrorExt as _;
     use rama_core::layer::layer_fn;
     #[cfg(all(
         feature = "quic",
@@ -1854,7 +1851,7 @@ mod tests {
                                     EstablishedClientConnection<ServiceInput<()>, ConnectRequest>,
                                     _,
                                 >(ConnectionError::local(
-                                    BoxError::from("test stopped before transport"),
+                                    BoxError::from_static_str("test stopped before transport"),
                                     ConnectionErrorKind::Unavailable,
                                 ))
                             }

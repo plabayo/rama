@@ -2093,6 +2093,8 @@ mod tests {
         let path = test_socket_path();
         let mut config = test_config(path.clone());
         config.max_concurrency = 1;
+        // The queued lookup waits out a delayed reply: keep the slot wait well above it.
+        config.connect_timeout = Duration::from_secs(1);
         let resolved = Arc::new(SystemdResolved::new(config));
 
         let good = hostname_reply(&json!([{ "family": 2, "address": [1, 2, 3, 4] }]));
@@ -2378,6 +2380,7 @@ mod tests {
             RrParse::Record { ttl, value } => {
                 assert_eq!(ttl, 300);
                 assert_eq!(value.owner.to_string(), "example.com.");
+                assert_eq!(value.owner.as_wire().as_ptr(), raw.as_ptr());
                 match &value.binding.params()[0] {
                     crate::wire::SvcParam::Unknown { value, .. } => {
                         assert_eq!(value.as_ptr(), value_ptr);

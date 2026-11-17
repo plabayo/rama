@@ -34,6 +34,9 @@ mod test_util;
 mod bridge;
 pub use bridge::BridgeIo;
 
+mod shutdown;
+pub use shutdown::shutdown_within;
+
 mod read_at;
 #[doc(inline)]
 pub use read_at::{BlockCache, BlockCacheConfig, FileIdentity, ReadAt, ReadAtFiles};
@@ -72,9 +75,6 @@ pub trait PeekIoProvider: Send + 'static {
     /// mapping the `PeekIo` and `PeekEgressIo` types.
     type Mapped<PeekedIo: Io, PeekedEgressIo: Io>: Send + 'static;
 
-    /// Retrieve a mutable reference to the peekable ingress.
-    fn peek_io_mut(&mut self) -> &mut Self::PeekIo;
-
     /// Retrieve mutable references to the peekable ingress and,
     /// if there is one, the peekable egress.
     fn peek_ios_mut(&mut self) -> (&mut Self::PeekIo, Option<&mut Self::PeekEgressIo>);
@@ -100,11 +100,6 @@ impl<T: Io> PeekIoProvider for T {
     type PeekIo = T;
     type PeekEgressIo = NoPeekEgress;
     type Mapped<PeekedIo: Io, PeekedEgressIo: Io> = PeekedIo;
-
-    #[inline(always)]
-    fn peek_io_mut(&mut self) -> &mut Self::PeekIo {
-        self
-    }
 
     #[inline(always)]
     fn peek_ios_mut(&mut self) -> (&mut Self::PeekIo, Option<&mut Self::PeekEgressIo>) {

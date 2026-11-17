@@ -35,12 +35,6 @@ where
         BridgeIo<PeekedIngress, PeekedEgress>;
 
     #[inline(always)]
-    fn peek_io_mut(&mut self) -> &mut Self::PeekIo {
-        let Self(ingress, _egress) = self;
-        ingress
-    }
-
-    #[inline(always)]
     fn peek_ios_mut(&mut self) -> (&mut Self::PeekIo, Option<&mut Self::PeekEgressIo>) {
         let Self(ingress, egress) = self;
         (ingress, Some(egress))

@@ -7,7 +7,7 @@ mod table;
 #[cfg(test)]
 mod test;
 
-pub use self::decoder::{Decoder, DecoderError, NeedMore};
+pub use self::decoder::{DecodedField, Decoder, DecoderError, MalformedField, NeedMore};
 pub use self::encoder::Encoder;
 pub use self::header::BytesStr;
 pub use self::header::{Header, NeverIndexedPseudo};

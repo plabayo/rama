@@ -214,39 +214,50 @@ pub fn parse_accept_encoding_wildcard_quality(
 ///
 /// Returns `Some(encoding)` (possibly [`Encoding::Identity`]) for the best acceptable encoding,
 /// or `None` when the client rejects every available representation (e.g. `*;q=0` or a lone
-/// `identity;q=0`). A `None` result signals that the server should respond with
+/// `identity;q=0`). A `None` result signals that the server may respond with
 /// `406 Not Acceptable`.
 pub fn maybe_preferred_encoding_with_wildcard(
     accepted: &[QualityValue<Encoding>],
     wildcard_quality: Option<Quality>,
     supported: impl SupportedEncodings,
 ) -> Option<Encoding> {
-    let Some(wildcard_quality) = wildcard_quality else {
-        // No wildcard: use only the explicitly listed encodings. Per RFC 9110 §12.5.3, if
-        // identity is excluded (q=0) and nothing else is acceptable, the server should 406.
-        let identity_rejected = accepted
-            .iter()
-            .any(|qval| qval.value == Encoding::Identity && qval.quality.as_u16() == 0);
-        return match Encoding::maybe_preferred_encoding(accepted.iter().copied()) {
-            Some(enc) => Some(enc),
-            None if identity_rejected => None,
-            None => Some(Encoding::Identity),
-        };
-    };
+    Encoding::maybe_preferred_encoding(accept_encoding_qualities(
+        accepted,
+        wildcard_quality,
+        supported,
+    ))
+}
 
-    // Wildcard present: build the effective (encoding, quality) set over every supported
-    // encoding, using the explicit quality where listed and the wildcard quality otherwise.
-    let effective = all_supported_encodings(supported)
+/// Yields every encoding the server supports with the quality the client gives it.
+///
+/// This is the candidate set behind [`maybe_preferred_encoding_with_wildcard`], for servers
+/// that have to fall back to a less preferred encoding when a variant turns out to be missing.
+/// An explicitly listed encoding takes its highest listed quality, an unlisted one takes the
+/// `*` wildcard quality. Without a wildcard an unlisted encoding is not acceptable, except
+/// [`Encoding::Identity`] (RFC 9110 §12.5.3, rule 2), which then takes the lowest non-zero
+/// quality so that any acceptable listed encoding is preferred over it.
+pub fn accept_encoding_qualities(
+    accepted: &[QualityValue<Encoding>],
+    wildcard_quality: Option<Quality>,
+    supported: impl SupportedEncodings,
+) -> impl Iterator<Item = QualityValue<Encoding>> + '_ {
+    all_supported_encodings(supported)
         .into_iter()
         .flatten()
-        .map(|enc| {
-            let quality = accepted
+        .filter_map(move |enc| {
+            let listed = accepted
                 .iter()
-                .find(|qval| qval.value == enc)
-                .map_or(wildcard_quality, |qval| qval.quality);
-            QualityValue::new(enc, quality)
-        });
-    Encoding::maybe_preferred_encoding(effective)
+                .filter(|qval| qval.value == enc)
+                .map(|qval| qval.quality)
+                .max();
+            let quality = match (listed, wildcard_quality) {
+                (Some(quality), _) => quality,
+                (None, Some(wildcard)) => wildcard,
+                (None, None) if enc == Encoding::Identity => Quality::new_clamped(1),
+                (None, None) => return None,
+            };
+            Some(QualityValue::new(enc, quality))
+        })
 }
 
 /// Returns every encoding the server supports (always including [`Encoding::Identity`]).

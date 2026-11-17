@@ -39,12 +39,12 @@ use rama_http_core::{
 use rama_http_types::proto::h3::{Code, SettingId, Settings};
 use rama_net::proxy::IoForwardService;
 use rama_quic_proto::{Side, VarInt};
-use rama_utils::guard::DropGuard;
-use tokio::time::{Instant, sleep};
+use rama_utils::{guard::DropGuard, time::deadline_after};
+use tokio::time::Instant;
 
 use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse, DefaultMiddleware};
 use crate::{
-    client::{MaxInformationalResponses, RefusedStreamBudget, SendAttempts},
+    client::{ResponseLimits, SendAttempts},
     h3::{clean_close, completed, drain, drained_within},
 };
 
@@ -245,7 +245,7 @@ where
     ) -> impl Future<Output = Result<(), BoxError>> + Send + '_ {
         // Guards and the deadline are taken now, so a future dropped or first polled late
         // still closes both hops and cannot renew the readiness budget.
-        let settings_deadline = Instant::now() + self.settings_timeout;
+        let settings_deadline = deadline_after(Instant::now(), self.settings_timeout);
         let close_ingress = ingress.clone();
         let close_egress = egress.clone();
         let mut guard = DropGuard::new(move || {
@@ -314,12 +314,9 @@ where
             egress_config.early_requests = false;
         }
         // As for a byte-stream egress: a limit stamped on the transport wins over the config.
-        if let Some(max) = egress.extensions().get_ref::<MaxInformationalResponses>() {
-            egress_config.max_informational_responses = max.0;
-        }
-        if let Some(budget) = egress.extensions().get_ref::<RefusedStreamBudget>() {
-            egress_config.refused_stream_budget = budget.0;
-        }
+        ResponseLimits::UNSET
+            .resolve(None, egress.extensions())
+            .apply_h3(&mut egress_config);
         // QPACK state stays independent per hop; push is not relayed.
         if ingress_config.max_pushes != 0 || egress_config.max_pushes != 0 {
             tracing::debug!("HTTP/3 relay disables server push on both hops");
@@ -494,30 +491,16 @@ where
         let mut cancelled = pin!(self.scope.cancelled());
         let forwarding = IoForwardService::new(self.scope.clone());
         let mut requests = FuturesUnordered::new();
-        // Announced: the peer is told to stop. Draining: its notice ended, nothing more is admitted.
-        let mut announced = false;
-        let mut draining = false;
-        let mut notice = pin!(sleep(Duration::ZERO));
+        let mut notice = pin!(server::ShutdownNotice::new());
         // The exchange borrows the HTTP/3 state, so the guards see its outcome while it lives.
         let result = async {
             loop {
                 tokio::select! {
                     result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, &self.scope).await,
-                    _ = &mut cancelled, if !announced => {
-                        let period = connection.announce_shutdown()?;
-                        notice.as_mut().reset(Instant::now() + period);
-                        announced = true;
-                    }
-                    _ = &mut upstream_draining, if !announced => {
-                        let period = connection.announce_shutdown()?;
-                        notice.as_mut().reset(Instant::now() + period);
-                        announced = true;
-                    }
-                    () = &mut notice, if announced && !draining => {
-                        connection.shutdown()?;
-                        draining = true;
-                    }
-                    accepted = connection.accept(), if !draining => {
+                    _ = &mut cancelled, if !notice.is_announced() => notice.as_mut().announce(&mut connection)?,
+                    _ = &mut upstream_draining, if !notice.is_announced() => notice.as_mut().announce(&mut connection)?,
+                    () = notice.as_mut().elapsed() => notice.as_mut().shutdown(&mut connection)?,
+                    accepted = connection.accept(), if notice.admits() => {
                         let stream = match accepted {
                             Ok(stream) => stream,
                             Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, &self.scope).await,
@@ -611,7 +594,7 @@ where
                         }
                     }
                 }
-                if draining && requests.is_empty() {
+                if !notice.admits() && requests.is_empty() {
                     return tokio::select! {
                         result = &mut driver => drain(std::future::ready(result), &mut requests, close_timeout, &self.scope).await,
                         result = drained_within(connection.drained(), goaway_timeout) => match result {

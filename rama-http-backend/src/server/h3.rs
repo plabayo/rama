@@ -15,8 +15,7 @@ use rama_http_core::{
     service::RamaHttpService,
 };
 use rama_http_types::Request;
-use std::{convert::Infallible, time::Duration};
-use tokio::time::{Instant, sleep};
+use std::convert::Infallible;
 
 /// Serves until the graceful phase of `scope`, tells the peer to stop, still serves the
 /// requests it had already sent, drains with a GOAWAY, and drops the connection at the
@@ -67,24 +66,13 @@ where
     let mut cancelled = std::pin::pin!(cancelled);
     let mut requests = FuturesUnordered::new();
     let service = RamaHttpService::new(service);
-    // Announced: the peer is told to stop. Draining: its notice ended, nothing more is admitted.
-    let mut announced = false;
-    let mut draining = false;
-    let notice = sleep(Duration::ZERO);
-    let mut notice = std::pin::pin!(notice);
+    let mut notice = std::pin::pin!(server::ShutdownNotice::new());
     loop {
         tokio::select! {
             result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, &scope).await,
-            _ = &mut cancelled, if !announced => {
-                let period = connection.announce_shutdown()?;
-                notice.as_mut().reset(Instant::now() + period);
-                announced = true;
-            }
-            () = &mut notice, if announced && !draining => {
-                connection.shutdown()?;
-                draining = true;
-            }
-            accepted = connection.accept(), if !draining => {
+            _ = &mut cancelled, if !notice.is_announced() => notice.as_mut().announce(&mut connection)?,
+            () = notice.as_mut().elapsed() => notice.as_mut().shutdown(&mut connection)?,
+            accepted = connection.accept(), if notice.admits() => {
                 let stream = match accepted {
                     Ok(stream) => stream,
                     // Keep accepted work alive while the driver files received input.
@@ -116,7 +104,7 @@ where
                 }
             }
         }
-        if draining && requests.is_empty() {
+        if !notice.admits() && requests.is_empty() {
             return tokio::select! {
                 result = &mut driver => drain(std::future::ready(result), &mut requests, close_timeout, &scope).await,
                 result = drained_within(connection.drained(), goaway_timeout) => match result {

@@ -27,6 +27,11 @@ use ::{rama_unix::server::UnixListener, std::path::Path};
 ///
 /// Supported protocols: HTTP/1, H2, Auto (HTTP/1 + H2), and with the `quic` feature H3 over QUIC.
 ///
+/// Adds no `Server` or `Date` response fields: use [`AddRequiredResponseHeadersLayer`]
+/// or your own layer. Core relays responses as-is; header policy lives in layers.
+///
+/// [`AddRequiredResponseHeadersLayer`]: rama_http::layer::required_header::AddRequiredResponseHeadersLayer
+///
 /// [`Service`]: rama_core::Service
 #[derive(Debug, Clone)]
 pub struct HttpServer<B> {

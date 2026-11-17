@@ -780,3 +780,72 @@ fn alpn_compatibility_matches_all_protocol_subsets_and_preference_orders() {
         }
     }
 }
+
+#[tokio::test]
+async fn protocol_subset_recomputes_ech_reliance() {
+    let ech = [0, 4, 0xfe, 0x0d, 0, 0];
+    let (lookup, calls) = setup(&[(
+        "origin.example",
+        vec![
+            record(
+                "origin.example",
+                1,
+                "ech.example",
+                &[(1, b"\x02h3"), (5, &ech)],
+            ),
+            record(
+                "origin.example",
+                1,
+                "plain.example",
+                &[(1, b"\x02h2"), (2, b"")],
+            ),
+        ],
+    )]);
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        true,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
+    assert!(!result.ech_reliant());
+    let h3 = result.restricted_to(&ApplicationProtocol::HTTP_3);
+    assert!(h3.ech_reliant());
+    assert_eq!(h3.bindings().len(), 1);
+    assert_eq!(h3.bindings()[0].target.to_string(), "ech.example.:443");
+    assert_eq!(h3.bindings()[0].protocols, [ApplicationProtocol::HTTP_3]);
+    let h2 = result.restricted_to(&ApplicationProtocol::HTTP_2);
+    assert!(!h2.ech_reliant());
+    assert_eq!(h2.bindings()[0].target.to_string(), "plain.example.:443");
+    // Only the ECH record keeps default http/1.1; the other sets no-default-alpn.
+    let h11 = result.restricted_to(&ApplicationProtocol::HTTP_11);
+    assert!(h11.ech_reliant());
+    assert_eq!(h11.bindings()[0].target.to_string(), "ech.example.:443");
+    assert_eq!(calls.lock().len(), 1);
+}
+
+#[tokio::test]
+async fn protocol_subset_keeps_ech_incapable_lookups_non_reliant() {
+    let ech = [0, 4, 0xfe, 0x0d, 0, 0];
+    let (lookup, _) = setup(&[(
+        "origin.example",
+        vec![record(
+            "origin.example",
+            1,
+            ".",
+            &[(1, b"\x02h3"), (5, &ech)],
+        )],
+    )]);
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
+    let h3 = result.restricted_to(&ApplicationProtocol::HTTP_3);
+    assert_eq!(h3.bindings().len(), 1);
+    assert!(!h3.ech_reliant());
+}

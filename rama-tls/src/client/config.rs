@@ -330,6 +330,14 @@ impl TlsClientConfig {
         }
     }
 
+    /// Effective extensions for one request: `overrides` resolved over this configuration.
+    ///
+    /// Inserts on the result stay local to it and never reach `overrides`.
+    #[must_use]
+    pub fn overlay(&self, overrides: &Extensions) -> Extensions {
+        overrides.fork().with_base(&self.0)
+    }
+
     pub fn as_extensions(&self) -> &Extensions {
         &self.0
     }

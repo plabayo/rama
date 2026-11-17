@@ -113,6 +113,8 @@ mod http_multipart;
 mod http_nd_json;
 #[cfg(feature = "http-full")]
 mod http_pooled_client;
+#[cfg(all(feature = "http-full", feature = "proxy-full"))]
+mod http_proxy_db_exclude_broken;
 #[cfg(all(feature = "http-full", feature = "tower"))]
 mod http_rama_tower;
 #[cfg(feature = "http-full")]

@@ -2,17 +2,20 @@
 
 use rama_udp::DatagramMetadata;
 use rama_utils::macros::define_inner_service_accessors;
-use std::{fmt, future::pending, time::Duration};
+use std::{fmt, time::Duration};
 
 use rama_core::{
     Service,
     bytes::Bytes,
     error::BoxError,
     extensions::{Extension, ExtensionsRef},
-    graceful::{WeakScope, scope_context},
+    graceful::scope_context,
     io::{
         BridgeIo,
-        peek::{PeekAction, PeekCutoff, PeekCutoffError, PeekPolicy, PeekProgress, PeekStopReason},
+        peek::{
+            PeekAction, PeekCutoff, PeekCutoffError, PeekPolicy, PeekProgress, PeekStopReason,
+            PeekWaiter,
+        },
     },
     service::RejectService,
     telemetry::tracing,
@@ -26,7 +29,10 @@ use rama_udp::{
     DatagramPeekInput, DatagramSocket, DatagramSocketExt as _, PrefixedDatagramSocket,
     RetainedDatagram, proxy::DatagramBridgeInput,
 };
-use rama_utils::octets::{kib, mib};
+use rama_utils::{
+    octets::{kib, mib},
+    time::deadline_after,
+};
 use tokio::time::{Instant, timeout_at};
 
 /// Optional first-datagram routing, sharing inspection's deadline and receive buffer.
@@ -467,15 +473,17 @@ where
 
     fn serve(&self, mut input: I) -> impl Future<Output = Result<O, BoxError>> + Send + '_ {
         // Fixed when the association is handed over, so a late first poll gains no time.
-        let deadline = Instant::now() + self.peek_timeout;
-        let scope = scope_context(input.extensions());
+        let deadline = deadline_after(Instant::now(), self.peek_timeout);
+        let mut waiter = PeekWaiter::new()
+            .with_policy(self.peek_policy)
+            .maybe_with_scope(scope_context(input.extensions()));
         async move {
             let mut retained = Vec::new();
             let peeked = self
                 .peek::<_, O>(
                     input.peek_socket_mut(),
                     deadline,
-                    scope.as_ref(),
+                    &mut waiter,
                     &mut retained,
                 )
                 .await?;
@@ -529,7 +537,7 @@ impl<K: KeyProvider, S, F, R> PeekQuicClientHelloService<K, S, F, R> {
         &self,
         socket: &mut Socket,
         deadline: Instant,
-        scope: Option<&WeakScope>,
+        waiter: &mut PeekWaiter<'_>,
         retained: &mut Vec<RetainedDatagram>,
     ) -> Result<PeekOutcome<R::Route>, BoxError>
     where
@@ -541,29 +549,19 @@ impl<K: KeyProvider, S, F, R> PeekQuicClientHelloService<K, S, F, R> {
             InitialPeek::new(self.limits, deadline.into_std())
         };
         let mut buffer = vec![0; RECEIVE_BUFFER];
-        let mut cancel_waived = None;
         loop {
-            let progress = PeekProgress::from_peeked(retained.len());
-            let cancel = scope.filter(|_| cancel_waived != Some(progress));
-            let received = tokio::select! {
-                biased;
-                received = timeout_at(deadline, socket.recv(&mut buffer)) => received,
-                () = aborted(scope) => {
-                    let cause = scope.and_then(WeakScope::abort_cause);
-                    return Err(PeekCutoffError::new(PeekCutoff::Aborted, cause).into());
-                }
-                () = cancelled(cancel) => {
-                    match self.peek_policy.action(PeekCutoff::Cancelled, progress) {
-                        PeekAction::Wait => {
-                            cancel_waived = Some(progress);
-                            continue;
-                        }
-                        PeekAction::Fallback => return Ok(PeekOutcome::Inspected(Err(QuicPeekRejection::Cancelled))),
-                        PeekAction::Fail => {
-                            let cause = scope.and_then(WeakScope::cause);
-                            return Err(PeekCutoffError::new(PeekCutoff::Cancelled, cause).into());
-                        }
-                    }
+            let received = match waiter
+                .wait_for(
+                    timeout_at(deadline, socket.recv(&mut buffer)),
+                    retained.len(),
+                )
+                .await
+            {
+                Ok(received) => received,
+                Err(_cutoff) => {
+                    waiter.check::<PeekCutoffError>()?;
+                    // without an egress only a cancelled scope falls back
+                    return Ok(PeekOutcome::Inspected(Err(QuicPeekRejection::Cancelled)));
                 }
             };
             let metadata = match received {
@@ -607,20 +605,6 @@ impl<K: KeyProvider, S, F, R> PeekQuicClientHelloService<K, S, F, R> {
                 }
             }
         }
-    }
-}
-
-async fn aborted(scope: Option<&WeakScope>) {
-    match scope {
-        Some(scope) => scope.aborted().await,
-        None => pending().await,
-    }
-}
-
-async fn cancelled(scope: Option<&WeakScope>) {
-    match scope {
-        Some(scope) => scope.cancelled().await,
-        None => pending().await,
     }
 }
 

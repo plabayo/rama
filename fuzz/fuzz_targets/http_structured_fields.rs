@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use rama::http::{headers::Priority, structured_fields::parse_dictionary};
+use rama::http::{headers::Priority, utils::structured_fields::parse_dictionary};
 
 fuzz_target!(|input: &[u8]| {
     let dictionary = parse_dictionary(input, |_, _| {});

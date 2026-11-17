@@ -30,7 +30,7 @@ use rama_http_types::proto::h2::frame::{
     EarlyFrame, Head, Kind, Setting, SettingId, Settings, StreamId, WindowUpdate,
 };
 use rama_net::test_utils::client::MockSocket;
-use rama_utils::octets::mib_u32;
+use rama_utils::octets::{mib, mib_u32};
 use std::{convert::Infallible, future::pending, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream},
@@ -38,6 +38,9 @@ use tokio::{
 };
 
 const CLIENT_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// A header value past the native 1 MiB header-list cap that no frame here advertises.
+const OVER_NATIVE_CAP: usize = mib(1) + 1;
 
 fn settings(entries: &[(u16, u32)]) -> Arc<Settings> {
     Arc::new(
@@ -250,9 +253,9 @@ async fn server_caps_an_explicit_frame_omits_stay_enforced() {
                 .body(Body::empty())
                 .unwrap()
         };
-        // The native 16 KiB header-list cap holds although the frame omits it; a
+        // The native header-list cap holds although the frame omits it; a
         // two-byte header asks the service to hold its stream.
-        if let Ok(response) = sender.send_request(request("/", 20000)).await {
+        if let Ok(response) = sender.send_request(request("/", OVER_NATIVE_CAP)).await {
             assert_eq!(response.status(), 431);
         }
         // The builder's stream cap holds although the frame omits it.
@@ -289,7 +292,7 @@ async fn client_header_list_cap_an_explicit_frame_omits_stays_enforced() {
                     service_fn(|_: Request| async {
                         Ok::<_, Infallible>(
                             Response::builder()
-                                .header("x-long", "h".repeat(20000))
+                                .header("x-long", "h".repeat(OVER_NATIVE_CAP))
                                 .body(Body::empty())
                                 .unwrap(),
                         )

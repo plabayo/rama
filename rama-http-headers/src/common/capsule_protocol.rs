@@ -1,7 +1,7 @@
 //! `Capsule-Protocol` (RFC 9297 §3.4).
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
-use rama_http_types::structured_fields::{BareItem, parse_item};
+use rama_http_types::utils::structured_fields::{BareItem, parse_item};
 use rama_http_types::{HeaderName, HeaderValue};
 
 /// Whether a request's data stream uses the Capsule Protocol.

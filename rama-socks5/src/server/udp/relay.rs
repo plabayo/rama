@@ -5,7 +5,7 @@ use rama_core::error::{BoxError, ErrorExt};
 use rama_core::telemetry::tracing;
 use rama_net::address::{HostWithPort, SocketAddress};
 
-use rama_udp::UdpSocket;
+use rama_udp::{UdpSocket, is_datagram_too_large};
 
 #[cfg(feature = "dns")]
 use super::MaybeDnsResolver;
@@ -27,9 +27,9 @@ pub(super) struct UdpSocketRelay {
     tcp_peer_ip: Option<IpAddr>,
 
     north: UdpSocket,
-    north_max_size: usize,
+    north_read_size: usize,
     south: UdpSocket,
-    south_max_size: usize,
+    south_read_size: usize,
 
     north_read_buf: BytesMut,
     south_read_buf: BytesMut,
@@ -123,21 +123,13 @@ impl UdpSocketRelay {
             tcp_peer_ip: None,
 
             north,
-            north_max_size: south_read_buf_size,
-            north_read_buf: {
-                let mut b = BytesMut::with_capacity(north_read_buf_size);
-                b.resize(north_read_buf_size, 0);
-                b
-            },
+            north_read_size: north_read_buf_size,
+            north_read_buf: oversize_detecting_read_buf(north_read_buf_size),
             north_write_buf: BytesMut::new(),
 
             south,
-            south_max_size: north_read_buf_size,
-            south_read_buf: {
-                let mut b = BytesMut::with_capacity(south_read_buf_size);
-                b.resize(south_read_buf_size, 0);
-                b
-            },
+            south_read_size: south_read_buf_size,
+            south_read_buf: oversize_detecting_read_buf(south_read_buf_size),
 
             #[cfg(feature = "dns")]
             dns_resolve_mode: DnsResolveIpMode::default(),
@@ -166,10 +158,10 @@ impl UdpSocketRelay {
 
     pub(super) async fn recv(&mut self) -> Result<Option<UdpRelayState>, BoxError> {
         self.north_read_buf.clear();
-        self.north_read_buf.resize(self.north_max_size, 0);
+        self.north_read_buf.resize(self.north_read_size + 1, 0);
 
         self.south_read_buf.clear();
-        self.south_read_buf.resize(self.south_max_size, 0);
+        self.south_read_buf.resize(self.south_read_size + 1, 0);
 
         tokio::select! {
             result = self.north.recv_from(&mut self.north_read_buf[..]) => {
@@ -178,6 +170,16 @@ impl UdpSocketRelay {
                         tracing::trace!(
                             "north socket: received packet (len = {len}; src = {src})",
                         );
+
+                        if len > self.north_read_size {
+                            tracing::debug!(
+                                network.peer.address = %self.client_address.ip_addr,
+                                network.peer.port = %self.client_address.port,
+                                "north socket: drop packet larger than the read buffer (len > {}; src = {src})",
+                                self.north_read_size,
+                            );
+                            return Ok(None);
+                        }
 
                         let src = SocketAddress::from(src);
                         if !self.north_source_allowed(src) {
@@ -247,6 +249,14 @@ impl UdpSocketRelay {
                         Ok(Some(UdpRelayState::ReadNorth(server_address)))
                     }
 
+                    Err(err) if is_datagram_too_large(&err) => {
+                        tracing::debug!(
+                            "north socket: drop packet larger than the read buffer (> {})",
+                            self.north_read_size,
+                        );
+                        Ok(None)
+                    }
+
                     Err(err) if is_transient_udp_io_error(&err) => {
                         tracing::debug!("north socket: non-fatal error: retry again: {err:?}");
                         Ok(None)
@@ -264,8 +274,23 @@ impl UdpSocketRelay {
                         tracing::trace!(
                             "south socket: received packet (len = {len}; src = {src})",
                         );
+                        if len > self.south_read_size {
+                            tracing::debug!(
+                                "south socket: drop packet larger than the read buffer (len > {}; src = {src})",
+                                self.south_read_size,
+                            );
+                            return Ok(None);
+                        }
                         self.south_read_buf.truncate(len);
                         Ok(Some(UdpRelayState::ReadSouth(src.into())))
+                    }
+
+                    Err(err) if is_datagram_too_large(&err) => {
+                        tracing::debug!(
+                            "south socket: drop packet larger than the read buffer (> {})",
+                            self.south_read_size,
+                        );
+                        Ok(None)
                     }
 
                     Err(err) if is_transient_udp_io_error(&err) => {
@@ -296,7 +321,8 @@ impl UdpSocketRelay {
                 "send packet south: data from input (len = {})",
                 data.len()
             );
-            if data.len() > self.south_max_size {
+            // Data sent south stands in for a north datagram, so the north read size caps it.
+            if data.len() > self.north_read_size {
                 tracing::trace!(
                     network.peer.address = %self.client_address.ip_addr,
                     network.peer.port = %self.client_address.port,
@@ -304,7 +330,7 @@ impl UdpSocketRelay {
                     server.port = %server_address.port,
                     "drop packet south: length is too large for defined limit (len = {}; max len = {})",
                     data.len(),
-                    self.south_max_size,
+                    self.north_read_size,
                 );
                 return Ok(());
             }
@@ -389,7 +415,8 @@ impl UdpSocketRelay {
                 data.len(),
             );
 
-            if data.len() > self.north_max_size {
+            // Data sent north stands in for a south datagram, so the south read size caps it.
+            if data.len() > self.south_read_size {
                 tracing::trace!(
                     network.peer.address = %self.client_address.ip_addr,
                     network.peer.port = %self.client_address.port,
@@ -397,7 +424,7 @@ impl UdpSocketRelay {
                     server.port = %server_address.port,
                     "drop packet north: length is too large for defined limit (len = {}; max len = {})",
                     data.len(),
-                    self.north_max_size,
+                    self.south_read_size,
                 );
                 return Ok(());
             }
@@ -512,6 +539,14 @@ impl UdpSocketRelay {
             (!self.client_address.ip_addr.is_unspecified()).then_some(self.client_address)
         })
     }
+}
+
+/// A read buffer one byte larger than `size`, so a datagram over `size` shows as oversized
+/// instead of being cut to fit.
+fn oversize_detecting_read_buf(size: usize) -> BytesMut {
+    let mut buf = BytesMut::with_capacity(size + 1);
+    buf.resize(size + 1, 0);
+    buf
 }
 
 fn is_transient_udp_io_error(err: &std::io::Error) -> bool {
@@ -932,6 +967,114 @@ mod tests {
             Some(UdpRelayState::ReadNorth(_))
         );
         assert_eq!(relay.north_send_address(), Some(client_addr.into()));
+    }
+
+    #[tokio::test]
+    async fn test_relay_larger_north_buffer_than_south() {
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let north_addr = north.local_addr().unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let south_addr = south.local_addr().unwrap();
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut relay = UdpSocketRelay::new(
+            client.local_addr().unwrap().into(),
+            north,
+            8192,
+            south,
+            1024,
+        );
+        let payload = vec![7u8; 4000];
+
+        for _ in 0..2 {
+            server.send_to(b"small", south_addr).await.unwrap();
+            assert_matches!(
+                recv_one(&mut relay).await,
+                Some(UdpRelayState::ReadSouth(_))
+            );
+            client
+                .send_to(&north_packet(&payload), north_addr)
+                .await
+                .unwrap();
+            assert_matches!(
+                recv_one(&mut relay).await,
+                Some(UdpRelayState::ReadNorth(_))
+            );
+            assert_eq!(relay.north_read_buf_slice().len(), payload.len());
+            assert_eq!(relay.north_read_buf_slice(), &payload[..]);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_relay_larger_south_buffer_than_north() {
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let north_addr = north.local_addr().unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let south_addr = south.local_addr().unwrap();
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut relay = UdpSocketRelay::new(
+            client.local_addr().unwrap().into(),
+            north,
+            1024,
+            south,
+            8192,
+        );
+        let payload = vec![9u8; 4000];
+
+        for _ in 0..2 {
+            client
+                .send_to(&north_packet(b"small"), north_addr)
+                .await
+                .unwrap();
+            assert_matches!(
+                recv_one(&mut relay).await,
+                Some(UdpRelayState::ReadNorth(_))
+            );
+            server.send_to(&payload, south_addr).await.unwrap();
+            assert_matches!(
+                recv_one(&mut relay).await,
+                Some(UdpRelayState::ReadSouth(_))
+            );
+            assert_eq!(relay.south_read_buf_slice().len(), payload.len());
+            assert_eq!(relay.south_read_buf_slice(), &payload[..]);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_relay_drops_datagrams_larger_than_the_read_buffer() {
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let north_addr = north.local_addr().unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let south_addr = south.local_addr().unwrap();
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut relay = UdpSocketRelay::new(
+            client.local_addr().unwrap().into(),
+            north,
+            1024,
+            south,
+            1024,
+        );
+
+        server.send_to(&[1u8; 1025], south_addr).await.unwrap();
+        assert!(recv_one(&mut relay).await.is_none());
+        server.send_to(&[1u8; 1024], south_addr).await.unwrap();
+        assert_matches!(
+            recv_one(&mut relay).await,
+            Some(UdpRelayState::ReadSouth(_))
+        );
+
+        let oversized = north_packet(&[2u8; 1024]);
+        client.send_to(&oversized, north_addr).await.unwrap();
+        assert!(recv_one(&mut relay).await.is_none());
+        let fits = north_packet(&[2u8; 1014]);
+        assert_eq!(fits.len(), 1024);
+        client.send_to(&fits, north_addr).await.unwrap();
+        assert_matches!(
+            recv_one(&mut relay).await,
+            Some(UdpRelayState::ReadNorth(_))
+        );
     }
 
     #[test]

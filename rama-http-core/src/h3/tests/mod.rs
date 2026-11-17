@@ -468,6 +468,7 @@ async fn header_order_survives_transport_and_message_forwarding() {
             WeakScope::detached(),
         )
         .unwrap();
+        // The response must carry exactly the forwarded fields, so no `Date` is added.
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -1021,11 +1022,7 @@ async fn connect_upstream_failure_resets_with_connect_error() {
                 .unwrap();
             let tunnel = upgrade.await.unwrap();
             acknowledged.await.unwrap();
-            tunnel
-                .extensions()
-                .self_get_arc::<AbortIo>()
-                .unwrap()
-                .abort();
+            tunnel.extensions().get_arc::<AbortIo>().unwrap().abort();
             drop(tunnel);
         });
         let response = client

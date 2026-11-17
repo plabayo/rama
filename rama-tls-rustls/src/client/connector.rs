@@ -18,11 +18,12 @@ use rama_net::client::{
 };
 use rama_net::extensions::StreamTransformed;
 use rama_net::{
-    AuthorityInputExt, Protocol, ProtocolInputExt,
+    AuthorityInputExt, ConnectorTargetInputExt, Protocol, ProtocolInputExt,
     tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
 };
 use rama_tls::client::{
-    NegotiatedTlsAlgorithms, NegotiatedTlsParameters, TlsClientConfig, TlsConnectionReuse,
+    EchRequirement, NegotiatedTlsAlgorithms, NegotiatedTlsParameters, TlsClientConfig,
+    TlsConnectionReuse, resolve_target_ech,
 };
 use rama_tls::{TlsTunnelMode, resolve_tls_tunnel};
 #[cfg(feature = "http")]
@@ -443,6 +444,14 @@ impl<S, K> TlsConnector<S, K> {
         TlsConnectorData::try_from(config)
     }
 
+    /// Request extensions resolved over the connector base, local to the caller.
+    fn effective_extensions(&self, request: &Extensions) -> Extensions {
+        match &self.base_config {
+            Some(base) => base.overlay(request),
+            None => request.fork(),
+        }
+    }
+
     fn tunnel_config_extensions(
         &self,
         tunnel: Option<&TlsTunnel>,
@@ -467,21 +476,15 @@ impl<S, K> TlsConnector<S, K> {
         input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
         secure: bool,
     ) -> Result<(), ConnectionError> {
-        let effective = input.extensions().fork();
-        let effective = match &self.base_config {
-            Some(base) => effective.with_base(base.as_extensions()),
-            None => effective,
-        };
-        if effective.get_ref::<rama_tls::client::EchRequirement>()
-            == Some(&rama_tls::client::EchRequirement::Required)
-        {
+        let effective = self.effective_extensions(input.extensions());
+        if effective.get_ref::<EchRequirement>() == Some(&EchRequirement::Required) {
             return Err(ConnectionError::local(
                 BoxError::from_static_str("required ECH is not supported by the rustls connector"),
                 ConnectionErrorKind::InvalidInput,
             ));
         }
-        if secure && let Some(target) = rama_net::ConnectorTargetInputExt::connector_target(input) {
-            rama_tls::client::target_ech_config(&effective, &target, false)
+        if secure && let Some(target) = input.connector_target() {
+            resolve_target_ech(&effective, &target, false)
                 .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::Unavailable))?;
         }
         let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() else {
@@ -549,12 +552,7 @@ impl<S, K> TlsConnector<S, K> {
         request_extensions: &Extensions,
         application_protocol: Option<&Protocol>,
     ) -> Result<TlsConnectorData, BoxError> {
-        let effective = request_extensions.fork();
-        let extensions = if let Some(base) = &self.base_config {
-            effective.with_base(base.as_extensions())
-        } else {
-            effective
-        };
+        let extensions = self.effective_extensions(request_extensions);
 
         apply_default_alpn(&extensions, application_protocol);
 

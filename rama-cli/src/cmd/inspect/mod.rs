@@ -19,6 +19,7 @@ use rama::{
     inspect::timeline::{Timeline, View},
     quic::qlog,
     telemetry::tracing::subscriber::filter::LevelFilter,
+    utils::octets::{kib, mib_u64},
 };
 
 mod har_timeline;
@@ -62,11 +63,11 @@ pub struct InspectCommand {
     summary: bool,
 
     /// maximum capture file size to open, in bytes
-    #[arg(long, default_value_t = 256 * 1024 * 1024)]
+    #[arg(long, default_value_t = mib_u64(256))]
     max_size: u64,
 
     /// maximum size of one record, in bytes (qlog text-sequence records)
-    #[arg(long, default_value_t = 16 * 1024 * 1024)]
+    #[arg(long, default_value_t = mib_u64(16))]
     max_record_size: u64,
 
     /// maximum number of records (HAR entries, qlog events) to read
@@ -77,7 +78,7 @@ pub struct InspectCommand {
     max_records: usize,
 
     /// maximum number of bytes shown of any captured body or payload
-    #[arg(long, default_value_t = 64 * 1024)]
+    #[arg(long, default_value_t = kib(64))]
     max_body: usize,
 
     /// enable debug logs for tracing (possible via RUST_LOG env as well)

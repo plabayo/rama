@@ -11,6 +11,7 @@ use rama::{
     http::{
         Body, Method, Request, Response, StatusCode,
         core::{
+            client::conn::http2 as client_http2,
             h2,
             server::conn::{http1, http2},
             service::RamaHttpService,
@@ -75,6 +76,23 @@ const CASES: &[Case] = &[
     ),
     case("GET", 200, &[], Payload::Empty, Some("0"), None),
     case("GET", 200, &[], Payload::Streamed(b"hello"), None, None),
+    // A known body frames itself: a declared length it does not have is rewritten.
+    case(
+        "GET",
+        200,
+        &[("content-length", "10")],
+        Payload::Known(b"hello"),
+        Some("5"),
+        Some("5"),
+    ),
+    case(
+        "GET",
+        200,
+        &[("content-length", "10")],
+        Payload::Empty,
+        Some("0"),
+        Some("0"),
+    ),
     // 204 never carries a length, even one the service set.
     case(
         "GET",
@@ -420,4 +438,156 @@ async fn http1_strict_connect_rejects_both_framing_fields() {
             "{name}: the refused framing fails the connection"
         );
     }
+}
+
+/// A streamed body of `body` declared as 5 bytes long.
+fn streamed_with_length_five(body: &'static [u8]) -> Response {
+    Response::builder()
+        .header("content-length", "5")
+        .body(Body::from_stream(stream::iter([Ok::<_, Infallible>(
+            Bytes::from_static(body),
+        )])))
+        .unwrap()
+}
+
+/// A streamed body longer or shorter than its declared length is never sent past it nor
+/// ended cleanly: the connection closes and the server reports the error.
+#[tokio::test]
+async fn http1_streamed_body_not_matching_its_content_length_closes_the_connection() {
+    // a chunk past the declared length is not sent at all
+    for (body, sent) in [(&b"hello world"[..], &b""[..]), (b"hi", b"hi")] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let svc = RamaHttpService::new(service_fn(async move |_req: Request| {
+                Ok::<_, Infallible>(streamed_with_length_five(body))
+            }));
+            http1::Builder::new()
+                .serve_connection(ServiceInput::new(socket), svc)
+                .await
+        });
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let (head, mut rest) = read_head(&mut stream).await;
+        assert!(head.contains("content-length: 5"), "{head}");
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest))
+            .await
+            .expect("the connection closes")
+            .unwrap();
+        assert_eq!(rest, sent);
+        let served = server.await.unwrap();
+        assert!(served.is_err(), "{body:?}: the mismatch is reported");
+    }
+}
+
+/// A streamed body longer or shorter than its declared length is never sent past it nor
+/// ended cleanly: the stream is reset and the connection serves on.
+#[tokio::test]
+async fn http2_streamed_body_not_matching_its_content_length_resets_the_stream() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let svc = RamaHttpService::new(service_fn(async |req: Request| {
+            let body: &'static [u8] = if req.uri().to_string().ends_with("/long") {
+                b"hello world"
+            } else {
+                b"hi"
+            };
+            Ok::<_, Infallible>(streamed_with_length_five(body))
+        }));
+        _ = http2::Builder::new(WeakScope::detached())
+            .serve_connection(ServiceInput::new(socket), svc)
+            .await;
+    });
+
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let (client, connection) = h2::client::handshake(ServiceInput::new(tcp)).await.unwrap();
+    tokio::spawn(connection);
+    let mut client = client.ready().await.unwrap();
+    for path in ["/long", "/short", "/long"] {
+        let request = Request::builder()
+            .uri(format!("https://localhost{path}"))
+            .body(())
+            .unwrap();
+        let (response, _send) = client.send_request(request, true).unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(5), response)
+            .await
+            .expect("response");
+        // a reset may overtake the response head that was still queued
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                assert_eq!(error.reason(), Some(h2::Reason::INTERNAL_ERROR), "{path}");
+                client = client.ready().await.unwrap();
+                continue;
+            }
+        };
+        assert_eq!(response.headers()["content-length"], "5");
+        let mut body = response.into_body();
+        let mut received = 0;
+        let error = loop {
+            match body.data().await {
+                Some(Ok(chunk)) => {
+                    received += chunk.len();
+                    _ = body.flow_control().release_capacity(chunk.len());
+                }
+                Some(Err(error)) => break error,
+                None => panic!("{path}: ended cleanly after {received} bytes"),
+            }
+        };
+        assert!(received <= 5, "{path}: {received} bytes");
+        assert_eq!(error.reason(), Some(h2::Reason::INTERNAL_ERROR), "{path}");
+        client = client.ready().await.unwrap();
+    }
+}
+
+/// A request body of known length frames itself: a declared length it does not have is
+/// rewritten before the head is sent.
+#[tokio::test]
+async fn http2_request_content_length_follows_a_known_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut conn = h2::server::handshake(ServiceInput::new(socket))
+            .await
+            .unwrap();
+        let (request, mut respond) = conn.accept().await.unwrap().unwrap();
+        // The body only makes progress while the connection is polled.
+        tokio::spawn(async move { while conn.accept().await.is_some() {} });
+        let length = request.headers()["content-length"].clone();
+        let mut body = request.into_body();
+        let mut received = Vec::new();
+        while let Some(chunk) = body.data().await {
+            let chunk = chunk.unwrap();
+            _ = body.flow_control().release_capacity(chunk.len());
+            received.extend_from_slice(&chunk);
+        }
+        respond.send_response(Response::new(()), true).unwrap();
+        (length, received)
+    });
+
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let (mut client, connection) = client_http2::Builder::new(WeakScope::detached())
+        .handshake(ServiceInput::new(tcp))
+        .await
+        .unwrap();
+    tokio::spawn(connection);
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("https://localhost/")
+        .header("content-length", "10")
+        .body(Body::from(Bytes::from_static(b"hey")))
+        .unwrap();
+    let response = client.send_request(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let (length, received) = origin.await.unwrap();
+    assert_eq!(length, "3");
+    assert_eq!(received, b"hey");
 }

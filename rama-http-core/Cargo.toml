@@ -46,7 +46,6 @@ ahash = { workspace = true }
 atomic-waker = { workspace = true }
 futures-channel = { workspace = true }
 httparse = { workspace = true }
-httpdate = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 itoa = { workspace = true }
 parking_lot = { workspace = true }

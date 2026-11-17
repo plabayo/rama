@@ -62,7 +62,7 @@ use self::lanes::{Claimed, IdBucket, Lane, OnlyLane, RequestLanes, Snapshot, sel
 use self::policy::{Asked, Excess, IdLimit, IdPermit, IdleLimits, over};
 pub use self::policy::{MultiplexSlot, SaturationPolicy};
 use self::reaper::{Reaped, Reaper, SAMPLE, SCAN_UP_TO, Sample, UNLINKED};
-use self::waiting::{Blocked, IdSlotWait, Look, SlotWait, Waiting, maybe, maybe_pinned};
+use self::waiting::{Blocked, IdSlotWait, Look, SlotWait, Waiting};
 
 use super::drain::ConnScope;
 use super::reuse::{KeyedLane, LaneKey, ReuseClass};
@@ -79,6 +79,7 @@ use parking_lot::Mutex;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef, NetExtension};
+use rama_core::futures::maybe;
 use rama_core::telemetry::tracing::trace;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::generate_set_and_with;
@@ -2036,25 +2037,25 @@ where
             tokio::select! {
                 _ = notified => {}
                 () = party.woken(seen) => {}
-                permit = maybe(&mut id_slot_wait) => {
+                permit = maybe(id_slot_wait.as_mut()) => {
                     id_slot_wait = None;
                     // The pool never closes its semaphores.
                     held_id = permit.ok();
                 }
-                () = maybe_pinned(patience.as_mut()) => {
+                () = maybe(patience.as_mut().as_pin_mut()) => {
                     patience.set(None);
                     patient = false;
                 }
                 // Looks again: its sweep takes out what expired. Cleared, so a
                 // look that waits for something else does not spin on it.
-                () = maybe_pinned(expiry.as_mut()) => {
+                () = maybe(expiry.as_mut().as_pin_mut()) => {
                     expiry.set(None);
                 }
-                () = maybe_pinned(dial_patience.as_mut()) => {
+                () = maybe(dial_patience.as_mut().as_pin_mut()) => {
                     dial_patience.set(None);
                     impatient = true;
                 }
-                permit = maybe(&mut total_slot_wait) => {
+                permit = maybe(total_slot_wait.as_mut()) => {
                     total_slot_wait = None;
                     let Ok(permit) = permit else {
                         // The pool never closes its semaphores; treat as spurious.
@@ -2123,7 +2124,7 @@ where
         let connect = slot.connect.take();
         // The establishing request owns the first reservation before concurrent
         // checkouts can see this connection in storage.
-        let admission = match conn.extensions().self_get_ref::<ConnectionAdmission>() {
+        let admission = match conn.extensions().get_ref::<ConnectionAdmission>() {
             Some(provider) => match provider.acquire(input).await {
                 Ok(admission) => Some(admission),
                 Err(error) => {
@@ -2156,10 +2157,7 @@ where
                 .extensions()
                 .get_arc_or_insert(|| Arc::new(ConnectionHealthWatcher::default())),
             unusable_told: AtomicBool::new(false),
-            admission: conn
-                .extensions()
-                .self_get_ref::<ConnectionAdmission>()
-                .cloned(),
+            admission: conn.extensions().get_ref::<ConnectionAdmission>().cloned(),
             conn,
             id,
             lane: Mutex::new(None),

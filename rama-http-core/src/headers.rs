@@ -1,4 +1,7 @@
-use rama_core::{bytes::BytesMut, telemetry::tracing::debug};
+use rama_core::{
+    bytes::BytesMut,
+    telemetry::tracing::{debug, warn},
+};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
     header::{CONNECTION, CONTENT_LENGTH, OccupiedEntry, TE, TRANSFER_ENCODING, ValueIter},
@@ -223,6 +226,19 @@ pub(super) fn method_has_defined_payload_semantics(method: &Method) -> bool {
 pub(super) fn drop_undeliverable_content_length(headers: &mut HeaderMap) {
     if content_length_parse_all(headers).is_none_or(|len| len != 0) {
         headers.remove(CONTENT_LENGTH);
+    }
+}
+
+/// Rewrite a present `Content-Length` to `len`, the exact length of the body that is sent:
+/// a length the body does not have would desync the framing.
+pub(super) fn correct_content_length(headers: &mut HeaderMap, len: u64) {
+    if headers.contains_key(CONTENT_LENGTH) && content_length_parse_all(headers) != Some(len) {
+        warn!(
+            declared = ?headers.get(CONTENT_LENGTH),
+            len,
+            "content-length disagrees with the body, sending the body's length"
+        );
+        headers.insert(CONTENT_LENGTH, HeaderValue::from(len));
     }
 }
 

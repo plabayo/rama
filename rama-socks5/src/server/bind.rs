@@ -1,11 +1,19 @@
 use std::{io, time::Duration};
 
+use rama_core::extensions::{
+    ExtensionsRef, NestedConnectionTransfer, SharedNestedConnectionTransfer,
+};
 use rama_core::graceful::WeakScope;
 use rama_core::io::BridgeIo;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, error::BoxError, io::Io, layer::timeout::DefaultTimeout};
 use rama_net::address::HostWithPort;
-use rama_net::{address::SocketAddress, proxy::IoForwardService, socket::SocketService};
+use rama_net::{
+    address::SocketAddress,
+    proxy::IoForwardService,
+    socket::SocketService,
+    stream::{DefaultConnectionTransfer, NestedConnection},
+};
 use rama_tcp::{TcpStream, server::TcpListener};
 use rama_utils::macros::generate_set_and_with;
 
@@ -68,6 +76,9 @@ pub type DefaultBinder = Binder<DefaultTimeout<DefaultAcceptorFactory>, IoForwar
 /// You can customise the [`Binder`] fully by creating it using [`Binder::new`]
 /// or overwrite any of the default components using either or both of [`Binder::with_acceptor`]
 /// and [`Binder::with_service`].
+///
+/// The original request stream is handed to the service as a [`NestedConnection`]
+/// on the SOCKS5 connection, see [`Binder::set_nested_connection_transfer`].
 #[derive(Debug, Clone)]
 pub struct Binder<A, S> {
     acceptor: A,
@@ -76,6 +87,8 @@ pub struct Binder<A, S> {
     bind_address: Option<SocketAddress>,
 
     accept_timeout: Option<Duration>,
+
+    nested_connection_transfer: SharedNestedConnectionTransfer,
 }
 
 impl<A, S> Binder<A, S> {
@@ -90,6 +103,7 @@ impl<A, S> Binder<A, S> {
             service,
             bind_address: None,
             accept_timeout: None,
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
         }
     }
 }
@@ -104,6 +118,7 @@ impl<A, S> Binder<A, S> {
             service: self.service,
             bind_address: self.bind_address,
             accept_timeout: self.accept_timeout,
+            nested_connection_transfer: self.nested_connection_transfer,
         }
     }
 
@@ -121,6 +136,7 @@ impl<A, S> Binder<A, S> {
             service,
             bind_address: self.bind_address,
             accept_timeout: self.accept_timeout,
+            nested_connection_transfer: self.nested_connection_transfer,
         }
     }
 
@@ -150,6 +166,19 @@ impl<A, S> Binder<A, S> {
         /// Define the accept timeout for this socks5 bind server.
         pub fn accept_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.accept_timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set what the original request stream keeps from the SOCKS5 connection
+        /// it is nested on.
+        ///
+        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
+        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// extension types into the tunnel.
+        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
+            self.nested_connection_transfer = transfer.into_shared();
             self
         }
     }
@@ -223,9 +252,12 @@ impl Default for DefaultBinder {
 
 impl<S, F, StreamService> Socks5BinderSeal<S> for Binder<F, StreamService>
 where
-    S: Io + Unpin,
+    S: Io + Unpin + ExtensionsRef,
     F: SocketService<Socket: Acceptor<Stream: Unpin>>,
-    StreamService: Service<BridgeIo<S, <F::Socket as Acceptor>::Stream>, Error: Into<BoxError>>,
+    StreamService: Service<
+            BridgeIo<NestedConnection<S>, <F::Socket as Acceptor>::Stream>,
+            Error: Into<BoxError>,
+        >,
 {
     async fn accept_bind(
         &self,
@@ -362,6 +394,8 @@ where
             "socks5 server @ {bind_address}: bind: ready to serve from {incoming_addr}",
         );
 
+        let ingress_stream =
+            NestedConnection::new(ingress_stream, &self.nested_connection_transfer);
         self.service
             .serve(BridgeIo(ingress_stream, incoming_stream))
             .instrument(tracing::trace_span!("socks5::bind::serve"))

@@ -11,7 +11,7 @@ use crate::profile::format::canonical::CanonicalValue;
 use crate::profile::{
     analysis::profile::AnalyzedProfileScope,
     capture::{
-        joint::{CapturedSlotKind, JointCapture, JointCaptureLimits},
+        joint::{JointCapture, JointCaptureLimits},
         tls::{TlsCapture, TlsCaptureLimits, TlsCapturedExtensionValue},
     },
     format::canonical::ValueId,
@@ -28,7 +28,10 @@ use crate::profile::{
         RequestReplayPlan,
     },
 };
-use rama_http::{HeaderName, Version, header::COOKIE};
+use rama_http::{
+    HeaderName, Version,
+    header::{ALT_USED, COOKIE},
+};
 use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,20 +135,9 @@ impl RequestShapeCache {
                                 let value = variant.value.canonical()?;
                                 let limits = JointCaptureLimits::default();
                                 let joint = JointCapture::from_canonical(value.as_ref(), limits)?;
-                                let tls_limits = TlsCaptureLimits {
-                                    elements: limits.value_bytes,
-                                    bytes: limits.value_bytes,
-                                };
-                                let effective = joint.slots.iter().find(|slot| {
-                                    matches!(
-                                        slot.kind,
-                                        CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
-                                    )
-                                });
-                                let outer = joint
-                                    .slots
-                                    .iter()
-                                    .find(|slot| slot.kind == CapturedSlotKind::TlsOuter);
+                                let tls_limits = TlsCaptureLimits::uniform(limits.value_bytes);
+                                let effective = joint.effective_tls_slot();
+                                let outer = joint.ech_outer_slot();
                                 let Some(effective) = effective else {
                                     return Ok(ConnectionShape {
                                         ordinary: true,
@@ -388,6 +380,9 @@ pub(super) fn request_variants_for_headers<'a>(
             let HeaderValueSource::Request(binding) = &field.value else {
                 return None;
             };
+            if is_stack_owned(&field.name, *binding) {
+                return None;
+            }
             let shape = RequestHeaderShape {
                 name: field.name.clone(),
                 occurrence: field.occurrence,
@@ -443,6 +438,9 @@ fn request_shape<'a>(
             let PlannedValue::Request(binding) = &entry.value else {
                 return None;
             };
+            if is_stack_owned(&entry.name, *binding) {
+                return None;
+            }
             Some(RequestHeaderShape {
                 name: entry.name.clone(),
                 occurrence: field.occurrence,
@@ -456,6 +454,12 @@ fn request_shape<'a>(
         fields: shape,
         cookie_layout,
     }
+}
+
+/// The alternative-service layer writes `Alt-Used` for the endpoint in use, so the
+/// caller never supplies it and it must not steer which captured variant is drawn.
+fn is_stack_owned(name: &HeaderName, binding: RequestBinding) -> bool {
+    binding == RequestBinding::Authority && *name == ALT_USED
 }
 
 fn sort_request_shape(shape: &mut Vec<RequestHeaderShape>, version: Version) {

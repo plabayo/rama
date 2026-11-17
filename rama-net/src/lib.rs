@@ -23,6 +23,7 @@ extern crate alloc;
 
 pub mod address;
 pub mod asn;
+pub mod availability;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod client;

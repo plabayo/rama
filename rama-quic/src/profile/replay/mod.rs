@@ -113,8 +113,8 @@ where
                 return false;
             };
             let effective = input.extensions().with_base(self.policy.as_extensions());
-            rama_tls::client::target_ech_config(&effective, &target, true)
-                .is_ok_and(|config| config.is_some())
+            rama_tls::client::resolve_target_ech(&effective, &target, true)
+                .is_ok_and(|resolution| resolution.config.is_some())
         }
         #[cfg(not(feature = "boring"))]
         {

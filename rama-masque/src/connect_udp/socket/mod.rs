@@ -36,6 +36,7 @@ use rama_http::{
 };
 use rama_net::{
     address::{SocketAddress, ip::IntoCanonicalIpAddr as _},
+    proxy::{IdleActivity, IdleGuard},
     stream::{DefaultConnectionTransfer, Socket},
 };
 use rama_udp::{
@@ -46,7 +47,6 @@ use rama_utils::macros::generate_set_and_with;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::{Notify, futures::OwnedNotified, mpsc},
-    time::Instant,
 };
 
 use super::{
@@ -221,7 +221,7 @@ struct Shared {
     space: Arc<Notify>,
     // Notified on close or receiver drop, so the pump rechecks what it can drain.
     stopped: Notify,
-    progress: Mutex<Instant>,
+    progress: IdleActivity,
     peer: SocketAddress,
     min_payload: Option<usize>,
     stats: StatsCounters,
@@ -231,7 +231,7 @@ struct Shared {
 
 impl Shared {
     fn progressed(&self) {
-        *self.progress.lock() = Instant::now();
+        self.progress.record();
     }
 
     /// End the tunnel from any side: every waiter (receiver, senders, pump) is woken.
@@ -276,10 +276,6 @@ impl Shared {
             }
             notified.await;
         }
-    }
-
-    fn idle_deadline(&self, idle_timeout: Duration) -> Instant {
-        *self.progress.lock() + idle_timeout
     }
 
     fn is_closed(&self) -> bool {
@@ -435,7 +431,7 @@ where
             recv_waker: Mutex::new(None),
             space: Arc::new(Notify::new()),
             stopped: Notify::new(),
-            progress: Mutex::new(Instant::now()),
+            progress: IdleActivity::new(),
             peer,
             min_payload: config.min_payload,
             stats: StatsCounters::default(),
@@ -771,9 +767,9 @@ async fn pump<T: AsyncWrite + Send>(
     config: ConnectUdpSocketConfig,
     scope: Scope,
 ) {
-    let idle_timeout = config.idle_timeout;
+    let mut idle = IdleGuard::for_activity(config.idle_timeout, &shared.progress);
     let end = scope
-        .run_until_aborted(forward(&mut sender, &mut rx, &shared, idle_timeout))
+        .run_until_aborted(forward(&mut sender, &mut rx, &shared, &mut idle))
         .await
         .unwrap_or(PumpEnd::Tunnel(ConnectUdpClose::Closed));
     // Stop admitting output immediately, without hiding input already received or
@@ -790,15 +786,9 @@ async fn pump<T: AsyncWrite + Send>(
     match end {
         PumpEnd::DestinationClosed => {
             let drain = async {
-                loop {
-                    tokio::select! {
-                        () = shared.wait_receive_end() => break ConnectUdpClose::Closed,
-                        () = tokio::time::sleep_until(shared.idle_deadline(idle_timeout)) => {
-                            if shared.idle_deadline(idle_timeout) <= Instant::now() {
-                                break ConnectUdpClose::Idle;
-                            }
-                        }
-                    }
+                tokio::select! {
+                    () = shared.wait_receive_end() => ConnectUdpClose::Closed,
+                    () = idle.expired(&shared.progress) => ConnectUdpClose::Idle,
                 }
             };
             let reason = scope
@@ -814,7 +804,7 @@ async fn pump<T: AsyncWrite + Send>(
     let closed = scope
         .run_until_aborted_within(config.close_grace, sender.close())
         .await;
-    if !matches!(closed, Some(Ok(()))) {
+    if !matches!(closed, Ok(Ok(()))) {
         sender.abort();
     }
 }
@@ -830,19 +820,14 @@ async fn forward<T: AsyncWrite>(
     sender: &mut SessionSender<T>,
     rx: &mut mpsc::Receiver<Bytes>,
     shared: &Shared,
-    idle_timeout: Duration,
+    idle: &mut IdleGuard,
 ) -> PumpEnd {
     let mut closed = pin!(shared.wait_closed());
     loop {
         let payload = tokio::select! {
             () = &mut closed => return PumpEnd::Tunnel(ConnectUdpClose::Closed),
             payload = rx.recv() => payload,
-            () = tokio::time::sleep_until(shared.idle_deadline(idle_timeout)) => {
-                if shared.idle_deadline(idle_timeout) <= Instant::now() {
-                    return PumpEnd::Tunnel(ConnectUdpClose::Idle);
-                }
-                continue;
-            }
+            () = idle.expired(&shared.progress) => return PumpEnd::Tunnel(ConnectUdpClose::Idle),
         };
         let Some(payload) = payload else {
             // Every socket and sender handle is gone: finish our side of the tunnel.
@@ -864,22 +849,14 @@ async fn forward<T: AsyncWrite>(
             len,
             counted: false,
         };
-        // One send future for the whole wait: restarting it could repeat the payload.
-        let mut sending = pin!(send(sender, shared, payload, outgoing));
-        loop {
-            tokio::select! {
-                () = &mut closed => return PumpEnd::Tunnel(ConnectUdpClose::Closed),
-                sent = &mut sending => match sent {
-                    Ok(()) => break,
-                    Err(ConnectUdpClose::Closed) => return PumpEnd::DestinationClosed,
-                    Err(reason) => return PumpEnd::Tunnel(reason),
-                },
-                () = tokio::time::sleep_until(shared.idle_deadline(idle_timeout)) => {
-                    if shared.idle_deadline(idle_timeout) <= Instant::now() {
-                        return PumpEnd::Tunnel(ConnectUdpClose::Idle);
-                    }
-                }
-            }
+        tokio::select! {
+            () = &mut closed => return PumpEnd::Tunnel(ConnectUdpClose::Closed),
+            sent = send(sender, shared, payload, outgoing) => match sent {
+                Ok(()) => (),
+                Err(ConnectUdpClose::Closed) => return PumpEnd::DestinationClosed,
+                Err(reason) => return PumpEnd::Tunnel(reason),
+            },
+            () = idle.expired(&shared.progress) => return PumpEnd::Tunnel(ConnectUdpClose::Idle),
         }
     }
 }

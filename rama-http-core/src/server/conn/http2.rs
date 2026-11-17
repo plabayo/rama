@@ -37,6 +37,10 @@ pin_project! {
 
 /// A configuration builder for HTTP/2 server connections.
 ///
+/// Adds no `Server` or `Date` response fields: use
+/// `rama_http::layer::required_header::AddRequiredResponseHeadersLayer` or your own layer.
+/// Core relays responses as-is; header policy lives in layers.
+///
 /// **Note**: The default values of options are *not considered stable*. They
 /// are subject to change at any time.
 #[derive(Clone, Debug)]
@@ -314,11 +318,21 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Sets the max size of received header frames.
+        /// Sets the max decoded size of a received header list.
         ///
-        /// Default is currently 16KB, but can change.
+        /// Default is 1 MiB, but can change.
         pub fn max_header_list_size(mut self, max: u32) -> Self {
             self.h2_builder.max_header_list_size = max;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets how many fields a received header list may hold.
+        ///
+        /// Default is 4096, but can change.
+        pub fn max_headers(mut self, max: usize) -> Self {
+            self.h2_builder.max_headers = max;
             self
         }
     }
@@ -354,18 +368,6 @@ impl Builder {
         /// Default is `false`: the field is dropped and the tunnel opens.
         pub fn strict_connect_framing(mut self, enabled: bool) -> Self {
             self.h2_builder.strict_connect_framing = enabled;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set whether the `date` header should be included in HTTP responses.
-        ///
-        /// Note that including the `date` header is recommended by RFC 7231.
-        ///
-        /// Default is `true`.
-        pub fn auto_date_header(mut self, enabled: bool) -> Self {
-            self.h2_builder.date_header = enabled;
             self
         }
     }

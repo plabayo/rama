@@ -494,6 +494,33 @@ async fn an_association_receiving_within_its_idle_timeout_stays_open() {
     .unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn an_unrepresentable_idle_timeout_restarts_without_panicking() {
+    timeout(LIMIT, async {
+        let (client, listener) = listener();
+        let mut sender = client.create_sender();
+        let target = SocketAddress::local_ipv4(443);
+        sender
+            .send(SendDatagram::new(target, b"first"))
+            .await
+            .unwrap();
+        let config = DemuxConfig {
+            idle_timeout: Duration::MAX,
+            ..config()
+        };
+        let mut sockets = serve(listener, config);
+        let mut association = sockets.recv().await.unwrap();
+        assert_eq!(next(&mut association).await, b"first");
+        sender
+            .send(SendDatagram::new(target, b"more"))
+            .await
+            .unwrap();
+        assert_eq!(next(&mut association).await, b"more");
+    })
+    .await
+    .unwrap();
+}
+
 /// A wildcard listener answers from the address each client sent to, which a multi-homed
 /// host would otherwise choose itself.
 #[tokio::test]

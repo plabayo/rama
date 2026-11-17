@@ -12,7 +12,10 @@ use rama::{
         Body, Request, StatusCode, Version,
         conn::{HttpServiceSelection, SelectedHttpService},
         header,
-        layer::{alt_svc::AltSvcCache, follow_redirect::FollowRedirectLayer},
+        layer::{
+            alt_svc::{AltSvcCache, SendAltUsed},
+            follow_redirect::FollowRedirectLayer,
+        },
     },
     layer::MapInputLayer,
     net::address::HostWithPort,
@@ -28,11 +31,14 @@ fn location(server: &Server) -> String {
 }
 
 fn request(server: &Server) -> Request {
-    Request::get(location(server))
+    let request = Request::get(location(server))
         .header(header::AUTHORIZATION, AUTHORIZATION)
         .header(header::COOKIE, COOKIE)
         .body(Body::empty())
-        .unwrap()
+        .unwrap();
+    // Alt-Used is opt-in; these tests observe the alternative in use through it.
+    request.extensions().insert(SendAltUsed::new());
+    request
 }
 
 fn redirect(location: &str) -> Reply {

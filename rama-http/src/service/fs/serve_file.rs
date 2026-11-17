@@ -103,6 +103,16 @@ impl ServeFile {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Respond `406 Not Acceptable` when `Accept-Encoding` rejects every variant.
+        ///
+        /// See [`ServeDir::with_enforce_not_acceptable`] for details.
+        pub fn enforce_not_acceptable(mut self, enable: bool) -> Self {
+            self.0.set_enforce_not_acceptable(enable);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Set a specific read buffer chunk size.
         ///
         /// The default capacity is 64kb.

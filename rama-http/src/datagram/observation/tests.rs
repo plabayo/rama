@@ -4,7 +4,11 @@ use crate::datagram::{
     capsule::{CapsuleConfig, CapsuleDecoder, CapsuleError, UnknownCapsules, encode_capsule},
 };
 use parking_lot::Mutex;
-use rama_core::{ServiceInput, bytes::Bytes};
+use rama_core::{
+    ServiceInput,
+    bytes::Bytes,
+    extensions::{Extensions, NoConnectionTransfer},
+};
 use rama_http_types::proto::capsule::CapsuleType;
 use std::{
     future::Future as _,
@@ -165,4 +169,33 @@ async fn cancelled_pending_send_does_not_repeat_created_or_report_unsupplied_val
     assert_eq!(observer.rows.lock().len(), 1);
     assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
     assert_eq!(observer.rows.lock().len(), 1);
+}
+
+/// Capsules a session over `extensions` sends; returns what the outer stream's observer saw.
+async fn observed_over(stream: &Extensions, extensions: Extensions) -> usize {
+    let observer = Observer::default();
+    stream.insert(CapsuleObservation::new(observer.clone()));
+    let (left, _right) = tokio::io::duplex(128);
+    let mut io = ServiceInput::new(left);
+    io.extensions = extensions;
+    let mut session = HttpDatagramSession::with_config(io, SessionConfig::default());
+    session
+        .send_capsule(CapsuleType::new(0x2a).unwrap(), Bytes::new())
+        .await
+        .unwrap();
+    observer.rows.lock().len()
+}
+
+#[tokio::test]
+async fn a_nested_session_does_not_report_to_the_outer_streams_observer() {
+    let stream = Extensions::new();
+    let nested = stream.fork_nested_connection(&NoConnectionTransfer);
+    assert_eq!(observed_over(&stream, nested).await, 0);
+}
+
+#[tokio::test]
+async fn a_plain_fork_still_reports_to_the_streams_observer() {
+    let stream = Extensions::new();
+    let fork = stream.fork();
+    assert_eq!(observed_over(&stream, fork).await, 1);
 }

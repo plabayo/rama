@@ -18,6 +18,7 @@ use crate::proto::{
     },
 };
 use rama_quic_proto::{TransportError, packet::SpaceId};
+use rama_utils::time::deadline_after;
 
 impl Connection {
     pub(crate) fn poll_timeout(&self) -> Option<Instant> {
@@ -240,7 +241,8 @@ impl Connection {
             Some(x) if self.state.is_established() => x,
             _ => return,
         };
-        self.timers.set(Timer::KeepAlive, now + interval);
+        self.timers
+            .set(Timer::KeepAlive, deadline_after(now, interval));
     }
 
     fn reset_cid_retirement(&mut self) {

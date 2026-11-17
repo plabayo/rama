@@ -214,7 +214,9 @@ fn parse_version(version: Option<u8>) -> Result<Version, HeadError> {
 }
 
 fn parse_headers(input: &Bytes, fields: &[httparse::Header<'_>]) -> Result<HeaderMap, HeadError> {
-    let mut headers = HeaderMap::with_capacity(fields.len());
+    // A configured max_headers can pass the names a map holds.
+    let mut headers = HeaderMap::try_with_capacity(fields.len())
+        .map_err(|_error| HeadError::new(HeadErrorKind::TooManyHeaders))?;
     for field in fields {
         let name = HeaderName::from_bytes(field.name.as_bytes())
             .map_err(|_error| HeadError::new(HeadErrorKind::InvalidHeader))?;
@@ -223,7 +225,9 @@ fn parse_headers(input: &Bytes, fields: &[httparse::Header<'_>]) -> Result<Heade
         if name.is_sensitive() {
             value.set_sensitive(true);
         }
-        headers.append(name, value);
+        headers
+            .try_append(name, value)
+            .map_err(|_error| HeadError::new(HeadErrorKind::TooManyHeaders))?;
     }
     Ok(headers)
 }
@@ -903,6 +907,20 @@ mod tests {
                 "unexpected request target: {encoded:?}"
             );
         }
+    }
+
+    #[test]
+    fn more_names_than_a_header_map_holds_are_too_many_headers() {
+        let mut wire = b"GET / HTTP/1.1\r\n".to_vec();
+        for i in 0..25_000 {
+            wire.extend_from_slice(format!("x-h-{i}: v\r\n").as_bytes());
+        }
+        wire.extend_from_slice(b"\r\n");
+        let error = HeadParser::new()
+            .with_max_headers(30_000)
+            .parse_request(&Bytes::from(wire))
+            .unwrap_err();
+        assert_eq!(error.kind(), HeadErrorKind::TooManyHeaders);
     }
 
     #[test]

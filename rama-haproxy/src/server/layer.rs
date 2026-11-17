@@ -17,7 +17,7 @@ use rama_core::{
 };
 use rama_net::address::Domain;
 use rama_net::forwarded::{Forwarded, ForwardedElement, ForwardedSelectionPolicy};
-use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with, nonzero};
 use std::{net::SocketAddr, num::NonZeroUsize, sync::Arc};
 use tokio::io::AsyncReadExt;
 
@@ -31,6 +31,12 @@ const MAX_HEADER_LENGTH: usize = 16 + u16::MAX as usize;
 /// hold any v1 header (≤ 107 bytes) and a typical v2 header without TLVs in
 /// a single allocation.
 const INITIAL_BUFFER_CAPACITY: usize = 128;
+
+/// Bytes the peek needs to tell a v1 or v2 PROXY prefix from other traffic.
+const PROXY_PREFIX_PEEK_LEN: NonZeroUsize = nonzero!({
+    let (v1, v2) = (v1::PROTOCOL_PREFIX.len(), v2::PROTOCOL_PREFIX.len());
+    if v1 > v2 { v1 } else { v2 }
+});
 
 /// Configurable strictness toggles for the PROXY protocol server.
 ///
@@ -428,12 +434,11 @@ async fn peek_disambiguate<IO: tokio::io::AsyncRead + Unpin>(
     buffer: &mut Vec<u8>,
     waiter: &mut PeekWaiter<'_>,
 ) -> Result<PeekOutcome, BoxError> {
-    let max_len = v1::PROTOCOL_PREFIX.len().max(v2::PROTOCOL_PREFIX.len());
     let output = peek_input_until_verdict_growing_with_output(
         stream,
         buffer,
-        max_len,
-        NonZeroUsize::new(max_len).unwrap_or(NonZeroUsize::MIN),
+        PROXY_PREFIX_PEEK_LEN.get(),
+        PROXY_PREFIX_PEEK_LEN,
         waiter,
         proxy_prefix_verdict,
     )
@@ -525,11 +530,11 @@ where
             }
 
             if buffer.len() >= max_header_length {
-                return Err(format!(
-                    "haproxy: buffer exhausted (read {} bytes, configured max {max_header_length}) before parsing completed",
-                    buffer.len()
+                return Err(BoxError::from_static_str(
+                    "haproxy: buffer exhausted before parsing completed",
                 )
-                .into());
+                .context_field("read", buffer.len())
+                .context_field("max", max_header_length));
             }
 
             // Grow the buffer geometrically up to the configured max.

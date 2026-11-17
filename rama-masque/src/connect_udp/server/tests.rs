@@ -7,7 +7,10 @@ use std::{
 };
 
 use parking_lot::Mutex;
-use rama_core::futures::{Stream, stream};
+use rama_core::{
+    error::BoxErrorExt as _,
+    futures::{Stream, stream},
+};
 use rama_dns::client::{DenyAllDnsResolver, EmptyDnsResolver};
 use rama_http::{
     HeaderValue, Method, Version, header,
@@ -145,7 +148,7 @@ impl Service<ConnectRequest> for TestConnector {
         self.requested.lock().push(requested);
         if self.unreachable {
             return Err(ConnectionError::transport(
-                BoxError::from("unreachable"),
+                BoxError::from_static_str("unreachable"),
                 ConnectionErrorKind::Unavailable,
             ));
         }
@@ -904,7 +907,7 @@ mod metrics {
 
         let failing = proxy(&collector, WeakScope::detached()).with_relay(service_fn(
             |_: BridgeIo<ConnectUdpSocket, UdpPacketSocket>| async {
-                Err::<(), BoxError>(BoxError::from("relay failed"))
+                Err::<(), BoxError>(BoxError::from_static_str("relay failed"))
             },
         ));
         let (_target, address) = target().await;

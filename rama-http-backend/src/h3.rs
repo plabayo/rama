@@ -3,7 +3,7 @@
 use rama_core::{
     error::BoxError,
     futures::{StreamExt as _, stream::FuturesUnordered, try_zip},
-    graceful::{Scope, WeakScope},
+    graceful::{RunCutoff, WeakScope},
     telemetry::tracing,
 };
 use rama_http_core::h3::{Error, qpack::ErrorScope};
@@ -65,23 +65,14 @@ where
         }
         Ok(())
     });
-    // A closed scope takes no holder: the drain then runs below no parent.
-    let held = scope.try_hold().unwrap_or_else(|_closed| Scope::detached());
-    // The hard phase is watched on the scope itself too: a scope that took no holder still
-    // reaches it.
-    let ended = tokio::select! {
-        biased;
-        () = scope.aborted() => None,
-        ended = held.run_until_aborted_within(timeout, work) => ended,
-    };
-    match ended {
-        Some(result) => result.map(|((), ())| ()),
-        None if scope.is_aborted() => Err(io::Error::new(
+    match scope.run_until_aborted_within(timeout, work).await {
+        Ok(result) => result.map(|((), ())| ()),
+        Err(RunCutoff::Aborted) => Err(io::Error::new(
             io::ErrorKind::Interrupted,
             "HTTP/3 connection drain cancelled",
         )
         .into()),
-        None => {
+        Err(RunCutoff::TimedOut) => {
             Err(io::Error::new(io::ErrorKind::TimedOut, "HTTP/3 connection drain timeout").into())
         }
     }
@@ -90,7 +81,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::graceful::Cause;
+    use rama_core::graceful::{Cause, Scope};
     use std::{
         future::{pending, ready},
         pin::Pin,

@@ -3,10 +3,17 @@ use std::time::{Duration, SystemTime};
 use rama_http::{Version, inspect::capture::HttpExchangeSummary};
 use sha2::{Digest as _, Sha256};
 
+#[cfg(feature = "tls")]
+use rama_core::telemetry::tracing;
+#[cfg(feature = "tls")]
+use rama_tls::server::{EchServerObservation, ServerClientHellos, ServerEchAccepted};
+
 use super::super::protocol::{H3ProfileConnection, H3ProfileRequest, connection_slots};
+#[cfg(feature = "tls")]
+use super::super::tls::tls_connection_slots;
 use super::*;
 #[cfg(feature = "tls")]
-use crate::profile::capture::tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport};
+use crate::profile::capture::tls::{TlsCaptureLimits, TlsCaptureTransport};
 use crate::profile::{
     analysis::profile::ProfileAnalysisLimits,
     capture::{
@@ -76,6 +83,8 @@ impl ProfileExport {
                 current_day,
                 limits,
             )?;
+            #[cfg(feature = "tls")]
+            let mut skipped_tls = 0;
             for capture in self.captures.iter().take(count) {
                 let details = capture.summary_details();
                 let observed_day = day(&details.summary)?;
@@ -211,70 +220,44 @@ impl ProfileExport {
                     });
                 }
                 #[cfg(feature = "tls")]
-                if let Some(hello) = metadata
-                    .connection
-                    .get_ref::<TlsObservation>()
-                    .and_then(|tls| tls.client_hello.as_ref())
                 {
-                    let quic = version == Version::HTTP_3;
+                    let connection = &metadata.connection;
+                    let hellos = ServerClientHellos::new(
+                        connection
+                            .get_ref::<TlsObservation>()
+                            .and_then(|tls| tls.client_hello.as_ref()),
+                        connection.get_ref::<ServerEchAccepted>().copied(),
+                        connection.get_ref::<EchServerObservation>(),
+                    );
                     let bounds = TlsCaptureLimits {
                         bytes: policy.bytes,
                         ..TlsCaptureLimits::default()
                     };
-                    if metadata
-                        .connection
-                        .get_ref::<rama_tls::server::ServerEchAccepted>()
-                        .is_some_and(|accepted| accepted.0)
-                    {
-                        let Some(observation) = metadata
-                            .connection
-                            .get_ref::<rama_tls::server::EchServerObservation>(
-                        ) else {
-                            // The outer capture layer is optional. Keep request
-                            // evidence already collected above, but do not export
-                            // an unmatched inner as a replayable connection.
-                            continue;
-                        };
-                        if h3.is_some_and(|facts| !facts.client_hello_complete) {
-                            continue;
-                        }
-                        let outer = TlsCapture::capture(
-                            ProfileCaptureCompleteness::from_complete(
-                                h3.is_none_or(|facts| facts.client_hello_complete),
-                            ),
-                            if quic {
-                                TlsCaptureTransport::Quic
-                            } else {
-                                TlsCaptureTransport::Tcp
-                            },
-                            &observation.outer,
-                            bounds,
-                        )?;
-                        slots.push(CapturedSlot {
-                            kind: CapturedSlotKind::TlsOuter,
-                            value: outer.canonical(bounds)?,
-                        });
-                    }
-                    let tls = TlsCapture::capture(
-                        ProfileCaptureCompleteness::from_complete(
-                            h3.is_none_or(|facts| facts.client_hello_complete),
-                        ),
-                        if quic {
+                    match tls_connection_slots(
+                        &hellos,
+                        if version == Version::HTTP_3 {
                             TlsCaptureTransport::Quic
                         } else {
                             TlsCaptureTransport::Tcp
                         },
-                        hello,
+                        h3.is_none_or(|facts| facts.client_hello_complete),
                         bounds,
-                    )?;
-                    slots.push(CapturedSlot {
-                        kind: if quic {
-                            CapturedSlotKind::QuicTls
-                        } else {
-                            CapturedSlotKind::TcpTls
-                        },
-                        value: tls.canonical(bounds)?,
-                    });
+                    ) {
+                        Ok(tls) => slots.extend(tls),
+                        // The outer capture layer is optional. Keep request
+                        // evidence already collected above, but do not export
+                        // an unmatched or partial hello as a replayable connection.
+                        Err(ProfileDataError::Incomplete(reason)) => {
+                            skipped_tls += 1;
+                            tracing::debug!(
+                                connection_id = details.summary.connection_id,
+                                reason,
+                                "profile export skipped connection with incomplete TLS evidence"
+                            );
+                            continue;
+                        }
+                        Err(err) => return Err(err.into()),
+                    }
                 }
                 if !slots.is_empty() {
                     slots.sort_unstable_by_key(|slot| slot.kind);
@@ -296,6 +279,10 @@ impl ProfileExport {
             }
             let evidence = collected.finish();
             self.captures.drain(..count);
+            #[cfg(feature = "tls")]
+            {
+                self.skipped_tls_connections += skipped_tls;
+            }
             if evidence.scopes.is_empty() {
                 continue;
             }

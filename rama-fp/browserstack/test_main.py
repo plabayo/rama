@@ -94,7 +94,22 @@ class NightlyTests(unittest.TestCase):
         self.assertTrue(receipts["000-0"]["journey_completed"])
         self.assertEqual(receipts["000-0"]["failure_stage"], "ech_connection")
 
-    def test_failed_cells_within_the_budget_are_reported_without_failing_the_job(self):
+    def test_ech_origin_staying_on_tcp_is_an_observation_not_a_failure(self):
+        origin = "https://h3.fp.ramaproxy.org/"
+        reason = "h3: browser stayed on TCP: did not switch to HTTP/3"
+        with patch.object(main, "run_ech_capture", side_effect=main.UnsupportedFlow(reason)):
+            code, receipts, _ = self.collect(
+                lambda *_args, **_kwargs: self.completed,
+                entrypoints=[(origin, "h3")],
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(receipts["000-0"]["status"], "passed")
+        self.assertEqual(receipts["000-0"]["ech"], {
+            "origin": main.ECH_ENTRYPOINTS[origin],
+            "status": "unsupported",
+            "unsupported_reason": reason,
+        })
+
         def journey(_driver, origin, **_kwargs):
             if origin == "https://broken-0.invalid/":
                 raise RuntimeError("journey failed")

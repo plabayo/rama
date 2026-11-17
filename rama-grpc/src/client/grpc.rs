@@ -18,6 +18,7 @@ use crate::{
         Codec, CompressionEncoding, Decoder, EnabledCompressionEncodings, EncodeBody, Streaming,
     },
     request::SanitizeHeaders,
+    status::metadata_limit_exceeded,
 };
 
 /// A gRPC client dispatcher.
@@ -150,14 +151,20 @@ impl<T> Grpc<T> {
         let message = body
             .try_next()
             .await
-            .map_err(|mut status| {
-                status.metadata_mut().merge(parts.clone());
-                status
-            })?
+            .map_err(
+                |mut status| match status.metadata_mut().try_merge(parts.clone()) {
+                    Ok(()) => status,
+                    Err(err) => {
+                        metadata_limit_exceeded("response metadata exceeds header limit", err)
+                    }
+                },
+            )?
             .ok_or_else(|| Status::internal("Missing response message."))?;
 
         if let Some(trailers) = body.trailers().await? {
-            parts.merge(trailers);
+            parts.try_merge(trailers).map_err(|err| {
+                metadata_limit_exceeded("response trailers exceed header limit", err)
+            })?;
         }
 
         Ok(Response::from_parts(parts, message, extensions))

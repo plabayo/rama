@@ -29,14 +29,26 @@ async fn dispatch(
     established: EstablishedClientConnection<FakeConnection, ConnectRequest>,
     cache: Option<AltSvcCache>,
 ) -> Response<AltSvcBody<Body>> {
+    // Alt-Used is opt-in; these tests observe the selected alternative through it.
+    dispatch_with(established, cache, true).await
+}
+
+#[cfg(feature = "tls")]
+async fn dispatch_with(
+    established: EstablishedClientConnection<FakeConnection, ConnectRequest>,
+    cache: Option<AltSvcCache>,
+    send_alt_used: bool,
+) -> Response<AltSvcBody<Body>> {
     let request = Request::builder()
         .uri(format!("https://{}/", established.input.authority))
         .body(Body::from("dispatch once"))
         .unwrap();
     request.extensions().extend(established.input.extensions());
     let service = match cache {
-        Some(cache) => AltSvcLayer::new(cache).layer(established.conn),
-        None => AltSvc::passthrough(established.conn),
+        Some(cache) => AltSvcLayer::new(cache)
+            .with_send_alt_used(send_alt_used)
+            .layer(established.conn),
+        None => AltSvc::passthrough(established.conn).with_send_alt_used(send_alt_used),
     };
     service.serve(request).await.unwrap()
 }
@@ -806,6 +818,27 @@ async fn only_alt_svc_discovery_adds_alt_used() {
         dispatch(established, None).await;
         assert_eq!(fake.dispatched.load(Ordering::SeqCst), 1);
     }
+
+    // Without opting in, an alternative in use sends no Alt-Used.
+    let input = input();
+    input.extensions().insert(HttpServiceCandidates::new(
+        origin(&input).unwrap(),
+        vec![
+            HttpServiceCandidate::new(
+                ApplicationProtocol::HTTP_2,
+                "alt.example:443".parse().unwrap(),
+            )
+            .with_source(HttpServiceSource::AltSvc),
+        ],
+    ));
+    let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_2)]);
+    let mut established = HttpServiceConnector::new(fake.clone())
+        .serve(input)
+        .await
+        .unwrap();
+    established.conn.expected_alt_used = None;
+    dispatch_with(established, None, false).await;
+    assert_eq!(fake.dispatched.load(Ordering::SeqCst), 1);
 }
 
 #[cfg(feature = "tls")]

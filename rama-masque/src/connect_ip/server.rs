@@ -22,7 +22,7 @@ use rama_http::{
     proto::ext::{HttpDatagrams, Protocol},
 };
 use rama_net::address::{Host, ip::ipnet::IpNet};
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{macros::generate_set_and_with, time::deadline_after};
 use std::{convert::Infallible, fmt, sync::Arc, time::Duration};
 
 /// Input to the admission service, before DNS resolution and HTTP acceptance.
@@ -195,7 +195,7 @@ where
             Ok(lease) => lease,
             Err(error) => return Ok(refuse(crate::refusal::admission_error(&error))),
         };
-        let deadline = crate::time::expiration_at(tokio::time::Instant::now(), self.open_timeout);
+        let deadline = deadline_after(tokio::time::Instant::now(), self.open_timeout);
         let upgrade = handle_upgrade(&request);
         let extensions = request.extensions().clone();
         let mut config = match tokio::time::timeout_at(

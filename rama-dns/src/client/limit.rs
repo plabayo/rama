@@ -14,6 +14,7 @@ use parking_lot::Mutex;
 #[cfg(any(target_vendor = "apple", target_os = "windows", test))]
 use rama_core::error::BoxError;
 use rama_core::telemetry::tracing;
+use rama_utils::time;
 use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
     task::{JoinError, JoinHandle},
@@ -435,9 +436,7 @@ impl std::error::Error for DnsTimeoutError {
 
 /// `timeout` from now, saturating instead of overflowing.
 pub(crate) fn deadline_after(timeout: Duration) -> Instant {
-    let now = Instant::now();
-    now.checked_add(timeout)
-        .unwrap_or_else(|| now + Duration::from_hours(24 * 365 * 30))
+    time::deadline_after(Instant::now(), timeout)
 }
 
 #[cfg(test)]

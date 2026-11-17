@@ -5,8 +5,11 @@ use super::{UpgradeOutput, UpgradeResponse};
 use super::{UpgradeService, service::UpgradeHandler};
 use rama_core::error::BoxError;
 use rama_core::error_sink::{DropErrorSink, ErrorSink, TracingErrorSink};
+use rama_core::extensions::{NestedConnectionTransfer, SharedNestedConnectionTransfer};
 use rama_core::{Layer, Service, graceful::WeakScope, matcher::Matcher};
 use rama_http_types::Request;
+use rama_net::stream::DefaultConnectionTransfer;
+use rama_utils::macros::generate_set_and_with;
 use std::{fmt, sync::Arc};
 
 /// UpgradeLayer is a middleware that can be used to upgrade a request.
@@ -18,6 +21,7 @@ pub struct UpgradeLayer<O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
     scope: WeakScope,
     error_sink: Arc<dyn ErrorSink>,
+    nested_connection_transfer: SharedNestedConnectionTransfer,
 }
 
 impl<O: Send + 'static> UpgradeLayer<O> {
@@ -53,6 +57,7 @@ impl<O: Send + 'static> UpgradeLayer<O> {
             handlers: vec![Arc::new(UpgradeHandler::new(matcher, service, sink))],
             scope,
             error_sink: Arc::new(TracingErrorSink::default()),
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
         }
     }
 
@@ -112,6 +117,7 @@ impl<O: Send + 'static> UpgradeLayer<O> {
             ))],
             scope,
             error_sink: Arc::new(TracingErrorSink::default()),
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
         }
     }
 
@@ -236,6 +242,19 @@ impl<O: Send + 'static> UpgradeLayer<O> {
         self.error_sink = Arc::new(sink);
         self
     }
+
+    generate_set_and_with! {
+        /// Set what an accepted CONNECT tunnel keeps from the connection it is
+        /// nested on.
+        ///
+        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
+        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// extension types into the tunnel.
+        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
+            self.nested_connection_transfer = transfer.into_shared();
+            self
+        }
+    }
 }
 
 impl<O> fmt::Debug for UpgradeLayer<O> {
@@ -252,6 +271,7 @@ impl<O> Clone for UpgradeLayer<O> {
             handlers: self.handlers.clone(),
             scope: self.scope.clone(),
             error_sink: self.error_sink.clone(),
+            nested_connection_transfer: self.nested_connection_transfer.clone(),
         }
     }
 }
@@ -266,9 +286,11 @@ impl<S, O> Layer<S> for UpgradeLayer<O> {
             self.scope.clone(),
             self.error_sink.clone(),
         )
+        .with_nested_connection_transfer(self.nested_connection_transfer.clone())
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
         UpgradeService::new(self.handlers, inner, self.scope, self.error_sink)
+            .with_nested_connection_transfer(self.nested_connection_transfer)
     }
 }

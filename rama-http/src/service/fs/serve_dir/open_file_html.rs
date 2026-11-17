@@ -10,9 +10,12 @@
 //! bytes inside filenames are percent-encoded by the URI builder rather
 //! than spliced into the attribute raw.
 
+use crate::protocols::html::{
+    IntoHtml as _, a, body, div, h1, head, hr, html, meta, table, tbody, td, th, thead, title, tr,
+};
 use crate::service::fs::serve_dir::{HiddenPathFilter, open_file::OpenFileOutput};
 use jiff::{Timestamp, tz::TimeZone};
-use rama_net::uri::Uri;
+use rama_net::uri::{PathRef, Uri};
 use rama_utils::include_dir;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt as _;
@@ -186,20 +189,12 @@ impl DirEntry {
 
 /// Generate HTML page for directory listing with file details and navigation.
 fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
-    use crate::protocols::html::{
-        IntoHtml as _, a, body, div, h1, head, hr, html, meta, table, tbody, td, th, thead, title,
-        tr,
-    };
-
-    let uri_path = uri.path_or_root();
+    let canonical_uri = uri.clone().canonicalize();
+    // A path starting with `//` would read as an authority in an href.
+    let uri_path = format!("/{}", canonical_uri.path_or_root().trim_start_matches('/'));
     let title_text = format!("Directory listing for .{uri_path}");
 
-    #[expect(
-        clippy::expect_used,
-        reason = "the request URI's path was already parsed upstream by the request parser; re-parsing it here as a URI-reference can't fail under the graceful parser"
-    )]
-    let base_link = rama_net::uri::Uri::parse_reference(uri_path.as_ref())
-        .expect("request uri path is a valid uri reference");
+    let base_link = Uri::from_static("/").with_path(PathRef::from_raw_str(&uri_path));
 
     let rows: Vec<_> = entries
         .into_iter()
@@ -389,6 +384,21 @@ mod test {
         for case in cases {
             let actual = format_size(case.input).to_string();
             assert_eq!(actual, case.expected, "Failed on input: {}", case.input);
+        }
+    }
+
+    #[test]
+    fn listing_of_double_slash_path_links_stay_paths() {
+        for target in ["//a:b/..", "//sub", "//sub/"] {
+            let entries = vec![DirEntry::new(
+                "x.txt".to_owned(),
+                false,
+                SystemTime::UNIX_EPOCH,
+                0,
+            )];
+            let uri = Uri::parse(target).unwrap();
+            let payload = generate_directory_html(entries, &uri);
+            assert!(!payload.contains(r#"href="//"#), "{target}: {payload}");
         }
     }
 

@@ -35,6 +35,15 @@ impl EchRequirement {
             _ => Ok(true),
         }
     }
+
+    /// Read the caller requirement and its effective intent from `extensions`.
+    ///
+    /// Absent policy is [`Self::Optional`]; a conflict fails as [`Self::intent`] does.
+    pub fn effective(extensions: &Extensions) -> Result<(Self, bool), BoxError> {
+        let requirement = extensions.get_ref::<Self>().copied().unwrap_or_default();
+        let intent = requirement.intent(extensions.get_ref::<TlsEncryptedClientHello>())?;
+        Ok((requirement, intent))
+    }
 }
 
 /// Whether the backend reports ECH acceptance after handshake completion.
@@ -45,21 +54,35 @@ impl EchRequirement {
 ///
 /// Acceptance does not replace server authentication, which is reported separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsEchAccepted(pub bool);
 
 /// Resolve caller policy and endpoint discovery facts after final TLS/profile
 /// settings are installed. This does not mutate caller policy or pool identity.
+///
+/// Unlike [`resolve_target_ech`], this does not require a matching configuration.
 pub fn target_ech_required(
     extensions: &Extensions,
     target: &HostWithPort,
     backend_supports_ech: bool,
 ) -> Result<bool, BoxError> {
-    let requirement = extensions
-        .get_ref::<EchRequirement>()
-        .copied()
-        .unwrap_or_default();
-    let intent = requirement.intent(extensions.get_ref::<TlsEncryptedClientHello>())?;
+    let (requirement, intent) = EchRequirement::effective(extensions)?;
+    required_for_target(
+        extensions,
+        target,
+        backend_supports_ech,
+        requirement,
+        intent,
+    )
+}
+
+fn required_for_target(
+    extensions: &Extensions,
+    target: &HostWithPort,
+    backend_supports_ech: bool,
+    requirement: EchRequirement,
+    intent: bool,
+) -> Result<bool, BoxError> {
     let binding = extensions
         .get_ref::<TargetEchServiceBinding>()
         .filter(|binding| &binding.target == target);
@@ -80,6 +103,15 @@ pub fn target_ech_required(
             && binding.is_some_and(|binding| binding.reliant || binding.mandatory)))
 }
 
+/// ECH settings resolved for one TLS hop by [`resolve_target_ech`].
+#[derive(Debug, Clone)]
+pub struct TargetEchResolution {
+    /// Matching configuration to offer, present only for a capable backend.
+    pub config: Option<Bytes>,
+    /// Whether the handshake must accept real ECH, as [`target_ech_required`] reports.
+    pub required: bool,
+}
+
 /// Resolve ECH for the actual TLS hop from effective caller/connector settings.
 ///
 /// The caller supplies the hop endpoint, not a potentially stale proxy routing
@@ -87,30 +119,34 @@ pub fn target_ech_required(
 /// no DNS and can be used by unsupported backends to enforce required ECH too.
 /// Native backends still validate supported configuration contents and require
 /// acceptance after the handshake.
-pub fn target_ech_config(
+pub fn resolve_target_ech(
     extensions: &Extensions,
     target: &HostWithPort,
     backend_supports_ech: bool,
-) -> Result<Option<Bytes>, BoxError> {
-    let requirement = extensions
-        .get_ref::<EchRequirement>()
-        .copied()
-        .unwrap_or_default();
-    let intent = requirement.intent(extensions.get_ref::<TlsEncryptedClientHello>())?;
+) -> Result<TargetEchResolution, BoxError> {
+    let (requirement, intent) = EchRequirement::effective(extensions)?;
     let config = intent
         .then(|| extensions.get_ref::<TargetEchConfig>())
         .flatten()
         .filter(|config| config.matches_target(target));
-    if target_ech_required(extensions, target, backend_supports_ech)?
-        && (!backend_supports_ech || config.is_none())
-    {
+    let required = required_for_target(
+        extensions,
+        target,
+        backend_supports_ech,
+        requirement,
+        intent,
+    )?;
+    if required && (!backend_supports_ech || config.is_none()) {
         return Err(BoxError::from_static_str(
             "required ECH needs a matching configuration and a capable TLS backend",
         ));
     }
-    Ok(config
-        .filter(|_| backend_supports_ech)
-        .map(|config| config.config_list().clone()))
+    Ok(TargetEchResolution {
+        config: config
+            .filter(|_| backend_supports_ech)
+            .map(|config| config.config_list().clone()),
+        required,
+    })
 }
 
 // Kept separate from configuration identity: optional callers may reuse either
@@ -165,6 +201,15 @@ impl EchRetryConfig {
     pub fn config_list(&self) -> &Bytes {
         &self.0
     }
+
+    /// Prepare `extensions` for the single retry towards `target`.
+    ///
+    /// Authenticated replacement data never authorizes a clear retry, so this
+    /// also requires real ECH acceptance on the retried handshake.
+    pub fn apply(&self, extensions: &Extensions, target: HostWithPort) {
+        extensions.insert(EchRequirement::Required);
+        extensions.insert(TargetEchConfig::new(target, self.0.clone()));
+    }
 }
 
 impl std::fmt::Debug for EchRetryConfig {
@@ -211,14 +256,19 @@ mod tests {
                             },
                             Bytes::from_static(b"config"),
                         ));
-                        let result = target_ech_config(&extensions, &target, capable);
+                        let result = resolve_target_ech(&extensions, &target, capable);
                         let enabled = intent.unwrap_or(true);
                         assert_eq!(
                             result.is_err(),
                             required && (!enabled || !capable || !matching)
                         );
-                        if let Ok(config) = result {
-                            assert_eq!(config.is_some(), enabled && capable && matching);
+                        if let Ok(resolution) = result {
+                            assert_eq!(resolution.config.is_some(), enabled && capable && matching);
+                            assert_eq!(resolution.required, required);
+                            assert_eq!(
+                                Some(resolution.required),
+                                target_ech_required(&extensions, &target, capable).ok()
+                            );
                         }
                     }
                 }
@@ -237,12 +287,13 @@ mod tests {
         );
         assert!(EchRequirement::Optional.intent(None).unwrap());
         assert!(
-            target_ech_config(
+            resolve_target_ech(
                 request.as_extensions(),
                 &"origin.example:443".parse().unwrap(),
                 true
             )
             .unwrap()
+            .config
             .is_none()
         );
         let effective = base.with_overrides(request.as_extensions());
@@ -261,7 +312,21 @@ mod tests {
     fn required_without_configuration_fails() {
         let extensions = Extensions::new();
         extensions.insert(EchRequirement::Required);
-        target_ech_config(&extensions, &"origin.example:443".parse().unwrap(), true).unwrap_err();
+        resolve_target_ech(&extensions, &"origin.example:443".parse().unwrap(), true).unwrap_err();
+    }
+
+    #[test]
+    fn retry_config_requires_ech_for_its_target_only() {
+        let target: HostWithPort = "origin.example:443".parse().unwrap();
+        let retry = EchRetryConfig::new(Bytes::from_static(b"\x00\x04\xfe\x0d\x00\x00")).unwrap();
+        let extensions = Extensions::new();
+        retry.apply(&extensions, target.clone());
+        let resolution = resolve_target_ech(&extensions, &target, true).unwrap();
+        assert!(resolution.required);
+        assert_eq!(resolution.config.as_ref(), Some(retry.config_list()));
+        resolve_target_ech(&extensions, &"proxy.example:443".parse().unwrap(), true).unwrap_err();
+        extensions.insert(TlsEncryptedClientHello(false));
+        resolve_target_ech(&extensions, &target, true).unwrap_err();
     }
 
     #[test]
@@ -305,28 +370,31 @@ mod tests {
             reliant: true,
             mandatory: false,
         });
-        target_ech_config(&request, &target, true).unwrap_err();
+        resolve_target_ech(&request, &target, true).unwrap_err();
         request.insert(TargetEchConfig::new(target.clone(), vec![0, 1, 2]));
         assert!(target_ech_required(&request, &target, true).unwrap());
         assert!(
-            target_ech_config(&request, &target, true)
+            resolve_target_ech(&request, &target, true)
                 .unwrap()
+                .config
                 .is_some()
         );
         assert!(!request.contains::<EchRequirement>());
         request.insert(TlsEncryptedClientHello(false));
         assert!(!target_ech_required(&request, &target, true).unwrap());
         assert!(
-            target_ech_config(&request, &target, true)
+            resolve_target_ech(&request, &target, true)
                 .unwrap()
+                .config
                 .is_none()
         );
         request.insert(TlsEncryptedClientHello(true));
         request.insert(TlsServerVerify(ServerVerifyMode::Disable));
         assert!(!target_ech_required(&request, &target, true).unwrap());
         assert!(
-            target_ech_config(&request, &target, true)
+            resolve_target_ech(&request, &target, true)
                 .unwrap()
+                .config
                 .is_some()
         );
         assert!(
@@ -345,14 +413,15 @@ mod tests {
         });
         request.insert(TargetEchConfig::new(target.clone(), vec![0, 1, 2]));
         assert!(
-            target_ech_config(&request, &target, true)
+            resolve_target_ech(&request, &target, true)
                 .unwrap()
+                .config
                 .is_some()
         );
         request.insert(TlsEncryptedClientHello(false));
-        target_ech_config(&request, &target, true).unwrap_err();
+        resolve_target_ech(&request, &target, true).unwrap_err();
         request.insert(TlsEncryptedClientHello(true));
-        target_ech_config(&request, &target, false).unwrap_err();
+        resolve_target_ech(&request, &target, false).unwrap_err();
         assert!(target_ech_required(&request, &target, true).unwrap());
     }
 }

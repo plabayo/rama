@@ -25,9 +25,12 @@ use rama_utils::octets::{kib, kib_u64};
 
 use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD, InsertError};
 use super::error::QpackError;
-use crate::h3::qlog::{
-    PeerEventBudget, QPACK_INSTRUCTION_EVENTS,
-    qpack::{self as metadata, Instruction},
+use crate::{
+    h3::qlog::{
+        PeerEventBudget, QPACK_INSTRUCTION_EVENTS,
+        qpack::{self as metadata, Instruction},
+    },
+    proto::{DEFAULT_MAX_HEADER_LIST_SIZE, DEFAULT_MAX_HEADERS},
 };
 
 /// A decoded field line (raw bytes; HTTP validation happens elsewhere).
@@ -68,9 +71,8 @@ impl Default for DecoderConfig {
         Self {
             max_table_capacity: kib_u64(4),
             max_blocked_streams: 16,
-            max_field_section_size: kib(64),
-            // Browsers send tens of lines; cookie crumbs (up to ~180 per site) still fit.
-            max_field_lines: 512,
+            max_field_section_size: DEFAULT_MAX_HEADER_LIST_SIZE,
+            max_field_lines: DEFAULT_MAX_HEADERS,
             max_blocked_bytes: kib(256),
             max_decoder_stream_bytes: kib(64),
         }

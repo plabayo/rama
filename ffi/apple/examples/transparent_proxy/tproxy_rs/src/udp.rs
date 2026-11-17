@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rama::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
-    extensions::{Extensions, ExtensionsRef as _},
+    extensions::ExtensionsRef as _,
     net::{
         apple::networkextension::{
             Datagram, UdpFlow,
@@ -22,18 +22,14 @@ use rama::{
                 TransparentProxyNetworkStatus, TransparentProxyServiceContext,
             },
         },
+        availability::{NetworkAvailability, NetworkChanges, NetworkState},
         client::ConnectorTarget,
-        socket::core::{Domain, Protocol, Socket, Type},
+        socket::SocketOptions,
     },
-    quic::proxy::{
-        QuicMigrationSide, QuicMitmIngressByIdentity, QuicNetworkAvailability, QuicNetworkChanges,
-    },
+    quic::proxy::QuicMitmIngressByIdentity,
     service::service_fn,
     telemetry::tracing,
-    udp::{
-        SharedQueueBudget, UdpSocket, bind_udp_with_address, bind_udp_with_socket,
-        proxy::{DatagramRecoverySignal, DatagramRecoveryState},
-    },
+    udp::{SharedQueueBudget, UdpSocket, bind_udp_with_address, bind_udp_with_socket},
     utils::octets::kib,
 };
 
@@ -124,10 +120,8 @@ pub(super) async fn try_new_service(
         NonZeroUsize::new(bytes)
             .ok_or_else(|| BoxError::from_static_str("zero engine UDP ingress budget"))
     };
-    let network = QuicNetworkChanges::new();
+    let network = NetworkChanges::new();
     let events = network.clone();
-    let recovery_signal = DatagramRecoverySignal::new();
-    let forwarding_events = recovery_signal.clone();
     let mut platform = ctx.network_path_changes();
     let held = ctx
         .scope
@@ -135,17 +129,8 @@ pub(super) async fn try_new_service(
         .map_err(|_closed| BoxError::from_static_str("provider scope closed"))?;
     held.into_spawn_cancellable_task(async move {
         loop {
-            let path = *platform.borrow_and_update();
-            let availability = match path.status {
-                TransparentProxyNetworkStatus::Satisfied => QuicNetworkAvailability::Available,
-                TransparentProxyNetworkStatus::Unknown => QuicNetworkAvailability::Unknown,
-                _ => QuicNetworkAvailability::Unavailable,
-            };
-            let context = Extensions::new();
-            context.insert(path);
-            events.update(QuicMigrationSide::Egress, availability, context);
-            // Both consumers receive the same trusted routing revision from this one observer.
-            forwarding_events.update(forwarding_network_state(path));
+            // QUIC migration and UDP forwarding recovery share this one trusted observation.
+            events.update(network_state(*platform.borrow_and_update()));
             if platform.changed().await.is_err() {
                 break;
             }
@@ -155,11 +140,11 @@ pub(super) async fn try_new_service(
         migration_limits.max_concurrent_egress_preparations.get(),
     ));
     let path = crate::quic::QuicPath {
-        network,
         forwarding_recovery: crate::quic::forwarding_recovery(
-            recovery_signal,
+            network.clone(),
             egress_preparations.clone(),
         ),
+        network,
         egress_preparations,
         state,
         limiter,
@@ -191,10 +176,15 @@ pub(super) async fn try_new_service(
     }))
 }
 
-fn forwarding_network_state(path: TransparentProxyNetworkPath) -> DatagramRecoveryState {
-    DatagramRecoveryState {
+/// Recovery follows the routing revision, not cost flags such as expensive or constrained.
+fn network_state(path: TransparentProxyNetworkPath) -> NetworkState {
+    NetworkState {
         revision: path.routing_revision,
-        available: path.status == TransparentProxyNetworkStatus::Satisfied,
+        availability: match path.status {
+            TransparentProxyNetworkStatus::Satisfied => NetworkAvailability::Available,
+            TransparentProxyNetworkStatus::Unknown => NetworkAvailability::Unknown,
+            _ => NetworkAvailability::Unavailable,
+        },
     }
 }
 
@@ -510,18 +500,13 @@ async fn bind_egress_socket(
     let Some(index) = bound_if else {
         return bind_udp_with_address(bind_addr).await;
     };
-    let domain = Domain::for_address(bind_addr);
-    let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
-        .context("create udp egress socket")?;
-    if bind_addr.is_ipv4() {
-        socket.bind_device_by_index_v4(Some(index))
-    } else {
-        socket.bind_device_by_index_v6(Some(index))
+    let socket = SocketOptions {
+        address: Some(bind_addr.into()),
+        interface_index: Some(index),
+        ..SocketOptions::default_udp()
     }
+    .try_build_socket(bind_addr.into())
     .context("bind udp egress socket to interface")?;
-    socket
-        .bind(&bind_addr.into())
-        .context("bind udp egress socket")?;
     bind_udp_with_socket(socket).await
 }
 
@@ -576,27 +561,34 @@ mod tests {
     use std::sync::{Arc, mpsc};
 
     #[test]
-    fn recovery_observations_follow_routing_not_cost_flags() {
+    fn network_observations_follow_routing_not_cost_flags() {
         let mut path = TransparentProxyNetworkPath {
             routing_revision: 7,
             status: TransparentProxyNetworkStatus::Satisfied,
             ..Default::default()
         };
-        let available = forwarding_network_state(path);
-        assert!(available.available);
+        let available = network_state(path);
+        assert_eq!(available.availability, NetworkAvailability::Available);
         path.expensive = true;
         path.constrained = true;
         path.revision += 1;
-        assert_eq!(forwarding_network_state(path), available);
+        assert_eq!(network_state(path), available);
         path.routing_revision += 1;
-        assert_ne!(forwarding_network_state(path), available);
+        assert_ne!(network_state(path), available);
+        path.status = TransparentProxyNetworkStatus::Unknown;
+        assert_eq!(
+            network_state(path).availability,
+            NetworkAvailability::Unknown
+        );
         for status in [
-            TransparentProxyNetworkStatus::Unknown,
             TransparentProxyNetworkStatus::Unsatisfied,
             TransparentProxyNetworkStatus::RequiresConnection,
         ] {
             path.status = status;
-            assert!(!forwarding_network_state(path).available);
+            assert_eq!(
+                network_state(path).availability,
+                NetworkAvailability::Unavailable
+            );
         }
     }
 

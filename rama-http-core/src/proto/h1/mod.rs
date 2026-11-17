@@ -53,8 +53,6 @@ pub(crate) trait Http1Transaction {
     fn accepts_upgrade(_subject: &Self::Outgoing, _method: Option<&Method>) -> bool {
         false
     }
-
-    fn update_date() {}
 }
 
 /// Result newtype for `Http1Transaction::parse`.
@@ -102,7 +100,6 @@ pub(crate) struct Encode<'a, T> {
     keep_alive: bool,
     req_method: &'a mut Option<Method>,
     title_case_headers: bool,
-    date_header: bool,
     /// Refuse, rather than drop, framing fields on a 2xx to CONNECT.
     strict_connect_framing: bool,
 }
@@ -190,7 +187,6 @@ pub(crate) mod test_util {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: false,
                 strict_connect_framing: false,
             },
             &mut dst,

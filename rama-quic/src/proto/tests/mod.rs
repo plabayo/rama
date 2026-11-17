@@ -862,6 +862,30 @@ fn stateless_reset_limit() {
 }
 
 #[test]
+fn unrepresentable_stateless_reset_interval_limits_to_one_reset() {
+    let _guard = subscribe();
+    let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 42);
+    let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
+    endpoint_config.set_cid_generator(Arc::new(move || {
+        Box::new(RandomConnectionIdGenerator::new(8).expect("eight bytes is a length"))
+    }));
+    endpoint_config.set_min_reset_interval(Duration::MAX);
+    let mut endpoint = Endpoint::new(
+        Arc::new(endpoint_config),
+        Some(Arc::new(server_config())),
+        true,
+        None,
+    );
+    let time = Instant::now();
+    let mut buf = Vec::new();
+    let event = endpoint.handle(time, remote, None, None, [0u8; 1024][..].into(), &mut buf);
+    assert!(matches!(event, Some(DatagramEvent::Response(_))));
+    let later = time + Duration::from_hours(24 * 365);
+    let event = endpoint.handle(later, remote, None, None, [0u8; 1024][..].into(), &mut buf);
+    assert!(event.is_none());
+}
+
+#[test]
 fn export_keying_material() {
     let _guard = subscribe();
     let mut pair = Pair::default();
@@ -3368,6 +3392,26 @@ fn zero_length_cid() {
         Bytes::new(),
     );
     pair.connect();
+}
+
+#[test]
+fn unrepresentable_keep_alive_interval_never_pings() {
+    let _guard = subscribe();
+    let server = ServerConfig {
+        transport: Arc::new(TransportConfig {
+            keep_alive_interval: Some(Duration::MAX),
+            ..TransportConfig::default()
+        }),
+        ..server_config()
+    };
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
+    let (client_ch, server_ch) = pair.connect();
+    pair.drive();
+    assert!(!pair.client_conn_mut(client_ch).is_closed());
+    assert!(!pair.server_conn_mut(server_ch).is_closed());
 }
 
 #[test]

@@ -61,7 +61,9 @@ mod parser;
 
 #[doc(inline)]
 pub use {
-    decoder::{EventDecoder, Events, OnIncompleteLine},
+    decoder::{
+        DEFAULT_MAX_EVENT_LEN, DEFAULT_MAX_LINE_LEN, EventDecoder, Events, OnIncompleteLine,
+    },
     event::{Event, EventBuildError},
     event_data::{
         EventDataJsonReader, EventDataLineReader, EventDataMultiLineReader, EventDataRead,

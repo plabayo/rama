@@ -216,6 +216,9 @@ fn parse_authority_ref(bytes: &[u8], mode: ParserMode) -> Result<AuthorityRef<'_
     if bytes.len() > super::MAX_URI_LEN {
         return Err(ParseError::TooLong { len: bytes.len() });
     }
+    if let Some(authority) = parse_unbracketed_ipv6_authority_ref(bytes, mode)? {
+        return Ok(authority);
+    }
     let authority = scan_authority(bytes, 0, bytes.len(), mode)?;
     if authority.host.is_empty() {
         return Err(ParseError::InvalidComponent(Component::Host));
@@ -225,6 +228,41 @@ fn parse_authority_ref(bytes: &[u8], mode: ParserMode) -> Result<AuthorityRef<'_
     // invariant makes valid UTF-8.
     let source = unsafe { core::str::from_utf8_unchecked(bytes) };
     Ok(authority.as_ref(source))
+}
+
+/// A standalone authority whose host parses as an unbracketed IPv6 address
+/// is that address without a port, matching the owned [`Authority`] parser.
+///
+/// [`Authority`]: crate::address::Authority
+fn parse_unbracketed_ipv6_authority_ref(
+    bytes: &[u8],
+    mode: ParserMode,
+) -> Result<Option<AuthorityRef<'_>>, ParseError> {
+    let host_start = parse_utils::find_userinfo_split(bytes).map_or(0, |at| at + 1);
+    let host = &bytes[host_start..];
+    // Cheap reject: an IPv6 address holds at least two colons.
+    if host.iter().filter(|&&b| b == b':').nth(1).is_none() {
+        return Ok(None);
+    }
+    let Ok(host) = core::str::from_utf8(host) else {
+        return Ok(None);
+    };
+    let Ok(address) = host.parse::<Ipv6Addr>() else {
+        return Ok(None);
+    };
+    // The userinfo still goes through the shared scanner and its mode rules.
+    let scanned = scan_authority(bytes, 0, host_start, mode)?;
+    let Ok(source) = core::str::from_utf8(bytes) else {
+        return Err(ParseError::InvalidComponent(Component::Authority));
+    };
+    let userinfo = scanned
+        .userinfo_range
+        .map(|(start, end)| UserInfoRef::new(&source[usize::from(start)..usize::from(end)]));
+    Ok(Some(AuthorityRef::new(
+        userinfo,
+        HostRef::Address(IpAddr::V6(address)),
+        OptPort::Unset,
+    )))
 }
 
 /// Scan and validate an authority without retaining or allocating bytes.

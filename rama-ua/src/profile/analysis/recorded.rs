@@ -192,10 +192,7 @@ fn joint_tls(
 ) -> Result<Vec<TlsCapture>, ProfileDataError> {
     let joint = JointCapture::from_canonical(value, JointCaptureLimits::default())?;
     let kind = if joint.slots.iter().any(|slot| slot.kind == transport)
-        && joint
-            .slots
-            .iter()
-            .any(|slot| slot.kind == CapturedSlotKind::TlsOuter)
+        && joint.ech_outer_slot().is_some()
     {
         CapturedSlotKind::TlsOuter
     } else {

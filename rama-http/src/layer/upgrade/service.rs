@@ -7,23 +7,32 @@ use crate::opentelemetry::version_as_protocol_version;
 use rama_core::Layer;
 use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::error_sink::ErrorSink;
-use rama_core::extensions::{Extension, ExtensionsRef};
+use rama_core::extensions::{
+    Extension, ExtensionsRef, NestedConnectionTransfer, SharedNestedConnectionTransfer,
+};
 use rama_core::graceful::WeakScope;
 use rama_core::layer::{ConsumeErrLayer, MapOutputLayer};
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, extensions::Extensions, matcher::Matcher, service::BoxService};
-use rama_http_types::Request;
-use rama_utils::macros::define_inner_service_accessors;
+use rama_http_types::{Method, Request, proto::ext::Protocol};
+use rama_net::stream::DefaultConnectionTransfer;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{convert::Infallible, fmt, future::Future, pin::Pin, sync::Arc};
 
 /// Upgrade service can be used to handle the possibility of upgrading a request,
 /// after which it will pass down the transport RW to the attached upgrade service.
+///
+/// The transport of an accepted `CONNECT` tunnel (RFC 9110 §9.3.6, not an extended
+/// `CONNECT` such as WebSocket or CONNECT-UDP) is handed on as a connection nested
+/// on the one it arrived on, see [`Extensions::fork_nested_connection`] and
+/// [`Self::set_nested_connection_transfer`].
 #[derive(ExtensionsRef)]
 pub struct UpgradeService<S, O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
     inner: S,
     scope: WeakScope,
     error_sink: Arc<dyn ErrorSink>,
+    nested_connection_transfer: SharedNestedConnectionTransfer,
 }
 
 /// Handshake response produced by the responder in a
@@ -252,10 +261,35 @@ impl<S, O> UpgradeService<S, O> {
             inner,
             scope,
             error_sink,
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set what an accepted CONNECT tunnel keeps from the connection it is
+        /// nested on.
+        ///
+        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
+        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// extension types into the tunnel.
+        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
+            self.nested_connection_transfer = transfer.into_shared();
+            self
         }
     }
 
     define_inner_service_accessors!();
+}
+
+/// A classic `CONNECT` tunnels to another endpoint, an extended `CONNECT` keeps talking to this one.
+fn is_tunnel_request(request: &Request) -> bool {
+    request.method() == Method::CONNECT && !request.extensions().contains::<Protocol>()
+}
+
+/// The tunnelled transport as a new connection nested on the one the request arrived on.
+fn into_nested_connection(upgraded: Upgraded, transfer: &dyn NestedConnectionTransfer) -> Upgraded {
+    let nested = upgraded.extensions().fork_nested_connection(transfer);
+    upgraded.with_extensions(nested)
 }
 
 impl<S, O> fmt::Debug for UpgradeService<S, O>
@@ -281,6 +315,7 @@ where
             inner: self.inner.clone(),
             scope: self.scope.clone(),
             error_sink: self.error_sink.clone(),
+            nested_connection_transfer: self.nested_connection_transfer.clone(),
         }
     }
 }
@@ -309,6 +344,8 @@ where
                     continuation,
                 }) => {
                     let upgrade_error_sink = self.error_sink.clone();
+                    let nested_connection_transfer = is_tunnel_request(&request)
+                        .then(|| self.nested_connection_transfer.clone());
 
                     let span = tracing::trace_root_span!(
                         "upgrade::serve",
@@ -328,6 +365,12 @@ where
                                 async move {
                                     match crate::io::upgrade::handle_upgrade(request).await {
                                         Ok(upgraded) => {
+                                            let upgraded = match &nested_connection_transfer {
+                                                Some(transfer) => {
+                                                    into_nested_connection(upgraded, transfer)
+                                                }
+                                                None => upgraded,
+                                            };
                                             upgraded.extensions().extend(&extensions);
                                             match continuation {
                                                 UpgradeContinuation::ResponseLocal {
@@ -394,6 +437,77 @@ mod tests {
 
     #[derive(Debug, Extension)]
     struct ResponseLocalMarker;
+
+    #[derive(Debug, Extension)]
+    #[extension(scope(connection))]
+    struct CarrierFact;
+
+    #[derive(Debug, Extension)]
+    struct FlowFact;
+
+    /// Upgrade `req` on a carrier holding [`CarrierFact`] and [`FlowFact`] and report
+    /// whether the handler still sees the carrier's connection fact.
+    async fn handler_sees_carrier_fact(req: Request) -> bool {
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel();
+        let (pending_upgrade, on_upgrade) = pending();
+        req.extensions().insert(on_upgrade);
+
+        let service = service_fn(move |req: Request| {
+            let seen_tx = seen_tx.clone();
+            async move {
+                Ok::<_, Response>(
+                    UpgradeResponse::new(req, Response::new(Body::empty()))
+                        .with_extension(ResponseLocalMarker)
+                        .with_handler(move |upgraded| async move {
+                            let ext = upgraded.extensions();
+                            assert!(ext.contains::<FlowFact>());
+                            assert!(ext.contains::<ResponseLocalMarker>());
+                            _ = seen_tx.send(ext.contains::<CarrierFact>());
+                            Ok::<_, BoxError>(())
+                        }),
+                )
+            }
+        });
+        let inner =
+            service_fn(
+                |_req: Request| async move { Ok::<_, Infallible>(Response::new(Body::empty())) },
+            );
+        let svc = UpgradeLayer::new(WeakScope::detached(), true, service).into_layer(inner);
+        let _response = svc.serve(req).await.expect("upgrade response");
+
+        let carrier = ServiceInput::new(Builder::default().build());
+        carrier.extensions.insert(CarrierFact);
+        carrier.extensions.insert(FlowFact);
+        pending_upgrade.fulfill(Upgraded::new(carrier, Bytes::new()));
+        tokio::time::timeout(Duration::from_secs(5), seen_rx.recv())
+            .await
+            .expect("handler should run")
+            .expect("handler notification")
+    }
+
+    #[tokio::test]
+    async fn connect_tunnel_is_a_nested_connection() {
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .body(Body::empty())
+            .unwrap();
+        assert!(!handler_sees_carrier_fact(req).await);
+    }
+
+    #[tokio::test]
+    async fn extended_connect_stays_on_its_connection() {
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .body(Body::empty())
+            .unwrap();
+        req.extensions().insert(Protocol::WEBSOCKET);
+        assert!(handler_sees_carrier_fact(req).await);
+    }
+
+    #[tokio::test]
+    async fn protocol_upgrade_stays_on_its_connection() {
+        assert!(handler_sees_carrier_fact(Request::new(Body::empty())).await);
+    }
 
     #[derive(Clone)]
     struct SendOnlyOutputResponder;

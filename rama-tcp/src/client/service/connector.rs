@@ -114,7 +114,7 @@ where
         let (conn, addr) = if let Some(candidates) = input
             .extensions()
             .get_ref::<ConnectorTargetStream>()
-            .filter(|candidates| candidate_matches_target(candidates, &authority))
+            .filter(|candidates| candidates.matches_target(&authority))
         {
             let port = authority.port;
             // A resolver chooses addresses, never permission to dial their
@@ -168,13 +168,6 @@ where
 
         Ok(EstablishedClientConnection { input, conn })
     }
-}
-
-fn candidate_matches_target(
-    candidates: &ConnectorTargetStream,
-    target: &rama_net::address::HostWithPort,
-) -> bool {
-    candidates.matches_target(target)
 }
 
 // Preserve policy/capability failures emitted before a dial. Unclassified
@@ -366,25 +359,13 @@ mod tests {
             },
         );
 
-        assert!(candidate_matches_target(
-            &candidates,
-            &HostWithPort::example_domain_https(),
-        ));
-        assert!(!candidate_matches_target(
-            &candidates,
-            &HostWithPort::example_domain_with_port(8443),
-        ));
-        assert!(!candidate_matches_target(
-            &candidates,
-            &HostWithPort::new(
-                rama_net::address::Host::Name(Domain::from_static("other.test")),
-                443,
-            ),
-        ));
-        assert!(!candidate_matches_target(
-            &candidates,
-            &HostWithPort::local_ipv4(443),
-        ));
+        assert!(candidates.matches_target(&HostWithPort::example_domain_https()));
+        assert!(!candidates.matches_target(&HostWithPort::example_domain_with_port(8443)));
+        assert!(!candidates.matches_target(&HostWithPort::new(
+            rama_net::address::Host::Name(Domain::from_static("other.test")),
+            443,
+        )));
+        assert!(!candidates.matches_target(&HostWithPort::local_ipv4(443)));
     }
 
     #[tokio::test]

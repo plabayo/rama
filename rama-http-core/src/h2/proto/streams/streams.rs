@@ -792,9 +792,25 @@ impl Inner {
             );
 
             let res = if stream.state.is_recv_headers() {
-                match actions.recv.recv_headers(frame, stream, counts) {
+                let request_ended = frame.is_end_stream();
+                let refusal = match actions.recv.recv_headers(frame, stream, counts) {
                     Ok(()) => Ok(()),
-                    Err(RecvHeaderBlockError::Oversize(resp)) => {
+                    Err(RecvHeaderBlockError::State(Error::Reset(
+                        id,
+                        Reason::PROTOCOL_ERROR,
+                        Initiator::Library,
+                    ))) if id == stream.id && counts.peer().is_server() => {
+                        // RFC 9113 §8.1.1: a malformed request is answered before its reset.
+                        Err(RecvHeaderBlockError::Refused(Some(super::recv::bad_request(
+                            id,
+                            request_ended,
+                        ))))
+                    }
+                    other => other,
+                };
+                match refusal {
+                    Ok(()) => Ok(()),
+                    Err(RecvHeaderBlockError::Refused(resp)) => {
                         if let Some(resp) = resp {
                             // The answer is ours to give, the refused head is the peer's doing.
                             if counts.refuse_stream().is_err() {
@@ -803,7 +819,7 @@ impl Inner {
                             let mut send_buffer = send_buffer.inner.lock();
                             let sent = actions.send.send_headers(
                                 resp, &mut send_buffer, stream, counts, &mut actions.task);
-                            debug_assert!(sent.is_ok(), "oversize response should not fail");
+                            debug_assert!(sent.is_ok(), "refusal response should not fail");
 
                             actions.send.schedule_implicit_reset(
                                 stream,

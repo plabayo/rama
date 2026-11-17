@@ -6,6 +6,7 @@
 //! completing a request head. A connection that never did gets one shorter window,
 //! counted from when it first went idle, which open requests and heads only pause.
 
+use rama_utils::time::deadline_after;
 use std::{
     fmt,
     pin::Pin,
@@ -139,16 +140,6 @@ fn drain_budget(rtt: Option<Duration>) -> Duration {
         rtt.saturating_mul(RTT_FACTOR)
             .clamp(DRAIN_FLOOR, DRAIN_CEILING)
     })
-}
-
-/// Saturate an unrepresentable deadline to a far future instant, never to `now`.
-pub(crate) fn deadline_after(start: Instant, mut duration: Duration) -> Instant {
-    loop {
-        if let Some(deadline) = start.checked_add(duration) {
-            return deadline;
-        }
-        duration = duration.checked_div(2).unwrap_or_default();
-    }
 }
 
 /// How long `bytes` last at `rate` bytes per second, plus 1 ns: the first
@@ -686,8 +677,6 @@ mod tests {
     #[test]
     fn unrepresentable_budgets_never_expire_immediately() {
         let now = Instant::now();
-        assert!(deadline_after(now, Duration::MAX) > now);
-        assert_eq!(deadline_after(now, Duration::ZERO), now);
         let mut timer = ConnDeadlines::new(
             Some(IdleTimeout {
                 first_request: Duration::MAX,

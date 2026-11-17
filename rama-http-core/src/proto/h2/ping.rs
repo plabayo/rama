@@ -28,6 +28,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use rama_core::telemetry::tracing::{debug, trace, warn};
+use rama_utils::{octets::mib, time::deadline_after};
 
 use crate::h2::{Ping, PingPong};
 
@@ -357,7 +358,7 @@ impl Shared {
 // ===== impl Bdp =====
 
 /// Any higher than this likely will be hitting the TCP flow control.
-const BDP_LIMIT: usize = 1024 * 1024 * 16;
+const BDP_LIMIT: usize = mib(16);
 
 impl Bdp {
     fn calculate(&mut self, bytes: usize, rtt: Duration) -> Option<WindowSize> {
@@ -446,7 +447,7 @@ impl KeepAlive {
 
     fn schedule(&mut self, shared: &Shared) {
         if let Some(last_read_at) = shared.last_read_at {
-            let interval = last_read_at + self.interval;
+            let interval = deadline_after(last_read_at, self.interval);
             self.state = KeepAliveState::Scheduled(interval);
             self.sleep.as_mut().reset(interval);
         } else {
@@ -464,7 +465,7 @@ impl KeepAlive {
                 }
                 // check if we've received a frame while we were scheduled
                 if let Some(last_read_at) = shared.last_read_at {
-                    if last_read_at + self.interval > at {
+                    if deadline_after(last_read_at, self.interval) > at {
                         self.state = KeepAliveState::Init;
                         cx.waker().wake_by_ref(); // schedule us again
                         return;
@@ -484,7 +485,7 @@ impl KeepAlive {
                 trace!("keep-alive interval ({:?}) reached", self.interval);
                 shared.send_ping();
                 self.state = KeepAliveState::PingSent;
-                let timeout = Instant::now() + self.timeout;
+                let timeout = deadline_after(Instant::now(), self.timeout);
                 self.sleep.as_mut().reset(timeout);
             }
             KeepAliveState::Init | KeepAliveState::PingSent => (),

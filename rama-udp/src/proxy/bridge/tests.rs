@@ -8,13 +8,13 @@ use std::{
     time::Duration,
 };
 
-use rama_core::{extensions::Extension, service::service_fn};
+use rama_core::{Fork as _, extensions::Extension, service::service_fn};
 use rama_net::{address::SocketAddress, stream::Socket as _};
 use tokio::time::timeout;
 
 use super::*;
 use crate::{
-    DatagramSenderExt as _, DatagramSocketExt as _, SendDatagram,
+    DatagramFeature, DatagramSenderExt as _, DatagramSocketExt as _, SendDatagram,
     proxy::{DatagramForwardService, EcnPolicy},
     test_utils::MemoryDatagramSocket,
 };
@@ -183,4 +183,146 @@ async fn forwarding_takes_a_bridge_of_connected_sockets() {
     })
     .await
     .unwrap();
+}
+
+/// What a connector produced for a replacement: refused, or a socket with or without `feature`.
+fn outcome(
+    result: Result<EstablishedClientConnection<UdpPacketSocket, ConnectRequest>, BoxError>,
+    feature: DatagramFeature,
+) -> Option<bool> {
+    result
+        .ok()
+        .map(|connected| connected.conn.capabilities().supports(feature))
+}
+
+/// Building a replacement with a fresh default connector and a clone of the request drops the
+/// configuration of the connector that made the original egress.
+#[tokio::test]
+async fn a_fresh_default_connector_loses_the_original_connector_configuration() {
+    let origin = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
+        .await
+        .unwrap();
+    let request = ConnectRequest::new(origin.local_addr().unwrap().into());
+    let feature = DatagramFeature::ReceiveOriginalDestination;
+    let configured =
+        UdpConnector::new().with_config(UdpSocketConfig::new().with_required_feature(feature));
+
+    let original = outcome(configured.serve(request.fork()).await, feature);
+    let hand_built = outcome(UdpConnector::new().serve(request.clone()).await, feature);
+    assert_eq!(
+        hand_built,
+        Some(false),
+        "a default socket lacks the feature"
+    );
+    assert_ne!(
+        hand_built, original,
+        "the configured connector either provides the feature or refuses"
+    );
+
+    let replacement = DatagramReplacementConnector::new(configured, request)
+        .serve(())
+        .await;
+    assert_eq!(
+        replacement
+            .ok()
+            .map(|socket| socket.capabilities().supports(feature)),
+        original,
+        "the replacement connector keeps the configuration"
+    );
+}
+
+/// Records whether a request already carried a [`Marker`] and then marks it, as a connector
+/// annotating its request does.
+#[derive(Clone)]
+struct MarkingConnector {
+    saw_marker: Arc<AtomicBool>,
+}
+
+impl Service<ConnectRequest> for MarkingConnector {
+    type Output = EstablishedClientConnection<UdpPacketSocket, ConnectRequest>;
+    type Error = BoxError;
+
+    async fn serve(&self, request: ConnectRequest) -> Result<Self::Output, Self::Error> {
+        self.saw_marker
+            .store(request.extensions.contains::<Marker>(), Ordering::Relaxed);
+        request.extensions.insert(Marker);
+        UdpConnector::new().serve(request).await
+    }
+}
+
+/// A cloned request shares its extensions, so one replacement attempt leaks into the next;
+/// the replacement connector forks them per attempt.
+#[tokio::test]
+async fn replacement_attempts_do_not_share_request_extensions() {
+    let origin = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
+        .await
+        .unwrap();
+    let request = ConnectRequest::new(origin.local_addr().unwrap().into());
+    let saw_marker = Arc::new(AtomicBool::new(false));
+    let connector = MarkingConnector {
+        saw_marker: saw_marker.clone(),
+    };
+
+    for _ in 0..2 {
+        connector.serve(request.clone()).await.unwrap();
+    }
+    assert!(
+        saw_marker.load(Ordering::Relaxed),
+        "a cloned request carries the previous attempt's extensions"
+    );
+
+    let request = ConnectRequest::new(origin.local_addr().unwrap().into());
+    let replacement = DatagramReplacementConnector::new(connector, request.clone());
+    for _ in 0..2 {
+        replacement.serve(()).await.unwrap();
+        assert!(!saw_marker.load(Ordering::Relaxed));
+    }
+    assert!(!request.extensions.contains::<Marker>());
+}
+
+/// The connector creates its socket with the configured socket options.
+#[cfg(any(
+    target_os = "ios",
+    target_os = "visionos",
+    target_os = "macos",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "illumos",
+    target_os = "solaris",
+    target_os = "linux",
+    target_os = "android",
+))]
+#[tokio::test]
+async fn the_udp_connector_applies_configured_socket_options() {
+    let loopback = rama_net::socket::interfaces()
+        .unwrap()
+        .into_iter()
+        .find(|iface| {
+            iface
+                .flags()
+                .contains(rama_net::socket::InterfaceFlags::LOOPBACK)
+        })
+        .and_then(|iface| iface.index())
+        .and_then(core::num::NonZeroU32::new)
+        .unwrap();
+    let origin = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
+        .await
+        .unwrap();
+    let options = rama_net::socket::SocketOptions {
+        interface_index: Some(loopback),
+        ..rama_net::socket::SocketOptions::default_udp()
+    };
+    let connected = UdpConnector::new()
+        .with_config(UdpSocketConfig::new().with_socket_options(options))
+        .serve(ConnectRequest::new(origin.local_addr().unwrap().into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        connected.conn.socket_ref().device_index_v4().unwrap(),
+        Some(loopback)
+    );
+    assert_eq!(
+        connected.conn.peer_addr().unwrap(),
+        origin.local_addr().unwrap()
+    );
 }

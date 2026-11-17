@@ -1,7 +1,5 @@
 use std::time::SystemTime;
 
-use rama_core::error::BoxError;
-use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
 
 use crate::Error;
@@ -47,12 +45,7 @@ impl crate::HeaderDecode for RetryAfter {
 
 impl crate::HeaderEncode for RetryAfter {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        match HeaderValue::try_from(&self.0) {
-            Ok(value) => values.extend(::std::iter::once(value)),
-            Err(err) => {
-                tracing::debug!("failed to encode retry-after value as header: {err}");
-            }
-        }
+        values.extend(::std::iter::once(HeaderValue::from(&self.0)));
     }
 }
 
@@ -102,13 +95,11 @@ impl TryFromValues for After {
     }
 }
 
-impl<'a> TryFrom<&'a After> for HeaderValue {
-    type Error = BoxError;
-
-    fn try_from(after: &'a After) -> Result<Self, Self::Error> {
+impl<'a> From<&'a After> for HeaderValue {
+    fn from(after: &'a After) -> Self {
         match *after {
-            After::Delay(ref delay) => Ok(delay.into()),
-            After::DateTime(ref date) => date.try_into(),
+            After::Delay(ref delay) => delay.into(),
+            After::DateTime(ref date) => date.into(),
         }
     }
 }

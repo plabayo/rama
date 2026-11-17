@@ -6,7 +6,7 @@
 
 use super::Endpoint;
 use crate::proto::RouteObserver;
-use ahash::HashMap;
+use ahash::{HashMap, HashSet};
 use parking_lot::Mutex;
 use rama_core::telemetry::tracing;
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
@@ -62,6 +62,9 @@ struct State {
 struct Owner {
     endpoint: Endpoint,
     cid_len: usize,
+    /// This owner's routing keys under its original destination, so its release touches
+    /// only those.
+    keys: HashSet<(ConnectionId, bool)>,
 }
 
 /// Keeps one endpoint's routing hints registered. Dropping it removes all hints atomically.
@@ -87,6 +90,16 @@ struct Observer {
 }
 
 impl State {
+    fn remove_route(&mut self, local: SocketAddress, cid: ConnectionId, initial: bool, id: u64) {
+        let key = (local, cid, initial);
+        if let Some(ids) = self.routes.get_mut(&key) {
+            ids.retain(|owner| *owner != id);
+            if ids.is_empty() {
+                self.routes.remove(&key);
+            }
+        }
+    }
+
     fn snapshot(&self) -> RoutingStats {
         RoutingStats {
             registered_endpoints: self.owners.len(),
@@ -224,6 +237,7 @@ impl EndpointRouteDirectory {
                 Owner {
                     endpoint: endpoint.clone(),
                     cid_len,
+                    keys: HashSet::default(),
                 },
             );
             state.stats.endpoint_high_water =
@@ -312,9 +326,10 @@ impl RouteObserver for Observer {
             return;
         };
         let mut state = shared.lock();
-        if !state.owners.contains_key(&self.id) {
+        let Some(owner) = state.owners.get_mut(&self.id) else {
             return;
-        }
+        };
+        owner.keys.insert((cid, initial));
         let ids = state.routes.entry((self.local, cid, initial)).or_default();
         if !ids.contains(&self.id) {
             ids.push(self.id);
@@ -328,13 +343,10 @@ impl RouteObserver for Observer {
             return;
         };
         let mut state = shared.lock();
-        let key = (self.local, cid, initial);
-        if let Some(ids) = state.routes.get_mut(&key) {
-            ids.retain(|id| *id != self.id);
-            if ids.is_empty() {
-                state.routes.remove(&key);
-            }
+        if let Some(owner) = state.owners.get_mut(&self.id) {
+            owner.keys.remove(&(cid, initial));
         }
+        state.remove_route(self.local, cid, initial, self.id);
     }
 }
 
@@ -345,13 +357,12 @@ impl Drop for EndpointRouteRegistration {
         };
         let (owner, snapshot) = {
             let mut state = shared.lock();
-            state.routes.retain(|_, ids| {
-                ids.retain(|id| *id != self.observer.id);
-                !ids.is_empty()
-            });
             let owner = state.owners.remove(&self.observer.id);
             if let Some(owner) = &owner {
                 state.cid_lengths[owner.cid_len] -= 1;
+                for &(cid, initial) in &owner.keys {
+                    state.remove_route(self.observer.local, cid, initial, self.observer.id);
+                }
             }
             (owner, state.snapshot())
         };
@@ -463,5 +474,50 @@ mod tests {
         assert_eq!(stats.registrations_rejected, 1);
         assert_eq!(stats.ambiguous_routes, 1);
         assert_eq!(stats.route_hits, 1);
+    }
+
+    #[tokio::test]
+    async fn a_released_registration_removes_only_its_own_keys() {
+        const OWNERS: u8 = 4;
+        const KEYS: u8 = 3;
+        let directory = EndpointRouteDirectory::new(rama_utils::macros::nonzero!(8));
+        let local = ([127, 0, 0, 1], 443).into();
+        let mut registrations: Vec<_> = (0..OWNERS)
+            .map(|owner| {
+                let registration = directory.register(&endpoint(443), local).unwrap();
+                for key in 0..KEYS {
+                    let cid = ConnectionId::new(&[owner, key, 0, 0, 0, 0, 0, 0]);
+                    registration.observer.insert(cid, false);
+                    registration.observer.insert(cid, true);
+                }
+                registration
+            })
+            .collect();
+        let per_owner = usize::from(KEYS) * 2;
+        assert_eq!(
+            directory.stats().routing_keys,
+            usize::from(OWNERS) * per_owner
+        );
+
+        let ids: Vec<u64> = registrations
+            .iter()
+            .map(EndpointRouteRegistration::id)
+            .collect();
+        drop(registrations.remove(1));
+        assert_eq!(
+            directory.stats().routing_keys,
+            usize::from(OWNERS - 1) * per_owner
+        );
+        for owner in 0..OWNERS {
+            for key in 0..KEYS {
+                let cid = ConnectionId::new(&[owner, key, 0, 0, 0, 0, 0, 0]);
+                let route = directory.route(local, &packet(cid)).unwrap();
+                if owner == 1 {
+                    assert!(route.is_none());
+                } else {
+                    assert_eq!(route.unwrap().registration, ids[usize::from(owner)]);
+                }
+            }
+        }
     }
 }

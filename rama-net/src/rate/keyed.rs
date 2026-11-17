@@ -8,7 +8,10 @@ use ahash::{HashMap, HashMapExt as _};
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::layer::limit::policy::{Policy, PolicyOutput, PolicyResult, RateLimitReached};
-use rama_utils::rate::{Acquire, Rate, RateLimiter};
+use rama_utils::{
+    rate::{Acquire, Rate, RateLimiter},
+    time::deadline_after,
+};
 
 use super::InputToRateKey;
 
@@ -277,7 +280,7 @@ where
             },
         );
         state.expirations.push(Expiration {
-            at: expiration_at(now, self.idle_timeout),
+            at: deadline_after(now, self.idle_timeout),
             key,
         });
         Ok(limiter)
@@ -301,12 +304,12 @@ where
             };
             if in_use {
                 state.expirations.push(Expiration {
-                    at: expiration_at(now, self.idle_timeout),
+                    at: deadline_after(now, self.idle_timeout),
                     key: expiry.key,
                 });
                 continue;
             }
-            match expiration_at(last_used, self.idle_timeout) {
+            match deadline_after(last_used, self.idle_timeout) {
                 at if at > now => state.expirations.push(Expiration {
                     at,
                     key: expiry.key,
@@ -321,17 +324,6 @@ where
     #[cfg(test)]
     fn len(&self) -> usize {
         self.state.lock().entries.len()
-    }
-}
-
-/// Add even a platform-unrepresentable timeout without dropping the cache
-/// entry from the expiration index. Only such extreme values are shortened.
-fn expiration_at(now: tokio::time::Instant, mut timeout: Duration) -> tokio::time::Instant {
-    loop {
-        if let Some(at) = now.checked_add(timeout) {
-            return at;
-        }
-        timeout /= 2;
     }
 }
 

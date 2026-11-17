@@ -1,8 +1,11 @@
-use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
+use crate::headers::encoding::{
+    SupportedEncodings, accept_encoding_qualities, parse_accept_encoding_headers,
+    parse_accept_encoding_wildcard_quality,
+};
 use crate::layer::set_status::SetStatus;
 use crate::mime::Mime;
 use crate::service::web::response::IntoResponse;
-use crate::{Body, Method, Request, Response, StatusCode, StreamingBody, header};
+use crate::{Method, Request, Response, StatusCode, StreamingBody};
 use bitflags::bitflags;
 use rama_core::Service;
 use rama_core::bytes::Bytes;
@@ -11,6 +14,7 @@ use rama_core::error::BoxErrorExt as _;
 use rama_core::telemetry::tracing;
 use rama_net::uri::util::percent_encoding::percent_decode;
 use rama_utils::include_dir::Dir;
+use rama_utils::octets::kib;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -34,8 +38,7 @@ enum DirSource {
     Embedded(Dir<'static>),
 }
 
-// default capacity 64KiB
-const DEFAULT_CAPACITY: usize = 65536;
+const DEFAULT_CAPACITY: usize = kib(64);
 
 /// Service that serves files from a given directory and all its sub directories.
 ///
@@ -61,6 +64,7 @@ pub struct ServeDir<F = DefaultServeDirFallback> {
     hidden: HiddenPathFilter,
     ignore_multi_range_requests: bool,
     precompressed_variants: Option<PrecompressedVariants>,
+    enforce_not_acceptable: bool,
     // This is used to specialise implementation for
     // single files
     variant: ServeVariant,
@@ -95,6 +99,7 @@ impl ServeDir<DefaultServeDirFallback> {
             hidden: HiddenPathFilter::default(),
             ignore_multi_range_requests: false,
             precompressed_variants: None,
+            enforce_not_acceptable: false,
             variant: ServeVariant::Directory {
                 serve_mode: Default::default(),
                 redirect_to_trailing_slash: true,
@@ -118,6 +123,7 @@ impl ServeDir<DefaultServeDirFallback> {
             hidden: HiddenPathFilter::allow_all(),
             ignore_multi_range_requests: false,
             precompressed_variants: None,
+            enforce_not_acceptable: false,
             variant: ServeVariant::SingleFile { mime },
             fallback: None,
             call_fallback_on_method_not_allowed: false,
@@ -354,6 +360,18 @@ impl<F> ServeDir<F> {
         }
     }
 
+    rama_utils::macros::generate_set_and_with! {
+        /// Respond `406 Not Acceptable` when the client's `Accept-Encoding` rejects every
+        /// variant of the file, including the uncompressed one (e.g. `*;q=0`).
+        ///
+        /// Disabled by default, in which case the uncompressed file is served, as
+        /// RFC 9110 §12.5.3 allows. The compression layers enable this by default.
+        pub fn enforce_not_acceptable(mut self, enable: bool) -> Self {
+            self.enforce_not_acceptable = enable;
+            self
+        }
+    }
+
     /// Set the fallback service.
     ///
     /// This service will be called if there is no file at the path of the request.
@@ -368,6 +386,7 @@ impl<F> ServeDir<F> {
             hidden: self.hidden,
             ignore_multi_range_requests: self.ignore_multi_range_requests,
             precompressed_variants: self.precompressed_variants,
+            enforce_not_acceptable: self.enforce_not_acceptable,
             variant: self.variant,
             fallback: Some(new_fallback),
             call_fallback_on_method_not_allowed: self.call_fallback_on_method_not_allowed,
@@ -426,30 +445,6 @@ impl<F> ServeDir<F> {
             return Ok(future::method_not_allowed());
         }
 
-        // `ServeDir` doesn't care about the request body but the fallback might. So move out the
-        // body and pass it to the fallback, leaving an empty body in its place
-        //
-        // this is necessary because we cannot clone bodies
-        let (mut parts, body) = req.into_parts();
-        // same goes for extensions
-        let extensions = std::mem::take(&mut parts.extensions);
-        let req = Request::from_parts(parts, Body::empty());
-
-        let fallback_and_request = self.fallback.as_ref().map(|fallback| {
-            let mut fallback_req = Request::new(body);
-            *fallback_req.method_mut() = req.method().clone();
-            *fallback_req.uri_mut() = req.uri().clone();
-            *fallback_req.headers_mut() = req.headers().clone();
-            // Carry the ORIGINAL request's full extensions (including any
-            // parent chain) onto the fallback request. `extend` would copy
-            // only the top-level store and silently drop a parent chain.
-            let (mut fallback_parts, fallback_body) = fallback_req.into_parts();
-            fallback_parts.extensions = extensions;
-            let fallback_req = Request::from_parts(fallback_parts, fallback_body);
-
-            (fallback, fallback_req)
-        });
-
         // Canonicalize per RFC 3986 first so `.`/`..` segments (including
         // percent-encoded ones) are resolved and clamped to the path root
         // before mapping to the filesystem; `build_and_validate_path` then
@@ -461,38 +456,38 @@ impl<F> ServeDir<F> {
             self.variant
                 .build_and_validate_path(&self.base, requested_path.as_ref(), &self.hidden)
         else {
-            return if let Some((fallback, request)) = fallback_and_request {
-                future::serve_fallback(fallback, request).await
+            return if let Some(fallback) = self.fallback.as_ref() {
+                future::serve_fallback(fallback, req).await
             } else {
                 Ok(future::not_found())
             };
         };
 
-        let buf_chunk_size = self.buf_chunk_size;
-        let range_header = req
-            .headers()
-            .get(header::RANGE)
-            .and_then(|value| value.to_str().ok())
-            .map(|s| s.to_owned());
-
-        let precompression_configured = self.precompressed_variants.is_some();
-        let negotiated_encodings: Vec<_> = parse_accept_encoding_headers(
-            req.headers(),
-            self.precompressed_variants.unwrap_or_default(),
+        // The request stays whole, body and extensions included, for the fallback.
+        let (parts, body) = req.into_parts();
+        let supported = self.precompressed_variants.unwrap_or_default();
+        let accepted: Vec<_> = parse_accept_encoding_headers(&parts.headers, supported).collect();
+        let negotiated_encodings: Vec<_> = accept_encoding_qualities(
+            &accepted,
+            parse_accept_encoding_wildcard_quality(&parts.headers),
+            supported,
         )
         .collect();
-
-        let variant = self.variant.clone();
-        let open_file_result = open_file::open_file(
-            variant,
-            path_to_file,
-            req,
+        let file_request = open_file::FileRequest::new(
+            &parts,
             negotiated_encodings,
-            range_header.as_deref(),
             self.ignore_multi_range_requests,
-            buf_chunk_size,
+            self.buf_chunk_size,
+            self.precompressed_variants.is_some(),
+            self.enforce_not_acceptable,
+        );
+
+        let open_file_result = open_file::open_file(
+            self.variant.clone(),
+            path_to_file,
+            parts.uri.clone(),
+            file_request,
             &self.base,
-            precompression_configured,
             open_file::PathAccess {
                 symlink_policy: self.symlink_policy,
                 hidden: &self.hidden,
@@ -500,6 +495,10 @@ impl<F> ServeDir<F> {
         )
         .await;
 
+        let fallback_and_request = self
+            .fallback
+            .as_ref()
+            .map(|fallback| (fallback, Request::from_parts(parts, body)));
         future::consume_open_file_result(open_file_result, fallback_and_request).await
     }
 }

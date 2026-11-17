@@ -310,14 +310,14 @@ impl Predicate for MirrorDecompressed {
     }
 }
 
-/// [`Predicate`] that will only allow compression of responses above a certain size.
+/// [`Predicate`] that will only allow compression of responses of at least a certain size.
 #[derive(Clone, Copy, Debug)]
 pub struct SizeAbove(u64);
 
 impl SizeAbove {
     pub(crate) const DEFAULT_MIN_SIZE: u64 = 32;
 
-    /// Create a new `SizeAbove` predicate that will only compress responses larger than
+    /// Create a new `SizeAbove` predicate that will only compress responses of at least
     /// `min_size_bytes`.
     ///
     /// The response will be compressed if the exact size cannot be determined through either the
@@ -408,6 +408,18 @@ impl Predicate for NotForContentType {
 mod tests {
     use super::*;
     use crate::{Body, Response};
+
+    #[test]
+    fn size_above_compresses_from_the_minimum_size_on() {
+        for (len, compress) in [(31, false), (32, true), (33, true)] {
+            let mut response = Response::new(Body::from(vec![b'a'; len]));
+            assert_eq!(
+                SizeAbove::new(32).should_compress(&mut response),
+                compress,
+                "{len}"
+            );
+        }
+    }
 
     /// The type is the one a browser extracts from several lines: the last valid one.
     #[test]

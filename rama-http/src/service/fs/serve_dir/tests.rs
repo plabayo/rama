@@ -1,5 +1,6 @@
 use crate::body::util::BodyExt;
 use crate::header::ALLOW;
+use crate::layer::compression::{Compression, predicate::Always};
 #[cfg(unix)]
 use crate::service::fs::ServeDirSymlinkPolicy;
 use crate::service::fs::serve_dir::DirSource;
@@ -10,6 +11,7 @@ use brotli::BrotliDecompress;
 use flate2::bufread::{DeflateDecoder, GzDecoder};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::{Extension, ExtensionsRef as _};
 use rama_core::service::service_fn;
 use rama_utils::fs::TempDir;
 use rama_utils::include_dir::{Dir, DirEntry, File as EmbeddedFile, include_dir};
@@ -2917,4 +2919,237 @@ async fn small_and_large_files_serve_whole_and_ranged() {
             assert_eq!(body, contents[start..=end], "{name}: {range}");
         }
     }
+}
+
+#[cfg(feature = "html")]
+#[tokio::test]
+async fn html_listing_of_double_slash_target_links_stay_paths() {
+    use rama_http_types::BodyExtractExt as _;
+
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    for svc in [
+        ServeDir::new("../test-files"),
+        ServeDir::new_embedded(EMBEDDED_FILES),
+    ] {
+        let svc = svc.with_directory_serve_mode(DirectoryServeMode::HtmlFileList);
+        for target in ["//a:b/..", "//foo"] {
+            let req = Request::builder().uri(target).body(Body::empty()).unwrap();
+            let res = svc.serve(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{target}");
+            let payload = res.into_body().try_into_string().await.unwrap();
+            assert!(payload.contains("Directory listing for"), "{target}");
+            assert!(!payload.contains(r#"href="//"#), "{target}: {payload}");
+        }
+    }
+}
+
+#[derive(Debug, Extension)]
+struct FallbackMarker;
+
+#[tokio::test]
+async fn fallback_sees_the_original_request() {
+    async fn fallback(req: Request) -> Result<Response, Infallible> {
+        assert!(req.extensions().get_ref::<FallbackMarker>().is_some());
+        assert_eq!(req.headers()["x-original"], "kept");
+        assert_eq!(req.headers()[header::RANGE], "bytes=0-1");
+        Ok(Response::new(Body::from("fallback")))
+    }
+
+    let svc = ServeDir::new("../test-files").fallback(service_fn(fallback));
+    for uri in ["/not-found", "/does/../not-exist.txt"] {
+        let req = Request::builder()
+            .uri(uri)
+            .header("x-original", "kept")
+            .header(header::RANGE, "bytes=0-1")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions().insert(FallbackMarker);
+        let res = svc.try_call(req).await.unwrap();
+        assert_eq!(body_into_text(res.into_body()).await, "fallback", "{uri}");
+    }
+}
+
+const ACCEPT_ENCODING_TABLE: [&str; 6] = [
+    "*",
+    "*;q=0",
+    "identity;q=0",
+    "gzip;q=0, *",
+    "br;q=0.5, gzip;q=0.5",
+    "gzip, identity;q=0",
+];
+
+/// Status, `Content-Encoding` and `Vary` of a response, for negotiation comparisons.
+fn negotiation_outcome<B>(res: &Response<B>) -> (StatusCode, Option<String>, Option<String>) {
+    let header = |name| {
+        res.headers()
+            .get(name)
+            .map(|value: &HeaderValue| value.to_str().unwrap().to_owned())
+    };
+    (
+        res.status(),
+        header(header::CONTENT_ENCODING),
+        header(header::VARY),
+    )
+}
+
+async fn compression_layer_outcome(
+    accept_encoding: &str,
+    enforce_not_acceptable: bool,
+) -> (StatusCode, Option<String>, Option<String>) {
+    let svc = Compression::new(service_fn(async |_req: Request| {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header(header::CONTENT_TYPE, "text/plain")
+                .body(Body::from("Test file"))
+                .unwrap(),
+        )
+    }))
+    .with_gzip(true)
+    .with_br(true)
+    .with_deflate(false)
+    .with_zstd(false)
+    .with_enforce_not_acceptable(enforce_not_acceptable)
+    .with_compress_predicate(Always);
+    let req = Request::builder()
+        .header(header::ACCEPT_ENCODING, accept_encoding)
+        .body(Body::empty())
+        .unwrap();
+    negotiation_outcome(&svc.serve(req).await.unwrap())
+}
+
+async fn serve_dir_negotiation_matches_compression_layer(
+    svc: ServeDir,
+    enforce_not_acceptable: bool,
+) {
+    for accept_encoding in ACCEPT_ENCODING_TABLE {
+        let req = Request::builder()
+            .uri("/precompressed.txt")
+            .header(header::ACCEPT_ENCODING, accept_encoding)
+            .body(Body::empty())
+            .unwrap();
+        let served = negotiation_outcome(&svc.serve(req).await.unwrap());
+        let layer = compression_layer_outcome(accept_encoding, enforce_not_acceptable).await;
+        assert_eq!(served, layer, "accept-encoding: {accept_encoding}");
+    }
+}
+
+#[tokio::test]
+async fn precompressed_negotiation_matches_compression_layer() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    for svc in [
+        ServeDir::new("../test-files"),
+        ServeDir::new_embedded(EMBEDDED_FILES),
+    ] {
+        let svc = svc.with_precompressed_gzip().with_precompressed_br();
+        serve_dir_negotiation_matches_compression_layer(svc.clone(), false).await;
+        serve_dir_negotiation_matches_compression_layer(
+            svc.with_enforce_not_acceptable(true),
+            true,
+        )
+        .await;
+    }
+}
+
+/// Asserts that HEAD answers what GET answers for `uri`, minus the content.
+async fn assert_head_matches_get<S>(svc: &S, uri: &str, accept_encoding: Option<&str>)
+where
+    S: Service<Request, Output = Response, Error = Infallible>,
+{
+    let request = |method| {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(accept_encoding) = accept_encoding {
+            builder = builder.header(header::ACCEPT_ENCODING, accept_encoding);
+        }
+        builder.body(Body::empty()).unwrap()
+    };
+    let head = svc.serve(request(Method::HEAD)).await.unwrap();
+    let get = svc.serve(request(Method::GET)).await.unwrap();
+    assert_eq!(head.status(), get.status(), "{uri}");
+    assert_eq!(
+        head.headers().get(header::CONTENT_ENCODING),
+        get.headers().get(header::CONTENT_ENCODING),
+        "{uri}"
+    );
+    let head_length = head.headers().get(header::CONTENT_LENGTH).cloned();
+    let get_status = get.status();
+    let body = get.into_body().collect().await.unwrap().to_bytes();
+    if get_status == StatusCode::OK {
+        assert_eq!(
+            head_length,
+            Some(HeaderValue::from(body.len())),
+            "{uri}: HEAD content-length"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn head_resolves_like_get_on_the_filesystem() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = rama_utils::fs::tempdir().unwrap();
+    let path = root.path();
+    std::fs::create_dir_all(path.join("d/index.html")).unwrap();
+    std::fs::create_dir_all(path.join("a.txt.gz")).unwrap();
+    std::fs::write(path.join("a.txt"), "plain a").unwrap();
+    std::fs::write(path.join("secret.txt"), "secret").unwrap();
+    std::fs::set_permissions(
+        path.join("secret.txt"),
+        std::fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
+    let unreadable = File::open(path.join("secret.txt")).is_err();
+
+    let svc = ServeDir::new(path).with_precompressed_gzip();
+    if unreadable {
+        assert_head_matches_get(&svc, "/secret.txt", None).await;
+    }
+    assert_head_matches_get(&svc, "/d/", None).await;
+    assert_head_matches_get(&svc, "/d/index.html", None).await;
+    assert_head_matches_get(&svc, "/a.txt", Some("gzip")).await;
+
+    let req = Request::builder()
+        .uri("/a.txt")
+        .header(header::ACCEPT_ENCODING, "gzip")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.headers().get(header::CONTENT_ENCODING).is_none());
+    assert_eq!(body_into_text(res.into_body()).await, "plain a");
+
+    let single = ServeFile::new(path.join("d"));
+    assert_head_matches_get(&single, "/", None).await;
+    let res = single
+        .serve(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn head_resolves_like_get_on_embedded_sources() {
+    const EMBEDDED: Dir<'static> = Dir::new(
+        "",
+        &[
+            DirEntry::File(EmbeddedFile::new("a.txt", b"plain a")),
+            DirEntry::Dir(Dir::new("a.txt.gz", &[])),
+            DirEntry::Dir(Dir::new(
+                "d",
+                &[DirEntry::Dir(Dir::new(
+                    "d/index.html",
+                    &[DirEntry::File(EmbeddedFile::new("d/index.html/x", b"x"))],
+                ))],
+            )),
+        ],
+    );
+    let svc = ServeDir::new_embedded(EMBEDDED).with_precompressed_gzip();
+    assert_head_matches_get(&svc, "/d/", None).await;
+    assert_head_matches_get(&svc, "/d/index.html", None).await;
+    assert_head_matches_get(&svc, "/a.txt", Some("gzip")).await;
+    let res = svc
+        .serve(Request::builder().uri("/d/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }

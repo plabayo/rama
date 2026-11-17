@@ -1511,11 +1511,11 @@ fn tcp_bridge_ends_each_publish_their_own_abort() {
             move |BridgeIo(ingress, egress): BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
                 let ingress_abort = ingress
                     .extensions()
-                    .self_get_arc::<AbortIo>()
+                    .get_arc::<AbortIo>()
                     .expect("the ingress publishes an AbortIo");
                 let egress_abort = egress
                     .extensions()
-                    .self_get_arc::<AbortIo>()
+                    .get_arc::<AbortIo>()
                     .expect("the egress publishes an AbortIo");
                 assert!(
                     !Arc::ptr_eq(&ingress_abort, &egress_abort),

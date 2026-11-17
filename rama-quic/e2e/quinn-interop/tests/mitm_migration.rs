@@ -10,7 +10,11 @@ use rama::{
     error::BoxError,
     graceful::WeakScope,
     io::BridgeIo,
-    net::{address::SocketAddress, stream::Socket as _},
+    net::{
+        address::SocketAddress,
+        availability::{NetworkAvailability, NetworkChanges},
+        stream::Socket as _,
+    },
     quic::{
         Connection,
         proto::VarInt,
@@ -32,8 +36,7 @@ use rama::{
         DatagramDemux, DemuxConfig, UdpPacketSocket,
         proxy::{
             DatagramForwardService, DatagramRecovery, DatagramRecoveryConfig,
-            DatagramRecoveryFailureAction, DatagramRecoverySignal, DatagramToProxyBridge,
-            EcnPolicy,
+            DatagramRecoveryFailureAction, DatagramToProxyBridge, EcnPolicy,
         },
     },
     utils::collections::NonEmptyVec,
@@ -191,7 +194,7 @@ async fn forwarded_quinn_connection_survives_repeated_egress_recovery() {
         )
         .unwrap();
         let origin_address = origin.local_addr().unwrap();
-        let signal = DatagramRecoverySignal::new();
+        let signal = NetworkChanges::new();
         let forward = DatagramToProxyBridge::new(
             DatagramForwardService::new(n(65536), EcnPolicy::Discard),
             origin_address,
@@ -253,7 +256,7 @@ async fn forwarded_quinn_connection_survives_repeated_egress_recovery() {
             let old = server.remote_address();
             let responses = server.stats().frame_rx.path_response;
             if round > 0 {
-                signal.request_recovery();
+                signal.advance(NetworkAvailability::Available);
             }
             let bytes = [round as u8; 4096];
             send.write_all(&bytes).await.unwrap();

@@ -644,6 +644,8 @@ jobs:
         run: just fuzz/h3 60
       - name: fuzz — HTTP structured fields
         run: just fuzz/http-structured-fields 60
+      - name: fuzz — HTTP dates
+        run: just fuzz/http-date 30
       - name: fuzz — masque
         run: just fuzz/masque 30
       - name: fuzz — wire parsers
@@ -660,6 +662,7 @@ jobs:
             fuzz/corpus/h3_*
             fuzz/corpus/qpack_*
             fuzz/corpus/http_structured_fields
+            fuzz/corpus/http_date
             fuzz/corpus/masque_*
             fuzz/corpus/uri_template
             fuzz/corpus/http1_*
@@ -674,6 +677,7 @@ jobs:
             fuzz/artifacts/h3_*
             fuzz/artifacts/qpack_*
             fuzz/artifacts/http_structured_fields
+            fuzz/artifacts/http_date
             fuzz/artifacts/masque_*
             fuzz/artifacts/uri_template
             fuzz/artifacts/http1_*

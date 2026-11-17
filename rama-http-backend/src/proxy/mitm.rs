@@ -45,7 +45,7 @@ use rama_net::{
     conn::{ConnectionHealth, ConnectionHealthWatcher},
     uri::Uri,
 };
-use rama_utils::octets::mib_u32;
+use rama_utils::{octets::mib_u32, time::deadline_after};
 use tokio::{
     sync::{Mutex, watch},
     time::Instant,
@@ -389,7 +389,7 @@ where
 
         // Initial SETTINGS are selected before either native leg writes its frame.
         // Mandatory downstream bytes cannot depend on a server SETTINGS response.
-        let deadline = Instant::now() + self.eager_peer_settings_timeout;
+        let deadline = deadline_after(Instant::now(), self.eager_peer_settings_timeout);
         let egress_is_h2 = egress_stream
             .extensions()
             .get_ref::<TargetHttpVersion>()

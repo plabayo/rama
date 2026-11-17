@@ -12,7 +12,13 @@ use rama_core::{
     io::{AbortableIo, Io},
 };
 use rama_http::{StreamingBody, opentelemetry::version_as_protocol_version};
-use rama_http_core::{client::conn::http2::H2PeerSettingsHandle, h2::RateBudget};
+use rama_http_core::{
+    client::conn::{
+        http1,
+        http2::{self, H2PeerSettingsHandle},
+    },
+    h2::RateBudget,
+};
 use rama_http_types::{
     Version,
     conn::{
@@ -32,7 +38,7 @@ use rama_tls::client::NegotiatedTlsParameters;
 use tokio::sync::Mutex;
 #[cfg(feature = "quic")]
 use {
-    rama_http_core::h3::transport::Connection as _,
+    rama_http_core::h3::{connection::Config, transport::Connection as _},
     rama_net::tls::{AlpnPolicy, EarlyDataPermit, ForbidEarlyData},
     std::sync::Arc,
 };
@@ -53,17 +59,6 @@ use std::{error::Error as StdError, marker::PhantomData};
 #[extension(tags(http))]
 pub struct MaxInformationalResponses(pub usize);
 
-impl MaxInformationalResponses {
-    /// The limit for a connection opened by an input with extensions `input` on a transport
-    /// with extensions `transport`, if either carries one.
-    pub(crate) fn resolve(input: &Extensions, transport: &Extensions) -> Option<usize> {
-        input
-            .get_ref::<Self>()
-            .or_else(|| transport.get_ref::<Self>())
-            .map(|max| max.0)
-    }
-}
-
 /// The budget of streams an HTTP/2 or HTTP/3 client connection refuses or resets for what
 /// its origin sent on them, a protocol or message error or a local limit such as
 /// [`MaxInformationalResponses`]: a burst tolerated at once and regained over time, past
@@ -80,15 +75,67 @@ impl MaxInformationalResponses {
 #[extension(tags(http))]
 pub struct RefusedStreamBudget(pub Option<RateBudget>);
 
-impl RefusedStreamBudget {
-    /// The budget for a connection opened by an input with extensions `input` on a
-    /// transport with extensions `transport`, if either carries one.
-    pub(crate) fn resolve(input: &Extensions, transport: &Extensions) -> Option<Self> {
-        input
-            .get_ref::<Self>()
-            .or_else(|| transport.get_ref::<Self>())
-            .copied()
+/// The limits a client connection puts on the responses of its origin, each as the
+/// extension that set it, if any.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ResponseLimits {
+    max_informational_responses: Option<MaxInformationalResponses>,
+    refused_stream_budget: Option<RefusedStreamBudget>,
+}
+
+impl ResponseLimits {
+    /// No limit set: each protocol keeps its own default.
+    pub(crate) const UNSET: Self = Self {
+        max_informational_responses: None,
+        refused_stream_budget: None,
+    };
+
+    /// The limits of a connection opened by an input with extensions `input`, if any, on a
+    /// transport with extensions `transport`: each from the input, else the transport, else
+    /// `self`.
+    pub(crate) fn resolve(self, input: Option<&Extensions>, transport: &Extensions) -> Self {
+        Self {
+            max_informational_responses: resolve_extension(input, transport)
+                .or(self.max_informational_responses),
+            refused_stream_budget: resolve_extension(input, transport)
+                .or(self.refused_stream_budget),
+        }
     }
+
+    fn apply_h1(self, builder: &mut http1::Builder) {
+        if let Some(max) = self.max_informational_responses {
+            builder.set_max_informational_responses(max.0);
+        }
+    }
+
+    fn apply_h2(self, builder: &mut http2::Builder) {
+        if let Some(max) = self.max_informational_responses {
+            builder.set_max_informational_responses(max.0);
+        }
+        if let Some(budget) = self.refused_stream_budget {
+            builder.maybe_set_refused_stream_budget(budget.0);
+        }
+    }
+
+    #[cfg(feature = "quic")]
+    pub(crate) fn apply_h3(self, config: &mut Config) {
+        if let Some(max) = self.max_informational_responses {
+            config.max_informational_responses = max.0;
+        }
+        if let Some(budget) = self.refused_stream_budget {
+            config.refused_stream_budget = budget.0;
+        }
+    }
+}
+
+fn resolve_extension<T: Extension + Copy>(
+    input: Option<&Extensions>,
+    transport: &Extensions,
+) -> Option<T> {
+    input
+        .and_then(|input| input.get_ref::<T>())
+        .or_else(|| transport.get_ref::<T>())
+        .copied()
 }
 
 pub(super) fn resolve_input_target_http_version<Input>(input: &Input) -> Option<Version>
@@ -419,8 +466,7 @@ fn apply_h2_client_extensions_to_builder(
 pub struct HttpConnector<S, Body> {
     inner: S,
     scope: WeakScope,
-    max_informational_responses: Option<usize>,
-    refused_stream_budget: Option<RefusedStreamBudget>,
+    response_limits: ResponseLimits,
     // Body type this connector will be able to send, this is not
     // necessarily the same one that was used in the request that
     // created this connection
@@ -434,8 +480,7 @@ impl<S, Body> HttpConnector<S, Body> {
         Self {
             inner,
             scope,
-            max_informational_responses: None,
-            refused_stream_budget: None,
+            response_limits: ResponseLimits::UNSET,
             _phantom: PhantomData,
         }
     }
@@ -448,7 +493,7 @@ impl<S, Body> HttpConnector<S, Body> {
         /// its transport carries [`MaxInformationalResponses`]. `None` (the default) leaves
         /// each protocol its own default.
         pub fn max_informational_responses(mut self, max: Option<usize>) -> Self {
-            self.max_informational_responses = max;
+            self.response_limits.max_informational_responses = max.map(MaxInformationalResponses);
             self
         }
     }
@@ -459,7 +504,7 @@ impl<S, Body> HttpConnector<S, Body> {
         /// transport carries [`RefusedStreamBudget`]. `None` (the default) leaves the
         /// protocol its default.
         pub fn refused_stream_budget(mut self, budget: Option<RefusedStreamBudget>) -> Self {
-            self.refused_stream_budget = budget;
+            self.response_limits.refused_stream_budget = budget;
             self
         }
     }
@@ -475,8 +520,7 @@ impl<S, Body> HttpConnector<S, Body> {
         HttpConnector {
             inner: HttpTransportConnector::new(self.inner, quic),
             scope: self.scope,
-            max_informational_responses: self.max_informational_responses,
-            refused_stream_budget: self.refused_stream_budget,
+            response_limits: self.response_limits,
             _phantom: PhantomData,
         }
     }
@@ -533,7 +577,7 @@ where
     BodyConnection:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    http_connect_with(transport, input, scope, None, None).await
+    http_connect_with(transport, input, scope, ResponseLimits::UNSET).await
 }
 
 /// [`http_connect`] with the connector's own limit on interim responses and budget of
@@ -543,8 +587,7 @@ async fn http_connect_with<T, Input, BodyConnection>(
     transport: T,
     input: Input,
     scope: WeakScope,
-    max_informational_responses: Option<usize>,
-    refused_stream_budget: Option<RefusedStreamBudget>,
+    response_limits: ResponseLimits,
 ) -> Result<EstablishedClientConnection<HttpClientService<BodyConnection>, Input>, OpaqueError>
 where
     T: IntoHttpTransport,
@@ -559,12 +602,7 @@ where
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     let transport = transport.into_http_transport();
-    let max_informational_responses =
-        MaxInformationalResponses::resolve(input.extensions(), transport.extensions())
-            .or(max_informational_responses);
-    let refused_stream_budget =
-        RefusedStreamBudget::resolve(input.extensions(), transport.extensions())
-            .or(refused_stream_budget);
+    let response_limits = response_limits.resolve(Some(input.extensions()), transport.extensions());
     let plaintext_origin = input
         .target_protocol()
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
@@ -606,14 +644,7 @@ where
                 input.extensions().insert(TargetHttpVersion(version));
                 io.extensions().insert(TargetHttpVersion(version));
             }
-            http_stream_connect(
-                io,
-                input,
-                scope,
-                max_informational_responses,
-                refused_stream_budget,
-            )
-            .await
+            http_stream_connect(io, input, scope, response_limits).await
         }
         #[cfg(feature = "quic")]
         HttpTransport::Quic(quic) => {
@@ -661,12 +692,7 @@ where
                 .insert(TargetHttpVersion(Version::HTTP_3));
             coalescing::restrict_reuse(input.extensions(), quic.connection.extensions());
             let mut config = Arc::unwrap_or_clone(quic.config);
-            if let Some(max) = max_informational_responses {
-                config.max_informational_responses = max;
-            }
-            if let Some(budget) = refused_stream_budget {
-                config.refused_stream_budget = budget.0;
-            }
+            response_limits.apply_h3(&mut config);
             let conn =
                 HttpClientService::http3(quic.connection, config, scope).into_opaque_error()?;
             if verify_peer && let SendRequest::Http3(sender) = &conn.sender {
@@ -691,8 +717,7 @@ async fn http_stream_connect<IO, Input, BodyConnection>(
     io: IO,
     input: Input,
     weak_scope: WeakScope,
-    max_informational_responses: Option<usize>,
-    refused_stream_budget: Option<RefusedStreamBudget>,
+    response_limits: ResponseLimits,
 ) -> Result<EstablishedClientConnection<HttpClientService<BodyConnection>, Input>, OpaqueError>
 where
     IO: Io + Unpin + ExtensionsRef,
@@ -738,12 +763,7 @@ where
             let mut builder = rama_http_core::client::conn::http2::Builder::new(weak_scope.clone());
 
             apply_h2_client_extensions_to_builder(&mut builder, input.extensions());
-            if let Some(max) = max_informational_responses {
-                builder.set_max_informational_responses(max);
-            }
-            if let Some(budget) = refused_stream_budget {
-                builder.maybe_set_refused_stream_budget(budget.0);
-            }
+            response_limits.apply_h2(&mut builder);
 
             let verify_peer = io
                 .extensions()
@@ -797,9 +817,7 @@ where
             if let Some(params) = input.extensions().get_ref::<Http1ClientContextParams>() {
                 builder.set_title_case_headers(params.title_header_case);
             }
-            if let Some(max) = max_informational_responses {
-                builder.set_max_informational_responses(max);
-            }
+            response_limits.apply_h1(&mut builder);
             let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
             let conn = conn.with_upgrades();
             // Lets a pooled connector drain abandoned response bodies on it.
@@ -867,12 +885,10 @@ where
     let mut builder = rama_http_core::client::conn::http2::Builder::new(weak_scope.clone());
     builder.set_observe_peer_settings(true);
     apply_h2_client_extensions_to_builder(&mut builder, &extensions);
-    if let Some(max) = extensions.get_ref::<MaxInformationalResponses>() {
-        builder.set_max_informational_responses(max.0);
-    }
-    if let Some(budget) = extensions.get_ref::<RefusedStreamBudget>() {
-        builder.maybe_set_refused_stream_budget(budget.0);
-    }
+    // No input opens this connection and no connector configures it: the transport decides.
+    ResponseLimits::UNSET
+        .resolve(None, &extensions)
+        .apply_h2(&mut builder);
     let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
     let peer_handle = conn.peer_settings_handle();
 
@@ -933,32 +949,26 @@ where
 
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
         let version = resolve_target_http_version(&conn, &input);
-        http_connect_with(
-            conn,
-            input,
-            self.scope.clone(),
-            self.max_informational_responses,
-            self.refused_stream_budget,
-        )
-        .await
-        .map_err(|error| {
-            if matches!(
-                version,
-                Some(
-                    Version::HTTP_09
-                        | Version::HTTP_10
-                        | Version::HTTP_11
-                        | Version::HTTP_2
-                        | Version::HTTP_3
-                )
-            ) {
-                ConnectionError::application(error, ConnectionErrorKind::Protocol)
-                    .context("HTTP connector: protocol handshake")
-            } else {
-                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                    .context("HTTP connector: select protocol version")
-            }
-        })
+        http_connect_with(conn, input, self.scope.clone(), self.response_limits)
+            .await
+            .map_err(|error| {
+                if matches!(
+                    version,
+                    Some(
+                        Version::HTTP_09
+                            | Version::HTTP_10
+                            | Version::HTTP_11
+                            | Version::HTTP_2
+                            | Version::HTTP_3
+                    )
+                ) {
+                    ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                        .context("HTTP connector: protocol handshake")
+                } else {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                        .context("HTTP connector: select protocol version")
+                }
+            })
     }
 }
 
@@ -966,8 +976,7 @@ where
 /// A [`Layer`] that produces an [`HttpConnector`].
 pub struct HttpConnectorLayer<Body> {
     scope: WeakScope,
-    max_informational_responses: Option<usize>,
-    refused_stream_budget: Option<RefusedStreamBudget>,
+    response_limits: ResponseLimits,
     _phantom: PhantomData<Body>,
 }
 
@@ -977,8 +986,7 @@ impl<Body> HttpConnectorLayer<Body> {
     pub const fn new(scope: WeakScope) -> Self {
         Self {
             scope,
-            max_informational_responses: None,
-            refused_stream_budget: None,
+            response_limits: ResponseLimits::UNSET,
             _phantom: PhantomData,
         }
     }
@@ -986,7 +994,7 @@ impl<Body> HttpConnectorLayer<Body> {
     generate_set_and_with! {
         /// See [`HttpConnector::with_max_informational_responses`].
         pub fn max_informational_responses(mut self, max: Option<usize>) -> Self {
-            self.max_informational_responses = max;
+            self.response_limits.max_informational_responses = max.map(MaxInformationalResponses);
             self
         }
     }
@@ -994,7 +1002,7 @@ impl<Body> HttpConnectorLayer<Body> {
     generate_set_and_with! {
         /// See [`HttpConnector::with_refused_stream_budget`].
         pub fn refused_stream_budget(mut self, budget: Option<RefusedStreamBudget>) -> Self {
-            self.refused_stream_budget = budget;
+            self.response_limits.refused_stream_budget = budget;
             self
         }
     }
@@ -1013,8 +1021,7 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
         HttpConnector {
             inner,
             scope: self.scope.clone(),
-            max_informational_responses: self.max_informational_responses,
-            refused_stream_budget: self.refused_stream_budget,
+            response_limits: self.response_limits,
             _phantom: PhantomData,
         }
     }
@@ -1023,8 +1030,7 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
         HttpConnector {
             inner,
             scope: self.scope,
-            max_informational_responses: self.max_informational_responses,
-            refused_stream_budget: self.refused_stream_budget,
+            response_limits: self.response_limits,
             _phantom: PhantomData,
         }
     }
@@ -1435,5 +1441,74 @@ mod h2_client_params_tests {
             .unwrap();
         assert_eq!(emitted, [(6, 131072), (1, 8192)]);
         task.abort();
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "quic")]
+mod response_limits_tests {
+    use super::*;
+
+    /// What an h3 config ends up with: the limit and the burst of its budget, if any.
+    fn applied(limits: ResponseLimits) -> (usize, Option<u32>) {
+        let mut config = Config::default();
+        limits.apply_h3(&mut config);
+        (
+            config.max_informational_responses,
+            config.refused_stream_budget.map(|budget| budget.burst()),
+        )
+    }
+
+    fn limits(max: usize, burst: u32) -> (MaxInformationalResponses, RefusedStreamBudget) {
+        (
+            MaxInformationalResponses(max),
+            RefusedStreamBudget(Some(RateBudget::lifetime(burst))),
+        )
+    }
+
+    fn stamped(
+        extensions: &Extensions,
+        (max, budget): (MaxInformationalResponses, RefusedStreamBudget),
+    ) {
+        extensions.insert(max);
+        extensions.insert(budget);
+    }
+
+    #[test]
+    fn every_connection_kind_resolves_a_limit_the_same_way() {
+        let connector = ResponseLimits {
+            max_informational_responses: Some(MaxInformationalResponses(30)),
+            refused_stream_budget: Some(RefusedStreamBudget(Some(RateBudget::lifetime(3)))),
+        };
+        // (on the input, on the transport, expected when a request opens the connection,
+        // expected when only the transport is known: eager h2 and the h3 relay)
+        let unset = applied(ResponseLimits::UNSET);
+        for (on_input, on_transport, opened, transport_only) in [
+            (None, None, (30, Some(3)), unset),
+            (None, Some(limits(20, 2)), (20, Some(2)), (20, Some(2))),
+            (Some(limits(10, 1)), None, (10, Some(1)), unset),
+            (
+                Some(limits(10, 1)),
+                Some(limits(20, 2)),
+                (10, Some(1)),
+                (20, Some(2)),
+            ),
+        ] {
+            let input = Extensions::new();
+            let transport = Extensions::new();
+            if let Some(on_input) = on_input {
+                stamped(&input, on_input);
+            }
+            if let Some(on_transport) = on_transport {
+                stamped(&transport, on_transport);
+            }
+            // h1, h2 and h3 connections opened by an input.
+            assert_eq!(applied(connector.resolve(Some(&input), &transport)), opened);
+            // Eager h2 and the h3 relay.
+            assert_eq!(
+                applied(ResponseLimits::UNSET.resolve(None, &transport)),
+                transport_only
+            );
+        }
     }
 }

@@ -10,9 +10,6 @@ t! {
             ;
         response:
             status: 200,
-            headers: {
-                "date" => SOME,
-            },
             ;
     server:
         request:

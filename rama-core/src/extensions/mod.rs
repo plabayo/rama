@@ -358,40 +358,7 @@ impl Extensions {
     ///
     /// Returns the most recently inserted match, for the oldest, see [`Self::self_first_ref`].
     pub fn get_ref<T: Extension>(&self) -> Option<&T> {
-        let target = TypeId::of::<T>();
-        let egress_id = TypeId::of::<Egress<Self>>();
-        let ingress_id = TypeId::of::<Ingress<Self>>();
-        let store = self.store();
-        if store.may_contain(type_bit(target)) {
-            let chunks = store.entries.chunks();
-            // Read after the chunks (see `AppendOnlyVec::push_tagged`).
-            let has_wrappers = store.has_wrappers();
-            for chunk in chunks.rev() {
-                for ext in chunk.iter().rev() {
-                    if ext.type_id == target {
-                        if let Some(v) = ext.downcast_ref::<T>() {
-                            return Some(v);
-                        }
-                    } else if has_wrappers
-                        && ext.type_id == egress_id
-                        && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
-                        && let Some(v) = eg.0.get_ref::<T>()
-                    {
-                        return Some(v);
-                    } else if has_wrappers
-                        && ext.type_id == ingress_id
-                        && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
-                        && let Some(v) = ig.0.get_ref::<T>()
-                    {
-                        return Some(v);
-                    }
-                }
-            }
-        }
-        if self.ends_scope_of::<T>() {
-            return None;
-        }
-        self.parent().and_then(|p| p.get_ref::<T>())
+        self.find::<T>().and_then(TypeErasedExtension::downcast_ref)
     }
 
     /// Raw flat [`Self::get_ref`]: returns the most recently inserted `T`, for the oldest, see [`Self::self_first_ref`].
@@ -416,6 +383,13 @@ impl Extensions {
     ///
     /// For a raw flat lookup (top-level only), use [`Self::self_get_arc`].
     pub fn get_arc<T: Extension>(&self) -> Option<Arc<T>> {
+        self.find::<T>()
+            .and_then(TypeErasedExtension::cloned_downcast)
+    }
+
+    /// The entry [`Self::get_ref`] and [`Self::get_arc`] resolve `T` to, see
+    /// [`Self::get_ref`] for the search order.
+    fn find<T: Extension>(&self) -> Option<&TypeErasedExtension> {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
         let ingress_id = TypeId::of::<Ingress<Self>>();
@@ -427,21 +401,19 @@ impl Extensions {
             for chunk in chunks.rev() {
                 for ext in chunk.iter().rev() {
                     if ext.type_id == target {
-                        if let Some(v) = ext.cloned_downcast::<T>() {
-                            return Some(v);
-                        }
+                        return Some(ext);
                     } else if has_wrappers
                         && ext.type_id == egress_id
                         && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
-                        && let Some(v) = eg.0.get_arc::<T>()
+                        && let Some(found) = eg.0.find::<T>()
                     {
-                        return Some(v);
+                        return Some(found);
                     } else if has_wrappers
                         && ext.type_id == ingress_id
                         && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
-                        && let Some(v) = ig.0.get_arc::<T>()
+                        && let Some(found) = ig.0.find::<T>()
                     {
-                        return Some(v);
+                        return Some(found);
                     }
                 }
             }
@@ -449,7 +421,7 @@ impl Extensions {
         if self.ends_scope_of::<T>() {
             return None;
         }
-        self.parent().and_then(|p| p.get_arc::<T>())
+        self.parent().and_then(Self::find::<T>)
     }
 
     /// Raw flat [`Self::get_arc`]: returns the most recently inserted `T`

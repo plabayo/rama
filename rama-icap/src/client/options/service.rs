@@ -12,7 +12,7 @@ use rama_net::{
     client::{ConnectRequest, ConnectorService, EstablishedClientConnection},
     uri::{ParseError as UriParseError, Uri},
 };
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{macros::generate_set_and_with, octets::kib};
 
 use crate::{
     client::ClientConnection,
@@ -24,7 +24,7 @@ use crate::{
 use super::{OptionsValidation, ServiceCapabilities};
 
 /// Default maximum retained OPTIONS body size.
-pub const DEFAULT_MAX_OPTIONS_BODY_BYTES: usize = 64 * 1024;
+pub const DEFAULT_MAX_OPTIONS_BODY_BYTES: usize = kib(64);
 
 /// Error constructing an ICAP OPTIONS discovery request.
 #[derive(Debug)]

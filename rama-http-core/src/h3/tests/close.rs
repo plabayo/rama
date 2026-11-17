@@ -481,7 +481,7 @@ async fn memory_received_body_length_and_trailer_errors_are_remote() {
                 .unwrap();
             bytes.extend_from_slice(b"x");
             if bad_trailer {
-                let fields = encoder.encode(id, [("content-length", "0")]).unwrap();
+                let fields = encoder.encode(id, [("connection", "close")]).unwrap();
                 FrameHeader::new(FrameType::HEADERS, fields.len() as u64)
                     .encode(&mut bytes)
                     .unwrap();

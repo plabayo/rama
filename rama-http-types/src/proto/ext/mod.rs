@@ -3,7 +3,9 @@
 /// Early-data transmission facts and rejection errors.
 pub mod early_data;
 
-use crate::{header::is_token, proto::h2::hpack::BytesStr};
+use rama_utils::byte_set::is_http_token;
+
+use crate::proto::h2::hpack::BytesStr;
 
 use rama_core::bytes::Bytes;
 use rama_core::extensions::Extension;
@@ -63,7 +65,7 @@ impl Protocol {
     #[must_use]
     pub const fn from_static(value: &'static str) -> Self {
         assert!(
-            is_token(value.as_bytes()),
+            is_http_token(value.as_bytes()),
             "`:protocol` value must be a non-empty HTTP token"
         );
         Self {
@@ -91,7 +93,7 @@ impl Protocol {
     }
 
     pub fn try_from_bytes(bytes: Bytes) -> Result<Self, InvalidProtocol> {
-        if !is_token(bytes.as_ref()) {
+        if !is_http_token(bytes.as_ref()) {
             return Err(InvalidProtocol::new());
         }
         // a token is ASCII, so the bytes are valid UTF-8; validate defensively rather than

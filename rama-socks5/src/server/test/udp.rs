@@ -1,10 +1,17 @@
 use std::{net::IpAddr, time::Duration};
 
-use crate::server::udp::{DeclaredClientUdpAddressPolicy, MockUdpAssociator};
+use crate::server::udp::{
+    DeclaredClientUdpAddressPolicy, MockUdpAssociator, RelayRequest, RelayResponse,
+};
 use crate::server::*;
-use rama_core::ServiceInput;
+use rama_core::{
+    ServiceInput,
+    error::BoxError,
+    extensions::{Extension, Extensions, ExtensionsRef, NestedConnectionTransfer},
+    service::service_fn,
+};
 use rama_net::address::{HostWithPort, SocketAddress};
-use rama_net::stream::SocketInfo;
+use rama_net::stream::{DefaultConnectionTransfer, SocketInfo};
 use rama_net::user::credentials::basic;
 use rama_utils::str::non_empty_str;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -228,4 +235,93 @@ async fn test_socks5_acceptor_udp_associate_declared_address_policy() {
             "policy: {policy:?}, tcp peer: {tcp_peer_ip:?}",
         );
     }
+}
+
+#[derive(Debug, Clone, Copy, Extension)]
+#[extension(scope(connection))]
+struct ControlConnFact;
+
+#[derive(Debug, Clone, Copy, Extension)]
+struct ControlFlowFact;
+
+/// Which of (connection fact, flow fact) of the SOCKS5 connection the inspector
+/// of an association sees on a relayed datagram.
+async fn inspector_facts(transfer: impl NestedConnectionTransfer) -> (bool, bool) {
+    let (mut client, server_io) = tokio::io::duplex(1024);
+    let stream = ServiceInput::new(server_io);
+    stream.extensions().insert(ControlConnFact);
+    stream.extensions().insert(ControlFlowFact);
+
+    let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+    let inspector = service_fn(move |req: RelayRequest| {
+        _ = seen_tx.send((
+            req.extensions.contains::<ControlConnFact>(),
+            req.extensions.contains::<ControlFlowFact>(),
+        ));
+        std::future::ready(Ok::<_, BoxError>(RelayResponse {
+            maybe_payload: None,
+            extensions: req.extensions,
+        }))
+    });
+    let server = Socks5Acceptor::new(WeakScope::detached()).with_udp_associator(
+        DefaultUdpRelay::default()
+            .with_bind_address(SocketAddress::local_ipv4(0))
+            .with_async_inspector(inspector)
+            .with_nested_connection_transfer(transfer),
+    );
+
+    let exchange = async {
+        client.write_all(b"\x05\x01\x00").await.unwrap();
+        let mut method = [0u8; 2];
+        client.read_exact(&mut method).await.unwrap();
+        client
+            .write_all(b"\x05\x03\x00\x01\x00\x00\x00\x00\x00\x00")
+            .await
+            .unwrap();
+        let mut reply = [0u8; 10];
+        client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply[1], u8::from(ReplyKind::Succeeded));
+        let relay_port = u16::from_be_bytes([reply[8], reply[9]]);
+
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        socket
+            .send_to(
+                b"\x00\x00\x00\x01\x7f\x00\x00\x01\x00\x09x",
+                ("127.0.0.1", relay_port),
+            )
+            .await
+            .unwrap();
+        let seen = seen_rx.recv().await.expect("datagram inspected");
+        // Closing the TCP stream ends the association.
+        drop(client);
+        seen
+    };
+
+    let (seen, result) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(exchange, server.accept(stream))
+    })
+    .await
+    .expect("udp associate exchange timeout");
+    result.unwrap();
+    seen
+}
+
+fn carry_control_conn_fact(outer: &Extensions, nested: &Extensions) {
+    if let Some(fact) = outer.get_ref::<ControlConnFact>() {
+        nested.insert(*fact);
+    }
+}
+
+#[tokio::test]
+async fn udp_associate_inspector_keeps_flow_facts_and_drops_connection_facts() {
+    assert_eq!(
+        inspector_facts(DefaultConnectionTransfer).await,
+        (false, true)
+    );
+}
+
+#[tokio::test]
+async fn udp_associate_custom_transfer_carries_a_chosen_fact() {
+    let transfer = DefaultConnectionTransfer.and(carry_control_conn_fact);
+    assert_eq!(inspector_facts(transfer).await, (true, true));
 }

@@ -94,6 +94,45 @@ pub(crate) fn brotli_window_bits(len: u64) -> Option<i32> {
     (10..22).find(|bits| (1_u64 << bits) - 16 >= len)
 }
 
+/// RFC 9659 §3: a "zstd" content coding never needs a window above 8 MiB.
+pub(crate) const ZSTD_MAX_WINDOW_LOG: u32 = 23;
+
+/// Brotli encoder parameters for on-the-fly compression of a body of `body_len` bytes, when known.
+pub(crate) fn brotli_encoder_params(
+    level: CompressionLevel,
+    body_len: Option<u64>,
+) -> BrotliEncoderParams {
+    // The brotli library defaults to level 11, its maximum and slowest level; 4 is the
+    // default established servers use for on-the-fly brotli compression.
+    let level = match level {
+        CompressionLevel::Default => CompressionLevel::Precise(4),
+        other => other,
+    };
+    let params = BrotliEncoderParams::default().quality(level.into_compression_core());
+    match body_len.and_then(brotli_window_bits) {
+        Some(bits) => params.window_size(bits),
+        None => params,
+    }
+}
+
+/// The zstd level for `level`, clamped to the library's range, and the window limit it needs.
+pub(crate) fn zstd_encoder_params(level: CompressionLevel) -> (i32, Option<ZstdCParameter>) {
+    let level = ZstdCParameter::quality(level.into_compression_core());
+    // See https://issues.chromium.org/issues/41493659:
+    //  "For memory usage reasons, Chromium limits the window size to 8MB"
+    // See https://datatracker.ietf.org/doc/html/rfc8878#name-window-descriptor
+    //  "For improved interoperability, it's recommended for decoders to support values
+    //  of Window_Size up to 8 MB and for encoders not to generate frames requiring a
+    //  Window_Size larger than 8 MB."
+    // Level 17 in zstd (as of v1.5.6) is the first level with a window size of 8 MB (2^23):
+    // https://github.com/facebook/zstd/blob/v1.5.6/lib/compress/clevels.h#L25-L51
+    // The parameter is set for all (clamped) levels >= 17. This either has no effect (but
+    // reduces the risk of future changes in zstd) or limits the window to 8 MiB.
+    // It is not set for levels below 17 as it would increase the window size of those levels.
+    let window = (level >= 17).then(|| ZstdCParameter::window_log(ZSTD_MAX_WINDOW_LOG));
+    (level, window)
+}
+
 /// Trait for applying some decorator to an `AsyncRead`
 pub(crate) trait DecorateAsyncRead {
     type Input: AsyncRead;
@@ -467,6 +506,10 @@ pub enum CompressionLevel {
 }
 
 use async_compression::Level as AsyncCompressionLevel;
+use compression_codecs::{
+    brotli::params::EncoderParams as BrotliEncoderParams,
+    zstd::params::CParameter as ZstdCParameter,
+};
 use compression_core::Level as CompressionCoreLevel;
 
 impl CompressionLevel {

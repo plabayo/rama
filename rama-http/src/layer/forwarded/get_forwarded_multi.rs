@@ -223,10 +223,7 @@ macro_rules! get_forwarded_service_for_tuple {
                     policy.install(req.extensions(), self.keep_existing_selection_policy);
                 }
                 let extensions = req.extensions();
-                let trusted = extensions
-                    .get_ref::<ForwardedSelectionPolicy>()
-                    .is_none_or(|policy| policy.trusts_peer(extensions));
-                if !trusted {
+                if !ForwardedSelectionPolicy::installed_trusts_peer(extensions) {
                     return self.inner.serve(req);
                 }
                 let mut forwarded_elements: Vec<ForwardedElement> = Vec::with_capacity(1);

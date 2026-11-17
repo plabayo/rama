@@ -1,9 +1,15 @@
 //! Utilities for HTTP.
 
+#[doc(inline)]
+pub use ::rama_http_types::utils::{http_date, structured_fields};
+
 mod upgrade;
 pub(crate) use upgrade::is_plain_connect;
 #[doc(inline)]
 pub use upgrade::request_connect_protocol;
+
+mod body_error;
+pub(crate) use body_error::body_error_status;
 
 mod header_value;
 #[doc(inline)]

@@ -1,22 +1,8 @@
 //! TLS implementation agnostic server types
 
-/// Diagnostic wire hello for a completed server handshake. When ECH is
-/// accepted, `SecureTransport::client_hello()` contains the effective inner
-/// instead. Capture consumers can retain both as a matched pair, preserving the
-/// wire offer alongside the effective inner.
-#[derive(Debug, Clone, rama_core::extensions::Extension)]
-#[extension(tags(tls))]
-#[non_exhaustive]
-pub struct EchServerObservation {
-    pub outer: crate::client::ClientHello,
-}
+use rama_core::extensions::Extension;
 
-impl EchServerObservation {
-    #[must_use]
-    pub fn new(outer: crate::client::ClientHello) -> Self {
-        Self { outer }
-    }
-}
+use crate::client::ClientHello;
 
 mod config;
 #[doc(inline)]
@@ -26,6 +12,10 @@ pub use config::{
     GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest, SelfSignedCaConfig, ServerAuthData,
     TlsClientVerify, TlsServerAuth, TlsServerConfig, TlsStoreClientCertChain,
 };
+
+mod client_hellos;
+#[doc(inline)]
+pub use client_hellos::ServerClientHellos;
 
 mod hello;
 #[doc(inline)]
@@ -50,9 +40,27 @@ mod sni;
 #[doc(inline)]
 pub use sni::{SniPrefixedIo, SniRequest, SniRouter};
 
+/// Diagnostic wire hello for a completed server handshake. When ECH is
+/// accepted, `SecureTransport::client_hello()` contains the effective inner
+/// instead. Capture consumers can retain both as a matched pair, preserving the
+/// wire offer alongside the effective inner.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+#[non_exhaustive]
+pub struct EchServerObservation {
+    pub outer: ClientHello,
+}
+
+impl EchServerObservation {
+    #[must_use]
+    pub fn new(outer: ClientHello) -> Self {
+        Self { outer }
+    }
+}
+
 /// Actual ECH acceptance on an ingress server handshake. Kept separate from
 /// client acceptance so ingress observations cannot satisfy egress pool policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, rama_core::extensions::Extension)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
 #[extension(tags(tls))]
 #[non_exhaustive]
 pub struct ServerEchAccepted(pub bool);

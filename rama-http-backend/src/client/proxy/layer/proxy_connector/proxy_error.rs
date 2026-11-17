@@ -164,6 +164,7 @@ impl std::error::Error for HttpProxyError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::error::BoxErrorExt as _;
 
     #[tokio::test]
     async fn closed_and_canceled_http_dispatch_remain_unavailable() {
@@ -228,7 +229,7 @@ mod tests {
                 ConnectionErrorKind::Protocol,
             ),
             (
-                BoxError::from("unknown handshake failure"),
+                BoxError::from_static_str("unknown handshake failure"),
                 ConnectionErrorKind::Protocol,
             ),
         ] {

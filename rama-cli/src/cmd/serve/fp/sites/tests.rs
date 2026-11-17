@@ -1,7 +1,16 @@
 use std::convert::Infallible;
 
 use rama::{
-    http::headers::{HeaderMapExt as _, SecFetchMode},
+    Layer as _, Service,
+    http::{
+        Method, Response, StatusCode,
+        header::{
+            ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
+            ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_REQUEST_HEADERS,
+            ACCESS_CONTROL_REQUEST_METHOD, VARY,
+        },
+        headers::{HeaderMapExt as _, SecFetchMode},
+    },
     service::service_fn,
 };
 
@@ -212,7 +221,7 @@ fn the_page_policy_admits_the_probe_hosts() {
 }
 
 fn cors_service() -> impl Service<Request<()>, Output = Response, Error = Infallible> {
-    SiteCorsLayer.into_layer(service_fn(|_request: Request<()>| async {
+    site_cors_layer().into_layer(service_fn(|_request: Request<()>| async {
         Ok::<_, Infallible>(Response::new(Body::from("probe")))
     }))
 }
@@ -238,7 +247,7 @@ async fn granted_preflights_are_answered_for_the_requesting_origin() {
             .unwrap(),
     );
     let response = cors_service().serve(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::OK);
     let headers = response.headers();
     assert_eq!(headers[ACCESS_CONTROL_ALLOW_ORIGIN], PAGE);
     assert_eq!(headers[ACCESS_CONTROL_ALLOW_METHODS], "POST");
@@ -246,7 +255,7 @@ async fn granted_preflights_are_answered_for_the_requesting_origin() {
         headers[ACCESS_CONTROL_ALLOW_HEADERS],
         "x-rama-custom-header-marker"
     );
-    assert_eq!(headers[&TIMING_ALLOW_ORIGIN], PAGE);
+    assert_eq!(headers[TIMING_ALLOW_ORIGIN], PAGE);
 }
 
 #[tokio::test]
@@ -261,7 +270,7 @@ async fn granted_responses_are_readable_and_timed_by_the_page() {
     );
     let response = cors_service().serve(request).await.unwrap();
     assert_eq!(response.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], PAGE);
-    assert_eq!(response.headers()[VARY], "Origin");
+    assert_eq!(response.headers()[VARY], "origin");
 
     let image = granted(
         Request::builder()
@@ -270,7 +279,7 @@ async fn granted_responses_are_readable_and_timed_by_the_page() {
             .unwrap(),
     );
     let response = cors_service().serve(image).await.unwrap();
-    assert_eq!(response.headers()[&TIMING_ALLOW_ORIGIN], PAGE);
+    assert_eq!(response.headers()[TIMING_ALLOW_ORIGIN], PAGE);
     assert!(!response.headers().contains_key(ACCESS_CONTROL_ALLOW_ORIGIN));
 }
 
@@ -288,7 +297,7 @@ async fn a_token_used_from_another_origin_shares_nothing() {
         );
         let response = cors_service().serve(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK, "{method}");
-        for name in [ACCESS_CONTROL_ALLOW_ORIGIN, TIMING_ALLOW_ORIGIN.clone()] {
+        for name in [ACCESS_CONTROL_ALLOW_ORIGIN, TIMING_ALLOW_ORIGIN] {
             assert!(!response.headers().contains_key(&name), "{method} {name}");
         }
     }
@@ -305,7 +314,7 @@ async fn requests_without_a_grant_are_not_shared_across_origins() {
         .unwrap();
     let response = cors_service().serve(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    for name in [ACCESS_CONTROL_ALLOW_ORIGIN, TIMING_ALLOW_ORIGIN.clone()] {
+    for name in [ACCESS_CONTROL_ALLOW_ORIGIN, TIMING_ALLOW_ORIGIN] {
         assert!(!response.headers().contains_key(&name), "{name}");
     }
 }

@@ -116,6 +116,8 @@ pin_project! {
         buffered_data: Option<Peeked<S::Data>>,
         // The message's trailer fields sent although not allowed in trailers.
         allowed_trailers: Option<Arc<ForbiddenTrailers>>,
+        // Bytes the declared content-length still expects, when one was sent.
+        remaining: Option<u64>,
         #[pin]
         stream: S,
     }
@@ -130,16 +132,19 @@ impl<S> PipeToSendStream<S>
 where
     S: StreamingBody,
 {
+    /// Pipe `stream` as the content of a message whose head declared `content_length`.
     fn new(
         stream: S,
         tx: SendStream<SendBuf<S::Data>>,
         allowed_trailers: Option<Arc<ForbiddenTrailers>>,
+        content_length: Option<u64>,
     ) -> Self {
         Self {
             body_tx: tx,
             data_done: false,
             buffered_data: None,
             allowed_trailers,
+            remaining: content_length,
             stream,
         }
     }
@@ -218,6 +223,12 @@ where
                             let is_eos = me.stream.is_end_stream();
                             let len = chunk.remaining();
                             trace!("send body chunk: {} bytes, eos={}", len, is_eos);
+                            if let Some(remaining) = me.remaining.as_mut() {
+                                if len as u64 > *remaining || is_eos && len as u64 != *remaining {
+                                    return Poll::Ready(Err(length_mismatch(me.body_tx)));
+                                }
+                                *remaining -= len as u64;
+                            }
 
                             if len == 0 {
                                 if !is_eos {
@@ -253,6 +264,9 @@ where
                             });
                         }
                         Err(frame) => match frame.into_trailers() {
+                            Ok(_) if me.remaining.is_some_and(|remaining| remaining != 0) => {
+                                return Poll::Ready(Err(length_mismatch(me.body_tx)));
+                            }
                             Ok(trailers) => {
                                 // no more DATA, so give any capacity back
                                 me.body_tx.reserve_capacity(0);
@@ -272,6 +286,9 @@ where
                     }
                 }
                 Some(Err(e)) => return Poll::Ready(Err(me.body_tx.on_user_err(e))),
+                None if me.remaining.is_some_and(|remaining| remaining != 0) => {
+                    return Poll::Ready(Err(length_mismatch(me.body_tx)));
+                }
                 None => {
                     // no more frames means we're done here
                     // but at this point, we haven't sent an EOS DATA, or
@@ -283,6 +300,14 @@ where
     }
 }
 
+/// Reset a stream whose content does not match its declared length: neither more than it
+/// declared nor a clean end short of it reaches the peer.
+fn length_mismatch<B: Buf>(body_tx: &mut SendStream<SendBuf<B>>) -> crate::Error {
+    // The peer did nothing wrong: this endpoint cannot complete the message it started.
+    body_tx.send_reset(crate::h2::Reason::INTERNAL_ERROR);
+    crate::Error::new_body_write("body length does not match its content-length")
+}
+
 fn filter_allowed_trailers(trailers: HeaderMap, allowed: Option<&ForbiddenTrailers>) -> HeaderMap {
     if trailers
         .keys()
@@ -291,7 +316,8 @@ fn filter_allowed_trailers(trailers: HeaderMap, allowed: Option<&ForbiddenTraile
         return trailers;
     }
 
-    let mut filtered = HeaderMap::with_capacity(trailers.len());
+    // Capacity is per name: one per value can pass what the map holds.
+    let mut filtered = HeaderMap::with_capacity(trailers.keys_len());
     for (name, value) in trailers.into_ordered_iter() {
         if is_sent_in_trailers(&name, allowed) {
             filtered.append(name, value);
@@ -373,9 +399,21 @@ impl<B: Buf> Buf for SendBuf<B> {
 
 #[cfg(test)]
 mod tests {
-    use rama_http_types::HeaderValue;
+    use rama_http_types::{HeaderValue, header::CONTENT_LENGTH};
 
     use super::*;
+
+    #[test]
+    fn filtering_trailers_with_more_values_than_the_map_holds_names() {
+        let mut trailers = HeaderMap::new();
+        for _ in 0..30_000 {
+            trailers.append("x-a", HeaderValue::from_static("v"));
+        }
+        trailers.insert(CONTENT_LENGTH, HeaderValue::from_static("0"));
+        let filtered = filter_allowed_trailers(trailers, None);
+        assert_eq!(filtered.len(), 30_000);
+        assert_eq!(filtered.keys_len(), 1);
+    }
 
     #[test]
     fn request_te_keeps_only_trailers_from_every_line() {

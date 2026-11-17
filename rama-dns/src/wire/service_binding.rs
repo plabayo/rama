@@ -1,7 +1,7 @@
 use core::{
     fmt,
     iter::FusedIterator,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
 use rama_core::bytes::Bytes;
@@ -489,6 +489,13 @@ impl ServiceBinding {
         }
     }
 
+    /// Return whether `key` is listed in the `mandatory` parameter.
+    #[must_use]
+    pub fn is_mandatory(&self, key: SvcParamKey) -> bool {
+        self.mandatory_keys()
+            .is_some_and(|keys| keys.contains(&key))
+    }
+
     /// Return the advertised ALPN protocol identifiers, if present.
     #[must_use]
     pub fn alpn_protocols(&self) -> Option<&AlpnList> {
@@ -538,6 +545,22 @@ impl ServiceBinding {
             Some(SvcParam::Ipv6Hint(addresses)) => Some(addresses),
             _ => None,
         }
+    }
+
+    /// Iterate the advertised address hints, IPv4 hints before IPv6 hints.
+    pub fn ip_hints(&self) -> impl Iterator<Item = IpAddr> + '_ {
+        self.ipv4_hints()
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .map(IpAddr::V4)
+            .chain(
+                self.ipv6_hints()
+                    .unwrap_or_default()
+                    .iter()
+                    .copied()
+                    .map(IpAddr::V6),
+            )
     }
 
     fn validate_self_consistency(&self) -> Result<(), ServiceBindingParseError> {

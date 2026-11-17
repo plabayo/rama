@@ -16,23 +16,28 @@ use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
 
-use super::{Http1Transaction, ParseContext, ParsedMessage};
-use crate::common::buf::BufList;
+use super::{Http1Transaction, ParseContext, ParsedMessage, role::max_header_size};
+use crate::proto::DEFAULT_MAX_HEADER_LIST_SIZE;
+use rama_http_types::body::util::BufList;
 
 /// The initial buffer size allocated before trying to read from IO.
-pub(crate) const INIT_BUFFER_SIZE: usize = 8192;
+pub(crate) const INIT_BUFFER_SIZE: usize = kib(8);
 
 /// The minimum value that can be set to max buffer size.
 pub(crate) const MINIMUM_MAX_BUFFER_SIZE: usize = INIT_BUFFER_SIZE;
 
 /// The buffer size for input that is only dropped, as nginx uses while
 /// lingering.
-const DISCARD_BUF_SIZE: usize = 4096;
+const DISCARD_BUF_SIZE: usize = kib(4);
 
 /// The default maximum read buffer size. If the buffer gets this big and
 /// a message is still not complete, a `TooLarge` error is triggered.
 // Note: if this changes, update server::conn::Http::max_buf_size docs.
-pub(crate) const DEFAULT_MAX_BUFFER_SIZE: usize = 8192 + 4096 * 100;
+pub(crate) const DEFAULT_MAX_BUFFER_SIZE: usize = kib(8) + kib(4) * 100;
+
+/// The default bound of the read buffer while a head arrives: one up to the default header
+/// size limit fits, so that limit is what refuses it.
+const DEFAULT_MAX_HEAD_BUFFER_SIZE: usize = DEFAULT_MAX_HEADER_LIST_SIZE + kib(8);
 
 /// Flatten-mode chunks at least this large are written from their own buffer
 /// after a prefix copy; one TLS record of plaintext, so the first write stays a single record.
@@ -64,6 +69,8 @@ pub(crate) struct Buffered<T, B> {
     read_failed: bool,
     read_buf: BytesMut,
     read_buf_strategy: ReadStrategy,
+    /// Bound of the read buffer while a head arrives.
+    head_buf_max: usize,
     idle_read_timer: Option<Pin<Box<Sleep>>>,
     write_buf: WriteBuf<B>,
 }
@@ -101,6 +108,7 @@ where
             read_failed: false,
             read_buf: BytesMut::with_capacity(0),
             read_buf_strategy: ReadStrategy::default(),
+            head_buf_max: DEFAULT_MAX_HEAD_BUFFER_SIZE,
             idle_read_timer: None,
             write_buf,
         }
@@ -120,11 +128,13 @@ where
             "The max_buf_size cannot be smaller than {MINIMUM_MAX_BUFFER_SIZE}.",
         );
         self.read_buf_strategy = ReadStrategy::with_max(max);
+        self.head_buf_max = max;
         self.write_buf.max_buf_size = max;
     }
 
     pub(crate) fn set_read_buf_exact_size(&mut self, sz: usize) {
         self.read_buf_strategy = ReadStrategy::Exact(sz);
+        self.head_buf_max = sz;
     }
 
     pub(crate) fn set_write_strategy_flatten(&mut self) {
@@ -282,14 +292,12 @@ where
             } else {
                 let curr_len = self.read_buf.len();
                 // A partial head that already holds the limit can only end up past it.
-                if curr_len > 0
-                    && let Some(max_header_size) = parse_ctx.h1_max_header_size
-                    && curr_len >= max_header_size
-                {
+                let max_header_size = max_header_size(&parse_ctx);
+                if curr_len > 0 && curr_len >= max_header_size {
                     debug!("max_header_size ({max_header_size}) reached, closing");
                     return Poll::Ready(Err(crate::Error::new_too_large()));
                 }
-                let max = self.read_buf_strategy.max();
+                let max = self.head_buf_max;
                 if curr_len >= max {
                     debug!("max_buf_size ({}) reached, closing", max);
                     return Poll::Ready(Err(crate::Error::new_too_large()));
@@ -302,7 +310,8 @@ where
                     self.partial_len = None;
                 }
             }
-            if ready!(self.poll_read_from_io(cx)).map_err(crate::Error::new_io)? == 0 {
+            let read = self.poll_read_into(cx, usize::MAX, self.head_buf_max);
+            if ready!(read).map_err(crate::Error::new_io)? == 0 {
                 trace!("parse eof");
                 return Poll::Ready(Err(crate::Error::new_incomplete()));
             }
@@ -318,6 +327,16 @@ where
         cx: &mut Context<'_>,
         max: usize,
     ) -> Poll<io::Result<usize>> {
+        self.poll_read_into(cx, max, self.read_buf_strategy.max())
+    }
+
+    /// Read at most `max` bytes, growing the read buffer to no more than `buf_max`.
+    fn poll_read_into(
+        &mut self,
+        cx: &mut Context<'_>,
+        max: usize,
+        buf_max: usize,
+    ) -> Poll<io::Result<usize>> {
         self.read_blocked = false;
         if self
             .idle_read_timer
@@ -330,9 +349,7 @@ where
         // the max read buf size configured.
         let next = cmp::min(
             self.read_buf_strategy.next(),
-            self.read_buf_strategy
-                .max()
-                .saturating_sub(self.read_buf.len()),
+            buf_max.saturating_sub(self.read_buf.len()),
         );
         if self.read_buf_remaining_mut() < next {
             self.read_buf.reserve(next);
@@ -379,7 +396,8 @@ where
     }
 
     pub(crate) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if self.flush_pipeline && !self.read_buf.is_empty() {
+        // A queued body blocks the next head, so holding it for a batch would stall the pipeline.
+        if self.flush_pipeline && !self.read_buf.is_empty() && self.can_headers_buf() {
             Poll::Ready(Ok(()))
         } else if self.write_buf.remaining() == 0 {
             Pin::new(&mut self.io).poll_flush(cx)

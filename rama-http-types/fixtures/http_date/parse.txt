@@ -1,0 +1,82 @@
+# HTTP-date parse fixtures for rama-http-types utils::http_date, with the current year
+# pinned to 2026. Each line: <unix seconds | reject> <input>; the input is the rest of the
+# line, where `\t` stands for a tab. Expected seconds come from Python's calendar.timegm.
+
+# RFC 9110 section 5.6.7 examples
+784111777 Sun, 06 Nov 1994 08:49:37 GMT
+784111777 Sunday, 06-Nov-94 08:49:37 GMT
+784111777 Sun Nov  6 08:49:37 1994
+
+# IMF-fixdate: range ends, leap days, century years
+0 Thu, 01 Jan 1970 00:00:00 GMT
+86399 Thu, 01 Jan 1970 23:59:59 GMT
+946684799 Fri, 31 Dec 1999 23:59:59 GMT
+951782400 Tue, 29 Feb 2000 00:00:00 GMT
+1709208000 Thu, 29 Feb 2024 12:00:00 GMT
+4107542399 Sun, 28 Feb 2100 23:59:59 GMT
+4107542400 Mon, 01 Mar 2100 00:00:00 GMT
+13574563200 Tue, 29 Feb 2400 00:00:00 GMT
+1794841445 Mon, 16 Nov 2026 15:04:05 GMT
+253402300799 Fri, 31 Dec 9999 23:59:59 GMT
+
+# asctime: one- and two-digit days
+0 Thu Jan  1 00:00:00 1970
+951782400 Tue Feb 29 00:00:00 2000
+1794841445 Mon Nov 16 15:04:05 2026
+253402300799 Fri Dec 31 23:59:59 9999
+784111777 Sun Nov 06 08:49:37 1994
+
+# RFC 850: two-digit years, more than 50 years ahead of 2026 means the past century
+946684800 Saturday, 01-Jan-00 00:00:00 GMT
+3138480000 Saturday, 15-Jun-69 00:00:00 GMT
+3155760000 Wednesday, 01-Jan-70 00:00:00 GMT
+3376598400 Thursday, 31-Dec-76 00:00:00 GMT
+220924800 Saturday, 01-Jan-77 00:00:00 GMT
+946684799 Friday, 31-Dec-99 23:59:59 GMT
+1794787200 Monday, 16-Nov-26 00:00:00 GMT
+
+# RFC 850: the byte before the hour is not checked
+784111777 Sunday, 06-Nov-94x08:49:37 GMT
+
+# Surrounding OWS is ignored
+784111777  Sun, 06 Nov 1994 08:49:37 GMT
+784111777 \tSun, 06 Nov 1994 08:49:37 GMT
+784111777 \t Sun Nov  6 08:49:37 1994
+
+# Rejected: malformed, out of range, impossible dates, wrong weekday, wrong case
+reject 
+reject GMT
+reject Sun, 06 Nov 1994
+reject Wed, 31 Dec 1969 23:59:59 GMT
+reject Sat, 01 Jan 10000 00:00:00 GMT
+reject Fri, 29 Feb 2100 00:00:00 GMT
+reject Thu, 29 Feb 1900 00:00:00 GMT
+reject Fri, 31 Apr 2026 00:00:00 GMT
+reject Sun, 00 Nov 1994 08:49:37 GMT
+reject Sun, 06 Nov 1994 24:00:00 GMT
+reject Sun, 06 Nov 1994 08:60:00 GMT
+reject Sun, 06 Nov 1994 08:49:60 GMT
+reject Mon, 06 Nov 1994 08:49:37 GMT
+reject sun, 06 Nov 1994 08:49:37 GMT
+reject Sun, 06 nov 1994 08:49:37 GMT
+reject Sun, 06 Nov 1994 08:49:37 gmt
+reject Sun, 06 Nov 1994 08:49:37 UTC
+reject Sun, 6 Nov 1994 08:49:37 GMT
+reject Sun,  6 Nov 1994 08:49:37 GMT
+reject Sun, 06 Nov 1994 8:49:37 GMT
+reject Sun, 06 Nov 1994 08:49:37 +0000
+reject Sun 06 Nov 1994 08:49:37 GMT
+reject Sun, 06-Nov-1994 08:49:37 GMT
+reject Sunday, 06 Nov 1994 08:49:37 GMT
+reject Sunday, 06-Nov-1994 08:49:37 GMT
+reject Sun, 06-Nov-94 08:49:37 GMT
+reject Sunday, 06-Nov-94 08:49:37 UTC
+reject Monday, 06-Nov-94 08:49:37 GMT
+reject Thursday, 01-Jan-70 00:00:00 GMT
+reject Sun Nov 6 08:49:37 1994
+reject Sun Nov  6 08:49:37 94
+reject Mon Nov  6 08:49:37 1994
+reject Sun Nov  x 08:49:37 1994
+reject Sun, 06 Nov 1994 08:49:37 GMTx
+reject Sun, 06 Nov 1994 08:49:37 Gé
+reject Sun,\t06 Nov 1994 08:49:37 GMT

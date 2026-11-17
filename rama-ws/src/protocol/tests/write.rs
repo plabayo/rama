@@ -385,3 +385,64 @@ fn reserved_bits_beside_the_compression_bit_are_refused() {
         );
     }
 }
+
+/// Frames as a server sends them, with the 64-bit length form for large payloads.
+#[cfg(feature = "compression")]
+fn server_frames_any_len(frames: &[(u8, &[u8])]) -> Cursor<Vec<u8>> {
+    let mut wire = Vec::new();
+    for (first, payload) in frames {
+        wire.push(*first);
+        match payload.len() {
+            len @ 0..=125 => wire.push(len as u8),
+            len @ 126..=0xFFFF => {
+                wire.push(126);
+                wire.extend_from_slice(&(len as u16).to_be_bytes());
+            }
+            len => {
+                wire.push(127);
+                wire.extend_from_slice(&(len as u64).to_be_bytes());
+            }
+        }
+        wire.extend_from_slice(payload);
+    }
+    Cursor::new(wire)
+}
+
+#[cfg(feature = "compression")]
+fn incompressible_bytes(len: usize) -> Vec<u8> {
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect()
+}
+
+#[cfg(feature = "compression")]
+#[test]
+fn a_fragmented_compressed_message_does_not_keep_its_buffer() {
+    let plain = incompressible_bytes(rama_utils::octets::mib(1));
+    let compressed = raw_deflate_compress(&plain);
+    let (head, tail) = compressed.split_at(compressed.len() / 2);
+    let mut socket = deflate_reader(server_frames_any_len(&[(0x42, head), (0x80, tail)]));
+
+    match socket.read() {
+        Ok(Message::Binary(data)) => assert_eq!(data.as_ref(), plain.as_slice()),
+        result => panic!("expected the binary message: {result:?}"),
+    }
+    let retained = socket
+        .context
+        .per_message_deflate_state
+        .as_ref()
+        .unwrap()
+        .decompress_incomplete_msg
+        .buffer
+        .capacity();
+    assert!(
+        retained <= rama_utils::octets::kib(256),
+        "retained {retained}"
+    );
+}

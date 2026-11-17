@@ -1,6 +1,7 @@
 use std::{
     fmt,
     io::{IoSlice, Read, Write},
+    num::NonZeroUsize,
     pin::Pin,
     task::{Context as TaskContext, Poll},
 };
@@ -8,12 +9,11 @@ use std::{
 use pin_project_lite::pin_project;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext},
+    error::BoxError,
     extensions::{Extensions, ExtensionsRef},
-    graceful::scope_context,
     io::{
-        HeapReader, PrefixedIo,
-        peek::{PeekOptions, PeekPolicy, PeekPolicyProvider},
+        HeapReader, PeekIoProvider, PrefixedIo,
+        peek::{PeekMapped, PeekPolicy, PeekPolicyProvider},
     },
     service::RejectService,
 };
@@ -21,7 +21,9 @@ use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
 use rama_net::address::Domain;
 
-use super::{MalformedTlsPolicy, NoTlsRejectError, peek_client_hello_from_input_with_policies};
+use super::{
+    InputWithClientHello, MalformedTlsPolicy, NoTlsRejectError, PeekTlsClientHelloService,
+};
 use crate::client::ClientHelloReassemblyConfig;
 
 /// A [`Service`] router that can be used to support
@@ -32,6 +34,9 @@ use crate::client::ClientHelloReassemblyConfig;
 /// in order to learn more about underlying traffic. This allowing
 /// you to route based on the SNI from the client hello,
 /// among other capabilities.
+///
+/// Peeking is done by [`PeekTlsClientHelloService`], so the router accepts the
+/// same inputs (including a [`BridgeIo`]) and honours the same peek options.
 ///
 /// By default non-tls traffic is rejected using [`RejectService`].
 /// Use [`SniRouter::with_fallback`] to configure the fallback service.
@@ -44,24 +49,17 @@ use crate::client::ClientHelloReassemblyConfig;
 /// partial input, see [`SniRouter::with_peek_policy`].
 ///
 /// [`TlsPeekRouter`]: super::TlsPeekRouter
+/// [`BridgeIo`]: rama_core::io::BridgeIo
 #[derive(Debug, Clone)]
 pub struct SniRouter<S, F = RejectService<(), NoTlsRejectError>, Pol = PeekPolicy> {
-    service: S,
-    fallback: F,
-    peek_policy: Pol,
-    reassembly_config: ClientHelloReassemblyConfig,
-    malformed_tls_policy: MalformedTlsPolicy,
+    peek: PeekTlsClientHelloService<SniRouteService<S>, F, Pol>,
 }
 
 impl<S> SniRouter<S> {
     /// Create a new [`SniRouter`].
     pub fn new(service: S) -> Self {
         Self {
-            service,
-            fallback: RejectService::new(NoTlsRejectError),
-            peek_policy: PeekPolicy::FAIL_OPEN,
-            reassembly_config: ClientHelloReassemblyConfig::default(),
-            malformed_tls_policy: MalformedTlsPolicy::default(),
+            peek: PeekTlsClientHelloService::new(SniRouteService(service)),
         }
     }
 }
@@ -72,11 +70,7 @@ impl<S, Pol> SniRouter<S, RejectService<(), NoTlsRejectError>, Pol> {
     /// Used for non-TLS traffic and whenever the configured peek policies select fallback.
     pub fn with_fallback<F>(self, fallback: F) -> SniRouter<S, F, Pol> {
         SniRouter {
-            service: self.service,
-            fallback,
-            peek_policy: self.peek_policy,
-            reassembly_config: self.reassembly_config,
-            malformed_tls_policy: self.malformed_tls_policy,
+            peek: self.peek.with_fallback(fallback),
         }
     }
 }
@@ -88,7 +82,7 @@ impl<S, F, Pol> SniRouter<S, F, Pol> {
         /// Keep rejection when route policy depends on validated SNI. This does
         /// not change the reassembly bounds or peek policy.
         pub fn malformed_tls_policy(mut self, policy: MalformedTlsPolicy) -> Self {
-            self.malformed_tls_policy = policy;
+            self.peek.set_malformed_tls_policy(policy);
             self
         }
     }
@@ -97,7 +91,15 @@ impl<S, F, Pol> SniRouter<S, F, Pol> {
         /// Configure ClientHello size, record count, and legacy-version checks.
         /// Defaults to 256 KiB across 256 records with tolerant legacy versions.
         pub fn reassembly_config(mut self, config: ClientHelloReassemblyConfig) -> Self {
-            self.reassembly_config = config;
+            self.peek.set_reassembly_config(config);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the byte limit for peeking the egress.
+        pub fn max_egress_peek_size(mut self, max_egress_peek_size: NonZeroUsize) -> Self {
+            self.peek.set_max_egress_peek_size(max_egress_peek_size);
             self
         }
     }
@@ -109,56 +111,58 @@ impl<S, F, Pol> SniRouter<S, F, Pol> {
     /// the fallback; malformed TLS follows the separate malformed-TLS policy.
     pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> SniRouter<S, F, Pol2> {
         SniRouter {
-            service: self.service,
-            fallback: self.fallback,
-            peek_policy,
-            reassembly_config: self.reassembly_config,
-            malformed_tls_policy: self.malformed_tls_policy,
+            peek: self.peek.with_peek_policy(peek_policy),
         }
     }
 }
 
-impl<Stream, Output, S, F, Pol> Service<Stream> for SniRouter<S, F, Pol>
+impl<PeekableInput, Output, S, F, Pol> Service<PeekableInput> for SniRouter<S, F, Pol>
 where
-    Stream: rama_core::io::Io + Unpin + ExtensionsRef,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin, PeekEgressIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
-    Pol: PeekPolicyProvider<Stream>,
-    S: Service<SniRequest<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<SniPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    Pol: PeekPolicyProvider<PeekableInput>,
+    S: Service<
+            SniRequest<PeekMapped<PeekableInput, SniPrefixedIo<PeekableInput::PeekIo>>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
+    F: Service<
+            PeekMapped<PeekableInput, SniPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
 {
     type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
-        // The shared peeker validates and reassembles TLS before SNI routing,
-        // while preserving all original wire bytes for the selected service.
-        let extensions = stream.extensions().clone();
-        let options = PeekOptions::new()
-            .with_policy(self.peek_policy.peek_policy(&stream))
-            .maybe_with_scope(scope_context(&extensions));
-        let (peeked, maybe_client_hello, status) = peek_client_hello_from_input_with_policies(
-            stream,
-            options,
-            self.malformed_tls_policy,
-            self.reassembly_config,
-        )
-        .await
-        .context("SNI router: peek TLS ClientHello")?;
+    #[inline(always)]
+    fn serve(
+        &self,
+        input: PeekableInput,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        self.peek.serve(input)
+    }
+}
 
-        extensions.insert(status);
-        match maybe_client_hello {
-            Some(client_hello) => {
-                let sni = client_hello.ext_server_name().cloned();
-                self.service
-                    .serve(SniRequest {
-                        stream: peeked,
-                        sni,
-                    })
-                    .await
-                    .into_box_error()
-            }
-            None => self.fallback.serve(peeked).await.into_box_error(),
-        }
+/// Adapter which turns the peeked ClientHello into an [`SniRequest`].
+#[derive(Debug, Clone)]
+struct SniRouteService<S>(S);
+
+impl<S, Input> Service<InputWithClientHello<Input>> for SniRouteService<S>
+where
+    Input: Send + 'static,
+    S: Service<SniRequest<Input>>,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, input: InputWithClientHello<Input>) -> Result<Self::Output, Self::Error> {
+        let InputWithClientHello {
+            input,
+            client_hello,
+        } = input;
+        let sni = client_hello.ext_server_name().cloned();
+        self.0.serve(SniRequest { stream: input, sni }).await
     }
 }
 
@@ -168,10 +172,15 @@ pub type SniPrefixedIo<S> = PrefixedIo<HeapReader, S>;
 pin_project! {
     /// A request ready for SNI routing,
     /// usually used in combination with [`SniRouter`].
+    ///
+    /// `stream` is the peeked input, replaying the bytes read while peeking:
+    /// a [`SniPrefixedIo`] for plain I/O, or the mapped bridge for a [`BridgeIo`].
+    ///
+    /// [`BridgeIo`]: rama_core::io::BridgeIo
     #[derive(Debug, Clone)]
     pub struct SniRequest<S> {
         #[pin]
-        pub stream: SniPrefixedIo<S>,
+        pub stream: S,
         pub sni: Option<Domain>,
     }
 }
@@ -325,7 +334,7 @@ mod test {
         error::error_chain,
         extensions::ExtensionsRef,
         graceful::{Scope, attach_scope},
-        io::peek::{PeekCutoff, PeekCutoffError},
+        io::peek::{DEFAULT_EGRESS_PEEK_MAX_SIZE, PeekCutoff, PeekCutoffError, PeekPrefixedIo},
         service::{RejectError, service_fn},
     };
     use std::{
@@ -337,9 +346,9 @@ mod test {
         },
         time::Duration,
     };
-    use tokio::io::AsyncReadExt as _;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-    use rama_core::io::Io;
+    use rama_core::io::{BridgeIo, Io};
 
     use super::*;
 
@@ -555,7 +564,7 @@ mod test {
             let mut wire = fragments(&hello(padding), chunk_size);
             wire.extend_from_slice(b"following bytes");
             let router = SniRouter::new(service_fn(
-                async |mut req: SniRequest<ServiceInput<ScriptedReader>>| {
+                async |mut req: SniRequest<SniPrefixedIo<ServiceInput<ScriptedReader>>>| {
                     assert_eq!(req.sni.as_ref().unwrap().as_str(), "x.com");
                     let mut replay = Vec::new();
                     tokio::io::AsyncReadExt::read_to_end(&mut req, &mut replay)
@@ -749,6 +758,86 @@ mod test {
             .unwrap();
             assert_eq!(Some("plain".to_owned()), response);
         }
+    }
+
+    type CursorBridge = BridgeIo<ServiceInput<std::io::Cursor<Vec<u8>>>, std::io::Cursor<Vec<u8>>>;
+
+    type PeekedCursorBridge = BridgeIo<
+        SniPrefixedIo<ServiceInput<std::io::Cursor<Vec<u8>>>>,
+        PeekPrefixedIo<std::io::Cursor<Vec<u8>>>,
+    >;
+
+    fn cursor_bridge(ingress: &[u8]) -> CursorBridge {
+        BridgeIo(
+            ServiceInput::new(std::io::Cursor::new(ingress.to_vec())),
+            std::io::Cursor::new(Vec::new()),
+        )
+    }
+
+    #[tokio::test]
+    async fn sni_router_routes_bridge_io_by_sni() {
+        let router = SniRouter::new(service_fn(
+            async |SniRequest { stream, sni }: SniRequest<PeekedCursorBridge>| {
+                let BridgeIo(mut ingress, _egress) = stream;
+                let mut replay = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut ingress, &mut replay)
+                    .await
+                    .unwrap();
+                let route = match sni.as_ref().map(Domain::as_str) {
+                    Some("one.one.one.one") => "one",
+                    Some(_) => "other",
+                    None => "no-sni",
+                };
+                Ok::<_, Infallible>((route, replay))
+            },
+        ))
+        .with_max_egress_peek_size(DEFAULT_EGRESS_PEEK_MAX_SIZE)
+        .with_fallback(service_fn(async || {
+            Ok::<_, Infallible>(("fallback", Vec::new()))
+        }));
+
+        let (route, replay) = router
+            .serve(cursor_bridge(CH_ONE_ONE_ONE_ONE))
+            .await
+            .unwrap();
+        assert_eq!("one", route);
+        assert_eq!(CH_ONE_ONE_ONE_ONE, replay);
+
+        let (route, replay) = router.serve(cursor_bridge(TLS_BUT_NO_SNI)).await.unwrap();
+        assert_eq!("no-sni", route);
+        assert_eq!(TLS_BUT_NO_SNI, replay);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sni_router_bridge_io_non_tls_takes_fallback() {
+        let router = SniRouter::new(service_fn(async || Ok::<_, Infallible>(Vec::new())))
+            .with_fallback(service_fn(async |input: PeekedCursorBridge| {
+                let BridgeIo(mut ingress, _egress) = input;
+                let mut replay = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut ingress, &mut replay)
+                    .await
+                    .unwrap();
+                Ok::<_, Infallible>(replay)
+            }));
+        for content in [&b""[..], b"foo", b"GET / HTTP/1.1\r\n\r\n"] {
+            let replay = router.serve(cursor_bridge(content)).await.unwrap();
+            assert_eq!(content, replay);
+        }
+
+        // A server-first greeting is judged on the egress side, with the client idle.
+        let (_client, ingress) = tokio::io::duplex(64);
+        let (mut server, egress) = tokio::io::duplex(64);
+        server.write_all(b"SSH-2.0-OpenSSH_9.6\r\n").await.unwrap();
+        let router = SniRouter::new(service_fn(async || Ok::<_, Infallible>("tls")))
+            .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
+        let route = tokio::time::timeout(
+            Duration::from_hours(1),
+            router.serve(BridgeIo(ServiceInput::new(ingress), egress)),
+        )
+        .await
+        .expect("server-first greeting must reach the fallback without waiting")
+        .unwrap();
+        assert_eq!("fallback", route);
     }
 
     fn scoped<I: ExtensionsRef>(input: I) -> I {

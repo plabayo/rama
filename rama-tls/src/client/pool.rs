@@ -984,6 +984,7 @@ mod tests {
         TlsServerTrustAnchors,
     };
     use crate::keylog::NoopKeyLogSink;
+    use rama_core::extensions::NoConnectionTransfer;
     use rama_crypto::pki_types::PrivatePkcs8KeyDer;
     use rama_utils::octets::kib;
     use std::{
@@ -1019,6 +1020,30 @@ mod tests {
                 .unwrap()
                 .request_key(&next)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn ech_acceptance_of_a_proxy_leg_does_not_count_for_a_nested_origin() {
+        let proxy = Extensions::new();
+        proxy.insert(TlsEchAccepted(true));
+        assert_eq!(
+            proxy.get_ref::<TlsEchAccepted>(),
+            Some(&TlsEchAccepted(true))
+        );
+
+        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
+        assert_eq!(origin.get_ref::<TlsEchAccepted>(), None);
+
+        origin.insert(TlsServerAuthentication(Some(Host::from_static(
+            "example.com",
+        ))));
+        let defaults = TlsClientConfig::new().with_ech_requirement(EchRequirement::Required);
+        TlsConnectionReuse::new(TestProvider, &Extensions::new()).publish(&origin, Some(&defaults));
+        let policy = origin.get_ref::<ConnectionReuse>().unwrap();
+        assert!(
+            !policy.matches(&Extensions::new()),
+            "the origin itself did not accept ECH"
         );
     }
 

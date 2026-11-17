@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use rama_core::{
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, FromExtensions},
 };
 use rama_net::tls::{AlpnPolicy, TlsAlpn};
@@ -42,7 +42,7 @@ impl RustlsTlsAcceptorConfig<'_> {
         provider: Arc<crate::dep::rustls::crypto::CryptoProvider>,
     ) -> Result<ServerConfig, BoxError> {
         if self.dynamic.is_some() {
-            return Err(BoxError::from(
+            return Err(BoxError::from_static_str(
                 "a dynamic TLS configuration requires the asynchronous TLS acceptor",
             ));
         }
