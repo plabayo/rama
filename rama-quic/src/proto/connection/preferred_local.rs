@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use rama_quic_proto::{
     ConnectionId, ResetToken, TransportError, coding::BufMutExt as _, frame, packet::SpaceId,
 };
+use rama_utils::time::deadline_after;
 use rand::RngExt as _;
 
 use super::{
@@ -91,7 +92,7 @@ impl Connection {
                 // attempt with three conservative PTOs, independently of ACKs
                 // and the congestion/recovery state on the original path.
                 let interval = self.pto(SpaceId::Data).max(3 * self.config.initial_rtt);
-                let deadline = now + 3 * interval;
+                let deadline = deadline_after(now, 3 * interval);
                 self.server_candidate_attempts += 1;
                 self.server_candidate = Some(Box::new(ServerCandidate {
                     remote,
@@ -221,7 +222,7 @@ impl Connection {
             // A small probe proves the address, but a fresh expanded one must
             // prove the minimum MTU before the candidate can carry traffic.
             candidate.challenge = Some(Challenge::of_mtu(self.rng.random(), candidate.generation));
-            candidate.deadline = now + 3 * candidate.interval;
+            candidate.deadline = deadline_after(now, 3 * candidate.interval);
         }
         self.timers.set(Timer::PathProbe, candidate.deadline);
         true

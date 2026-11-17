@@ -1099,3 +1099,24 @@ fn initial_probe_acknowledges_ack_only_server_packets() {
         "the probe acknowledges the server packet that arrived"
     );
 }
+
+#[test]
+fn handshake_completes_with_an_unbounded_initial_rtt() {
+    let mut server_config = server_config();
+    Arc::get_mut(&mut server_config.transport)
+        .unwrap()
+        .set_initial_rtt(Duration::MAX);
+    let mut config = client_config();
+    Arc::get_mut(&mut config.transport)
+        .unwrap()
+        .set_initial_rtt(Duration::MAX);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
+    let client = pair.begin_connect(config);
+    pair.drive();
+    let server = pair.server.assert_accept();
+    assert!(!pair.client_conn_mut(client).is_handshaking());
+    assert!(!pair.server_conn_mut(server).is_handshaking());
+}

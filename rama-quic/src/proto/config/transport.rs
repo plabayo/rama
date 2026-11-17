@@ -12,6 +12,9 @@ use rama_quic_proto::{VarInt, VarIntBoundsExceeded};
 /// zero was measured to leave a connection unable to complete its handshake.
 pub const MIN_INITIAL_CONGESTION_WINDOW: u64 = 2 * congestion::BASE_DATAGRAM_SIZE;
 
+/// Largest initial RTT a connection starts from; timers multiply it.
+const MAX_INITIAL_RTT: Duration = Duration::from_hours(1);
+
 /// Which congestion controller a connection's paths use.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -300,8 +303,11 @@ impl TransportConfig {
 
     rama_utils::macros::generate_set_and_with! {
         /// The RTT used before an RTT sample is taken
+        ///
+        /// Values above one hour are lowered to one hour, which keeps the
+        /// timers derived from it within range.
         pub fn initial_rtt(mut self, value: Duration) -> Self {
-            self.initial_rtt = value;
+            self.initial_rtt = value.min(MAX_INITIAL_RTT);
             self
         }
     }
