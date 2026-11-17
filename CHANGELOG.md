@@ -587,8 +587,8 @@ as a compiled, compressed binary, so loading it only decodes.
   Keep `ProfileEmulateHttpRequestModifierLayer` as a just-in-time layer on the
   client, as before. To send one known ClientHello without a profile, write
   `TlsClientConfig::new_from_client_hello(&hello)` onto the request.
-* **HTTP/3 replay**: wrap an `Http3Connector` (built with `BoringTlsProvider`)
-  in the same connect modifier, with
+* **HTTP/3 replay**: wrap an `Http3Connector` (built with
+  `BoringTlsProvider::new()` as TLS provider) in the same connect modifier, with
   `rama::quic::profile::replay::ConnectionProfileCompiler` as compiler, and
   install it with its DNS layer through `with_http3_connector`;
   `with_http3_support` only accepts the unwrapped built-in connector. The `ua`
@@ -633,8 +633,9 @@ as a compiled, compressed binary, so loading it only decodes.
   * Added proxy building blocks in `rama::quic::proxy`: ClientHello peeking,
     admission, transparent relays, and a BoringSSL MITM relay that follows a
     client's connection across UDP and platform flows, with an explicit policy
-    for how ingress and egress react to network changes (#1258, #1303, #1345,
-    #1355).
+    for how ingress and egress react to network changes. Like the TLS relay, it
+    publishes the client's ClientHello on the connection it accepts, together
+    with the QUIC first flight (#1258, #1303, #1345, #1355).
   * QUIC connections publish `SocketInfo` (updated after migration),
     `NegotiatedTlsParameters` and `QuicConnectionInfo` in their extensions,
     like the TCP TLS connectors do (#1260, #1265, #1271, #1280, by Brecht
@@ -742,12 +743,13 @@ as a compiled, compressed binary, so loading it only decodes.
     extractor (#1289, #1290).
 * **Proxying, MITM and inspection**:
   * Added MITM and a live web inspector to `rama serve proxy` (`--mitm`):
-    encrypted, bounded captures of HTTP(S) and WebSocket traffic, HAR and
-    profile export, curl export, replay over TCP or HTTP/3 as captured,
-    interception with approval, edits, local responses and rules
-    (`--intercept`), and host discovery without decryption (`--mitm-scope`).
-    The proxy is multi-protocol (`--protocol http,https,socks5`) with upstream
-    and system proxy support (#1135, #1160).
+    encrypted, bounded captures of HTTP(S) and WebSocket traffic, including
+    HTTP/3 tunnelled through MASQUE, HAR and profile export, curl export, replay
+    over TCP or QUIC with the captured ClientHello, interception with approval,
+    edits, local responses and rules (`--intercept`), and host discovery without
+    decryption (`--mitm-scope`). The proxy is multi-protocol
+    (`--protocol http,https,socks5`) with upstream and system proxy support
+    (#1135, #1160).
   * Added the `rama-inspect` crate (`rama::inspect`): inspection sessions,
     typed interception waits, subscriptions, streaming memory and file stores,
     search and timelines, with adapters in the HTTP, WebSocket, TLS, UA and
