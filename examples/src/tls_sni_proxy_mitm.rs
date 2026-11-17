@@ -119,7 +119,7 @@ use rama::{
     tls::boring::server::{BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer},
     tls::{
         client::{ServerVerifyMode, TlsClientConfig},
-        server::{SniPrefixedIo, SniRequest, SniRouter, TlsServerConfig},
+        server::{SniRequest, SniRouter, TlsServerConfig},
     },
 };
 
@@ -247,7 +247,7 @@ struct SniRouterService<T> {
 impl<T, S> Service<SniRequest<S>> for SniRouterService<T>
 where
     S: Io + Unpin + ExtensionsRef,
-    T: Service<SniPrefixedIo<S>, Output = (), Error: Into<BoxError>>,
+    T: Service<S, Output = (), Error: Into<BoxError>>,
 {
     type Output = ();
     type Error = BoxError;
