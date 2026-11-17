@@ -72,7 +72,7 @@ mod state;
 mod storage;
 pub(crate) use storage::{CountedProfileSource, compact_profile_archive, export_counted_profiles};
 
-use sites::{SiteCorsLayer, SiteTokens, Sites};
+use sites::{SiteTokens, Sites, site_cors_layer};
 #[doc(inline)]
 use state::State;
 
@@ -365,7 +365,7 @@ pub async fn run(
                 .as_ref()
                 .and_then(storage::Storage::capture_layer),
             StorageAuthLayer::new(&state),
-            SiteCorsLayer,
+            site_cors_layer(),
         ),
         SetResponseHeaderLayer::if_not_present_typed(AcceptCh(client_hints.clone())),
         SetResponseHeaderLayer::if_not_present_typed(CriticalCh(client_hints)),

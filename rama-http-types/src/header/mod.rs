@@ -175,6 +175,7 @@ pub use self::name::{
     SET_COOKIE,
     STRICT_TRANSPORT_SECURITY,
     TE,
+    TIMING_ALLOW_ORIGIN,
     TRAILER,
     TRANSFER_ENCODING,
     UPGRADE,

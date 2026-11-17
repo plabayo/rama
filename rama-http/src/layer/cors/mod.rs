@@ -50,6 +50,7 @@ pub struct CorsLayer {
     max_age: Option<MaxAge>,
     vary: Option<Vary>,
     handle_options_request: bool,
+    forward_disallowed_preflights: bool,
 }
 
 impl CorsLayer {
@@ -71,6 +72,7 @@ impl CorsLayer {
             max_age: None,
             vary: None,
             handle_options_request: false,
+            forward_disallowed_preflights: false,
         }
     }
 
@@ -410,6 +412,18 @@ impl CorsLayer {
         NonEmptyVec::from_vec(names).map(Vary::headers)
     }
 
+    generate_set_and_with! {
+        /// Forward OPTIONS requests that get no `Access-Control-Allow-Origin`
+        /// to the inner service, adding only `Vary`, instead of answering them.
+        ///
+        /// Preflights from an allowed origin are still answered by the layer,
+        /// so the inner service decides how to treat every other origin.
+        pub fn forward_disallowed_preflights(mut self, forward: bool) -> Self {
+            self.forward_disallowed_preflights = forward;
+            self
+        }
+    }
+
     /// Handle OPTIONS request with the inner service.
     ///
     /// By default it is not passed on to the inner service,
@@ -703,6 +717,15 @@ impl<S> Cors<S> {
     }
 
     generate_set_and_with! {
+        /// Forward OPTIONS requests from origins that are not allowed to the inner
+        /// service. See [`CorsLayer::with_forward_disallowed_preflights`].
+        pub fn forward_disallowed_preflights(mut self, forward: bool) -> Self {
+            self.layer.set_forward_disallowed_preflights(forward);
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Set the value(s) of the [`Vary`][mdn] header. See [`CorsLayer::with_vary`]
         /// for the derivation rules used when no value is set.
         ///
@@ -773,6 +796,19 @@ where
 
         if let Some(allow_origin) = self.layer.allow_origin.as_ref() {
             allow_origin.extend_headers(&mut headers, origin, &parts);
+        }
+
+        if parts.method == Method::OPTIONS
+            && self.layer.forward_disallowed_preflights
+            && !headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        {
+            let req = Request::from_parts(parts, body);
+            let mut response: Response<ResBody> = self.inner.serve(req).await?;
+            // The response still depends on the request's CORS headers.
+            for value in headers.get_all(header::VARY) {
+                response.headers_mut().append(header::VARY, value.clone());
+            }
+            return Ok(response.map(OptionalBody::some));
         }
 
         // Return results immediately upon preflight request

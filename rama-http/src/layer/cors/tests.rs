@@ -5,7 +5,12 @@
 
 use crate::headers::Vary;
 use crate::layer::cors::CorsLayer;
-use crate::{Body, HeaderValue, Method, Request, Response, header};
+use crate::{
+    Body, HeaderValue, Method, Request, Response,
+    body::{OptionalBody, util::BodyExt},
+    header,
+};
+use rama_core::bytes::Bytes;
 use rama_core::service::service_fn;
 use rama_core::{Layer, Service};
 use rama_http_headers::{AccessControlAllowHeaders, AccessControlAllowMethods};
@@ -301,4 +306,82 @@ async fn several_origin_lines_are_never_reflected() {
             "{origins:?}"
         );
     }
+}
+
+fn forwarding_cors()
+-> impl Service<Request, Output = Response<OptionalBody<Body>>, Error = Infallible> {
+    CorsLayer::new()
+        .with_allow_origin_if(|origin, _| origin == "https://allowed.example")
+        .with_allow_methods_mirror_request()
+        .with_allow_headers_mirror_request()
+        .with_forward_disallowed_preflights(true)
+        .into_layer(service_fn(|_: Request| async {
+            Ok::<_, Infallible>(Response::new(Body::from("inner")))
+        }))
+}
+
+fn preflight(origin: Option<&'static str>) -> Request {
+    let mut builder = Request::builder()
+        .method(Method::OPTIONS)
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+        .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "x-custom");
+    if let Some(origin) = origin {
+        builder = builder.header(header::ORIGIN, origin);
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
+async fn body_bytes(res: Response<OptionalBody<Body>>) -> Bytes {
+    res.into_body().collect().await.unwrap().to_bytes()
+}
+
+#[tokio::test]
+async fn forwarded_disallowed_preflight_reaches_the_inner_service_without_cors_headers() {
+    for origin in [Some("https://other.example"), None] {
+        let res = forwarding_cors().serve(preflight(origin)).await.unwrap();
+        for name in [
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+        ] {
+            assert!(!res.headers().contains_key(&name), "{origin:?} {name}");
+        }
+        assert_eq!(
+            res.headers()[header::VARY],
+            "origin, access-control-request-method, access-control-request-headers"
+        );
+        assert_eq!(body_bytes(res).await, "inner", "{origin:?}");
+    }
+}
+
+#[tokio::test]
+async fn allowed_preflight_is_answered_even_when_forwarding_disallowed_ones() {
+    let res = forwarding_cors()
+        .serve(preflight(Some("https://allowed.example")))
+        .await
+        .unwrap();
+    assert_eq!(
+        res.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "https://allowed.example"
+    );
+    assert_eq!(res.headers()[header::ACCESS_CONTROL_ALLOW_METHODS], "POST");
+    assert_eq!(
+        res.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS],
+        "x-custom"
+    );
+    assert!(body_bytes(res).await.is_empty());
+}
+
+#[tokio::test]
+async fn disallowed_preflight_is_answered_by_default() {
+    let svc = CorsLayer::new()
+        .with_allow_origin_if(|origin, _| origin == "https://allowed.example")
+        .into_layer(service_fn(|_: Request| async {
+            Ok::<_, Infallible>(Response::new(Body::from("inner")))
+        }));
+    let res = svc
+        .serve(preflight(Some("https://other.example")))
+        .await
+        .unwrap();
+    assert!(body_bytes(res).await.is_empty());
 }

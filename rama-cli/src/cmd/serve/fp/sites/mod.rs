@@ -14,20 +14,22 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rama::{
-    Layer, Service,
     crypto::hmac::HmacSha2,
     error::{BoxError, ErrorContext as _},
-    extensions::{Extension, ExtensionsRef},
+    extensions::{Extension, Extensions, ExtensionsRef},
     http::{
-        Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode,
-        header::{
-            ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
-            ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_REQUEST_HEADERS,
-            ACCESS_CONTROL_REQUEST_METHOD, ORIGIN, VARY,
+        Body, HeaderValue, Request,
+        body::OptionalBody,
+        header::{ORIGIN, TIMING_ALLOW_ORIGIN},
+        headers::{ContentSecurityPolicy, HostSource, SourceList, Vary},
+        layer::{
+            cors::CorsLayer,
+            map_response_body::MapResponseBodyLayer,
+            set_header::{SetResponseHeaderLayer, response::MakeHeaderValueFactory},
         },
-        headers::{ContentSecurityPolicy, HostSource, SourceList},
     },
     net::{Protocol, address::Domain},
+    utils::collections::non_empty_vec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,8 +40,6 @@ const TOKEN_LABEL: &[u8] = b"rama-fp-site-token\0";
 const HEADER_BYTES: usize = 9;
 const MAX_ORIGIN_BYTES: usize = 255;
 const MAC_BYTES: usize = 32;
-
-static TIMING_ALLOW_ORIGIN: HeaderName = HeaderName::from_static("timing-allow-origin");
 
 /// How a probe host relates to the page that uses it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -252,76 +252,59 @@ fn signed_message(signed: &[u8]) -> Vec<u8> {
 
 /// Lets the page a site token was minted for read its probe responses and their
 /// timing. CORS preflights from that page are answered here; any other origin gets
-/// no cross-origin access.
-#[derive(Debug, Clone, Copy, Default)]
-pub(super) struct SiteCorsLayer;
+/// no cross-origin access and reaches the inner service.
+pub(super) type SiteCorsLayer = (
+    SetResponseHeaderLayer<PageTimingOrigin>,
+    MapResponseBodyLayer<fn(OptionalBody<Body>) -> Body>,
+    CorsLayer,
+);
 
-impl<S> Layer<S> for SiteCorsLayer {
-    type Service = SiteCorsService<S>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        SiteCorsService { inner }
-    }
+pub(super) fn site_cors_layer() -> SiteCorsLayer {
+    (
+        SetResponseHeaderLayer::overriding(TIMING_ALLOW_ORIGIN, PageTimingOrigin),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
+        CorsLayer::new()
+            .with_allow_origin_if(|origin, parts| {
+                granted_origin(&parts.extensions).is_some_and(|page| origin == page)
+            })
+            .with_allow_methods_mirror_request()
+            .with_allow_headers_mirror_request()
+            .with_vary(Vary::headers(non_empty_vec![ORIGIN]))
+            .with_forward_disallowed_preflights(true),
+    )
 }
 
-#[derive(Debug, Clone, ExtensionsRef)]
-pub(super) struct SiteCorsService<S> {
-    inner: S,
-}
+/// `Timing-Allow-Origin` for the granted page on its own requests and on
+/// subresource requests without an Origin, never for another origin.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PageTimingOrigin;
 
-impl<S, B> Service<Request<B>> for SiteCorsService<S>
+impl<ReqBody, ResBody> MakeHeaderValueFactory<ReqBody, ResBody> for PageTimingOrigin
 where
-    B: Send + 'static,
-    S: Service<Request<B>, Output = Response>,
+    ReqBody: Send + 'static,
+    ResBody: Send + 'static,
 {
-    type Output = Response;
-    type Error = S::Error;
+    type Maker = Option<HeaderValue>;
 
-    async fn serve(&self, req: Request<B>) -> Result<Self::Output, Self::Error> {
-        let Some(page) = req
-            .extensions()
-            .get_ref::<SiteGrant>()
-            .and_then(|grant| HeaderValue::from_str(&grant.origin).ok())
-        else {
-            return self.inner.serve(req).await;
-        };
-        let origin = req.headers().get(ORIGIN);
-        if origin.is_some_and(|origin| *origin != page) {
-            return self.inner.serve(req).await;
-        }
-        if origin.is_some()
-            && req.method() == Method::OPTIONS
-            && let Some(method) = req.headers().get(ACCESS_CONTROL_REQUEST_METHOD)
-        {
-            let mut response = Response::new(Body::empty());
-            *response.status_mut() = StatusCode::NO_CONTENT;
-            let headers = response.headers_mut();
-            headers.insert(ACCESS_CONTROL_ALLOW_METHODS, method.clone());
-            if let Some(requested) = req.headers().get(ACCESS_CONTROL_REQUEST_HEADERS) {
-                headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, requested.clone());
-            }
-            allow_page(&mut response, page);
-            return Ok(response);
-        }
-        let cors = origin.is_some();
-        let mut response = self.inner.serve(req).await?;
-        if cors {
-            allow_page(&mut response, page);
-        } else {
-            // A subresource request has no Origin: only its timing is shared.
-            response
-                .headers_mut()
-                .insert(TIMING_ALLOW_ORIGIN.clone(), page);
-        }
-        Ok(response)
+    async fn make_header_value_maker(
+        &self,
+        req: Request<ReqBody>,
+    ) -> (Request<ReqBody>, Self::Maker) {
+        let page = granted_origin(req.extensions())
+            .filter(|page| {
+                req.headers()
+                    .get(ORIGIN)
+                    .is_none_or(|origin| origin == *page)
+            })
+            .and_then(|page| HeaderValue::from_str(page).ok());
+        (req, page)
     }
 }
 
-fn allow_page(response: &mut Response, page: HeaderValue) {
-    let headers = response.headers_mut();
-    headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, page.clone());
-    headers.insert(TIMING_ALLOW_ORIGIN.clone(), page);
-    headers.append(VARY, HeaderValue::from_static("Origin"));
+fn granted_origin(extensions: &Extensions) -> Option<&str> {
+    extensions
+        .get_ref::<SiteGrant>()
+        .map(|grant| grant.origin.as_ref())
 }
 
 #[cfg(test)]

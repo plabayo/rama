@@ -1013,6 +1013,9 @@ standard_headers! {
     /// trailer fields in a chunked transfer coding using the "trailers" value.
     (Te, TE, b"te");
 
+    /// Lists the origins allowed to read the resource's timing information.
+    (TimingAllowOrigin, TIMING_ALLOW_ORIGIN, b"timing-allow-origin");
+
     /// Allows the sender to include additional fields at the end of chunked
     /// messages.
     (Trailer, TRAILER, b"trailer");
