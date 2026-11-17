@@ -41,10 +41,8 @@ where
                 let changes = self.recovery.signal.subscribe();
                 let request = self.bridge.connect_request(input.ingress())?;
                 let connected = connect_egress(&self.bridge.connector, request.fork()).await?;
-                let factory = ReplacementConnector {
-                    connector: self.bridge.connector.clone(),
-                    request,
-                };
+                let factory =
+                    DatagramReplacementConnector::new(self.bridge.connector.clone(), request);
                 let BridgeIo(ingress, egress) = input.bridge(connected).into();
                 self.bridge
                     .inner
@@ -60,12 +58,25 @@ where
     }
 }
 
-struct ReplacementConnector<C> {
+/// Connects a replacement egress through the connector and request of the original one.
+///
+/// Every attempt forks the request's extensions, so what one attempt records never reaches
+/// the next or the original request. The destination is the request's; network observations
+/// never select another.
+#[derive(Debug, Clone)]
+pub struct DatagramReplacementConnector<C> {
     connector: C,
     request: ConnectRequest,
 }
 
-impl<C> Service<()> for ReplacementConnector<C>
+impl<C> DatagramReplacementConnector<C> {
+    /// Replace egress sockets made by `connector` for `request`.
+    pub fn new(connector: C, request: ConnectRequest) -> Self {
+        Self { connector, request }
+    }
+}
+
+impl<C> Service<()> for DatagramReplacementConnector<C>
 where
     C: ConnectorService<ConnectRequest, Connection: DatagramSocket>,
 {

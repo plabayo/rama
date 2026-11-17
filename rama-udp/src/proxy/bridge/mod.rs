@@ -16,9 +16,9 @@ use rama_net::{
 use rama_utils::macros::define_inner_service_accessors;
 
 mod recovery;
-pub use recovery::DatagramForwardRecovery;
+pub use recovery::{DatagramForwardRecovery, DatagramReplacementConnector};
 
-use crate::{DatagramSocket, UdpPacketSocket, UdpSocketConfig, bind_udp_socket_with_connect};
+use crate::{DatagramSocket, UdpPacketSocket, UdpSocketConfig, socket::udp_connect_target};
 
 /// Connects a [`UdpPacketSocket`] to the request's IP target, configured by its
 /// [`UdpSocketConfig`]: its [`ConnectorTarget`] when set, else its authority. Resolving a
@@ -52,8 +52,13 @@ impl Service<ConnectRequest> for UdpConnector {
         let target = request
             .connector_target()
             .unwrap_or_else(|| request.authority.clone());
-        let socket = bind_udp_socket_with_connect(target, Some(&request.extensions)).await?;
-        let conn = self.config.wrap_tokio(socket)?;
+        let peer = udp_connect_target(target, Some(&request.extensions))?;
+        let conn = self
+            .config
+            .connect(peer)
+            .context("udp connector socket")
+            .context_field("peer", peer)?;
+        tracing::trace!("udp connector connected to IP address: {peer}");
         Ok(EstablishedClientConnection {
             input: request,
             conn,

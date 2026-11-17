@@ -5,18 +5,22 @@
 //! packet queue or per-packet callback; it runs only on these control-plane notifications.
 
 use crate::{Connection, LocalMigrationCapability};
+use parking_lot::Mutex;
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _},
-    extensions::Extensions,
     futures::maybe,
     graceful::WeakScope,
     io::BridgeIo,
     service::BoxService,
 };
-use rama_net::address::SocketAddress;
+use rama_net::{
+    address::SocketAddress,
+    availability::{NetworkChanges, NetworkState, prepare_network_change},
+    client::{ConnectRequest, ConnectorService},
+};
 use rama_quic_proto::VarInt;
-use rama_udp::DatagramSocket;
+use rama_udp::{DatagramSocket, proxy::DatagramReplacementConnector};
 use rama_utils::{guard::DropGuard, reactive::Changed};
 use std::{fmt, io, sync::Arc, time::Duration};
 use tokio::sync::watch;
@@ -28,73 +32,12 @@ pub enum QuicMigrationSide {
     Egress,
 }
 
-/// Platform reachability, independent of QUIC's authenticated path validation.
+/// Latest trusted platform state of both sides, independent of QUIC's authenticated path
+/// validation. A side without a subscribed source stays [`NetworkState::default`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum QuicNetworkAvailability {
-    #[default]
-    Unknown,
-    Available,
-    Unavailable,
-}
-
-/// Latest trusted platform state for one side. Extensions carry platform/policy metadata.
-#[derive(Debug, Clone, Default)]
-pub struct QuicNetworkPath {
-    pub revision: u64,
-    pub availability: QuicNetworkAvailability,
-    pub context: Extensions,
-}
-
-/// Full latest state, so coalescing notifications never loses one side's update.
-#[derive(Debug, Clone, Default)]
 pub struct QuicNetworkSnapshot {
-    pub ingress: QuicNetworkPath,
-    pub egress: QuicNetworkPath,
-}
-
-/// A bounded, coalescing source of trusted network/interface/policy changes.
-///
-/// Publish platform observations here, never unauthenticated packet claims. A source may be
-/// shared by many policy layers; each reader receives the latest complete snapshot, not a
-/// growing event queue. A policy can use context to preserve interface or tunnel constraints.
-#[derive(Debug, Clone)]
-pub struct QuicNetworkChanges {
-    state: watch::Sender<QuicNetworkSnapshot>,
-}
-
-impl Default for QuicNetworkChanges {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl QuicNetworkChanges {
-    pub fn new() -> Self {
-        Self {
-            state: watch::channel(QuicNetworkSnapshot::default()).0,
-        }
-    }
-
-    pub fn update(
-        &self,
-        side: QuicMigrationSide,
-        availability: QuicNetworkAvailability,
-        context: Extensions,
-    ) {
-        self.state.send_modify(|state| {
-            let path = match side {
-                QuicMigrationSide::Ingress => &mut state.ingress,
-                QuicMigrationSide::Egress => &mut state.egress,
-            };
-            path.revision = path.revision.wrapping_add(1);
-            path.availability = availability;
-            path.context = context;
-        });
-    }
-
-    pub fn snapshot(&self) -> QuicNetworkSnapshot {
-        self.state.borrow().clone()
-    }
+    pub ingress: NetworkState,
+    pub egress: NetworkState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,7 +173,8 @@ pub struct QuicMigrationConfig {
 #[derive(Debug, Clone)]
 pub struct QuicMigrationLayer {
     policy: BoxService<QuicMigrationInput, QuicMigrationDecision, BoxError>,
-    network: Option<QuicNetworkChanges>,
+    ingress_network: Option<NetworkChanges>,
+    egress_network: Option<NetworkChanges>,
     decision_gate: Option<Arc<tokio::sync::Semaphore>>,
     config: QuicMigrationConfig,
 }
@@ -242,7 +186,8 @@ impl QuicMigrationLayer {
     {
         Self {
             policy: BoxService::new(policy),
-            network: None,
+            ingress_network: None,
+            egress_network: None,
             decision_gate: None,
             config,
         }
@@ -260,47 +205,64 @@ impl QuicMigrationLayer {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Subscribe to trusted platform network changes in addition to native path changes.
-        pub fn network_changes(mut self, changes: QuicNetworkChanges) -> Self {
-            self.network = Some(changes);
+        /// Subscribe to trusted platform network changes of the ingress side, in addition to
+        /// native path changes. Publish observations, never unauthenticated packet claims.
+        pub fn ingress_network_changes(mut self, changes: NetworkChanges) -> Self {
+            self.ingress_network = Some(changes);
             self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Subscribe to trusted platform network changes of the egress side, in addition to
+        /// native path changes. Publish observations, never unauthenticated packet claims.
+        pub fn egress_network_changes(mut self, changes: NetworkChanges) -> Self {
+            self.egress_network = Some(changes);
+            self
+        }
+    }
+
+    fn network_snapshot(&self) -> QuicNetworkSnapshot {
+        QuicNetworkSnapshot {
+            ingress: self
+                .ingress_network
+                .as_ref()
+                .map(NetworkChanges::state)
+                .unwrap_or_default(),
+            egress: self
+                .egress_network
+                .as_ref()
+                .map(NetworkChanges::state)
+                .unwrap_or_default(),
         }
     }
 
     async fn supervise(&self, ingress: &Connection, egress: &Connection) -> Result<(), BoxError> {
         let mut ingress_changes = ingress.path_watch();
         let mut egress_changes = egress.path_watch();
-        let mut network = self.network.as_ref().map(|source| source.state.subscribe());
+        let mut network = NetworkWatch {
+            ingress: self.ingress_network.as_ref().map(NetworkChanges::subscribe),
+            egress: self.egress_network.as_ref().map(NetworkChanges::subscribe),
+        };
         let mut trigger = QuicMigrationTrigger::Initial;
         loop {
             let input = QuicMigrationInput {
                 trigger,
                 ingress: ingress.clone(),
                 egress: egress.clone(),
-                network: self
-                    .network
-                    .as_ref()
-                    .map_or_else(QuicNetworkSnapshot::default, QuicNetworkChanges::snapshot),
+                network: self.network_snapshot(),
             };
             // Admission precedes the deadline: queued work retains its preparation budget.
             // The whole operation remains cancellable on closure or a newer observation.
-            let prepare_and_apply = async {
-                let _permit = if let Some(gate) = &self.decision_gate {
-                    Some(gate.acquire().await.map_err(|_closed| {
-                        BoxError::from_static_str("QUIC migration decision gate closed")
-                    })?)
-                } else {
-                    None
-                };
-                let decision =
-                    tokio::time::timeout(self.config.decision_timeout, self.policy.serve(input))
-                        .await
-                        .map_err(|_elapsed| {
-                            BoxError::from_static_str("QUIC migration policy deadline exceeded")
-                        })??;
-                decision.ingress.apply(ingress)?;
-                decision.egress.apply(egress)
-            };
+            let prepare_and_apply = prepare_network_change(
+                self.decision_gate.as_deref(),
+                self.config.decision_timeout,
+                || self.policy.serve(input),
+                |decision| {
+                    decision.ingress.apply(ingress)?;
+                    decision.egress.apply(egress)
+                },
+            );
             // Prefer a newer observation over an already-ready stale decision.
             let result = tokio::select! {
                 biased;
@@ -334,17 +296,23 @@ impl QuicMigrationLayer {
     }
 }
 
+struct NetworkWatch {
+    ingress: Option<watch::Receiver<NetworkState>>,
+    egress: Option<watch::Receiver<NetworkState>>,
+}
+
 async fn next_trigger(
     ingress_changes: &mut Changed<usize>,
     egress_changes: &mut Changed<usize>,
-    network: &mut Option<watch::Receiver<QuicNetworkSnapshot>>,
+    network: &mut NetworkWatch,
     ingress: &Connection,
     egress: &Connection,
 ) -> Option<QuicMigrationTrigger> {
     tokio::select! {
         change = ingress_changes.changed() => change.map(|_| QuicMigrationTrigger::ValidatedPath(QuicMigrationSide::Ingress)),
         change = egress_changes.changed() => change.map(|_| QuicMigrationTrigger::ValidatedPath(QuicMigrationSide::Egress)),
-        _closed = maybe(network.as_mut().map(watch::Receiver::changed)) => Some(QuicMigrationTrigger::NetworkChanged),
+        _closed = maybe(network.ingress.as_mut().map(watch::Receiver::changed)) => Some(QuicMigrationTrigger::NetworkChanged),
+        _closed = maybe(network.egress.as_mut().map(watch::Receiver::changed)) => Some(QuicMigrationTrigger::NetworkChanged),
         _closed = ingress.closed() => None,
         _closed = egress.closed() => None,
     }
@@ -440,6 +408,76 @@ impl<F> QuicEgressMigration<F> {
     }
 }
 
+impl<C> QuicEgressMigration<QuicEgressConnector<C>> {
+    /// Replace egress through `connector` and the `request` of the original egress.
+    ///
+    /// The configuration of `connector` applies to every replacement and each attempt forks
+    /// the request's extensions. Serves one connection: it tracks the routing revision its
+    /// egress was connected under.
+    pub fn from_connector(connector: C, request: ConnectRequest) -> Self {
+        Self::new(QuicEgressConnector {
+            connector: DatagramReplacementConnector::new(connector, request),
+            connected_revision: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// The egress routing revision the original egress was connected under.
+        ///
+        /// The initial evaluation replaces the egress when the observed revision differs.
+        /// Without it, the first observed revision is assumed to be the connected one.
+        pub fn connected_revision(mut self, revision: u64) -> Self {
+            *self.factory.connected_revision.lock() = Some(revision);
+            self
+        }
+    }
+}
+
+/// Replacement factory of [`QuicEgressMigration::from_connector`].
+///
+/// Connects a replacement on the initial evaluation or a trusted network change when the
+/// egress side is [`NetworkAvailability::Available`] under a routing revision the egress is
+/// not yet connected under. Validated ingress moves, [`NetworkAvailability::Unknown`] and
+/// [`NetworkAvailability::Unavailable`] keep the current egress.
+///
+/// [`NetworkAvailability::Available`]: rama_net::availability::NetworkAvailability::Available
+/// [`NetworkAvailability::Unknown`]: rama_net::availability::NetworkAvailability::Unknown
+/// [`NetworkAvailability::Unavailable`]: rama_net::availability::NetworkAvailability::Unavailable
+#[derive(Debug, Clone)]
+pub struct QuicEgressConnector<C> {
+    connector: DatagramReplacementConnector<C>,
+    connected_revision: Arc<Mutex<Option<u64>>>,
+}
+
+impl<C> Service<QuicMigrationInput> for QuicEgressConnector<C>
+where
+    C: ConnectorService<ConnectRequest, Connection: DatagramSocket>,
+{
+    type Output = Option<C::Connection>;
+    type Error = BoxError;
+
+    async fn serve(&self, input: QuicMigrationInput) -> Result<Self::Output, BoxError> {
+        if !matches!(
+            input.trigger,
+            QuicMigrationTrigger::Initial | QuicMigrationTrigger::NetworkChanged
+        ) {
+            return Ok(None);
+        }
+        let egress = input.network.egress;
+        {
+            let mut connected = self.connected_revision.lock();
+            let connected = connected.get_or_insert(egress.revision);
+            if *connected == egress.revision || !egress.availability.is_available() {
+                return Ok(None);
+            }
+        }
+        let socket = self.connector.serve(()).await?;
+        // Recorded once prepared: a newer revision supersedes it, an equal one never retries.
+        *self.connected_revision.lock() = Some(egress.revision);
+        Ok(Some(socket))
+    }
+}
+
 impl<F, Socket> Service<QuicMigrationInput> for QuicEgressMigration<F>
 where
     F: Service<QuicMigrationInput, Output = Option<Socket>, Error: Into<BoxError>>,
@@ -471,6 +509,8 @@ mod tests {
     use super::*;
     use crate::{Endpoint, test_helpers};
     use rama_core::service::service_fn;
+    use rama_net::{availability::NetworkAvailability, stream::Socket as _};
+    use rama_udp::proxy::UdpConnector;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -516,30 +556,113 @@ mod tests {
     }
 
     #[test]
-    fn network_updates_coalesce_without_losing_the_other_side() {
-        let changes = QuicNetworkChanges::new();
-        let mut subscription = changes.state.subscribe();
-        changes.update(
-            QuicMigrationSide::Ingress,
-            QuicNetworkAvailability::Unavailable,
-            Extensions::new(),
-        );
-        changes.update(
-            QuicMigrationSide::Egress,
-            QuicNetworkAvailability::Available,
-            Extensions::new(),
-        );
-        let latest = subscription.borrow_and_update();
-        assert_eq!(latest.ingress.revision, 1);
-        assert_eq!(latest.egress.revision, 1);
+    fn network_snapshot_reports_each_side_from_its_own_source() {
+        let ingress = NetworkChanges::new();
+        let egress = NetworkChanges::new();
+        let layer = QuicMigrationLayer::new(
+            service_fn(|_: QuicMigrationInput| async {
+                Ok::<_, BoxError>(QuicMigrationDecision::default())
+            }),
+            QuicMigrationConfig {
+                scope: WeakScope::detached(),
+                decision_timeout: Duration::from_secs(1),
+                failure_action: QuicMigrationFailureAction::Keep,
+                failure_code: VarInt::from_u32(1),
+            },
+        )
+        .with_ingress_network_changes(ingress.clone())
+        .with_egress_network_changes(egress.clone());
+        ingress.advance(NetworkAvailability::Unavailable);
+        egress.update(NetworkState {
+            revision: 9,
+            availability: NetworkAvailability::Available,
+        });
+        let latest = layer.network_snapshot();
+        assert_eq!(latest.ingress, ingress.state());
+        assert_eq!(latest.egress.revision, 9);
         assert_eq!(
             latest.ingress.availability,
-            QuicNetworkAvailability::Unavailable
+            NetworkAvailability::Unavailable
         );
-        assert_eq!(
-            latest.egress.availability,
-            QuicNetworkAvailability::Available
+        assert_eq!(latest.egress.availability, NetworkAvailability::Available);
+    }
+
+    #[tokio::test]
+    async fn connector_migration_replaces_egress_once_per_available_revision() {
+        let (client_endpoint, server_endpoint, client, server) = pair().await;
+        let origin = rama_udp::UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        let request = ConnectRequest::new(origin.local_addr().unwrap().into());
+        let input = |trigger, revision, availability| QuicMigrationInput {
+            trigger,
+            ingress: server.clone(),
+            egress: client.clone(),
+            network: QuicNetworkSnapshot {
+                ingress: NetworkState::default(),
+                egress: NetworkState {
+                    revision,
+                    availability,
+                },
+            },
+        };
+        let replaces = |decision: QuicMigrationDecision| {
+            assert!(matches!(decision.ingress, QuicPathAction::Keep));
+            matches!(decision.egress, QuicPathAction::Replace(_))
+        };
+        let available = NetworkAvailability::Available;
+
+        let policy = QuicEgressMigration::from_connector(UdpConnector::new(), request.clone());
+        for (trigger, revision, availability, expected) in [
+            (QuicMigrationTrigger::Initial, 1, available, false),
+            (QuicMigrationTrigger::NetworkChanged, 1, available, false),
+            (
+                QuicMigrationTrigger::NetworkChanged,
+                2,
+                NetworkAvailability::Unknown,
+                false,
+            ),
+            (
+                QuicMigrationTrigger::NetworkChanged,
+                2,
+                NetworkAvailability::Unavailable,
+                false,
+            ),
+            (
+                QuicMigrationTrigger::ValidatedPath(QuicMigrationSide::Ingress),
+                2,
+                available,
+                false,
+            ),
+            (QuicMigrationTrigger::NetworkChanged, 2, available, true),
+            (QuicMigrationTrigger::NetworkChanged, 2, available, false),
+        ] {
+            let decision = policy
+                .serve(input(trigger, revision, availability))
+                .await
+                .unwrap();
+            assert_eq!(
+                replaces(decision),
+                expected,
+                "{trigger:?} {revision} {availability:?}"
+            );
+        }
+
+        let policy = QuicEgressMigration::from_connector(UdpConnector::new(), request)
+            .with_connected_revision(1);
+        let decision = policy
+            .serve(input(QuicMigrationTrigger::Initial, 2, available))
+            .await
+            .unwrap();
+        assert!(
+            replaces(decision),
+            "routing changed before supervision started"
         );
+
+        client.close(VarInt::from_u32(0), b"done");
+        server.close(VarInt::from_u32(0), b"done");
+        client_endpoint.shutdown_now().await;
+        server_endpoint.shutdown_now().await;
     }
 
     #[tokio::test]
@@ -549,7 +672,7 @@ mod tests {
             let (egress_endpoint, origin_endpoint, egress, origin) = pair().await;
             let ingress_peer = ingress.remote_address();
             let original_egress_peer = origin.remote_address();
-            let changes = QuicNetworkChanges::new();
+            let changes = NetworkChanges::new();
             let calls = Arc::new(AtomicUsize::new(0));
             let count = calls.clone();
             let policy = QuicEgressMigration::new(service_fn(move |input: QuicMigrationInput| {
@@ -573,7 +696,7 @@ mod tests {
                     failure_code: VarInt::from_u32(1),
                 },
             )
-            .with_network_changes(changes.clone())
+            .with_egress_network_changes(changes.clone())
             .into_layer(super::super::QuicRelay::new(VarInt::from_u32(1)).with_datagrams(true));
             let observed_ingress = ingress.clone();
             let relay = tokio::spawn(async move { service.serve(BridgeIo(ingress, egress)).await });
@@ -589,11 +712,7 @@ mod tests {
             });
             for round in 0..2 {
                 if round == 1 {
-                    changes.update(
-                        QuicMigrationSide::Egress,
-                        QuicNetworkAvailability::Available,
-                        Extensions::new(),
-                    );
+                    changes.advance(NetworkAvailability::Available);
                     while calls.load(Ordering::Relaxed) == 0 {
                         tokio::task::yield_now().await;
                     }
@@ -632,7 +751,7 @@ mod tests {
         const FLOWS: usize = 32;
         const MOVES: usize = 4;
         timeout(Duration::from_secs(30), async {
-            let changes = QuicNetworkChanges::new();
+            let changes = NetworkChanges::new();
             let gate = Arc::new(tokio::sync::Semaphore::new(4));
             let barrier = Arc::new(tokio::sync::Barrier::new(FLOWS + 1));
             let active = Arc::new(AtomicUsize::new(0));
@@ -696,7 +815,7 @@ mod tests {
                             failure_code: VarInt::from_u32(1),
                         },
                     )
-                    .with_network_changes(changes)
+                    .with_egress_network_changes(changes)
                     .with_decision_gate(gate)
                     .into_layer(
                         super::super::QuicRelay::new(VarInt::from_u32(1)).with_datagrams(true),
@@ -751,11 +870,7 @@ mod tests {
             }
             for _ in 0..MOVES {
                 barrier.wait().await;
-                changes.update(
-                    QuicMigrationSide::Egress,
-                    QuicNetworkAvailability::Available,
-                    Extensions::new(),
-                );
+                changes.advance(NetworkAvailability::Available);
                 barrier.wait().await;
                 barrier.wait().await;
             }
@@ -805,7 +920,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap_err();
-        assert!(error.to_string().contains("deadline"));
+        assert!(error.to_string().contains("timed out"));
         assert_eq!(observed.load(Ordering::Relaxed), 1);
         for connection in [client, origin] {
             let reason = timeout(Duration::from_secs(2), connection.closed())
@@ -834,7 +949,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let called = notified.clone();
         let counted = calls.clone();
-        let changes = QuicNetworkChanges::new();
+        let changes = NetworkChanges::new();
         let layer = QuicMigrationLayer::new(
             service_fn(move |_: QuicMigrationInput| {
                 let called = called.clone();
@@ -854,7 +969,7 @@ mod tests {
                 failure_code: VarInt::from_u32(42),
             },
         )
-        .with_network_changes(changes.clone());
+        .with_egress_network_changes(changes.clone());
         let monitor = tokio::spawn(async move { layer.supervise(&ingress, &egress).await });
         timeout(Duration::from_secs(2), notified.notified())
             .await
@@ -862,11 +977,7 @@ mod tests {
         assert!(!monitor.is_finished());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         assert!(client.close_reason().is_none() && origin.close_reason().is_none());
-        changes.update(
-            QuicMigrationSide::Egress,
-            QuicNetworkAvailability::Available,
-            Extensions::new(),
-        );
+        changes.advance(NetworkAvailability::Available);
         timeout(Duration::from_secs(2), notified.notified())
             .await
             .unwrap();
@@ -893,7 +1004,7 @@ mod tests {
     async fn newer_network_snapshot_cancels_unfinished_policy() {
         let (client_endpoint, ingress_endpoint, client, ingress) = pair().await;
         let (egress_endpoint, origin_endpoint, egress, origin) = pair().await;
-        let changes = QuicNetworkChanges::new();
+        let changes = NetworkChanges::new();
         let started = Arc::new(tokio::sync::Notify::new());
         let finished = Arc::new(tokio::sync::Notify::new());
         let cancelled = Arc::new(AtomicUsize::new(0));
@@ -926,16 +1037,12 @@ mod tests {
                 failure_code: VarInt::from_u32(42),
             },
         )
-        .with_network_changes(changes.clone());
+        .with_egress_network_changes(changes.clone());
         let monitor = tokio::spawn(async move { layer.supervise(&ingress, &egress).await });
         timeout(Duration::from_secs(2), started.notified())
             .await
             .unwrap();
-        changes.update(
-            QuicMigrationSide::Egress,
-            QuicNetworkAvailability::Available,
-            Extensions::new(),
-        );
+        changes.advance(NetworkAvailability::Available);
         timeout(Duration::from_secs(2), finished.notified())
             .await
             .unwrap();

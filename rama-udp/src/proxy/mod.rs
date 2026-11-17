@@ -9,15 +9,12 @@
 use std::{error::Error, fmt, io::ErrorKind, net::IpAddr, num::NonZeroUsize, time::Duration};
 
 mod recovery;
-pub use recovery::{
-    DatagramRecovery, DatagramRecoveryConfig, DatagramRecoveryFailureAction,
-    DatagramRecoverySignal, DatagramRecoveryState,
-};
+pub use recovery::{DatagramRecovery, DatagramRecoveryConfig, DatagramRecoveryFailureAction};
 
 mod bridge;
 pub use bridge::{
-    DatagramBridgeInput, DatagramForwardRecovery, DatagramToProxyBridge,
-    DatagramToProxyBridgeLayer, UdpConnector,
+    DatagramBridgeInput, DatagramForwardRecovery, DatagramReplacementConnector,
+    DatagramToProxyBridge, DatagramToProxyBridgeLayer, UdpConnector,
 };
 
 use rama_core::{Service, futures::try_join_with_drain, io::BridgeIo, telemetry::tracing};

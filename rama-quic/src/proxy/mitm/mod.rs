@@ -59,7 +59,7 @@ use rama_tls_boring::proxy::{
     },
 };
 use rama_udp::DatagramSocket;
-use rama_utils::{guard::DropGuard, octets};
+use rama_utils::{guard::DropGuard, octets, time::deadline_after};
 use tokio::{
     sync::oneshot,
     time::{Instant, timeout_at},
@@ -336,7 +336,7 @@ where
         input: InputWithQuicClientHello<BridgeIo<Ingress, Egress>>,
     ) -> impl Future<Output = Result<S::Output, BoxError>> + Send + '_ {
         // Fixed at hand-over, so a late first poll cannot renew the budget.
-        let deadline = Instant::now() + self.relay.handshake_timeout;
+        let deadline = deadline_after(Instant::now(), self.relay.handshake_timeout);
         async move {
             let established = timeout_at(deadline, self.relay.establish(input))
                 .await

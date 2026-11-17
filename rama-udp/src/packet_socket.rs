@@ -85,6 +85,24 @@ impl UdpPacketSocket {
         self.primary.cache_bound_address()
     }
 
+    #[cfg(all(
+        test,
+        any(
+            target_os = "ios",
+            target_os = "visionos",
+            target_os = "macos",
+            target_os = "tvos",
+            target_os = "watchos",
+            target_os = "illumos",
+            target_os = "solaris",
+            target_os = "linux",
+            target_os = "android",
+        )
+    ))]
+    pub(crate) fn socket_ref(&self) -> rama_net::socket::core::SockRef<'_> {
+        rama_net::socket::core::SockRef::from(&**self.primary.io)
+    }
+
     #[cfg(target_vendor = "apple")]
     pub(crate) fn with_ipv4(mut self, ipv4: Self) -> Self {
         self.ipv4 = Some(ipv4.primary);

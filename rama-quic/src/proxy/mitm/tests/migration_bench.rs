@@ -91,7 +91,7 @@ async fn sample(scenario: Scenario) -> Sample {
                 failure_code: VarInt::from_u32(1),
             },
         )
-        .with_network_changes(crate::proxy::QuicNetworkChanges::new())
+        .with_egress_network_changes(rama_net::availability::NetworkChanges::new())
     });
     let relay = QuicMitmRelay::new(
         issuer(&mitm),

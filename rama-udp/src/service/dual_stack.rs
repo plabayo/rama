@@ -53,8 +53,8 @@ pub(super) fn bind(
         let ipv4 = ipv4_options.try_build_socket(Domain::IPv4)?;
         match ipv4.bind(&SocketAddr::from(SocketAddress::default_ipv4(port)).into()) {
             Ok(()) => {
-                let ipv6 = factory.prepare_socket(ipv6, &options)?;
-                let ipv4 = factory.prepare_socket(ipv4, &ipv4_options)?;
+                let ipv6 = factory.config.prepare_socket(ipv6, &options)?;
+                let ipv4 = factory.config.prepare_socket(ipv4, &ipv4_options)?;
                 return Ok(ipv6.with_ipv4(ipv4));
             }
             Err(error)

@@ -8,6 +8,7 @@ use rama_core::{
 };
 use rama_net::{
     address::SocketAddress,
+    availability::{NetworkAvailability, NetworkState},
     client::{ConnectRequest, EstablishedClientConnection},
     stream::Socket as _,
 };
@@ -16,7 +17,10 @@ use std::{
     num::NonZeroUsize,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use tokio::sync::{Mutex, mpsc};
+use tokio::{
+    sync::{Mutex, mpsc},
+    time::timeout,
+};
 
 const LIMIT: Duration = Duration::from_secs(10);
 
@@ -28,7 +32,7 @@ fn pair(port: u16) -> (MemoryDatagramSocket, MemoryDatagramSocket) {
     )
 }
 
-fn settings(signal: DatagramRecoverySignal) -> DatagramRecovery {
+fn settings(signal: NetworkChanges) -> DatagramRecovery {
     DatagramRecovery::new(
         signal,
         DatagramRecoveryConfig {
@@ -62,7 +66,7 @@ struct Harness {
     replacements: mpsc::UnboundedSender<Result<MemoryDatagramSocket, BoxError>>,
     requests: mpsc::UnboundedReceiver<()>,
     task: tokio::task::JoinHandle<Result<(), BoxError>>,
-    signal: DatagramRecoverySignal,
+    signal: NetworkChanges,
 }
 
 impl Drop for Harness {
@@ -119,7 +123,7 @@ impl Harness {
     }
 
     async fn request(&mut self) {
-        self.signal.request_recovery();
+        self.signal.advance(NetworkAvailability::Available);
         timeout(LIMIT, self.requests.recv()).await.unwrap().unwrap();
     }
 
@@ -136,7 +140,7 @@ impl Harness {
 
 #[tokio::test]
 async fn retains_ingress_across_multiple_replacements_and_empty_datagrams() {
-    let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
     for port in 8100..8120 {
         h.replace(port).await;
         h.exchange(b"").await;
@@ -146,7 +150,7 @@ async fn retains_ingress_across_multiple_replacements_and_empty_datagrams() {
 
 #[tokio::test]
 async fn preparation_does_not_pause_the_working_transport() {
-    let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
     h.request().await;
     h.exchange(b"old path during preparation").await;
     h.replacements
@@ -158,7 +162,7 @@ async fn preparation_does_not_pause_the_working_transport() {
 
 #[tokio::test]
 async fn a_new_signal_cancels_pending_preparation() {
-    let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
     h.request().await;
     h.request().await;
     let (socket, origin) = pair(8100);
@@ -171,7 +175,7 @@ async fn a_new_signal_cancels_pending_preparation() {
 
 #[tokio::test]
 async fn rejects_a_replacement_with_a_different_remote_peer() {
-    let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
     h.request().await;
     let (wrong, _remote) = MemoryDatagramSocket::pair(
         SocketAddress::local_ipv4(8100),
@@ -185,7 +189,7 @@ async fn rejects_a_replacement_with_a_different_remote_peer() {
 
 #[tokio::test]
 async fn recovers_after_egress_closes_without_closing_ingress() {
-    let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
     let (_, dummy) = pair(8999);
     drop(std::mem::replace(&mut h.origin, dummy));
     tokio::task::yield_now().await;
@@ -195,7 +199,7 @@ async fn recovers_after_egress_closes_without_closing_ingress() {
 
 #[tokio::test(start_paused = true)]
 async fn dead_egress_wait_is_bounded_without_retries() {
-    let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
     let (_, dummy) = pair(8999);
     drop(std::mem::replace(&mut h.origin, dummy));
     let error = (&mut h.task).await.unwrap().unwrap_err();
@@ -205,7 +209,7 @@ async fn dead_egress_wait_is_bounded_without_retries() {
 
 #[tokio::test(start_paused = true)]
 async fn preparation_timeout_can_close_the_association() {
-    let mut config = settings(DatagramRecoverySignal::new());
+    let mut config = settings(NetworkChanges::new());
     config.config.failure_action = DatagramRecoveryFailureAction::Close;
     let mut h = Harness::new(config).await;
     h.request().await;
@@ -217,8 +221,7 @@ async fn preparation_timeout_can_close_the_association() {
 async fn cancellation_releases_the_shared_preparation_permit() {
     let gate = Arc::new(Semaphore::new(1));
     let mut h =
-        Harness::new(settings(DatagramRecoverySignal::new()).with_preparation_gate(gate.clone()))
-            .await;
+        Harness::new(settings(NetworkChanges::new()).with_preparation_gate(gate.clone())).await;
     h.request().await;
     assert_eq!(gate.available_permits(), 0);
     h.task.abort();
@@ -229,7 +232,7 @@ async fn cancellation_releases_the_shared_preparation_permit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn many_flows_recover_together_through_a_shared_gate() {
     timeout(LIMIT, async {
-        let signal = DatagramRecoverySignal::new();
+        let signal = NetworkChanges::new();
         let recovery = settings(signal.clone()).with_preparation_gate(Arc::new(Semaphore::new(4)));
         let mut flows = Vec::new();
         for _ in 0..64 {
@@ -244,7 +247,7 @@ async fn many_flows_recover_together_through_a_shared_gate() {
                 send(&origin, b"new path").await;
                 origins.push(origin);
             }
-            signal.request_recovery();
+            signal.advance(NetworkAvailability::Available);
             for (h, origin) in flows.iter_mut().zip(origins) {
                 receive(&mut h.client, b"new path").await;
                 h.origin = origin;
@@ -261,7 +264,7 @@ struct RouteMarker;
 
 #[tokio::test]
 async fn bridge_reuses_the_original_connector_target_and_extensions() {
-    let signal = DatagramRecoverySignal::new();
+    let signal = NetworkChanges::new();
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = calls.clone();
     let (sockets, mut origins) = mpsc::unbounded_channel();
@@ -294,7 +297,7 @@ async fn bridge_reuses_the_original_connector_target_and_extensions() {
     send(&client, b"first").await;
     receive(&mut origin, b"first").await;
     for _ in 0..4 {
-        signal.request_recovery();
+        signal.advance(NetworkAvailability::Available);
         let mut replacement = timeout(LIMIT, origins.recv()).await.unwrap().unwrap();
         send(&replacement, b"ready").await;
         receive(&mut client, b"ready").await;
@@ -356,10 +359,10 @@ fn only_local_path_failures_are_recoverable() {
 
 #[tokio::test]
 async fn identical_routing_snapshots_do_not_reconnect() {
-    let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
-    let state = DatagramRecoveryState {
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
+    let state = NetworkState {
         revision: 42,
-        available: true,
+        availability: NetworkAvailability::Available,
     };
     h.signal.update(state);
     h.requests.recv().await.unwrap();
@@ -377,10 +380,25 @@ async fn identical_routing_snapshots_do_not_reconnect() {
 
 #[tokio::test]
 async fn unavailable_observation_cancels_preparation_without_replacing_working_path() {
-    let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
     h.request().await;
-    h.signal.suspend_recovery();
+    h.signal.advance(NetworkAvailability::Unavailable);
     h.exchange(b"still working").await;
+    assert!(h.requests.try_recv().is_err());
+    h.replace(8100).await;
+}
+
+#[tokio::test]
+async fn unknown_observation_is_treated_as_unavailable() {
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
+    h.request().await;
+    h.signal.advance(NetworkAvailability::Unknown);
+    h.exchange(b"still working").await;
+    h.signal.update(NetworkState {
+        revision: 7,
+        availability: NetworkAvailability::Unknown,
+    });
+    h.exchange(b"no preparation while unknown").await;
     assert!(h.requests.try_recv().is_err());
     h.replace(8100).await;
 }
@@ -389,9 +407,8 @@ async fn unavailable_observation_cancels_preparation_without_replacing_working_p
 async fn gate_wait_does_not_consume_preparation_timeout() {
     let gate = Arc::new(Semaphore::new(0));
     let mut h =
-        Harness::new(settings(DatagramRecoverySignal::new()).with_preparation_gate(gate.clone()))
-            .await;
-    h.signal.request_recovery();
+        Harness::new(settings(NetworkChanges::new()).with_preparation_gate(gate.clone())).await;
+    h.signal.advance(NetworkAvailability::Available);
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(30)).await;
     h.exchange(b"old path while queued").await;
@@ -406,7 +423,7 @@ async fn gate_wait_does_not_consume_preparation_timeout() {
 
 #[tokio::test]
 async fn ingress_close_ends_recovery_during_an_egress_outage() {
-    let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
     let (_, dummy) = pair(8999);
     drop(std::mem::replace(&mut h.origin, dummy));
     h.request().await;
@@ -417,7 +434,7 @@ async fn ingress_close_ends_recovery_during_an_egress_outage() {
 
 #[tokio::test]
 async fn an_unbounded_outage_timeout_still_recovers() {
-    let mut recovery = settings(DatagramRecoverySignal::new());
+    let mut recovery = settings(NetworkChanges::new());
     recovery.config.unavailable_timeout = Duration::MAX;
     let mut h = Harness::new(recovery).await;
     let (_, dummy) = pair(8999);
@@ -429,7 +446,7 @@ async fn an_unbounded_outage_timeout_still_recovers() {
 
 #[tokio::test]
 async fn egress_failure_during_preparation_uses_that_preparation() {
-    let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
     h.request().await;
     let (_, dummy) = pair(8999);
     drop(std::mem::replace(&mut h.origin, dummy));
@@ -478,7 +495,7 @@ async fn capability_downgrade_is_rejected_before_canceling_the_old_path() {
         DatagramRecoveryFailureAction::Keep,
         DatagramRecoveryFailureAction::Close,
     ] {
-        let signal = DatagramRecoverySignal::new();
+        let signal = NetworkChanges::new();
         let mut recovery = settings(signal.clone());
         recovery.config.failure_action = action;
         let (client, ingress) = pair(7000);
@@ -503,7 +520,7 @@ async fn capability_downgrade_is_rejected_before_canceling_the_old_path() {
         });
         send(&client, b"first").await;
         receive(&mut origin, b"first").await;
-        signal.request_recovery();
+        signal.advance(NetworkAvailability::Available);
         let mut buffer = [0; 128];
         assert!(matches!(
             timeout(LIMIT, refused_origin.recv(&mut buffer))
@@ -524,7 +541,7 @@ async fn capability_downgrade_is_rejected_before_canceling_the_old_path() {
 
 #[tokio::test(start_paused = true)]
 async fn repeated_network_changes_do_not_extend_the_outage_deadline() {
-    let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
+    let mut h = Harness::new(settings(NetworkChanges::new())).await;
     let (_, dummy) = pair(8999);
     drop(std::mem::replace(&mut h.origin, dummy));
     h.request().await;
@@ -546,7 +563,7 @@ async fn repeated_network_changes_do_not_extend_the_outage_deadline() {
 #[tokio::test]
 async fn blocked_old_send_is_cancelled_without_replaying_or_duplicating_packets() {
     timeout(LIMIT, async {
-        let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
+        let mut h = Harness::new(settings(NetworkChanges::new())).await;
         let sent = Arc::new(AtomicUsize::new(0));
         let progress = sent.clone();
         let mut sender = h.client.create_sender();
@@ -585,7 +602,7 @@ async fn blocked_old_send_is_cancelled_without_replaying_or_duplicating_packets(
 
 #[tokio::test]
 async fn superseding_a_factory_drops_its_prepared_transport_and_releases_permits() {
-    let signal = DatagramRecoverySignal::new();
+    let signal = NetworkChanges::new();
     let gate = Arc::new(Semaphore::new(1));
     let recovery = settings(signal.clone()).with_preparation_gate(gate.clone());
     let (client, ingress) = pair(7000);
@@ -613,9 +630,9 @@ async fn superseding_a_factory_drops_its_prepared_transport_and_releases_permits
     });
     send(&client, b"ready").await;
     receive(&mut origin, b"ready").await;
-    signal.request_recovery();
+    signal.advance(NetworkAvailability::Available);
     let mut first = timeout(LIMIT, observed.recv()).await.unwrap().unwrap();
-    signal.request_recovery();
+    signal.advance(NetworkAvailability::Available);
     let mut second = timeout(LIMIT, observed.recv()).await.unwrap().unwrap();
     let mut bytes = [0; 128];
     assert!(matches!(
@@ -633,7 +650,7 @@ async fn superseding_a_factory_drops_its_prepared_transport_and_releases_permits
 
 #[tokio::test]
 async fn bridge_retains_a_network_change_during_initial_connection_preparation() {
-    let signal = DatagramRecoverySignal::new();
+    let signal = NetworkChanges::new();
     let (started, mut starts) = mpsc::unbounded_channel();
     let (created, mut origins) = mpsc::unbounded_channel();
     let release = Arc::new(tokio::sync::Notify::new());
@@ -666,7 +683,7 @@ async fn bridge_retains_a_network_change_during_initial_connection_preparation()
     let (mut client, ingress) = pair(7000);
     let task = tokio::spawn(async move { bridge.serve(ingress).await });
     timeout(LIMIT, starts.recv()).await.unwrap().unwrap();
-    signal.request_recovery();
+    signal.advance(NetworkAvailability::Available);
     release.notify_one();
     let mut initial = timeout(LIMIT, origins.recv()).await.unwrap().unwrap();
     let replacement = timeout(LIMIT, origins.recv()).await.unwrap().unwrap();

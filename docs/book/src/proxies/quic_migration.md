@@ -55,10 +55,14 @@ is protected. Reusing that active tuple remains subject to its original flow lif
 A client's port change usually leaves the origin-facing connection alone. A network or policy
 change can require reassessing either side. `QuicMigrationLayer` makes that decision explicit:
 keep a path, refresh its transport information, or replace its transport. `QuicEgressMigration`
-adapts a replacement-socket factory to this policy. New ingress flows join their existing
+adapts a replacement-socket factory to this policy, or replaces egress through the original
+connector and connect request with `QuicEgressMigration::from_connector`. New ingress flows join their existing
 connection through the router; egress changes remain subject to QUIC's migration constraints.
 
-Network observations are hints, not proof that a particular connection failed. Reuse the
+Network observations are hints, not proof that a particular connection failed. Both QUIC
+migration and UDP forwarding recovery subscribe to the same `rama::net::availability::NetworkChanges`
+source, which carries a routing revision and whether the network is available, unavailable or
+unknown; an unknown network never prepares a replacement. Reuse the
 original connector and its policy restrictions when preparing a replacement. Bound concurrent
 preparations during network-wide changes, set decision deadlines, and choose whether a failed
 preparation preserves the connection or closes it. Newer observations supersede unfinished work.

@@ -1,6 +1,5 @@
 //! Socket configuration and Rama service integration.
 
-#[cfg(target_vendor = "apple")]
 use std::net::SocketAddr;
 
 use rama_core::{Service, error::BoxError, telemetry::tracing};
@@ -50,6 +49,43 @@ impl UdpSocketConfig {
     #[must_use]
     pub fn socket_options(&self) -> &SocketOptions {
         &self.socket_options
+    }
+
+    /// Create a socket with these options and connect it to `peer`.
+    ///
+    /// Without a configured local address the socket binds the wildcard of the peer's family.
+    pub(crate) fn connect(&self, peer: SocketAddr) -> Result<UdpPacketSocket, DatagramError> {
+        let mut options = self.socket_options.clone();
+        options.address.get_or_insert_with(|| {
+            if peer.is_ipv4() {
+                SocketAddress::default_ipv4(0)
+            } else {
+                SocketAddress::default_ipv6(0)
+            }
+        });
+        options.r#type = Type::Datagram;
+        options.protocol = Some(Protocol::UDP);
+        let socket = options.try_build_socket(Domain::from(peer))?;
+        socket.connect(&peer.into())?;
+        self.prepare_socket(socket, &options)
+    }
+
+    pub(crate) fn prepare_socket(
+        &self,
+        socket: Socket,
+        options: &SocketOptions,
+    ) -> Result<UdpPacketSocket, DatagramError> {
+        if let Some(wanted) = self.min_buffer_size {
+            if options.recv_buffer_size.is_none() {
+                grow_buffer(&socket, Buffer::Receive, wanted);
+            }
+            if options.send_buffer_size.is_none() {
+                grow_buffer(&socket, Buffer::Send, wanted);
+            }
+        }
+        let mut socket = self.wrap_core(socket)?;
+        socket.cache_bound_address()?;
+        Ok(socket)
     }
 
     /// Features that socket creation must provide.
@@ -279,25 +315,7 @@ impl UdpSocketFactory {
             }
             socket.bind(&SocketAddr::from(address).into())?;
         }
-        self.prepare_socket(socket, &options)
-    }
-
-    fn prepare_socket(
-        &self,
-        socket: Socket,
-        options: &SocketOptions,
-    ) -> Result<UdpPacketSocket, DatagramError> {
-        if let Some(wanted) = self.config.min_buffer_size {
-            if options.recv_buffer_size.is_none() {
-                grow_buffer(&socket, Buffer::Receive, wanted);
-            }
-            if options.send_buffer_size.is_none() {
-                grow_buffer(&socket, Buffer::Send, wanted);
-            }
-        }
-        let mut socket = self.config.wrap_core(socket)?;
-        socket.cache_bound_address()?;
-        Ok(socket)
+        self.config.prepare_socket(socket, &options)
     }
 }
 

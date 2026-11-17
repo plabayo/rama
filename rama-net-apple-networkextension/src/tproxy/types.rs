@@ -1219,7 +1219,8 @@ impl TransparentProxyFlowMeta {
     /// this flow to, `None` when unbound or unknown.
     ///
     /// Services that dial their own egress (e.g. a UDP relay) should
-    /// bind it to this interface (`IP_BOUND_IF` / `IPV6_BOUND_IF`),
+    /// bind it to this interface by setting
+    /// [`SocketOptions::interface_index`](rama_net::socket::SocketOptions::interface_index),
     /// as the kernel would without the proxy in the path. TCP egress
     /// dialed by the Swift provider already does so.
     ///

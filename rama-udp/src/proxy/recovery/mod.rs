@@ -14,7 +14,10 @@ use rama_core::{
     io::BridgeIo,
     telemetry::tracing,
 };
-use rama_net::address::ip::IntoCanonicalIpAddr as _;
+use rama_net::{
+    address::ip::IntoCanonicalIpAddr as _,
+    availability::{NetworkChanges, NetworkState, prepare_network_change},
+};
 use rama_utils::time::deadline_after;
 use std::{
     future::Future,
@@ -28,70 +31,8 @@ use std::{
 };
 use tokio::{
     sync::{Semaphore, oneshot, watch},
-    time::{Instant, timeout},
+    time::Instant,
 };
-
-/// A bounded, coalescing signal from a trusted network or routing-policy observer.
-///
-/// Call [`Self::request_recovery`] when a usable replacement path should be prepared, not
-/// for every packet or repeated identical platform observation. Signals before an association
-/// subscribes are already reflected in its initial connector call. Clones share the source.
-#[derive(Debug, Clone)]
-pub struct DatagramRecoverySignal(watch::Sender<DatagramRecoveryState>);
-
-/// Trusted routing revision and whether a usable replacement can be prepared.
-/// Repeated identical snapshots are ignored. Revisions need only change, not increase.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DatagramRecoveryState {
-    pub revision: u64,
-    pub available: bool,
-}
-
-impl Default for DatagramRecoverySignal {
-    fn default() -> Self {
-        Self(watch::channel(DatagramRecoveryState::default()).0)
-    }
-}
-
-impl DatagramRecoverySignal {
-    /// Create a source with no pending recovery request.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Request preparation, advancing this source's locally managed revision.
-    pub fn request_recovery(&self) {
-        self.0.send_modify(|state| {
-            state.revision = state.revision.wrapping_add(1);
-            state.available = true;
-        });
-    }
-
-    /// Cancel unfinished preparations when the network is unavailable. Existing forwarding
-    /// is retained, and an existing outage deadline is never extended.
-    pub fn suspend_recovery(&self) {
-        self.0.send_modify(|state| {
-            state.revision = state.revision.wrapping_add(1);
-            state.available = false;
-        });
-    }
-
-    /// Publish an externally managed routing revision, ignoring identical snapshots.
-    /// Use this mode or the local request/suspend methods; do not mix revision owners.
-    pub fn update(&self, snapshot: DatagramRecoveryState) {
-        self.0.send_if_modified(|current| {
-            if *current == snapshot {
-                return false;
-            }
-            *current = snapshot;
-            true
-        });
-    }
-
-    pub(super) fn subscribe(&self) -> watch::Receiver<DatagramRecoveryState> {
-        self.0.subscribe()
-    }
-}
 
 /// What happens when preparing or validating a replacement fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,18 +59,27 @@ pub struct DatagramRecoveryConfig {
 
 /// Recovery controls shared by a set of independently forwarded associations.
 ///
+/// Each changed [`NetworkState`] with [`NetworkAvailability::Available`] prepares a
+/// replacement; any other availability, [`NetworkAvailability::Unknown`] included, cancels
+/// unfinished preparations, retains existing forwarding and never extends an outage deadline.
+/// Observations before an association subscribes are already reflected in its initial
+/// connector call.
+///
 /// No tasks, payload queues, or per-packet locks are added. Dropping the serving future
 /// cancels preparation and forwarding. The optional gate bounds concurrent connector calls.
+///
+/// [`NetworkAvailability::Available`]: rama_net::availability::NetworkAvailability::Available
+/// [`NetworkAvailability::Unknown`]: rama_net::availability::NetworkAvailability::Unknown
 #[derive(Debug, Clone)]
 pub struct DatagramRecovery {
-    pub(super) signal: DatagramRecoverySignal,
+    pub(super) signal: NetworkChanges,
     config: DatagramRecoveryConfig,
     gate: Option<Arc<Semaphore>>,
 }
 
 impl DatagramRecovery {
     /// Combine an observation source with explicit recovery deadlines and failure policy.
-    pub fn new(signal: DatagramRecoverySignal, config: DatagramRecoveryConfig) -> Self {
+    pub fn new(signal: NetworkChanges, config: DatagramRecoveryConfig) -> Self {
         Self {
             signal,
             config,
@@ -151,14 +101,13 @@ impl DatagramRecovery {
         F: Service<(), Output = S>,
         F::Error: Into<BoxError>,
     {
-        let _permit = match &self.gate {
-            Some(gate) => Some(gate.acquire().await.map_err(BoxError::from)?),
-            None => None,
-        };
-        timeout(self.config.preparation_timeout, factory.serve(()))
-            .await
-            .map_err(|_elapsed| BoxError::from_static_str("UDP recovery preparation timed out"))?
-            .map_err(Into::into)
+        prepare_network_change(
+            self.gate.as_deref(),
+            self.config.preparation_timeout,
+            || factory.serve(()),
+            Ok,
+        )
+        .await
     }
 }
 
@@ -194,7 +143,7 @@ impl DatagramForwardService {
         BridgeIo(mut ingress, mut egress): BridgeIo<Peer<A>, Peer<B>>,
         recovery: &DatagramRecovery,
         factory: F,
-        mut changes: watch::Receiver<DatagramRecoveryState>,
+        mut changes: watch::Receiver<NetworkState>,
     ) -> Result<(), BoxError>
     where
         A: DatagramSocket,
@@ -281,7 +230,7 @@ impl DatagramForwardService {
                             if changed.is_err() {
                                 return Err(BoxError::from_static_str("UDP recovery signal closed"));
                             }
-                            let available = changes.borrow_and_update().available;
+                            let available = changes.borrow_and_update().availability.is_available();
                             preparation = if available {
                                 Some(Box::pin(wake_gated(recovery.prepare(&factory))))
                             } else {
