@@ -38,19 +38,25 @@ pub struct Proxy {
     pub address: HostWithPort,
 
     /// Credential to authenticate with at the proxy.
-    #[serde(default, with = "credential_str")]
+    #[serde(default)]
     pub credential: Option<ProxyCredential>,
 
     #[cfg_attr(feature = "memory-db", venndb(filter, set))]
     #[serde(with = "protocol_tokens")]
-    /// Every protocol the proxy speaks, with the HTTP version and MASQUE template
-    /// that belong to it.
+    /// Every protocol the proxy speaks, each one way to reach it and one kind of tunnel.
     ///
-    /// Written as `scheme[+option][template]` outside of Rust, the scheme of a proxy
-    /// address followed by the path its tunnels live on: see
-    /// [`ProxyProtocol::try_from_scheme_and_path`]. An option appears only where it differs from
-    /// the scheme's default, so `socks5h+udp`, `h2` and
-    /// `masque/m{?target_host,target_port}` are three.
+    /// Outside of Rust each protocol is written as a proxy address scheme, optionally
+    /// followed by a path (see [`ProxyProtocol::try_from_scheme_and_path`]):
+    ///
+    /// - `h2`: CONNECT (TCP) over HTTP/2
+    /// - `socks5+tcp`: SOCKS5 CONNECT
+    /// - `socks5+udp`: SOCKS5 UDP ASSOCIATE
+    /// - `h3+udp`: CONNECT-UDP over HTTP/3, on the default template
+    /// - `h3/udp/{target_host}/{target_port}`: CONNECT-UDP over HTTP/3 on that path
+    ///   template, as in `h3://proxy.example:443/udp/{target_host}/{target_port}`
+    ///
+    /// A record is selected on what it offers, so a SOCKS5 protocol names its transport.
+    /// A proxy that does both TCP and UDP lists both, such as `socks5+tcp;socks5+udp`.
     pub protocols: ProxyProtocols,
 
     #[cfg_attr(feature = "memory-db", venndb(filter))]
@@ -91,6 +97,30 @@ pub struct Proxy {
 /// Validate the proxy is valid according to rules that are not enforced by the type system.
 fn proxydb_insert_validator(proxy: &Proxy) -> bool {
     !proxy.protocols.is_empty()
+        && proxy
+            .protocols
+            .iter()
+            .all(|p| record_transport(p).is_some())
+}
+
+/// The one transport a protocol of a [`Proxy`] record carries, `None` when it does not say.
+///
+/// A record is selected on what it offers, so each protocol in it is one tunnel: CONNECT
+/// for an HTTP proxy without a path, CONNECT-UDP with a CONNECT-UDP template, and for
+/// SOCKS5 whatever its `+tcp` or `+udp` option names.
+pub(crate) fn record_transport(protocol: &ProxyProtocol) -> Option<TransportProtocol> {
+    match protocol {
+        ProxyProtocol::Http {
+            path_template: None,
+            ..
+        }
+        | ProxyProtocol::Custom(_) => Some(TransportProtocol::Tcp),
+        ProxyProtocol::Http {
+            path_template: Some(template),
+            ..
+        } => template.is_connect_udp().then_some(TransportProtocol::Udp),
+        ProxyProtocol::Socks5 { transport, .. } => *transport,
+    }
 }
 
 fn string_filter_matches(
@@ -107,35 +137,21 @@ fn string_filter_matches(
     }
 }
 
-/// Whether the protocol relays UDP: SOCKS5 with UDP ASSOCIATE, or MASQUE with CONNECT-UDP.
-fn relays_udp(protocol: &ProxyProtocol) -> bool {
-    matches!(protocol, ProxyProtocol::Socks5 { udp: true, .. }) || protocol.supports_connect_udp()
-}
-
 impl Proxy {
-    /// Whether the proxy offers any MASQUE method on at least one HTTP version.
-    #[must_use]
-    pub fn is_masque(&self) -> bool {
-        self.protocols.iter().any(ProxyProtocol::is_masque)
-    }
-
     /// Whether the proxy tunnels UDP with CONNECT-UDP on at least one HTTP version.
     #[must_use]
     pub fn supports_connect_udp(&self) -> bool {
-        self.protocols
-            .iter()
-            .any(ProxyProtocol::supports_connect_udp)
+        self.protocols.iter().any(|protocol| {
+            protocol.is_http() && record_transport(protocol) == Some(TransportProtocol::Udp)
+        })
     }
 
-    /// Whether the proxy can carry traffic of the given transport.
-    ///
-    /// Every proxy protocol tunnels TCP; UDP needs one that relays it.
+    /// Whether one of the proxy's protocols carries the given transport.
     #[must_use]
     pub fn supports_transport(&self, protocol: TransportProtocol) -> bool {
-        match protocol {
-            TransportProtocol::Udp => self.protocols.iter().any(relays_udp),
-            TransportProtocol::Tcp => !self.protocols.is_empty(),
-        }
+        self.protocols
+            .iter()
+            .any(|p| record_transport(p) == Some(protocol))
     }
 
     /// Check if the proxy is a match for the given[`ProxyContext`] and [`ProxyFilter`].
@@ -175,18 +191,18 @@ impl Proxy {
 #[cfg(test)]
 mod serde_tests {
     use super::*;
-    use rama_net::Protocol;
     use rama_net::user::credentials::{basic, bearer};
-    use rama_utils::str::non_empty_str;
+    use rama_utils::str::{non_empty_str, smol_str::SmolStr};
 
     fn protocols() -> ProxyProtocols {
         ProxyProtocols::from([
             ProxyProtocol::HTTPS.with_http_version(rama_net::http::Version::HTTP_2),
             ProxyProtocol::Socks5 {
                 remote_dns: true,
-                udp: true,
+                transport: Some(TransportProtocol::Udp),
+                secure: false,
             },
-            ProxyProtocol::Other(Protocol::from_static("warp")),
+            ProxyProtocol::Custom(SmolStr::new_static("warp")),
             protocol_token::parse("h3/m?h={target_host}&p={target_port}").unwrap(),
         ])
     }
@@ -261,7 +277,8 @@ mod serde_tests {
                 "socks5+udp",
                 Some(ProxyProtocol::Socks5 {
                     remote_dns: false,
-                    udp: true,
+                    transport: Some(TransportProtocol::Udp),
+                    secure: false,
                 }),
             ),
             (
@@ -270,7 +287,7 @@ mod serde_tests {
             ),
             (
                 "warp",
-                Some(ProxyProtocol::Other(Protocol::from_static("warp"))),
+                Some(ProxyProtocol::Custom(SmolStr::new_static("warp"))),
             ),
             // An option belongs to its own scheme, and only TLS carries HTTP/3.
             ("socks5+h2", None),
@@ -280,7 +297,7 @@ mod serde_tests {
             ("https+h4", None),
             // A template belongs to MASQUE, and has to be one.
             ("socks5/m/{target_host}/{target_port}", None),
-            ("h3/not-a-template", None),
+            ("h3/{target_host}", None),
         ] {
             assert_eq!(protocol_token::parse(token), protocol, "{token}");
         }
@@ -289,7 +306,7 @@ mod serde_tests {
     #[test]
     fn a_tls_scheme_with_a_template_is_masque_in_the_version_it_asked_for() {
         let protocol = protocol_token::parse("h2/m/{target_host}/{target_port}").unwrap();
-        assert!(protocol.supports_connect_udp());
+        assert_eq!(record_transport(&protocol), Some(TransportProtocol::Udp));
         assert_eq!(
             protocol.http_version(),
             Some(rama_net::http::Version::HTTP_2)
@@ -518,54 +535,6 @@ mod tests {
     }
 }
 
-/// `basic <userinfo>` / `bearer <token>`, the only shapes a [`ProxyCredential`] has.
-mod credential_str {
-    use rama_net::{
-        address::UserInfo,
-        user::{Bearer, ProxyCredential},
-    };
-    use serde::{Deserialize as _, Deserializer, Serializer, de::Error as _};
-
-    #[expect(clippy::ref_option, reason = "signature serde's `with` module demands")]
-    pub(super) fn serialize<S: Serializer>(
-        credential: &Option<ProxyCredential>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        match credential {
-            Some(ProxyCredential::Basic(basic)) => {
-                serializer.collect_str(&format_args!("basic {}", UserInfo::from(basic.clone())))
-            }
-            Some(ProxyCredential::Bearer(bearer)) => {
-                serializer.collect_str(&format_args!("bearer {bearer}"))
-            }
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<ProxyCredential>, D::Error> {
-        let Some(text) = Option::<String>::deserialize(deserializer)? else {
-            return Ok(None);
-        };
-        let (scheme, value) = text
-            .split_once(' ')
-            .ok_or_else(|| D::Error::custom("proxy credential is missing its scheme"))?;
-        if scheme.eq_ignore_ascii_case("basic") {
-            let basic = value
-                .parse::<UserInfo>()
-                .and_then(|user_info| user_info.to_basic())
-                .map_err(D::Error::custom)?;
-            Ok(Some(ProxyCredential::Basic(basic)))
-        } else if scheme.eq_ignore_ascii_case("bearer") {
-            let bearer = value.parse::<Bearer>().map_err(D::Error::custom)?;
-            Ok(Some(ProxyCredential::Bearer(bearer)))
-        } else {
-            Err(D::Error::custom("unknown proxy credential scheme"))
-        }
-    }
-}
-
 /// The textual form of a [`ProxyProtocol`]; see [`Proxy::protocols`].
 ///
 /// A token is the scheme of a proxy address with the path a MASQUE one offers its tunnels
@@ -591,10 +560,10 @@ pub(super) mod protocol_token {
     impl fmt::Display for Token {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             self.0.scheme().fmt(f)?;
-            if let Some(connect_udp) = self.0.connect_udp()
-                && !connect_udp.template.is_connect_udp_default()
+            if let Some(template) = self.0.path_template()
+                && !template.is_connect_udp_default()
             {
-                connect_udp.template.fmt(f)?;
+                template.fmt(f)?;
             }
             Ok(())
         }

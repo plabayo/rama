@@ -17,6 +17,8 @@ pub enum ProxyType {
 }
 
 impl ProxyType {
+    pub const ALL: [Self; 4] = [Self::Datacenter, Self::Residential, Self::Mobile, Self::Isp];
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -58,12 +60,7 @@ mod tests {
 
     #[test]
     fn a_proxy_type_round_trips_as_its_name() {
-        for kind in [
-            ProxyType::Datacenter,
-            ProxyType::Residential,
-            ProxyType::Mobile,
-            ProxyType::Isp,
-        ] {
+        for kind in ProxyType::ALL {
             assert_eq!(kind.as_str().parse::<ProxyType>().unwrap(), kind);
             assert_eq!(
                 kind.as_str().to_uppercase().parse::<ProxyType>().unwrap(),

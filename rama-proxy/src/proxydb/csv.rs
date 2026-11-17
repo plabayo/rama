@@ -1,10 +1,7 @@
 use super::{Proxy, ProxyProtocols, StringFilter, internal::protocol_token};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as ENGINE;
 use rama_net::{
     address::ProxyAddress,
     asn::{Asn, InvalidAsn},
-    user::ProxyCredential,
 };
 use std::path::Path;
 use tokio::{
@@ -21,10 +18,13 @@ use tokio::{
 /// id,type,address,pool_id,continent,country,state,city,carrier,asn,credential,protocols
 /// ```
 ///
-/// The `type` is a [`ProxyType`] name, such as `residential`. The `address` is `[user[:pass]@]host:port`, without a scheme. The `credential` column,
-/// when set, replaces the credential of the address and also takes a `Bearer` token. The
-/// `protocols` column names every protocol the proxy speaks, `;`-separated, in the form
-/// that [`Proxy::protocols`] documents, such as `socks5+udp;h2;h3/m{?target_host,target_port}`.
+/// - `type`: a [`ProxyType`](crate::ProxyType) name, such as `residential`
+/// - `address`: `[user[:pass]@]host:port`, without a scheme
+/// - `credential`: replaces the credential of the address when set, written as a
+///   [`ProxyCredential`](rama_net::user::ProxyCredential)
+/// - `protocols`: every protocol the proxy speaks, `;`-separated, as
+///   [`Proxy::protocols`] documents, such as `socks5+tcp;socks5+udp;h2`
+///
 /// A `,` separates columns and a `;` protocols, so neither can appear in a template here.
 pub struct ProxyCsvRowReader {
     data: ProxyCsvRowReaderData,
@@ -110,7 +110,7 @@ pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
 
     let value = iter.next()?;
     if !value.is_empty() {
-        credential = Some(parse_csv_credential(value)?);
+        credential = Some(value.parse().ok()?);
     }
 
     let protocols = iter
@@ -137,24 +137,6 @@ pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
         city,
         carrier,
         asn,
-    })
-}
-
-/// `<scheme> <value>` as in a `Proxy-Authorization` header, or bare `user:pass`.
-fn parse_csv_credential(value: &str) -> Option<ProxyCredential> {
-    Some(match value.split_once(' ') {
-        Some((scheme, token)) => {
-            if scheme.eq_ignore_ascii_case("basic") {
-                let bytes = ENGINE.decode(token).ok()?;
-                let decoded = String::from_utf8(bytes).ok()?;
-                ProxyCredential::Basic(decoded.parse().ok()?)
-            } else if scheme.eq_ignore_ascii_case("bearer") {
-                ProxyCredential::Bearer(token.parse().ok()?)
-            } else {
-                ProxyCredential::Basic(value.parse().ok()?)
-            }
-        }
-        None => ProxyCredential::Basic(value.parse().ok()?),
     })
 }
 
@@ -226,12 +208,11 @@ mod tests {
     use super::*;
     use crate::ProxyType;
     use crate::{ProxyFilter, proxydb::ProxyContext};
-    use rama_net::Protocol;
-    use rama_net::address::ProxyProtocol;
+    use rama_net::address::{ProxyPathTemplate, ProxyProtocol};
     use rama_net::http::Version;
     use rama_net::transport::TransportProtocol;
     use rama_net::user::credentials::basic;
-    use rama_utils::str::{NonEmptyStr, non_empty_str};
+    use rama_utils::str::{NonEmptyStr, non_empty_str, smol_str::SmolStr};
 
     #[test]
     fn test_parse_csv_opt_string_filter() {
@@ -295,9 +276,13 @@ mod tests {
                 },
             ),
             (
-                "123,residential,host:1234,,americas,*,*,*,carrier,13335,,socks5",
+                "123,residential,host:1234,,americas,*,*,*,carrier,13335,,socks5+tcp",
                 Proxy {
-                    protocols: ProxyProtocols::from([ProxyProtocol::SOCKS5]),
+                    protocols: ProxyProtocols::from([ProxyProtocol::Socks5 {
+                        remote_dns: false,
+                        transport: Some(TransportProtocol::Tcp),
+                        secure: false,
+                    }]),
                     continent: Some("americas".into()),
                     country: Some("*".into()),
                     state: Some("*".into()),
@@ -315,7 +300,8 @@ mod tests {
                         ProxyProtocol::HTTPS,
                         ProxyProtocol::Socks5 {
                             remote_dns: true,
-                            udp: true,
+                            transport: Some(TransportProtocol::Udp),
+                            secure: false,
                         },
                     ]),
                     continent: Some("europe".into()),
@@ -391,7 +377,7 @@ mod tests {
                 ProxyProtocol::HTTPS.with_http_version(Version::HTTP_2),
                 ProxyProtocol::try_from_scheme("h3+udp").unwrap(),
                 ProxyProtocol::try_from_scheme("socks5h+udp").unwrap(),
-                ProxyProtocol::Other(Protocol::from_static("warp")),
+                ProxyProtocol::Custom(SmolStr::new_static("warp")),
             ]),
         );
     }
@@ -403,7 +389,7 @@ mod tests {
         let [protocol] = Vec::from_iter(proxy.protocols).try_into().unwrap();
         assert_eq!(protocol.http_version(), Some(Version::HTTP_3));
         assert_eq!(
-            protocol.connect_udp().map(|udp| udp.template.as_str()),
+            protocol.path_template().map(ProxyPathTemplate::as_str),
             Some("/m?h={target_host}&p={target_port}"),
         );
     }
@@ -411,7 +397,7 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_csv_row_reader_happy_multi_row() {
         let mut reader = ProxyCsvRowReader::raw(
-            "id,datacenter,authority:80,pool_id,continent,country,state,city,carrier,42,Basic dXNlcm5hbWU6cGFzc3dvcmQ=,https;socks5\nid2,residential,authority2:80,pool_id2,continent2,country2,state2,city2,carrier2,1,,http",
+            "id,datacenter,authority:80,pool_id,continent,country,state,city,carrier,42,Basic dXNlcm5hbWU6cGFzc3dvcmQ=,https;socks5+tcp\nid2,residential,authority2:80,pool_id2,continent2,country2,state2,city2,carrier2,1,,http",
         );
 
         let proxy = reader.next().await.unwrap().unwrap();
@@ -423,7 +409,14 @@ mod tests {
         );
         assert_eq!(
             proxy.protocols,
-            ProxyProtocols::from([ProxyProtocol::HTTPS, ProxyProtocol::SOCKS5]),
+            ProxyProtocols::from([
+                ProxyProtocol::HTTPS,
+                ProxyProtocol::Socks5 {
+                    remote_dns: false,
+                    transport: Some(TransportProtocol::Tcp),
+                    secure: false
+                }
+            ]),
         );
         assert_eq!(proxy.kind, ProxyType::Datacenter);
         assert_eq!(proxy.pool_id, Some("pool_id".into()));

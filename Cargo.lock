@@ -5425,7 +5425,6 @@ name = "rama-proxy"
 version = "0.5.0"
 dependencies = [
  "arc-swap",
- "base64 0.23.1",
  "itertools 0.15.0",
  "rama-core",
  "rama-http-types",

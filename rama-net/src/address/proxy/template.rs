@@ -8,25 +8,43 @@ use crate::{
     },
 };
 
-/// The path-and-query URI Template of a MASQUE proxy.
+/// The path-and-query URI Template of a proxy.
 ///
-/// It locates CONNECT-UDP tunnels on the proxy ([RFC 9298 §2]): scheme, host, port
-/// and credentials come from the [`ProxyAddress`] carrying it. The template is
-/// validated on construction: a level 3 or lower template whose path starts with
-/// `/`, naming both `target_host` and `target_port`, and using only simple
-/// (`{x}`) and form-style query (`{?x}`, `{&x}`) expressions. Other variables are
-/// allowed and expand empty. Cloning is cheap.
+/// It locates the tunnels on the proxy: scheme, host, port and credentials come from
+/// the [`ProxyAddress`] carrying it. Its variables say which protocol, see
+/// [`ProxyPathProtocolTemplate`].
+///
+/// The template is validated on construction: a level 3 or lower template whose path
+/// starts with `/` and using only simple (`{x}`) and form-style query (`{?x}`, `{&x}`)
+/// expressions. Other variables are allowed and expand empty. Cloning is cheap.
 ///
 /// The syntax is RFC 6570 ([`UriTemplate`]), not [`PathPattern`] route syntax.
 ///
 /// [`PathPattern`]: crate::uri::PathPattern
 /// [`ProxyAddress`]: super::ProxyAddress
-/// [RFC 9298 §2]: https://datatracker.ietf.org/doc/html/rfc9298#section-2
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ProxyPathTemplate {
     template: UriTemplate,
-    target_host: TemplateVariable,
-    target_port: TemplateVariable,
+    protocol: ProxyPathProtocolTemplate,
+}
+
+/// The protocol a [`ProxyPathTemplate`] is for, with its variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProxyPathProtocolTemplate {
+    /// `target_host` and `target_port` ([RFC 9298 §2]).
+    ///
+    /// [RFC 9298 §2]: https://datatracker.ietf.org/doc/html/rfc9298#section-2
+    ConnectUdp {
+        target_host: TemplateVariable,
+        target_port: TemplateVariable,
+    },
+    /// Neither of those, with the optional `target` and `ipproto` ([RFC 9484 §3]).
+    ///
+    /// [RFC 9484 §3]: https://datatracker.ietf.org/doc/html/rfc9484#section-3
+    ConnectIp {
+        target: Option<TemplateVariable>,
+        ip_proto: Option<TemplateVariable>,
+    },
 }
 
 /// Why a [`ProxyPathTemplate`] was rejected.
@@ -39,9 +57,9 @@ pub enum ProxyPathTemplateError {
     NotAbsolutePath,
     /// A literal `#`: a request target carries no fragment.
     Fragment,
-    /// The template does not name `target_host`.
+    /// The template names `target_port` but not `target_host`.
     MissingTargetHost,
-    /// The template does not name `target_port`.
+    /// The template names `target_host` but not `target_port`.
     MissingTargetPort,
     /// An operator RFC 9298 forbids (`+`, `#`, `.`, `/`, `;`).
     ForbiddenOperator(TemplateOperator),
@@ -90,6 +108,11 @@ impl ProxyPathTemplate {
     /// [RFC 9298 §2]: https://datatracker.ietf.org/doc/html/rfc9298#section-2
     pub const CONNECT_UDP_DEFAULT: &str = "/.well-known/masque/udp/{target_host}/{target_port}/";
 
+    /// The default CONNECT-IP template a proxy serves ([RFC 9484 §3]).
+    ///
+    /// [RFC 9484 §3]: https://datatracker.ietf.org/doc/html/rfc9484#section-3
+    pub const CONNECT_IP_DEFAULT: &str = "/.well-known/masque/ip/{target}/{ipproto}/";
+
     /// Parse and validate a path-and-query template.
     pub fn try_new(template: impl AsRef<str>) -> Result<Self, ProxyPathTemplateError> {
         let template = UriTemplate::try_new(template)?;
@@ -110,17 +133,22 @@ impl ProxyPathTemplate {
         }) {
             return Err(ProxyPathTemplateError::ForbiddenOperator(operator));
         }
-        let target_host = template
-            .variable("target_host")
-            .ok_or(ProxyPathTemplateError::MissingTargetHost)?;
-        let target_port = template
-            .variable("target_port")
-            .ok_or(ProxyPathTemplateError::MissingTargetPort)?;
-        Ok(Self {
-            template,
-            target_host,
-            target_port,
-        })
+        let protocol = match (
+            template.variable("target_host"),
+            template.variable("target_port"),
+        ) {
+            (Some(target_host), Some(target_port)) => ProxyPathProtocolTemplate::ConnectUdp {
+                target_host,
+                target_port,
+            },
+            (Some(_), None) => return Err(ProxyPathTemplateError::MissingTargetPort),
+            (None, Some(_)) => return Err(ProxyPathTemplateError::MissingTargetHost),
+            (None, None) => ProxyPathProtocolTemplate::ConnectIp {
+                target: template.variable("target"),
+                ip_proto: template.variable("ipproto"),
+            },
+        };
+        Ok(Self { template, protocol })
     }
 
     /// The RFC 9298 default CONNECT-UDP template, parsed once.
@@ -130,24 +158,39 @@ impl ProxyPathTemplate {
         {
             static DEFAULT: std::sync::LazyLock<ProxyPathTemplate> =
                 std::sync::LazyLock::new(|| {
-                    #[expect(
-                        clippy::expect_used,
-                        reason = "a constant of this crate, covered by its own test"
-                    )]
-                    ProxyPathTemplate::try_new(ProxyPathTemplate::CONNECT_UDP_DEFAULT)
-                        .expect("the RFC 9298 default template is a valid template")
+                    ProxyPathTemplate::parse_constant(ProxyPathTemplate::CONNECT_UDP_DEFAULT)
                 });
             DEFAULT.clone()
         }
         #[cfg(not(feature = "std"))]
         {
-            #[expect(
-                clippy::expect_used,
-                reason = "a constant of this crate, covered by its own test"
-            )]
-            Self::try_new(Self::CONNECT_UDP_DEFAULT)
-                .expect("the RFC 9298 default template is a valid template")
+            Self::parse_constant(Self::CONNECT_UDP_DEFAULT)
         }
+    }
+
+    /// The RFC 9484 default CONNECT-IP template, parsed once.
+    #[must_use]
+    pub fn connect_ip_default() -> Self {
+        #[cfg(feature = "std")]
+        {
+            static DEFAULT: std::sync::LazyLock<ProxyPathTemplate> =
+                std::sync::LazyLock::new(|| {
+                    ProxyPathTemplate::parse_constant(ProxyPathTemplate::CONNECT_IP_DEFAULT)
+                });
+            DEFAULT.clone()
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            Self::parse_constant(Self::CONNECT_IP_DEFAULT)
+        }
+    }
+
+    fn parse_constant(template: &'static str) -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "a constant of this crate, covered by its own test"
+        )]
+        Self::try_new(template).expect("a default MASQUE template is a valid template")
     }
 
     /// Whether this is the RFC 9298 default CONNECT-UDP template.
@@ -156,22 +199,31 @@ impl ProxyPathTemplate {
         self.template.as_str() == Self::CONNECT_UDP_DEFAULT
     }
 
+    /// Whether this is the RFC 9484 default CONNECT-IP template.
+    #[must_use]
+    pub fn is_connect_ip_default(&self) -> bool {
+        self.template.as_str() == Self::CONNECT_IP_DEFAULT
+    }
+
+    #[must_use]
+    pub fn protocol(&self) -> ProxyPathProtocolTemplate {
+        self.protocol
+    }
+
+    #[must_use]
+    pub fn is_connect_udp(&self) -> bool {
+        matches!(self.protocol, ProxyPathProtocolTemplate::ConnectUdp { .. })
+    }
+
+    #[must_use]
+    pub fn is_connect_ip(&self) -> bool {
+        matches!(self.protocol, ProxyPathProtocolTemplate::ConnectIp { .. })
+    }
+
     /// The underlying URI Template.
     #[must_use]
     pub fn template(&self) -> &UriTemplate {
         &self.template
-    }
-
-    /// The `target_host` variable.
-    #[must_use]
-    pub fn target_host(&self) -> TemplateVariable {
-        self.target_host
-    }
-
-    /// The `target_port` variable.
-    #[must_use]
-    pub fn target_port(&self) -> TemplateVariable {
-        self.target_port
     }
 
     /// The template text.
@@ -180,15 +232,25 @@ impl ProxyPathTemplate {
         self.template.as_str()
     }
 
-    /// Append the path and query for a target, leaving other variables empty.
+    /// Append the CONNECT-UDP path and query for a target, leaving other variables empty.
+    ///
+    /// A CONNECT-IP template expands with every variable empty.
     pub fn expand_target_to(&self, out: &mut String, host: &Host, port: u16) {
+        let ProxyPathProtocolTemplate::ConnectUdp {
+            target_host,
+            target_port,
+        } = self.protocol
+        else {
+            self.template.expand_to(out, |_| None);
+            return;
+        };
         let host = target_host_text(host);
         let mut port_text = String::new();
         _ = write!(port_text, "{port}");
         self.template.expand_to(out, |variable| {
-            if variable == self.target_host {
+            if variable == target_host {
                 Some(host.as_str())
-            } else if variable == self.target_port {
+            } else if variable == target_port {
                 Some(port_text.as_str())
             } else {
                 None

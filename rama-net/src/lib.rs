@@ -81,8 +81,6 @@ pub use proto::Protocol;
 pub mod tls;
 pub mod transport;
 
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod http;
 
 #[cfg(feature = "std")]

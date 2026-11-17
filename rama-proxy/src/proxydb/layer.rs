@@ -1,4 +1,6 @@
-use super::{Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyQueryPredicate};
+use super::{
+    Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyQueryPredicate, internal::record_transport,
+};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
@@ -225,55 +227,44 @@ fn select_protocol(
             .find(|protocol| proxy.protocols.contains(protocol))
             .cloned()
     };
-    // A MASQUE proxy is also an HTTP proxy for CONNECT, so the MASQUE methods do not matter.
     let http = |version: Option<Version>, secure: bool| {
-        proxy
-            .protocols
-            .iter()
-            .find(|protocol| {
-                matches!(protocol, ProxyProtocol::Http { version: v, secure: s, .. }
-                    if *v == version && *s == secure)
-            })
-            .cloned()
+        speaks(&[ProxyProtocol::Http {
+            version,
+            secure,
+            path_template: None,
+        }])
     };
     // A CONNECT-UDP element carries its own template, so it is matched instead of built.
     let connect_udp = |version: Option<Version>| {
         proxy
             .protocols
             .iter()
-            .find(|protocol| protocol.supports_connect_udp() && protocol.http_version() == version)
+            .find(|protocol| {
+                protocol.is_http()
+                    && protocol.http_version() == version
+                    && record_transport(protocol) == Some(TransportProtocol::Udp)
+            })
+            .cloned()
+    };
+    let socks5 = |remote_dns: bool| {
+        proxy
+            .protocols
+            .iter()
+            .find(|protocol| {
+                matches!(protocol, ProxyProtocol::Socks5 { remote_dns: r, .. } if *r == remote_dns)
+                    && record_transport(protocol) == Some(transport_protocol)
+            })
             .cloned()
     };
 
     let known = match transport_protocol {
-        TransportProtocol::Udp => {
-            let socks5 = |remote_dns| {
-                speaks(&[ProxyProtocol::Socks5 {
-                    remote_dns,
-                    udp: true,
-                }])
-            };
-            socks5(false)
-                .or_else(|| socks5(true))
-                .or_else(|| connect_udp(Some(Version::HTTP_3)))
-                .or_else(|| connect_udp(Some(Version::HTTP_2)))
-                .or_else(|| connect_udp(None))
-                .or_else(|| connect_udp(Some(Version::HTTP_11)))
-        }
+        TransportProtocol::Udp => socks5(false)
+            .or_else(|| socks5(true))
+            .or_else(|| connect_udp(Some(Version::HTTP_3)))
+            .or_else(|| connect_udp(Some(Version::HTTP_2)))
+            .or_else(|| connect_udp(None))
+            .or_else(|| connect_udp(Some(Version::HTTP_11))),
         TransportProtocol::Tcp => {
-            // UDP ASSOCIATE says nothing about CONNECT, so either variant serves TCP.
-            let socks5 = |remote_dns| {
-                speaks(&[
-                    ProxyProtocol::Socks5 {
-                        remote_dns,
-                        udp: true,
-                    },
-                    ProxyProtocol::Socks5 {
-                        remote_dns,
-                        udp: false,
-                    },
-                ])
-            };
             let by_port = match proxy.address.port {
                 Protocol::HTTP_DEFAULT_PORT | Protocol::HTTP_ALT_PORT => {
                     http(None, false).or_else(|| http(Some(Version::HTTP_11), false))
@@ -300,7 +291,7 @@ fn select_protocol(
             proxy
                 .protocols
                 .iter()
-                .find(|protocol| matches!(protocol, ProxyProtocol::Other(_)))
+                .find(|protocol| matches!(protocol, ProxyProtocol::Custom(_)))
                 .cloned()
         })
         .ok_or_else(|| {
@@ -648,14 +639,14 @@ mod tests {
     use rama_net::user::credentials::basic;
     use rama_net::{
         Protocol,
-        address::{ConnectUdp, HostWithPort, Masque, ProxyAddress, ProxyPathTemplate},
+        address::{HostWithPort, ProxyAddress, ProxyPathTemplate},
         asn::Asn,
         client::{
             ConnectRequest, ConnectionError, ConnectionErrorKind, EstablishedClientConnection,
             ProxyRoute, ProxyRouteIndex, ProxyRoutesConnector,
         },
     };
-    use rama_utils::str::non_empty_str;
+    use rama_utils::str::{non_empty_str, smol_str::SmolStr};
     use std::{
         convert::Infallible,
         sync::{
@@ -699,8 +690,16 @@ mod tests {
         proxy.protocols = [
             http.then_some(ProxyProtocol::HTTP),
             https.then_some(ProxyProtocol::HTTPS),
-            socks5.then_some(ProxyProtocol::SOCKS5),
-            socks5h.then_some(ProxyProtocol::SOCKS5H),
+            socks5.then_some(ProxyProtocol::Socks5 {
+                remote_dns: false,
+                transport: Some(TransportProtocol::Tcp),
+                secure: false,
+            }),
+            socks5h.then_some(ProxyProtocol::Socks5 {
+                remote_dns: true,
+                transport: Some(TransportProtocol::Tcp),
+                secure: false,
+            }),
         ]
         .into_iter()
         .flatten()
@@ -718,7 +717,8 @@ mod tests {
         .proxy_address()
         .unwrap()
         .protocol
-        .to_protocol()
+        .as_protocol()
+        .unwrap()
     }
 
     #[test]
@@ -804,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn tcp_prefers_the_lowest_http_version_and_connect_udp_last() {
+    fn tcp_prefers_the_lowest_http_version() {
         for (protocols, expected) in [
             (vec![h2c()], h2c()),
             (vec![h2(), h3()], h2()),
@@ -814,10 +814,20 @@ mod tests {
                 ProxyProtocol::HTTPS,
             ),
             (
-                vec![connect_udp(Version::HTTP_11), connect_udp(Version::HTTP_3)],
-                connect_udp(Version::HTTP_11),
+                vec![
+                    ProxyProtocol::Socks5 {
+                        remote_dns: true,
+                        transport: Some(TransportProtocol::Tcp),
+                        secure: false,
+                    },
+                    h2c(),
+                ],
+                ProxyProtocol::Socks5 {
+                    remote_dns: true,
+                    transport: Some(TransportProtocol::Tcp),
+                    secure: false,
+                },
             ),
-            (vec![ProxyProtocol::SOCKS5H, h2c()], ProxyProtocol::SOCKS5H),
         ] {
             let proxy = speaking_proxy(protocols);
             assert_eq!(
@@ -829,26 +839,29 @@ mod tests {
     }
 
     #[test]
-    fn tcp_takes_a_socks5_proxy_that_relays_udp_too() {
-        let both = [true, false].map(|udp| ProxyProtocol::Socks5 {
+    fn a_udp_protocol_carries_no_tcp() {
+        let socks5_udp = ProxyProtocol::Socks5 {
             remote_dns: false,
-            udp,
-        });
-        let proxy = speaking_proxy(both);
-        assert_eq!(
-            selected_protocol(proxy, TransportProtocol::Tcp),
-            ProxyProtocol::Socks5 {
-                remote_dns: false,
-                udp: true,
-            },
-        );
+            transport: Some(TransportProtocol::Udp),
+            secure: false,
+        };
+        let proxy = speaking_proxy([socks5_udp, connect_udp(Version::HTTP_3)]);
+        prepare_proxy(
+            &(),
+            proxy,
+            &ProxyFilter::default(),
+            TransportProtocol::Tcp,
+            &Extensions::new(),
+        )
+        .unwrap_err();
     }
 
     #[test]
     fn udp_prefers_socks5_and_then_the_newest_connect_udp_version() {
         let socks5_udp = ProxyProtocol::Socks5 {
             remote_dns: false,
-            udp: true,
+            transport: Some(TransportProtocol::Udp),
+            secure: false,
         };
         for (protocols, expected) in [
             (
@@ -865,7 +878,14 @@ mod tests {
             ),
             // SOCKS5 without UDP ASSOCIATE carries no UDP, CONNECT-UDP does.
             (
-                vec![ProxyProtocol::SOCKS5, connect_udp(Version::HTTP_11)],
+                vec![
+                    ProxyProtocol::Socks5 {
+                        remote_dns: false,
+                        transport: Some(TransportProtocol::Tcp),
+                        secure: false,
+                    },
+                    connect_udp(Version::HTTP_11),
+                ],
                 connect_udp(Version::HTTP_11),
             ),
         ] {
@@ -880,19 +900,32 @@ mod tests {
 
     #[test]
     fn a_protocol_rama_does_not_support_is_only_picked_without_another() {
-        let warp = ProxyProtocol::Other(Protocol::from_static("warp"));
+        let warp = ProxyProtocol::Custom(SmolStr::new_static("warp"));
         let socks5_udp = ProxyProtocol::Socks5 {
             remote_dns: false,
-            udp: true,
+            transport: Some(TransportProtocol::Udp),
+            secure: false,
         };
-        let proxy = speaking_proxy([warp.clone(), socks5_udp.clone()]);
-        for transport in [TransportProtocol::Tcp, TransportProtocol::Udp] {
-            assert_eq!(selected_protocol(proxy.clone(), transport), socks5_udp);
-        }
+        let proxy = speaking_proxy([
+            warp.clone(),
+            ProxyProtocol::Socks5 {
+                remote_dns: false,
+                transport: Some(TransportProtocol::Tcp),
+                secure: false,
+            },
+            socks5_udp.clone(),
+        ]);
+        assert_eq!(
+            selected_protocol(proxy.clone(), TransportProtocol::Tcp),
+            ProxyProtocol::Socks5 {
+                remote_dns: false,
+                transport: Some(TransportProtocol::Tcp),
+                secure: false
+            }
+        );
+        assert_eq!(selected_protocol(proxy, TransportProtocol::Udp), socks5_udp);
         let proxy = speaking_proxy([warp.clone()]);
-        for transport in [TransportProtocol::Tcp, TransportProtocol::Udp] {
-            assert_eq!(selected_protocol(proxy.clone(), transport), warp);
-        }
+        assert_eq!(selected_protocol(proxy, TransportProtocol::Tcp), warp);
     }
 
     #[test]
@@ -901,16 +934,10 @@ mod tests {
         let proxy = speaking_proxy([ProxyProtocol::Http {
             version: Some(Version::HTTP_3),
             secure: true,
-            masque: Some(Masque {
-                connect_udp: Some(ConnectUdp {
-                    template: template.clone(),
-                }),
-            }),
+            path_template: Some(template.clone()),
         }]);
         assert_eq!(
-            selected_protocol(proxy, TransportProtocol::Udp)
-                .connect_udp()
-                .map(|connect_udp| &connect_udp.template),
+            selected_protocol(proxy, TransportProtocol::Udp).path_template(),
             Some(&template),
         );
     }
@@ -958,7 +985,11 @@ mod tests {
     async fn default_mode_retries_candidates_and_records_selected_proxy() {
         let first = test_proxy("first", "first:secret@a.example:8080");
         let mut second = test_proxy("second", "second:secret@b.example:1080");
-        second.protocols = ProxyProtocols::from([ProxyProtocol::SOCKS5]);
+        second.protocols = ProxyProtocols::from([ProxyProtocol::Socks5 {
+            remote_dns: false,
+            transport: Some(TransportProtocol::Tcp),
+            secure: false,
+        }]);
 
         let db = OrderedProxyDB(NonEmptyVec::from((first, vec![second.clone()])));
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -990,7 +1021,7 @@ mod tests {
                         assert_eq!(selected_id.as_str(), "second");
                         assert_eq!(
                             proxy_address.to_string(),
-                            "socks5://second-second:secret@b.example:1080"
+                            "socks5+tcp://second-second:secret@b.example:1080"
                         );
                         Ok(EstablishedClientConnection {
                             input,
@@ -1373,7 +1404,7 @@ mod tests {
             .get_proxy(udp.clone(), by_id(non_empty_str!("masque")))
             .await
             .unwrap();
-        assert!(proxy.is_masque());
+        assert!(proxy.supports_connect_udp());
         db.get_proxy(udp, by_id(non_empty_str!("http")))
             .await
             .unwrap_err();
@@ -1390,11 +1421,13 @@ mod tests {
                 protocols: ProxyProtocols::from([
                     ProxyProtocol::Socks5 {
                         remote_dns: false,
-                        udp: true,
+                        transport: Some(TransportProtocol::Udp),
+                        secure: false,
                     },
                     ProxyProtocol::Socks5 {
                         remote_dns: true,
-                        udp: true,
+                        transport: Some(TransportProtocol::Udp),
+                        secure: false,
                     },
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,
@@ -1478,11 +1511,13 @@ mod tests {
             protocols: ProxyProtocols::from([
                 ProxyProtocol::Socks5 {
                     remote_dns: false,
-                    udp: true,
+                    transport: Some(TransportProtocol::Udp),
+                    secure: false,
                 },
                 ProxyProtocol::Socks5 {
                     remote_dns: true,
-                    udp: true,
+                    transport: Some(TransportProtocol::Udp),
+                    secure: false,
                 },
                 ProxyProtocol::HTTP,
                 ProxyProtocol::HTTPS,
@@ -1540,11 +1575,13 @@ mod tests {
             protocols: ProxyProtocols::from([
                 ProxyProtocol::Socks5 {
                     remote_dns: false,
-                    udp: true,
+                    transport: Some(TransportProtocol::Udp),
+                    secure: false,
                 },
                 ProxyProtocol::Socks5 {
                     remote_dns: true,
-                    udp: true,
+                    transport: Some(TransportProtocol::Udp),
+                    secure: false,
                 },
                 ProxyProtocol::HTTP,
                 ProxyProtocol::HTTPS,
@@ -1619,11 +1656,13 @@ mod tests {
                 protocols: ProxyProtocols::from([
                     ProxyProtocol::Socks5 {
                         remote_dns: false,
-                        udp: true,
+                        transport: Some(TransportProtocol::Udp),
+                        secure: false,
                     },
                     ProxyProtocol::Socks5 {
                         remote_dns: true,
-                        udp: true,
+                        transport: Some(TransportProtocol::Udp),
+                        secure: false,
                     },
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,

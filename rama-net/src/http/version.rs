@@ -4,7 +4,7 @@
 //! standard `HTTP_09..HTTP_3` constants) so it is a drop-in replacement for
 //! `rama_http_types::Version`, which re-exports this type.
 
-use std::{error::Error, fmt};
+use core::{error::Error, fmt};
 
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
 use rama_macros::Extension;
@@ -87,7 +87,7 @@ impl fmt::Display for Version {
     }
 }
 
-impl std::str::FromStr for Version {
+impl core::str::FromStr for Version {
     type Err = InvalidVersion;
 
     /// Parse from the canonical `HTTP/x.y` text or any of its

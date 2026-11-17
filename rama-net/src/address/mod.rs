@@ -60,7 +60,8 @@ pub(crate) mod parse_utils;
 
 #[doc(inline)]
 pub use proxy::{
-    ConnectUdp, Masque, ProxyAddress, ProxyPathTemplate, ProxyPathTemplateError, ProxyProtocol,
+    ProxyAddress, ProxyPathProtocolTemplate, ProxyPathTemplate, ProxyPathTemplateError,
+    ProxyProtocol,
 };
 
 mod domain_address;

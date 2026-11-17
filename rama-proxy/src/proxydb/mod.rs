@@ -1197,12 +1197,13 @@ mod memdb {
                 if found_ids.contains(&proxy.id) {
                     continue;
                 }
-                assert!(
-                    proxy.protocols.iter().any(|protocol| matches!(
-                        protocol,
-                        ProxyProtocol::Socks5 { udp: true, .. }
-                    ))
-                );
+                assert!(proxy.protocols.iter().any(|protocol| matches!(
+                    protocol,
+                    ProxyProtocol::Socks5 {
+                        transport: Some(TransportProtocol::Udp),
+                        ..
+                    }
+                )));
                 found_ids.push(proxy.id);
             }
             assert_eq!(found_ids.len(), 40);
@@ -1490,11 +1491,13 @@ mod memdb {
                 protocols: ProxyProtocols::from([
                     ProxyProtocol::Socks5 {
                         remote_dns: false,
-                        udp: true,
+                        transport: Some(TransportProtocol::Udp),
+                        secure: false,
                     },
                     ProxyProtocol::Socks5 {
                         remote_dns: true,
-                        udp: true,
+                        transport: Some(TransportProtocol::Udp),
+                        secure: false,
                     },
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,
@@ -1571,11 +1574,13 @@ mod memdb {
                 protocols: ProxyProtocols::from([
                     ProxyProtocol::Socks5 {
                         remote_dns: false,
-                        udp: true,
+                        transport: Some(TransportProtocol::Udp),
+                        secure: false,
                     },
                     ProxyProtocol::Socks5 {
                         remote_dns: true,
-                        udp: true,
+                        transport: Some(TransportProtocol::Udp),
+                        secure: false,
                     },
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,
@@ -1657,11 +1662,13 @@ mod memdb {
                     protocols: ProxyProtocols::from([
                         ProxyProtocol::Socks5 {
                             remote_dns: false,
-                            udp: true,
+                            transport: Some(TransportProtocol::Udp),
+                            secure: false,
                         },
                         ProxyProtocol::Socks5 {
                             remote_dns: true,
-                            udp: true,
+                            transport: Some(TransportProtocol::Udp),
+                            secure: false,
                         },
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
@@ -1682,11 +1689,13 @@ mod memdb {
                     protocols: ProxyProtocols::from([
                         ProxyProtocol::Socks5 {
                             remote_dns: false,
-                            udp: true,
+                            transport: Some(TransportProtocol::Udp),
+                            secure: false,
                         },
                         ProxyProtocol::Socks5 {
                             remote_dns: true,
-                            udp: true,
+                            transport: Some(TransportProtocol::Udp),
+                            secure: false,
                         },
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
@@ -1707,11 +1716,13 @@ mod memdb {
                     protocols: ProxyProtocols::from([
                         ProxyProtocol::Socks5 {
                             remote_dns: false,
-                            udp: true,
+                            transport: Some(TransportProtocol::Udp),
+                            secure: false,
                         },
                         ProxyProtocol::Socks5 {
                             remote_dns: true,
-                            udp: true,
+                            transport: Some(TransportProtocol::Udp),
+                            secure: false,
                         },
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
@@ -1732,11 +1743,13 @@ mod memdb {
                     protocols: ProxyProtocols::from([
                         ProxyProtocol::Socks5 {
                             remote_dns: false,
-                            udp: true,
+                            transport: Some(TransportProtocol::Udp),
+                            secure: false,
                         },
                         ProxyProtocol::Socks5 {
                             remote_dns: true,
-                            udp: true,
+                            transport: Some(TransportProtocol::Udp),
+                            secure: false,
                         },
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
@@ -1848,21 +1861,16 @@ mod memdb {
     mod runtime_column_tests {
         use super::*;
         use itertools::Itertools;
+        use rama_net::address::ProxyProtocol;
         use std::collections::BTreeSet;
 
         fn proxy(id: &str) -> Proxy {
             Proxy {
                 id: NonEmptyStr::try_from(id).unwrap(),
                 address: "127.0.0.1:8080".parse().unwrap(),
-                tcp: true,
-                udp: false,
-                http: true,
-                https: false,
-                socks5: false,
-                socks5h: false,
-                datacenter: true,
-                residential: false,
-                mobile: false,
+                credential: None,
+                protocols: ProxyProtocols::from([ProxyProtocol::HTTP]),
+                kind: ProxyType::Datacenter,
                 pool_id: None,
                 continent: None,
                 country: None,

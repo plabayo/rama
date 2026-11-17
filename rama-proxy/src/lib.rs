@@ -64,9 +64,9 @@
 //! ## Proxy protocols
 //!
 //! A [`Proxy`] record names every [`ProxyProtocol`] the proxy speaks, each with
-//! the HTTP version and CONNECT-UDP template belonging to it. Every protocol
-//! carries TCP; UDP needs one that relays it. The layer turns a selected record
-//! plus the requested transport into one [`ProxyAddress`] with one of them.
+//! one way to reach the proxy and one kind of tunnel: TCP, or UDP for `socks5+udp`
+//! and CONNECT-UDP. The layer turns a selected record plus the requested transport
+//! into one [`ProxyAddress`] with one of them.
 //!
 //! [`ProxyAddress`]: rama_net::address::ProxyAddress
 //! [`ProxyProtocol`]: rama_net::address::ProxyProtocol
@@ -93,6 +93,7 @@
 //!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyProtocol;
+//! use rama_net::transport::TransportProtocol;
 //! use rama_net::client::ProxyRoute;
 //! use rama_utils::str::non_empty_str;
 //! use std::{convert::Infallible, sync::Arc};
@@ -107,7 +108,11 @@
 //!             credential: None,
 //!             protocols: ProxyProtocols::from([
 //!                 ProxyProtocol::HTTP,
-//!                 ProxyProtocol::Socks5 { remote_dns: false, udp: true },
+//!                 ProxyProtocol::Socks5 {
+//!                     remote_dns: false,
+//!                     transport: Some(TransportProtocol::Udp),
+//!                     secure: false,
+//!                 },
 //!             ]),
 //!             kind: ProxyType::Mobile,
 //!             pool_id: None,
@@ -193,6 +198,7 @@
 //!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyProtocol;
+//! use rama_net::transport::TransportProtocol;
 //! use rama_net::client::ProxyRoute;
 //! use rama_net::user::credentials::basic;
 //! use rama_utils::str::non_empty_str;
@@ -206,7 +212,11 @@
 //!         credential: Some(basic!("john", "secret").into()),
 //!         protocols: ProxyProtocols::from([
 //!             ProxyProtocol::HTTP,
-//!             ProxyProtocol::Socks5 { remote_dns: false, udp: true },
+//!             ProxyProtocol::Socks5 {
+//!                 remote_dns: false,
+//!                 transport: Some(TransportProtocol::Udp),
+//!                 secure: false,
+//!             },
 //!         ]),
 //!         kind: ProxyType::Residential,
 //!         pool_id: None,

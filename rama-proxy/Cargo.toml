@@ -28,11 +28,10 @@ targets = [
 default = []
 memory-db = ["dep:rand", "dep:venndb"]
 live-update = ["dep:arc-swap"]
-csv = ["dep:tokio", "tokio/fs", "dep:base64"]
+csv = ["dep:tokio", "tokio/fs"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true, default-features = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }

@@ -17,6 +17,7 @@ use rama_utils::macros::match_ignore_ascii_case_str;
 pub struct ProxyFilterUsernameParser {
     key: Option<ProxyFilterKey>,
     proxy_filter: ProxyFilter,
+    excluded_kinds: Vec<ProxyType>,
 }
 
 #[derive(Debug, Clone)]
@@ -141,10 +142,21 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
                     "carrier" => ProxyFilterKey::Carrier,
                     "asn" => ProxyFilterKey::Asn,
                     _ => {
+                        let (label, excluded) = match label.strip_prefix('!') {
+                            Some(label) => (label, true),
+                            None => (label, false),
+                        };
                         let Ok(kind) = label.parse::<ProxyType>() else {
                             return UsernameLabelState::Ignored;
                         };
-                        self.proxy_filter.kind.get_or_insert_default().push(kind);
+                        let kinds = if excluded {
+                            &mut self.excluded_kinds
+                        } else {
+                            self.proxy_filter.kind.get_or_insert_default()
+                        };
+                        if !kinds.contains(&kind) {
+                            kinds.push(kind);
+                        }
                         return UsernameLabelState::Used;
                     }
                 }
@@ -155,12 +167,18 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
         UsernameLabelState::Used
     }
 
-    fn build(self, ext: &Extensions) -> Result<(), Self::Error> {
+    fn build(mut self, ext: &Extensions) -> Result<(), Self::Error> {
         if let Some(key) = self.key {
             return Err(
                 BoxError::from_static_str("unused proxy filter username key")
                     .context_debug_field("key", key),
             );
+        }
+        if !self.excluded_kinds.is_empty() {
+            self.proxy_filter
+                .kind
+                .get_or_insert_with(|| ProxyType::ALL.to_vec())
+                .retain(|kind| !self.excluded_kinds.contains(kind));
         }
         if self.proxy_filter != ProxyFilter::default() {
             ext.insert(self.proxy_filter);
@@ -382,7 +400,6 @@ mod tests {
                         ProxyType::Datacenter,
                         ProxyType::Residential,
                         ProxyType::Mobile,
-                        ProxyType::Datacenter,
                     ]),
                     ..Default::default()
                 }),
@@ -398,8 +415,6 @@ mod tests {
                         ProxyType::Datacenter,
                         ProxyType::Residential,
                         ProxyType::Mobile,
-                        ProxyType::Datacenter,
-                        ProxyType::Residential,
                     ]),
                     ..Default::default()
                 }),
@@ -415,10 +430,27 @@ mod tests {
                         ProxyType::Datacenter,
                         ProxyType::Residential,
                         ProxyType::Mobile,
-                        ProxyType::Datacenter,
+                    ]),
+                    ..Default::default()
+                }),
+            ),
+            (
+                "john-!datacenter",
+                String::from("john"),
+                Some(ProxyFilter {
+                    kind: Some(vec![
                         ProxyType::Residential,
                         ProxyType::Mobile,
+                        ProxyType::Isp,
                     ]),
+                    ..Default::default()
+                }),
+            ),
+            (
+                "john-!mobile-residential-mobile-!isp",
+                String::from("john"),
+                Some(ProxyFilter {
+                    kind: Some(vec![ProxyType::Residential]),
                     ..Default::default()
                 }),
             ),
@@ -472,7 +504,6 @@ mod tests {
             "",
             "-",
             "john-country-us-datacenter-pool",
-            "john-!datacenter",
             "john-foo",
             "john-foo-country",
             "john-country",
