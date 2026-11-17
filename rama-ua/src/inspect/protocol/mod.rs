@@ -60,6 +60,12 @@ impl H3ProfileConnection {
         }))
     }
 
+    /// Whether the facts still wait for the first request's native publication, so a later
+    /// export can complete them.
+    pub(super) fn awaits_first_request(&self) -> bool {
+        matches!(&*self.0.lock(), ConnectionState::Pending(_))
+    }
+
     pub(super) fn facts(&self) -> Result<Arc<ConnectionFacts>, ProfileDataError> {
         let mut state = self.0.lock();
         let first_request = match &*state {

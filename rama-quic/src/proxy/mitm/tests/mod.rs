@@ -11,7 +11,11 @@ use std::{
 };
 
 use rama_core::{
-    Service, error::BoxError, graceful::WeakScope, io::BridgeIo, service::service_fn,
+    Service,
+    error::BoxError,
+    graceful::WeakScope,
+    io::BridgeIo,
+    service::{RejectService, service_fn},
     telemetry::tracing::test_utils::prepare_for_captures,
 };
 use rama_crypto::dep::boring::{pkey::PKey, x509::X509};
@@ -21,15 +25,20 @@ use rama_net::{
 };
 use rama_quic_proto::{
     TransportError, TransportErrorCode,
+    capture::{FirstFlight, QuicObservation, transport_parameters_from_hello},
     frame::{ApplicationClose, ConnectionClose},
     peek::PeekedClientHello,
 };
 use rama_tls::{
+    SecureTransport,
     alpn::AlpnRouter,
-    client::{ClientHelloExtension, TlsClientConfig},
+    client::{ClientHello, ClientHelloExtension, TlsClientConfig},
     server::ServerAuthData,
 };
-use rama_tls_boring::proxy::cert_issuer::{BoringMitmCertIssuer, StaticBoringMitmCertIssuer};
+use rama_tls_boring::{
+    client::BoringClientConfigExt as _,
+    proxy::cert_issuer::{BoringMitmCertIssuer, StaticBoringMitmCertIssuer},
+};
 use rama_udp::test_utils::MemoryDatagramSocket;
 use rama_utils::collections::NonEmptyVec;
 use tokio::time::timeout;
@@ -37,7 +46,7 @@ use tokio::time::timeout;
 use super::*;
 use crate::{
     ClientConfig, Endpoint, ServerConfig,
-    proxy::{PeekQuicClientHelloService, QuicRelay},
+    proxy::{PeekQuicClientHelloService, QuicRelay, peek::NoQuicRejectError},
     test_helpers::{identity, untrusted_identity},
     tls::{BoringTlsProvider, TlsOptions},
 };
@@ -163,7 +172,7 @@ async fn a_terminated_association_relays_streams_to_the_verified_origin() {
             origin,
         } = sockets(&origin_identity, 24500);
         let service = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
+            BoringTlsProvider::new(),
             relay(issuer(&mitm_identity), &origin_identity)
                 .into_layer(QuicRelay::new(VarInt::from_u32(0x0101))),
         );
@@ -248,7 +257,7 @@ async fn second_connection_is_refused(migration: bool) {
             )
         });
         let service = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
+            BoringTlsProvider::new(),
             relay(issuer(&mitm_identity), &origin_identity)
                 .maybe_with_migration_ingress(migration_ingress)
                 .into_layer(QuicRelay::new(VarInt::from_u32(0x0101))),
@@ -354,7 +363,7 @@ async fn unverified_origin_is_refused(client_auth: Option<TlsMitmClientAuthPolic
         };
         // Egress trusts some other identity, so the origin fails verification.
         let service = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
+            BoringTlsProvider::new(),
             relay(issuer, &mitm_identity)
                 .maybe_with_client_auth(client_auth)
                 .into_layer(service_fn(async |_: BridgeIo<Connection, Connection>| {
@@ -402,7 +411,7 @@ async fn the_alpn_router_dispatches_on_the_negotiated_protocol() {
         let routed = Arc::new(AtomicUsize::new(0));
         let counted = routed.clone();
         let service = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
+            BoringTlsProvider::new(),
             relay(issuer(&mitm_identity), &origin_identity).into_layer(AlpnRouter::new(
                 ApplicationProtocol::from(ALPN),
                 service_fn(
@@ -466,7 +475,7 @@ async fn the_handshake_budget_is_fixed_when_the_association_is_handed_over() {
             .unwrap();
         // Peek first, keeping its output, so the relay itself is what is handed over late.
         let peeked = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
+            BoringTlsProvider::new(),
             service_fn(async |input: InputWithQuicClientHello<_>| Ok::<_, BoxError>(input)),
         )
         .with_fallback(service_fn(async |_: BridgeIo<_, _>| {
@@ -505,7 +514,7 @@ async fn an_http3_origin_marks_the_egress_http_version() {
         let marked = Arc::new(AtomicUsize::new(0));
         let counted = marked.clone();
         let service = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
+            BoringTlsProvider::new(),
             QuicMitmRelay::new(
                 issuer(&mitm_identity),
                 WeakScope::detached(),
@@ -547,6 +556,112 @@ async fn an_http3_origin_marks_the_egress_http_version() {
         connection.closed().await;
         assert_eq!(marked.load(Ordering::Relaxed), 1);
         drop(origin_task.await.unwrap());
+    })
+    .await
+    .unwrap();
+}
+
+/// What the relay publishes on the ingress connection, and the hello and first flight it peeked.
+async fn published_on_ingress(
+    retain: bool,
+    port: u16,
+) -> (
+    Option<ClientHello>,
+    Option<QuicObservation>,
+    ClientHello,
+    Option<FirstFlight>,
+) {
+    let mitm_identity = identity();
+    let origin_identity = untrusted_identity();
+    let Sockets {
+        client,
+        ingress,
+        ingress_address,
+        egress,
+        origin,
+    } = sockets_with_alpn(&origin_identity, port, b"h3");
+    let terminate = QuicMitmRelay::new(
+        issuer(&mitm_identity),
+        WeakScope::detached(),
+        trusting_with_alpn(&origin_identity, b"h3"),
+        VarInt::from_u32(0x0101),
+    )
+    .into_layer(service_fn(
+        async |BridgeIo(ingress, egress): BridgeIo<Connection, Connection>| {
+            let published = (
+                ingress
+                    .extensions()
+                    .get_ref::<SecureTransport>()
+                    .and_then(SecureTransport::client_hello)
+                    .cloned(),
+                ingress.extensions().get_ref::<QuicObservation>().cloned(),
+            );
+            ingress.close(VarInt::from_u32(0), b"checked");
+            egress.close(VarInt::from_u32(0), b"checked");
+            Ok::<_, BoxError>(published)
+        },
+    ));
+    let peek = PeekQuicClientHelloService::new(
+        BoringTlsProvider::new(),
+        service_fn(async |input: InputWithQuicClientHello<_>| Ok::<_, BoxError>(input)),
+    )
+    .with_fallback(RejectService::new(NoQuicRejectError))
+    .with_first_flight_retention(retain);
+    let relaying = tokio::spawn(async move {
+        let input = peek.serve(BridgeIo(ingress, egress)).await?;
+        let peeked = (
+            input.peeked.client_hello.clone(),
+            input.peeked.first_flight.clone(),
+        );
+        let published = terminate.serve(input).await?;
+        Ok::<_, BoxError>((published, peeked))
+    });
+    let origin_task = tokio::spawn(async move {
+        let _connection = origin.accept().await.unwrap().await;
+        origin
+    });
+    let config = ClientConfig::try_from_rama_tls(
+        &trusting_with_alpn(&mitm_identity, b"h3"),
+        TlsOptions::default(),
+    )
+    .unwrap();
+    let connection = client
+        .connect_with(config, ingress_address, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
+    let ((hello, observation), (peeked, flight)) = relaying.await.unwrap().unwrap();
+    connection.closed().await;
+    drop(origin_task.await.unwrap());
+    (hello, observation, peeked, flight)
+}
+
+#[tokio::test]
+async fn the_ingress_connection_carries_the_peeked_client_hello_and_first_flight() {
+    timeout(LIMIT, async {
+        let (hello, observation, peeked, flight) = published_on_ingress(true, 24620).await;
+        let hello = hello.expect("the relay publishes the peeked ClientHello");
+        assert_eq!(format!("{hello:?}"), format!("{peeked:?}"));
+        let observation = observation.expect("the relay publishes the QUIC observation");
+        assert!(flight.is_some());
+        assert_eq!(observation.first_flight, flight);
+        assert_eq!(
+            observation.transport_parameters,
+            transport_parameters_from_hello(&peeked, &CaptureLimits::default()).unwrap()
+        );
+        assert!(observation.completeness.is_complete());
+
+        // Without the retained Initial structure only the hello and its parameters are known.
+        let (hello, observation, peeked, flight) = published_on_ingress(false, 24630).await;
+        assert_eq!(format!("{:?}", hello.unwrap()), format!("{peeked:?}"));
+        let observation = observation.unwrap();
+        assert!(flight.is_none());
+        assert!(observation.first_flight.is_none());
+        assert!(!observation.completeness.datagrams);
+        assert!(!observation.completeness.frames);
+        assert!(observation.completeness.client_hello);
+        assert!(observation.completeness.transport_parameters);
+        assert!(!observation.transport_parameters.is_empty());
     })
     .await
     .unwrap();
@@ -631,7 +746,7 @@ async fn no_origin_work_runs_for_a_client_that_never_proves_its_address() {
                 mitm.set_validate_address(false);
             }
             let service = PeekQuicClientHelloService::new(
-                BoringTlsProvider,
+                BoringTlsProvider::new(),
                 mitm.into_layer(QuicRelay::new(VarInt::from_u32(0x0101))),
             );
             let error = service.serve(BridgeIo(ingress, egress)).await.unwrap_err();
@@ -671,7 +786,7 @@ async fn peeked_client_hello_for(
         .connect_with(config, ingress_address, server_name)
         .unwrap();
     PeekQuicClientHelloService::new(
-        BoringTlsProvider,
+        BoringTlsProvider::new(),
         service_fn(async |input: InputWithQuicClientHello<BridgeIo<_, _>>| {
             Ok::<_, BoxError>(input.peeked)
         }),
@@ -712,7 +827,7 @@ async fn an_attempt_other_than_the_peeked_one_is_refused_without_origin_work() {
                 .connect_with(config, ingress_address, "localhost")
                 .unwrap();
             let mut peeked = PeekQuicClientHelloService::new(
-                BoringTlsProvider,
+                BoringTlsProvider::new(),
                 service_fn(async |input: InputWithQuicClientHello<_>| Ok::<_, BoxError>(input)),
             )
             .with_fallback(service_fn(async |_: BridgeIo<_, _>| {
@@ -815,7 +930,7 @@ async fn the_origin_sees_the_clients_protocols_in_order_and_its_version() {
             // The egress configuration allows another order, more, and not all the client offers.
             let egress_tls = trusting_with_alpns(&origin_identity, &[b"c", b"b", b"a"]);
             let service = PeekQuicClientHelloService::new(
-                BoringTlsProvider,
+                BoringTlsProvider::new(),
                 QuicMitmRelay::new(
                     issuer(&mitm_identity),
                     WeakScope::detached(),
@@ -879,7 +994,7 @@ async fn a_client_that_fails_its_handshake_closes_the_origin_with_the_failure_co
             origin,
         } = sockets(&origin_identity, 24590);
         let service = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
+            BoringTlsProvider::new(),
             relay(issuer(&mitm_identity), &origin_identity)
                 .into_layer(QuicRelay::new(VarInt::from_u32(0x0101))),
         );
@@ -1066,7 +1181,7 @@ async fn migration_ingress_survives_repeated_client_port_migration() {
         let count = inspections.clone();
         let supervisor = shared.clone();
         let service = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
+            BoringTlsProvider::new(),
             service_fn(
                 move |input: super::InputWithQuicClientHello<
                     rama_udp::PrefixedDatagramSocket<MemoryDatagramSocket>,
@@ -1206,7 +1321,7 @@ async fn migration_ingress_keeps_concurrent_origin_and_alpn_selection_separate()
             .into_layer(QuicRelay::new(VarInt::from_u32(1)));
             let egress = Arc::new(Mutex::new(Some(fixture.egress)));
             let service = PeekQuicClientHelloService::new(
-                BoringTlsProvider,
+                BoringTlsProvider::new(),
                 service_fn(
                     move |input: super::InputWithQuicClientHello<
                         rama_udp::PrefixedDatagramSocket<MemoryDatagramSocket>,

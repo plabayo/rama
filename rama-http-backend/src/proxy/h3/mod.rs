@@ -36,7 +36,7 @@ use rama_http_core::{
     },
     service::RamaHttpService,
 };
-use rama_http_types::proto::h3::{Code, SettingId, Settings};
+use rama_http_types::proto::h3::{Code, SettingId, Settings, observation::ObservationLimits};
 use rama_net::proxy::IoForwardService;
 use rama_quic_proto::{Side, VarInt};
 use rama_utils::{guard::DropGuard, time::deadline_after};
@@ -187,6 +187,15 @@ impl<M, P, D> Http3MitmRelay<M, P, D> {
         /// HTTP/3 settings of the ingress (server) side.
         pub fn ingress_config(mut self, config: Config) -> Self {
             self.ingress = config;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Bounded wire observation of the ingress connection and its requests, such as an
+        /// inspector exports as an HTTP/3 profile. Disabled by default.
+        pub fn ingress_observation(mut self, limits: Option<ObservationLimits>) -> Self {
+            self.ingress.observation = limits.map(Box::new);
             self
         }
     }

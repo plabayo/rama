@@ -65,7 +65,7 @@ async fn exchange(client_ciphers: Option<Vec<CipherSuite>>, port: u16) -> (Answe
             ServerConfig::try_from_rama_tls_with_provider(
                 &origin_tls,
                 TlsOptions::default(),
-                &BoringTlsProvider,
+                &BoringTlsProvider::new(),
             )
             .unwrap(),
         )
@@ -78,7 +78,7 @@ async fn exchange(client_ciphers: Option<Vec<CipherSuite>>, port: u16) -> (Answe
     });
 
     let service = PeekQuicClientHelloService::new(
-        BoringTlsProvider,
+        BoringTlsProvider::new(),
         // A mirrored offer would bound the origin to the client's own ciphers; this
         // checks the answer when the relay's egress offer differs from the client's.
         relay(issuer(&mitm_identity), &origin_identity)
@@ -108,7 +108,7 @@ async fn exchange(client_ciphers: Option<Vec<CipherSuite>>, port: u16) -> (Answe
     let config = ClientConfig::try_from_rama_tls_with_provider(
         &client_tls,
         TlsOptions::default(),
-        &BoringTlsProvider,
+        &BoringTlsProvider::new(),
     )
     .unwrap();
     let client = Endpoint::build(WeakScope::detached())

@@ -145,11 +145,11 @@ fn pending_policy(
             ssl.set_verify(SslVerifyMode::PEER);
             Ok(())
         })));
-    let mut client_config = BoringTlsProvider
+    let mut client_config = BoringTlsProvider::new()
         .client_config(&client_tls, TlsOptions::default())
         .unwrap();
     client_config.set_version(version).unwrap();
-    let server_config = BoringTlsProvider
+    let server_config = BoringTlsProvider::new()
         .server_config(&server_tls, TlsOptions::default())
         .unwrap();
     (client_config, server_config, started, dropped)
@@ -324,12 +324,12 @@ fn delayed_policy(
             Ok(())
         })));
     let transport = Arc::new(TransportConfig::default().with_initial_rtt(Duration::from_secs(60)));
-    let mut client_config = BoringTlsProvider
+    let mut client_config = BoringTlsProvider::new()
         .client_config(&client_tls, TlsOptions::default())
         .unwrap()
         .with_transport_config(transport.clone());
     client_config.set_version(version).unwrap();
-    let server_config = BoringTlsProvider
+    let server_config = BoringTlsProvider::new()
         .server_config(&server_tls, TlsOptions::default())
         .unwrap()
         .with_transport_config(transport);

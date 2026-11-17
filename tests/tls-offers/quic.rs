@@ -34,7 +34,7 @@ use rama::quic::tls::default_tls_provider;
 async fn peer_offers() -> Result<(), BoxError> {
     let providers: Vec<Arc<dyn QuicClientConfigProvider>> = vec![
         #[cfg(feature = "boring")]
-        Arc::new(BoringTlsProvider),
+        Arc::new(BoringTlsProvider::new()),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
         default_tls_provider()?,
     ];

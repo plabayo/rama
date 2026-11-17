@@ -106,7 +106,7 @@ fn tcp_socket_options() -> SocketOptions {
 fn client(scope: WeakScope, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxError> {
     let h3 = Http3Connector::builder(scope.clone())
         .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
         .build_lazy()?;
     let connector = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(
@@ -630,7 +630,7 @@ async fn endpoint_with_connect_support(
     let mut config = ServerConfig::try_from_rama_tls_with_provider(
         &tls,
         TlsOptions::default(),
-        &BoringTlsProvider,
+        &BoringTlsProvider::new(),
     )
     .unwrap();
     config.set_transport_config(Arc::new(transport));
@@ -794,7 +794,7 @@ fn websocket_client(outer: Version) -> BoxService<Request, Response, OpaqueError
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
     let h3 = Http3Connector::builder(scope.clone())
         .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
         .build_lazy()
         .unwrap();
     EasyHttpWebClient::connector_builder()

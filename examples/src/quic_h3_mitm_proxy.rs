@@ -272,7 +272,7 @@ async fn main() -> Result<(), BoxError> {
             }
         }
     });
-    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route)
+    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider::new(), route)
         .with_router(ingress)
         .with_fallback(service_fn(move |input: Association| {
             let forward = forward.clone();

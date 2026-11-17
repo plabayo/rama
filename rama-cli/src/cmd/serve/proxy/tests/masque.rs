@@ -2,7 +2,7 @@ use rama::{
     error::ErrorExt as _,
     http::{
         Version,
-        client::{DefaultHttpWebClient, masque_quic_transport},
+        client::{DefaultHttpWebClient, EasyHttpWebClient, masque_quic_transport},
         conn::TargetHttpVersion,
         core::h3::connection::Config as H3Config,
     },
@@ -18,7 +18,19 @@ use rama::{
         Connection, ConnectionError, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, NegotiatedTlsParameters,
         ServerConfig, TransportConfig,
         client::{QuicConnector, QuicEndpointConnector, SharedQuicEndpoint},
+        proto::capture::CaptureLimits,
         tls::{BoringTlsProvider, TlsOptions},
+    },
+    tls::{
+        SecureTransport,
+        client::{ClientHello, ClientHelloExtension},
+    },
+    ua::{
+        UserAgentKind,
+        profile::{
+            format::archive::{ProfileArchiveLimits, load_profile_archive_snapshot},
+            selection::database::UserAgentDatabase,
+        },
     },
     udp::{
         DatagramSenderExt as _, DatagramSocket as _, DatagramSocketExt as _, SendDatagram,
@@ -28,6 +40,7 @@ use rama::{
 use tokio::{net::UdpSocket, sync::mpsc};
 
 use super::*;
+use crate::cmd::send::{self, SendCommand};
 
 /// A proxy started from `args` on loopback, sharing `shutdown`.
 async fn proxy_with(shutdown: &Scope, args: &[&str]) -> std::net::SocketAddr {
@@ -265,7 +278,7 @@ async fn mitm_relays_a_clients_own_authenticated_masque_session() {
                 let mut config = rama::quic::ClientConfig::try_from_rama_tls_with_provider(
                     &tls.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect()),
                     TlsOptions::default(),
-                    &BoringTlsProvider,
+                    &BoringTlsProvider::new(),
                 )
                 .unwrap();
                 config.set_transport_config(Arc::new(masque_quic_transport()));
@@ -690,8 +703,9 @@ async fn h3_origin_reporting_connections() -> (
     (port, endpoint, connections)
 }
 
-/// An HTTP/3 endpoint on `[::]` that also takes IPv4: dual-stack is not the platform default
-/// everywhere (Windows), and the tests reach the origin over both families.
+/// An HTTP/3 endpoint on `[::]` that also takes IPv4, capturing each client's first flight:
+/// dual-stack is not the platform default everywhere (Windows), and the tests reach the origin
+/// over both families.
 async fn bind_dual_stack_http3(tls: &TlsServerConfig) -> Endpoint {
     let tls = tls
         .clone()
@@ -703,10 +717,11 @@ async fn bind_dual_stack_http3(tls: &TlsServerConfig) -> Endpoint {
     let mut config = ServerConfig::try_from_rama_tls_with_provider(
         &tls,
         TlsOptions::default(),
-        &BoringTlsProvider,
+        &BoringTlsProvider::new(),
     )
     .unwrap();
     config.set_transport_config(Arc::new(transport));
+    config.set_capture(CaptureLimits::default());
     let socket = UdpSocketConfig::default().with_min_buffer_size(DEFAULT_SOCKET_BUFFER_SIZE);
     let options = SocketOptions {
         only_v6: Some(false),
@@ -746,9 +761,13 @@ async fn origin_connection(port: u16, proxy: Option<&str>) -> Connection {
         request
             .extensions
             .insert(ProxyRoute::Proxy(proxy.parse().unwrap()));
-        QuicConnector::new(tunneling_endpoints(), tls, Arc::new(BoringTlsProvider))
-            .serve(request)
-            .await
+        QuicConnector::new(
+            tunneling_endpoints(),
+            tls,
+            Arc::new(BoringTlsProvider::new()),
+        )
+        .serve(request)
+        .await
     } else {
         request
             .extensions
@@ -756,7 +775,7 @@ async fn origin_connection(port: u16, proxy: Option<&str>) -> Connection {
         QuicConnector::new(
             SharedQuicEndpoint::managed(WeakScope::detached()),
             tls,
-            Arc::new(BoringTlsProvider),
+            Arc::new(BoringTlsProvider::new()),
         )
         .serve(request)
         .await
@@ -866,6 +885,288 @@ async fn mitm_terminates_tunneled_quic_in_scope_and_forwards_the_rest_untouched(
         assert_eq!(leaf != direct, intercepted, "{args:?}");
         assert_eq!(h3_get_through(port, &proxy).await, "h3 origin", "{args:?}");
     }
+    shutdown_proxy(shutdown_tx, shutdown).await;
+    origin.close(0u32, b"done");
+}
+
+/// GET of an inspector API `path`, as JSON or the raw body.
+async fn inspector_get(inspector: std::net::SocketAddr, path: &str) -> Bytes {
+    let response = EasyHttpWebClient::default()
+        .serve(dashboard_request(
+            Request::builder()
+                .uri(format!("http://{inspector}{path}"))
+                .body(Body::empty())
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        status.is_success(),
+        "{status}: {}",
+        String::from_utf8_lossy(&body)
+    );
+    body
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mitm_inspector_records_and_exports_tunneled_http3_with_its_quic_hello() {
+    let (port, origin) = h3_origin().await;
+    let (shutdown_tx, shutdown) = shutdown_pair();
+    let bind = loopback_bind_address().to_string();
+    let cli = TestCli::parse_from([
+        "test",
+        "--bind",
+        bind.as_str(),
+        "--protocol",
+        "masque",
+        "--masque-allow-private",
+        "--mitm",
+    ]);
+    let (proxy, inspector) = start_proxy(&shutdown, cli.proxy).await;
+    let inspector = inspector.unwrap();
+
+    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
+    let client = DefaultHttpWebClient::try_default_masque_using_boringssl(
+        WeakScope::detached(),
+        tls.clone(),
+        tls,
+    )
+    .unwrap();
+    let request = Request::builder()
+        .version(Version::HTTP_3)
+        .uri(format!("https://localhost:{port}/"))
+        .header("user-agent", "tunneled-h3/1")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions().insert(ProxyRoute::Proxy(
+        format!("masque://{proxy}").parse().unwrap(),
+    ));
+    request
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_3));
+    let response = timeout(Duration::from_secs(10), client.serve(request))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.into_body().collect().await.unwrap();
+
+    let id = timeout(Duration::from_secs(5), async {
+        loop {
+            let view: serde_json::Value =
+                serde_json::from_slice(&inspector_get(inspector, "/api/captures").await).unwrap();
+            if let Some(exchange) = view["exchanges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|exchange| exchange["user_agent"] == "tunneled-h3/1")
+            {
+                return exchange["id"].as_u64().unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the inspector captured the tunneled HTTP/3 exchange");
+    let archive = inspector_get(inspector, &format!("/api/profiles.json?ids={id}")).await;
+    let profiles =
+        load_profile_archive_snapshot(&archive, false, ProfileArchiveLimits::default()).unwrap();
+    assert_eq!(profiles.len(), 1);
+    let components = &profiles[0].analysis.components;
+    assert!(components.quic.is_some());
+    assert!(components.tls_quic.is_some());
+    assert!(components.h3.is_some());
+    assert!(components.tls_tcp.is_none());
+
+    shutdown_proxy(shutdown_tx, shutdown).await;
+    origin.close(0u32, b"done");
+}
+
+/// [`h3_origin`], reporting the version of every request it answers and the ClientHello of
+/// the connection that carried it.
+async fn h3_origin_reporting_hellos() -> (
+    u16,
+    Endpoint,
+    mpsc::UnboundedReceiver<(Version, ClientHello)>,
+) {
+    let tls = TlsServerConfig::new()
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
+        .unwrap();
+    let endpoint = bind_dual_stack_http3(&tls).await;
+    let port = endpoint.local_addr().unwrap().port();
+    let (reports_tx, reports) = mpsc::unbounded_channel();
+    let h3 = HttpServer::new_http3(WeakScope::detached()).service(service_fn(
+        move |request: Request| {
+            let hello = request
+                .extensions()
+                .get_ref::<SecureTransport>()
+                .and_then(SecureTransport::client_hello)
+                .cloned()
+                .expect("the origin captures every ClientHello");
+            _ = reports_tx.send((request.version(), hello));
+            async move { Ok::<_, Infallible>(Response::new(Body::from("h3 origin"))) }
+        },
+    ));
+    tokio::spawn(endpoint.clone().serve(
+        WeakScope::detached(),
+        service_fn(move |connection: Connection| {
+            let h3 = h3.clone();
+            async move { h3.serve(connection).await }
+        }),
+    ));
+    (port, endpoint, reports)
+}
+
+/// The ClientHello of the next request the origin answers, which must be HTTP/3.
+async fn next_h3_hello(
+    reports: &mut mpsc::UnboundedReceiver<(Version, ClientHello)>,
+) -> ClientHello {
+    let (version, hello) = reports.recv().await.unwrap();
+    assert_eq!(version, Version::HTTP_3);
+    hello
+}
+
+/// What a ClientHello offers that the native engine controls: cipher suites (GREASE included),
+/// extensions in order, and the supported groups and ALPN values.
+fn offer(hello: &ClientHello) -> Vec<String> {
+    let mut offer = vec![format!("{:?}", hello.cipher_suites())];
+    for extension in hello.extensions() {
+        offer.push(match extension {
+            ClientHelloExtension::SupportedGroups(_)
+            | ClientHelloExtension::ApplicationLayerProtocolNegotiation(_) => {
+                format!("{extension:?}")
+            }
+            other => format!("{:?}", other.id()),
+        });
+    }
+    offer
+}
+
+/// `rama send` itself, as a command line.
+#[derive(clap::Parser)]
+struct SendCli {
+    #[command(flatten)]
+    send: SendCommand,
+}
+
+/// Run `rama send` with `args`, writing the response under `output`.
+async fn rama_send(output: &rama::utils::fs::TempDir, args: &[&str]) {
+    let output = output.path().join("response.out").display().to_string();
+    let mut argv = vec!["rama-send-test", "--output", output.as_str()];
+    argv.extend_from_slice(args);
+    timeout(
+        Duration::from_secs(10),
+        send::run(SendCli::parse_from(argv).send),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mitm_replay_offers_the_captured_quic_client_hello_of_an_emulated_browser() {
+    // A Chromium profile with a recorded QUIC ClientHello, so BoringSSL can reproduce it.
+    let database = UserAgentDatabase::try_embedded().unwrap();
+    let user_agent = database
+        .iter_ua_str()
+        .filter(|ua| {
+            database.get_exact_header_str(ua).any(|profile| {
+                profile.ua_kind == Some(UserAgentKind::Chromium)
+                    && !profile.recorded_quic_client_hellos().is_empty()
+            })
+        })
+        .min()
+        .expect("an embedded Chromium profile with HTTP/3")
+        .to_owned();
+    let (port, origin, mut reports) = h3_origin_reporting_hellos().await;
+    let (shutdown_tx, shutdown) = shutdown_pair();
+    let bind = loopback_bind_address().to_string();
+    let cli = TestCli::parse_from([
+        "test",
+        "--bind",
+        bind.as_str(),
+        "--protocol",
+        "masque",
+        "--masque-allow-private",
+        "--mitm",
+    ]);
+    let (proxy, inspector) = start_proxy(&shutdown, cli.proxy).await;
+    let inspector = inspector.unwrap();
+    let output = rama::utils::fs::tempdir().unwrap();
+    let url = format!("https://localhost:{port}/");
+    let proxy = format!("masque://{proxy}");
+    let user_agent_header = format!("User-Agent: {user_agent}");
+    rama_send(
+        &output,
+        &[
+            "--emulate",
+            "--emulate-seed",
+            "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed",
+            "--emulate-connection-key",
+            "c0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec0ec",
+            "--emulate-request-key",
+            "5e9a5e9a5e9a5e9a5e9a5e9a5e9a5e9a5e9a5e9a5e9a5e9a5e9a5e9a5e9a5e9a",
+            "--http3",
+            "--insecure",
+            "--proxy-insecure",
+            "--proxy",
+            proxy.as_str(),
+            "-H",
+            user_agent_header.as_str(),
+            url.as_str(),
+        ],
+    )
+    .await;
+    // Through the relay, the origin sees the client's hello as the relay mirrors it.
+    let mirrored = next_h3_hello(&mut reports).await;
+
+    let view: serde_json::Value =
+        serde_json::from_slice(&inspector_get(inspector, "/api/captures").await).unwrap();
+    let id = view["exchanges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|exchange| exchange["user_agent"] == user_agent.as_str())
+        .expect("the inspector captured the emulated request")["id"]
+        .as_u64()
+        .unwrap();
+    // The capture carries the client's TLS ClientHello over QUIC.
+    let archive = inspector_get(inspector, &format!("/api/profiles.json?ids={id}")).await;
+    let profiles =
+        load_profile_archive_snapshot(&archive, false, ProfileArchiveLimits::default()).unwrap();
+    assert!(profiles[0].analysis.components.tls_quic.is_some());
+
+    let response = EasyHttpWebClient::default()
+        .serve(dashboard_request(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("http://{inspector}/api/replay/{id}"))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        status.is_success(),
+        "{status}: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let replayed = next_h3_hello(&mut reports).await;
+
+    // Rama's own QUIC offer, as a replay that falls back would send it.
+    rama_send(&output, &["--http3", "--insecure", url.as_str()]).await;
+    let native = next_h3_hello(&mut reports).await;
+
+    // The replay offers what the relay mirrored from the captured hello, GREASE included,
+    // and not the native offer a fallback sends.
+    assert_eq!(offer(&replayed), offer(&mirrored));
+    assert_ne!(offer(&replayed), offer(&native));
+
     shutdown_proxy(shutdown_tx, shutdown).await;
     origin.close(0u32, b"done");
 }

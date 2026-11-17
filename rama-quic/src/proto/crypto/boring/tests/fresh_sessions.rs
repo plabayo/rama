@@ -8,7 +8,7 @@ fn fresh_client_policy_keeps_full_handshakes_across_providers_and_versions() {
     #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
     let rustls = RustlsTlsProvider::new(configured_provider());
     let providers: &[&dyn TestTlsProvider] = &[
-        &BoringTlsProvider,
+        &BoringTlsProvider::new(),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
         &rustls,
     ];

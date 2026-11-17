@@ -105,7 +105,7 @@ async fn sample(scenario: Scenario) -> Sample {
         policy,
     });
     let bridge = PeekQuicClientHelloService::new(
-        BoringTlsProvider,
+        BoringTlsProvider::new(),
         DatagramToProxyBridge::new(relay, origin_address),
     );
     let routed = bridge.clone().with_router(ingress);

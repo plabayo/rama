@@ -35,7 +35,7 @@ fn captured_quic_tls_preparation_authenticates_with_fresh_native_sessions() {
         )
         .unwrap()
         .crypto;
-        let server = BoringTlsProvider
+        let server = BoringTlsProvider::new()
             .server_config(&server, TlsOptions::default())
             .unwrap()
             .crypto
@@ -124,11 +124,11 @@ fn captured_wire_choices_never_override_explicit_cipher_policy() {
 #[test]
 fn a_real_resumed_capture_without_a_current_ticket_offers_a_full_handshake() {
     let (policy, server) = policy();
-    let client = BoringTlsProvider
+    let client = BoringTlsProvider::new()
         .client_config(&policy, TlsOptions::default())
         .unwrap()
         .crypto;
-    let server = BoringTlsProvider
+    let server = BoringTlsProvider::new()
         .server_config(&server, TlsOptions::default())
         .unwrap()
         .crypto
@@ -165,7 +165,7 @@ fn checked_parameters(
     version: Version,
 ) -> (Arc<dyn crypto::ClientConfig>, ParameterExpectation) {
     let (policy, _) = policy();
-    let client = BoringTlsProvider
+    let client = BoringTlsProvider::new()
         .client_config(&policy, TlsOptions::default())
         .unwrap();
     let hello = first_hello(client.crypto, version, parameters);

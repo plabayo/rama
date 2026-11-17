@@ -450,7 +450,7 @@ async fn client_with_http3_cache_and_timeout(
         .with_tls_config(tls.clone());
     // Match the stream provider so native overrides exercise both transports.
     #[cfg(feature = "boring")]
-    let h3 = h3.with_tls_provider(Arc::new(BoringTlsProvider));
+    let h3 = h3.with_tls_provider(Arc::new(BoringTlsProvider::new()));
     let h3 = h3.build().await.unwrap();
     let builder = EasyHttpConnectorBuilder::new()
         .with_default_transport_connector()
@@ -2305,7 +2305,7 @@ async fn http3_connector_rustls_cache_tracks_mutated_defaults() {
 #[cfg(feature = "boring")]
 #[tokio::test]
 async fn http3_connector_boring_cache_tracks_mutated_defaults() {
-    check_http3_config_cache_tracks_mutated_defaults(Arc::new(BoringTlsProvider)).await;
+    check_http3_config_cache_tracks_mutated_defaults(Arc::new(BoringTlsProvider::new())).await;
 }
 
 #[cfg(feature = "rustls")]
@@ -2317,7 +2317,7 @@ async fn http3_connector_rustls_reuses_compatible_resumption_state() {
 #[cfg(feature = "boring")]
 #[tokio::test]
 async fn http3_connector_boring_reuses_compatible_resumption_state() {
-    check_http3_connector_resumption(Arc::new(BoringTlsProvider)).await;
+    check_http3_connector_resumption(Arc::new(BoringTlsProvider::new())).await;
 }
 
 #[tokio::test]

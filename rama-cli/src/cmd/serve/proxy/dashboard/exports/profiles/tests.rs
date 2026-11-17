@@ -167,7 +167,7 @@ async fn real_h3_inspector_export_preserves_connection_and_request_evidence() {
     let h3 = Http3Connector::builder(WeakScope::detached())
         .with_endpoint(client_endpoint.clone())
         .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
         .build()
         .await
         .unwrap();

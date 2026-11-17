@@ -125,7 +125,7 @@ enum Mode {
 fn client(scope: WeakScope, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxError> {
     let h3 = Http3Connector::builder(scope.clone())
         .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
         .build_lazy()?;
     let connector = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
@@ -497,7 +497,7 @@ async fn main() -> Result<(), BoxError> {
             let mut config = ServerConfig::try_from_rama_tls_with_provider(
                 &tls,
                 TlsOptions::default(),
-                &BoringTlsProvider,
+                &BoringTlsProvider::new(),
             )?;
             config.set_transport_config(Arc::new(transport));
 

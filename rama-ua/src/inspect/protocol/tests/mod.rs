@@ -6,11 +6,13 @@ use crate::{
         selection::database::UserAgentDatabase,
     },
 };
+#[cfg(feature = "tls")]
+use rama_core::extensions::{Extensions, Ingress};
 use rama_core::{Layer, Service, extensions::ExtensionsRef, service::service_fn};
 use rama_http::{
     Body, Request, Response, Version,
     body::util::BodyExt,
-    inspect::capture::{CaptureHttpLayer, ConnectionId},
+    inspect::capture::{CaptureHttpLayer, CaptureStore, ConnectionId},
     proto::{
         h2::PseudoHeader,
         h3::observation::{
@@ -25,6 +27,10 @@ use rama_quic_proto::{
     capture::{CaptureCompleteness, FirstFlight, ObservedFrame, RawParameter},
     profile::PaddingPlacement,
     transport_parameters::TransportParameterId,
+};
+#[cfg(feature = "tls")]
+use rama_tls::{
+    CipherSuite, CompressionAlgorithm, ProtocolVersion, SecureTransport, client::ClientHello,
 };
 use std::{
     collections::BTreeSet,
@@ -134,13 +140,19 @@ fn h3() -> H3RequestObservation {
 }
 
 fn parts() -> Parts {
+    let parts = parts_without_quic();
+    parts.extensions.insert(observed());
+    parts
+}
+
+/// An HTTP/3 request whose QUIC observation, if any, the caller supplies.
+fn parts_without_quic() -> Parts {
     Request::builder()
         .version(Version::HTTP_3)
         .uri("https://example.test/")
         .header("user-agent", "synthetic/1")
         .header("accept", "text/html")
         .header("cookie", "cookie-canary")
-        .extension(observed())
         .extension(h3())
         .extension(
             [
@@ -349,6 +361,124 @@ async fn h3_selected_export_counts_one_connection_and_each_request() {
             .unwrap()
             .is_none()
     );
+}
+
+/// Joint observations of the selected captures: (connection, request) counts.
+async fn exported_counts(store: &CaptureStore, export: &mut ProfileExport) -> (u64, u64) {
+    let details = store.details(1).await.unwrap();
+    let current_day = u32::try_from(details.summary.started_at.as_second() / 86_400).unwrap();
+    let Some(entry) = export
+        .next_evidence(current_day, 14, [9; 32], ProfileAnalysisLimits::default())
+        .await
+        .unwrap()
+    else {
+        return (0, 0);
+    };
+    let analysis = entry
+        .analyze(false, current_day, 14, ProfileAnalysisLimits::default())
+        .unwrap()
+        .analysis;
+    let mut counts = (0, 0);
+    for scope in &analysis.scopes {
+        if scope.observations.domain != CanonicalDomain::Joint {
+            continue;
+        }
+        if scope.flow.is_some() {
+            counts.1 += scope.observations.counts.total;
+        } else {
+            counts.0 += scope.observations.counts.total;
+        }
+    }
+    counts
+}
+
+#[tokio::test]
+async fn incomplete_h3_evidence_skips_only_that_exchange() {
+    let store = store(UserAgentDatabase::default());
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |_: Request| {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
+    // An HTTP/3 connection without its QUIC observation, then a complete HTTP/1.1 one.
+    let incomplete = Request::from_parts(parts_without_quic(), Body::empty());
+    let http1 = Request::builder()
+        .uri("http://example.test/")
+        .header("user-agent", "synthetic/1")
+        .header("accept", "text/html")
+        .body(Body::empty())
+        .unwrap();
+    for request in [incomplete, http1] {
+        let connection = store
+            .begin_connection_if_enabled(None, Protocol::HTTPS, None)
+            .unwrap();
+        request.extensions().insert(ConnectionId(connection));
+        service
+            .serve(request)
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+    }
+    let mut export = ProfileExport::new(&store, &[1, 2].into(), &BTreeSet::new());
+    assert_eq!(exported_counts(&store, &mut export).await, (0, 1));
+    assert_eq!(export.skipped_http3_exchanges(), 1);
+}
+
+/// The connection facts a QUIC MITM relay publishes: its peeked attempt, without
+/// identifiers or raw handshake bytes, and the ClientHello beside it.
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn h3_relay_publication_exports_quic_tls_and_h3_slots() {
+    let store = store(UserAgentDatabase::default());
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |_: Request| {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
+    let connection = store
+        .begin_connection_if_enabled(None, Protocol::HTTPS, None)
+        .unwrap();
+    let published = Extensions::new();
+    published.insert(QuicObservation {
+        connection_id: Vec::new(),
+        attempt_id: Vec::new(),
+        client_hello_message: Vec::new(),
+        ..observed()
+    });
+    published.insert(SecureTransport::with_client_hello(ClientHello::new(
+        ProtocolVersion::TLSv1_2,
+        vec![CipherSuite::from(0x1301)],
+        vec![CompressionAlgorithm::from(0)],
+        Vec::new(),
+    )));
+    let request = Request::from_parts(parts_without_quic(), Body::empty());
+    request.extensions().insert(Ingress(published));
+    request.extensions().insert(ConnectionId(connection));
+    service
+        .serve(request)
+        .await
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap();
+    let details = store.details(1).await.unwrap();
+    let current_day = u32::try_from(details.summary.started_at.as_second() / 86_400).unwrap();
+    let mut export = ProfileExport::new(&store, &[1].into(), &BTreeSet::new());
+    let analysis = export
+        .next_evidence(current_day, 14, [9; 32], ProfileAnalysisLimits::default())
+        .await
+        .unwrap()
+        .unwrap()
+        .analyze(false, current_day, 14, ProfileAnalysisLimits::default())
+        .unwrap()
+        .analysis;
+    assert!(analysis.components.quic.is_some());
+    assert!(analysis.components.tls_quic.is_some());
+    assert!(analysis.components.h3.is_some());
+    assert!(analysis.components.tls_tcp.is_none());
+    assert_eq!(export.skipped_http3_exchanges(), 0);
 }
 
 #[test]

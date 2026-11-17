@@ -260,7 +260,7 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, scope: WeakScope) {
         })
     };
     // Best-effort demo: fail open for every peek rejection (see README interception policy).
-    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route)
+    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider::new(), route)
         .with_fallback_policy(QuicPeekFallbackPolicy::ALL)
         .with_fallback(service_fn(move |input: Association| {
             let forward = fallback_forward.clone();

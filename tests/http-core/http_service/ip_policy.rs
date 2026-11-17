@@ -69,7 +69,7 @@ async fn h3_rejects_disallowed_literal_and_custom_candidates_before_sending() {
             .with_endpoint(endpoint.clone())
             .with_tls_config(tls.clone());
         #[cfg(feature = "boring")]
-        let builder = builder.with_tls_provider(Arc::new(BoringTlsProvider));
+        let builder = builder.with_tls_provider(Arc::new(BoringTlsProvider::new()));
         let connector = builder.build().await.unwrap();
         for domain in [false, true] {
             let input = ConnectRequest::new(HostWithPort::example_domain_https())

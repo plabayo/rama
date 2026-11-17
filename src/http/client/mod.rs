@@ -264,7 +264,7 @@ where
             ) -> Result<Self, BoxError> {
                 let scope = scope.into();
                 let h3 = Http3Connector::builder(scope.clone())
-                    .with_tls_provider(Arc::new(BoringTlsProvider))
+                    .with_tls_provider(Arc::new(BoringTlsProvider::new()))
                     .with_tls_config(tls.clone());
                 let proxy_client =
                     DefaultHttpWebClient::<crate::http::Body>::try_default_masque_proxy_client_using_boringssl(
@@ -290,7 +290,7 @@ where
                 transport: Option<TransportConfig>,
             ) -> Result<Self, BoxError> {
                 let h3 = Http3Connector::builder(scope.clone())
-                    .with_tls_provider(Arc::new(BoringTlsProvider))
+                    .with_tls_provider(Arc::new(BoringTlsProvider::new()))
                     .with_tls_config(tls.clone())
                     .maybe_with_transport(transport)
                     .build_lazy()?;

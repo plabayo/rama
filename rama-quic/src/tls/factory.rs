@@ -25,7 +25,9 @@ use rama_tls::{
 #[cfg(feature = "boring")]
 use {
     crate::proto::crypto::boring as boring_crypto,
-    rama_tls_boring::client::BoringTlsConnectorConfig,
+    rama_crypto::dep::boring::ssl::{GreaseValues, UnknownValues},
+    rama_tls::client::ClientHello,
+    rama_tls_boring::client::{BoringClientConfigExt as _, BoringTlsConnectorConfig},
 };
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use {
@@ -122,7 +124,7 @@ pub fn default_tls_provider() -> Result<Arc<dyn QuicClientConfigProvider>, TlsCo
         not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))
     ))]
     {
-        Ok(Arc::new(BoringTlsProvider))
+        Ok(Arc::new(BoringTlsProvider::new()))
     }
     #[cfg(not(any(
         feature = "boring",
@@ -231,10 +233,17 @@ impl KeyProvider for RustlsTlsProvider {
 /// BoringSSL QUIC configuration factory.
 #[cfg(feature = "boring")]
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct BoringTlsProvider;
 
 #[cfg(feature = "boring")]
 impl BoringTlsProvider {
+    /// Select BoringSSL for QUIC TLS.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+
     /// Prepare the first native TLS session for `peer` without sending packets.
     ///
     /// The first dial consumes the prepared SSL object; address retries create
@@ -249,6 +258,16 @@ impl BoringTlsProvider {
         Ok(ClientConfig::new(Arc::new(
             boring_crypto::QuicClientConfig::prepare_fresh(config, peer)?,
         )))
+    }
+
+    /// Offer a client's QUIC `hello` again, as far as this engine negotiates it: values it
+    /// cannot negotiate are dropped and GREASE codepoints are the client's. Building a
+    /// configuration from it fails for a hello this engine cannot reproduce.
+    #[must_use]
+    pub fn mirror_client_hello(&self, hello: &ClientHello) -> TlsClientConfig {
+        TlsClientConfig::new_from_client_hello(hello)
+            .with_unknown_values(UnknownValues::Drop)
+            .with_grease_values(GreaseValues::Pinned)
     }
 }
 
@@ -355,7 +374,7 @@ pub fn default_server_tls_provider() -> Result<Arc<dyn QuicServerConfigProvider>
         not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))
     ))]
     {
-        Ok(Arc::new(BoringTlsProvider))
+        Ok(Arc::new(BoringTlsProvider::new()))
     }
     #[cfg(not(any(
         feature = "boring",
@@ -389,7 +408,7 @@ mod tests {
     #[test]
     fn native_settings_affect_only_the_selected_provider() {
         let rustls = RustlsTlsProvider::new(rustls_crypto::configured_provider());
-        let boring = BoringTlsProvider;
+        let boring = BoringTlsProvider::new();
         let config =
             TlsClientConfig::new().with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
         let extensions = config.as_extensions();
@@ -432,7 +451,8 @@ mod tests {
             Arc::new(RustlsTlsProvider::new(rustls_crypto::configured_provider())),
             TlsOptions::default(),
         );
-        let boring = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
+        let boring =
+            ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default());
         let config =
             TlsClientConfig::new().with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
         let request = Extensions::new();

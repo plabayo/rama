@@ -3,6 +3,7 @@ use std::fmt;
 use rama::{
     extensions::Extension,
     http::{
+        Version,
         client::{
             BindBodyToConnLayer, DefaultHttpWebClient, EasyHttpWebClient, Http3Connector,
             HttpConnId, HttpConnIdentifier, HttpConnectRequestAdapter, HttpPooledConnectorConfig,
@@ -16,8 +17,12 @@ use rama::{
             pool::{ConnID, ReqToConnID},
         },
     },
-    quic::tls::BoringTlsProvider,
+    quic::{
+        ClientConfig as QuicClientConfig,
+        tls::{BoringTlsProvider, TlsOptions},
+    },
     tcp::client::service::TcpConnector,
+    telemetry::tracing,
     tls::{
         boring::client::BoringClientConfigExt as _,
         client::{ClientHello, TlsClientConfig},
@@ -77,7 +82,7 @@ pub(super) fn replay_client(
             }),
     )?;
     let http3 = Http3Connector::builder(WeakScope::detached())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
         .with_tls_config(tls_config.clone());
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(transport)
@@ -213,7 +218,14 @@ pub(super) async fn replay_captured(
     request.extensions().insert(source);
     if let Some(client_hello) = tls_client_hello {
         // Replay the captured connection's offer, including its extension order.
-        TlsClientConfig::new_from_client_hello(&client_hello).write_to(request.extensions());
+        let offer = if request.version() == Version::HTTP_3 {
+            quic_offer(&client_hello)
+        } else {
+            Some(TlsClientConfig::new_from_client_hello(&client_hello))
+        };
+        if let Some(offer) = offer {
+            offer.write_to(request.extensions());
+        }
     }
     let replay_connection = state.capture.begin_connection_if_enabled(
         None,
@@ -241,6 +253,23 @@ pub(super) async fn replay_captured(
         frame.context("drain replay response")?;
     }
     Ok(status)
+}
+
+/// A captured QUIC ClientHello as the QUIC MITM relay mirrors it to an origin, or `None`
+/// when the native engine cannot reproduce it and the replay client's own offer is used.
+fn quic_offer(client_hello: &ClientHello) -> Option<TlsClientConfig> {
+    let offer = BoringTlsProvider::new().mirror_client_hello(client_hello);
+    match QuicClientConfig::try_from_rama_tls_with_provider(
+        &offer,
+        TlsOptions::default(),
+        &BoringTlsProvider::new(),
+    ) {
+        Ok(_) => Some(offer),
+        Err(error) => {
+            tracing::debug!(%error, "replay uses its own QUIC ClientHello: the captured one is not reproducible");
+            None
+        }
+    }
 }
 
 pub(super) fn build_captured_request<B>(

@@ -13,14 +13,15 @@ use rama::{
     },
     quic::{
         Connection, Endpoint, ServerConfig, TransportConfig,
+        proto::capture::CaptureLimits,
         tls::{BoringTlsProvider, TlsOptions},
     },
     service::service_fn,
     tcp::server::TcpListener,
     tls::{
-        CipherSuite, SecureTransport,
+        CipherSuite, ProtocolVersion, SecureTransport,
         boring::server::TlsAcceptorLayer,
-        client::ClientHello,
+        client::{ClientHello, ClientHelloExtension},
         server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
 };
@@ -767,6 +768,28 @@ async fn websocket_send_requires_direction_and_kind() {
 
 /// An HTTP/3 origin on loopback reporting the version of every request it answers.
 async fn h3_origin() -> (SocketAddr, Endpoint, mpsc::UnboundedReceiver<Version>) {
+    h3_origin_reporting(Request::version).await
+}
+
+/// An HTTP/3 origin on loopback reporting the ClientHello of every request it answers.
+async fn h3_origin_reporting_hellos() -> (SocketAddr, Endpoint, mpsc::UnboundedReceiver<ClientHello>)
+{
+    h3_origin_reporting(|request| {
+        request
+            .extensions()
+            .get_ref::<SecureTransport>()
+            .and_then(SecureTransport::client_hello)
+            .cloned()
+            .unwrap()
+    })
+    .await
+}
+
+/// An HTTP/3 origin on loopback, capturing each client's QUIC first flight, reporting
+/// `report` of every request it answers.
+async fn h3_origin_reporting<T: Send + 'static>(
+    report: fn(&Request) -> T,
+) -> (SocketAddr, Endpoint, mpsc::UnboundedReceiver<T>) {
     let tls = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .unwrap()
@@ -778,20 +801,21 @@ async fn h3_origin() -> (SocketAddr, Endpoint, mpsc::UnboundedReceiver<Version>)
     let mut config = ServerConfig::try_from_rama_tls_with_provider(
         &tls,
         TlsOptions::default(),
-        &BoringTlsProvider,
+        &BoringTlsProvider::new(),
     )
     .unwrap();
     config.set_transport_config(Arc::new(transport));
+    config.set_capture(CaptureLimits::default());
     let endpoint = Endpoint::build(WeakScope::detached())
         .with_server_config(config)
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
     let address = endpoint.local_addr().unwrap();
-    let (versions_tx, versions) = mpsc::unbounded_channel();
+    let (reports_tx, reports) = mpsc::unbounded_channel();
     let h3 = HttpServer::new_http3(WeakScope::detached()).service(service_fn(
         move |request: Request| {
-            _ = versions_tx.send(request.version());
+            _ = reports_tx.send(report(&request));
             async move { Ok::<_, Infallible>(Response::new(Body::from("h3 origin"))) }
         },
     ));
@@ -802,7 +826,7 @@ async fn h3_origin() -> (SocketAddr, Endpoint, mpsc::UnboundedReceiver<Version>)
             async move { h3.serve(connection).await }
         }),
     ));
-    (address, endpoint, versions)
+    (address, endpoint, reports)
 }
 
 async fn capture_h3_request_for_replay(state: &DashboardState, origin: SocketAddr) {
@@ -827,8 +851,7 @@ async fn replay_within_deadline(state: &DashboardState, id: u64) -> Result<Statu
 async fn replay_sends_a_captured_http3_request_over_http3() {
     let (origin, endpoint, mut versions) = h3_origin().await;
     let upstream = UpstreamProxyConfig::new(None, false, &[]).unwrap();
-    let mut state = test_state_with_upstream(8, 8, &upstream);
-    trust_any_replay_origin(&mut state, &upstream);
+    let state = test_state_with_upstream(8, 8, &upstream);
     capture_h3_request_for_replay(&state, origin).await;
 
     assert_eq!(
@@ -861,8 +884,7 @@ async fn replay_sends_http3_through_a_masque_upstream_and_never_around_it() {
         )
         .unwrap()
         .with_insecure_tls(true);
-        let mut state = test_state_with_upstream(8, 8, &upstream);
-        trust_any_replay_origin(&mut state, &upstream);
+        let state = test_state_with_upstream(8, 8, &upstream);
         capture_h3_request_for_replay(&state, origin).await;
 
         let result = replay_within_deadline(&state, 1).await;
@@ -883,8 +905,7 @@ async fn replay_of_http3_fails_through_an_upstream_that_cannot_carry_udp() {
     let (origin, endpoint, mut versions) = h3_origin().await;
     for proxy in ["http://127.0.0.1:9", "socks5://127.0.0.1:9"] {
         let upstream = UpstreamProxyConfig::new(Some(proxy.parse().unwrap()), false, &[]).unwrap();
-        let mut state = test_state_with_upstream(8, 8, &upstream);
-        trust_any_replay_origin(&mut state, &upstream);
+        let state = test_state_with_upstream(8, 8, &upstream);
         capture_h3_request_for_replay(&state, origin).await;
 
         let error = replay_within_deadline(&state, 1).await.unwrap_err();
@@ -945,8 +966,7 @@ fn offered_cipher_suites(hello: &ClientHello) -> Vec<CipherSuite> {
 async fn replay_over_tcp_offers_the_captured_client_hello() {
     let (origin, origin_task, mut hellos) = tls_origin().await;
     let upstream = UpstreamProxyConfig::new(None, false, &[]).unwrap();
-    let mut state = test_state_with_upstream(8, 8, &upstream);
-    trust_any_replay_origin(&mut state, &upstream);
+    let state = test_state_with_upstream(8, 8, &upstream);
 
     // A capture without a ClientHello replays with the default offer.
     capture_request_for_replay(&state, &format!("https://{origin}/default")).await;
@@ -988,4 +1008,108 @@ async fn replay_over_tcp_offers_the_captured_client_hello() {
         offered_cipher_suites(&captured)
     );
     origin_task.abort();
+}
+
+/// `hello` offering its cipher suites in reverse order, GREASE excluded.
+fn with_reversed_cipher_suites(hello: &ClientHello) -> ClientHello {
+    let mut reversed = offered_cipher_suites(hello);
+    reversed.reverse();
+    ClientHello::new(
+        hello.protocol_version(),
+        reversed,
+        hello.compression_algorithms().to_vec(),
+        hello.extensions().to_vec(),
+    )
+}
+
+async fn capture_h3_request_with_hello(
+    state: &DashboardState,
+    origin: SocketAddr,
+    hello: ClientHello,
+) {
+    let request = Request::builder()
+        .version(Version::HTTP_3)
+        .uri(format!("https://{origin}/captured"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions()
+        .insert(SecureTransport::with_client_hello(hello));
+    capture_for_replay(state, request).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_over_http3_offers_the_captured_quic_client_hello() {
+    let (origin, endpoint, mut hellos) = h3_origin_reporting_hellos().await;
+    let upstream = UpstreamProxyConfig::new(None, false, &[]).unwrap();
+    let state = test_state_with_upstream(8, 8, &upstream);
+
+    // A capture without a ClientHello replays with the default offer.
+    capture_h3_request_for_replay(&state, origin).await;
+    assert_eq!(
+        replay_within_deadline(&state, 1).await.unwrap(),
+        StatusCode::OK
+    );
+    let default = hellos.recv().await.unwrap();
+
+    let captured = with_reversed_cipher_suites(&default);
+    capture_h3_request_with_hello(&state, origin, captured.clone()).await;
+    // The first replay is captured as exchange #2.
+    assert_eq!(
+        replay_within_deadline(&state, 3).await.unwrap(),
+        StatusCode::OK
+    );
+    let replayed = hellos.recv().await.unwrap();
+    assert_ne!(
+        offered_cipher_suites(&default),
+        offered_cipher_suites(&captured)
+    );
+    assert_eq!(
+        offered_cipher_suites(&replayed),
+        offered_cipher_suites(&captured)
+    );
+    endpoint.close(0u32, b"done");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_over_http3_falls_back_when_the_captured_hello_is_not_reproducible() {
+    let (origin, endpoint, mut hellos) = h3_origin_reporting_hellos().await;
+    let upstream = UpstreamProxyConfig::new(None, false, &[]).unwrap();
+    let state = test_state_with_upstream(8, 8, &upstream);
+    capture_h3_request_for_replay(&state, origin).await;
+    assert_eq!(
+        replay_within_deadline(&state, 1).await.unwrap(),
+        StatusCode::OK
+    );
+    let default = hellos.recv().await.unwrap();
+
+    // QUIC needs TLS 1.3: a hello offering only TLS 1.2 cannot be offered again.
+    let reordered = with_reversed_cipher_suites(&default);
+    let extensions = reordered
+        .extensions()
+        .iter()
+        .map(|extension| match extension {
+            ClientHelloExtension::SupportedVersions(_) => {
+                ClientHelloExtension::SupportedVersions(vec![ProtocolVersion::TLSv1_2])
+            }
+            other => other.clone(),
+        })
+        .collect();
+    let captured = ClientHello::new(
+        reordered.protocol_version(),
+        reordered.cipher_suites().to_vec(),
+        reordered.compression_algorithms().to_vec(),
+        extensions,
+    );
+    capture_h3_request_with_hello(&state, origin, captured).await;
+    assert_eq!(
+        replay_within_deadline(&state, 3).await.unwrap(),
+        StatusCode::OK
+    );
+    let replayed = hellos.recv().await.unwrap();
+    assert_eq!(
+        offered_cipher_suites(&replayed),
+        offered_cipher_suites(&default)
+    );
+    endpoint.close(0u32, b"done");
 }
