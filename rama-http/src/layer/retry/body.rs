@@ -95,6 +95,12 @@ impl RetryBody {
     }
 }
 
+impl Default for RetryBody {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl StreamingBody for RetryBody {
     type Data = Bytes;
     type Error = rama_core::error::BoxError;

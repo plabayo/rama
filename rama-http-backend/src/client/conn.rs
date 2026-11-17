@@ -457,7 +457,7 @@ fn apply_h2_client_extensions_to_builder(
     }
 }
 
-#[derive(Debug, Clone, ExtensionsRef)]
+#[derive(Debug, ExtensionsRef)]
 /// A [`Service`] which establishes an HTTP Connection.
 ///
 /// A byte stream connection holds the connector's scope until its transport is gone, an
@@ -471,6 +471,18 @@ pub struct HttpConnector<S, Body> {
     // necessarily the same one that was used in the request that
     // created this connection
     _phantom: PhantomData<fn() -> Body>,
+}
+
+// Hand-written: the body type is only carried, so it needs no `Clone` of its own.
+impl<S: Clone, Body> Clone for HttpConnector<S, Body> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            scope: self.scope.clone(),
+            response_limits: self.response_limits,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<S, Body> HttpConnector<S, Body> {

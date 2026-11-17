@@ -22,13 +22,12 @@ use rama_http_types::{
             critical_streams::Preferences as CriticalStreamPreferences, qpack::EncoderPreferences,
         },
     },
-    proxy::PlaintextHttpProxyMode,
 };
 use rama_net::client::pool::{
     BasicConnId, BasicConnIdentifier, ConnID, MultiplexPool, MuxSelection, PooledConnector,
     ReqToConnID, SaturationPolicy,
 };
-use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
+use rama_net::client::{ConnectRequest, ConnectorService};
 use rama_net::http::HttpRequestVersion;
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt};
@@ -36,7 +35,7 @@ use rama_tls::client::TlsPoolId;
 
 use super::{
     BindBodyToConnLayer, BindBodyToConnector, Http1BodyDrainConfig,
-    h2_preferences::H2WirePreferences,
+    h2_preferences::H2WirePreferences, proxy::forwarding_proxy,
 };
 #[cfg(feature = "quic")]
 use {
@@ -98,7 +97,6 @@ pub struct HttpConnId {
     coalescing: Option<Arc<Http3Coalescing>>,
     network: BasicConnId,
     required_version: Option<Version>,
-    http_proxy_mode: Option<HttpProxyModeRequirement>,
 }
 
 /// Request preferences that change a connection's wire image, reduced to one
@@ -135,12 +133,6 @@ fn wire_digest(extensions: &Extensions) -> Option<WireDigest> {
                 .map(|state| state.hash_one(&preferences)),
         )
     })
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum HttpProxyModeRequirement {
-    Forward,
-    Tunnel,
 }
 
 impl ConnID for HttpConnId {
@@ -180,61 +172,18 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
             network.authority = target.clone().into();
         }
         Ok(HttpConnId {
-            reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable),
+            // A forwarded request travels on its proxy's connection, which that proxy's
+            // own pool holds: it neither takes nor leaves a connection in this one.
+            reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable)
+                && forwarding_proxy(input).is_none(),
             tls,
             wire: wire_digest(input.extensions()),
             #[cfg(feature = "quic")]
             coalescing,
             network,
             required_version: connection_version_requirement(input),
-            http_proxy_mode: http_proxy_mode_requirement(input),
         })
     }
-}
-
-fn http_proxy_mode_requirement(input: &ConnectRequest) -> Option<HttpProxyModeRequirement> {
-    let route = input.extensions().get_ref::<ProxyRoute>();
-    // A MASQUE route sends its proxy's own requests as forwarded, everything else tunneled.
-    if let Some(route) = route
-        && route
-            .proxy_address()
-            .and_then(|proxy| proxy.protocol.as_ref())
-            .is_some_and(rama_net::Protocol::is_masque)
-    {
-        return Some(if route.addresses_proxy(&input.authority) {
-            HttpProxyModeRequirement::Forward
-        } else {
-            HttpProxyModeRequirement::Tunnel
-        });
-    }
-    let is_http_proxy = route
-        .and_then(ProxyRoute::proxy_address)
-        .is_some_and(|proxy| {
-            proxy
-                .protocol
-                .as_ref()
-                .is_none_or(|protocol| protocol.is_http())
-        });
-    if !is_http_proxy {
-        return None;
-    }
-
-    Some(
-        if !input
-            .extensions()
-            .contains::<rama_net::client::ConnectorTarget>()
-            && input
-                .extensions()
-                .get_ref::<PlaintextHttpProxyMode>()
-                .copied()
-                .unwrap_or_default()
-                .should_forward(input.target_protocol())
-        {
-            HttpProxyModeRequirement::Forward
-        } else {
-            HttpProxyModeRequirement::Tunnel
-        },
-    )
 }
 
 pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<Version> {
@@ -254,21 +203,8 @@ pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<V
     let plaintext_http = input
         .target_protocol()
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
-    let secure_forward_proxy = !input
-        .extensions()
-        .contains::<rama_net::client::ConnectorTarget>()
-        && input
-            .extensions()
-            .get_ref::<PlaintextHttpProxyMode>()
-            .copied()
-            .unwrap_or_default()
-            .should_forward(input.target_protocol())
-        && input
-            .extensions()
-            .get_ref::<ProxyRoute>()
-            .and_then(ProxyRoute::proxy_address)
-            .and_then(|proxy| proxy.protocol.as_ref())
-            .is_some_and(|protocol| protocol.is_secure());
+    let secure_forward_proxy =
+        forwarding_proxy(input).is_some_and(|proxy| proxy.protocol.is_secure());
 
     // HTTPS forward-proxy wire versions come from proxy-side ALPN or an
     // explicit connector policy, never from origin request metadata.
@@ -518,7 +454,7 @@ mod tests {
     };
     use rama_http_types::proxy::PlaintextHttpProxyMode;
     use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
-    use rama_net::address::{HostWithPort, ProxyAddress};
+    use rama_net::address::{HostWithPort, ProxyAddress, ProxyProtocol};
     use rama_net::client::pool::{
         BasicConnIdentifier, ConnID as _, MultiplexPool, MuxSelection, PooledConnector,
         ReqToConnID, ReuseKey, SaturationPolicy,
@@ -530,7 +466,7 @@ mod tests {
     };
     use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
     use rama_net::http::{HttpRequestVersion, TargetHttpVersion};
-    use rama_net::test_utils::client::MockConnectorService;
+    use rama_net::test_utils::client::{MockConnectorService, MockSocket};
     use rama_net::{HttpVersionInputExt, Protocol, transport::TransportProtocol};
     #[cfg(feature = "quic")]
     use rama_quic_proto::profile::QuicProfile;
@@ -546,10 +482,9 @@ mod tests {
 
     use super::{
         FallbackHttpVersion, Http1BodyDrainConfig, HttpConnIdentifier, HttpPooledConnector,
-        HttpPooledConnectorConfig, HttpProxyModeRequirement, connection_version_requirement,
-        expected_streams, http_proxy_mode_requirement,
+        HttpPooledConnectorConfig, connection_version_requirement, expected_streams,
     };
-    use crate::client::proxy::layer::HttpProxyConnectorLayer;
+    use crate::client::proxy::layer::HttpConnectProxyConnectorLayer;
     use crate::client::{HttpConnectRequestAdapter, HttpConnectorLayer};
     use crate::server::HttpServer;
     use rama_net::tls::TlsAlpn;
@@ -692,6 +627,7 @@ mod tests {
             let input = ConnectRequest::new(HostWithPort::example_domain_http())
                 .with_application_protocol(Protocol::HTTP);
             input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+            input.extensions.insert(PlaintextHttpProxyMode::Tunnel);
             if tunnel {
                 input.extensions.insert(TlsTunnel {
                     server_identity: Some("proxy.example".parse().unwrap()),
@@ -722,15 +658,8 @@ mod tests {
             .extensions()
             .insert(ProxyRoute::Proxy(proxy.clone()));
         secure.extensions().insert(ProxyRoute::Proxy(proxy));
-        assert_eq!(
-            http_proxy_mode_requirement(&plaintext),
-            Some(HttpProxyModeRequirement::Forward)
-        );
-        assert_eq!(
-            http_proxy_mode_requirement(&secure),
-            Some(HttpProxyModeRequirement::Tunnel)
-        );
-        assert_ne!(ids.id(&plaintext).unwrap(), ids.id(&secure).unwrap());
+        assert!(!ids.id(&plaintext).unwrap().is_reusable());
+        assert!(ids.id(&secure).unwrap().is_reusable());
     }
 
     #[test]
@@ -749,10 +678,9 @@ mod tests {
         assert_ne!(unconfigured_id, direct_id);
 
         let proxy_address = ProxyAddress {
-            protocol: Some(Protocol::HTTP),
+            protocol: ProxyProtocol::HTTP,
             address: HostWithPort::example_domain_http(),
             credential: None,
-            template: None,
         };
         request
             .extensions()
@@ -931,31 +859,8 @@ mod tests {
     }
 
     #[test]
-    fn masque_routes_forward_their_proxy_own_requests_and_tunnel_the_rest() {
-        let input = |target: HostWithPort| {
-            let input = ConnectRequest::new(target).with_application_protocol(Protocol::HTTPS);
-            input.extensions.insert(ProxyRoute::Proxy(
-                "masque://proxy.example:443"
-                    .parse::<ProxyAddress>()
-                    .unwrap(),
-            ));
-            input
-        };
-        assert_eq!(
-            http_proxy_mode_requirement(&input(
-                HostWithPort::try_from("proxy.example:443").unwrap()
-            )),
-            Some(HttpProxyModeRequirement::Forward)
-        );
-        assert_eq!(
-            http_proxy_mode_requirement(&input(HostWithPort::example_domain_https())),
-            Some(HttpProxyModeRequirement::Tunnel)
-        );
-    }
-
-    #[test]
-    fn http_proxy_mode_requirement_covers_every_route_kind() {
-        let make_input = |application: Protocol, proxy: Option<&str>, tunnel: bool| {
+    fn only_a_forwarded_request_skips_the_pool() {
+        let reusable = |application: Protocol, proxy: Option<&str>, tunnel: bool| {
             let input = ConnectRequest::new(HostWithPort::example_domain_http())
                 .with_application_protocol(application);
             if let Some(proxy) = proxy {
@@ -966,47 +871,30 @@ mod tests {
             if tunnel {
                 input.extensions.insert(PlaintextHttpProxyMode::Tunnel);
             }
-            input
+            HttpConnIdentifier::new().id(&input).unwrap().is_reusable()
         };
 
-        assert_eq!(
-            http_proxy_mode_requirement(&make_input(
-                Protocol::HTTP,
-                Some("http://proxy.example:8080"),
-                false,
-            )),
-            Some(HttpProxyModeRequirement::Forward)
-        );
-        assert_eq!(
-            http_proxy_mode_requirement(&make_input(
-                Protocol::HTTP,
-                Some("http://proxy.example:8080"),
-                true,
-            )),
-            Some(HttpProxyModeRequirement::Tunnel)
-        );
-        for application in [Protocol::HTTPS, Protocol::from_static("custom")] {
-            assert_eq!(
-                http_proxy_mode_requirement(&make_input(
-                    application,
-                    Some("http://proxy.example:8080"),
-                    false,
-                )),
-                Some(HttpProxyModeRequirement::Tunnel)
-            );
-        }
-        assert_eq!(
-            http_proxy_mode_requirement(&make_input(
-                Protocol::HTTP,
-                Some("socks5://proxy.example:1080"),
-                false,
-            )),
-            None
-        );
-        assert_eq!(
-            http_proxy_mode_requirement(&make_input(Protocol::HTTP, None, false)),
-            None
-        );
+        assert!(!reusable(
+            Protocol::HTTP,
+            Some("http://proxy.example:8080"),
+            false
+        ));
+        assert!(reusable(
+            Protocol::HTTP,
+            Some("http://proxy.example:8080"),
+            true
+        ));
+        assert!(reusable(
+            Protocol::HTTPS,
+            Some("http://proxy.example:8080"),
+            false
+        ));
+        assert!(reusable(
+            Protocol::HTTP,
+            Some("socks5://proxy.example:1080"),
+            false
+        ));
+        assert!(reusable(Protocol::HTTP, None, false));
     }
 
     #[test]
@@ -1586,6 +1474,44 @@ mod tests {
         );
     }
 
+    /// A mock proxy which answers CONNECT with a tunnel serving an "origin" that tags
+    /// each response with the index of its tunnel, and counts the connections dialed to
+    /// the proxy itself.
+    fn mock_connect_proxy(
+        dials: Arc<AtomicUsize>,
+        tunnels: Arc<AtomicUsize>,
+    ) -> impl Service<
+        ConnectRequest,
+        Output = EstablishedClientConnection<MockSocket, ConnectRequest>,
+        Error = Infallible,
+    > {
+        MockConnectorService::new(move || {
+            dials.fetch_add(1, Ordering::Relaxed);
+            let tunnels = tunnels.clone();
+            HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
+                let tunnels = tunnels.clone();
+                async move {
+                    assert_eq!(req.method(), Method::CONNECT);
+                    let on_upgrade = rama_http::io::upgrade::handle_upgrade(&req);
+                    let tunnel_id = tunnels.fetch_add(1, Ordering::Relaxed);
+                    _ = tokio::spawn(async move {
+                        let tunnel = on_upgrade.await.unwrap();
+                        let origin = HttpServer::auto(WeakScope::detached()).service(service_fn(
+                            move |_req: Request| async move {
+                                let mut resp = Response::new(Body::from("ok"));
+                                resp.headers_mut()
+                                    .insert("x-conn-id", HeaderValue::from(tunnel_id as u64));
+                                Ok::<_, Infallible>(resp)
+                            },
+                        ));
+                        _ = origin.serve(tunnel).await;
+                    });
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                }
+            }))
+        })
+    }
+
     /// A connection tunneled through an HTTP CONNECT proxy must be reusable: the
     /// consumed h1 proxy hop is marked broken on upgrade, but the tunnel built on
     /// top forks that state instead of inheriting it. It used to inherit the
@@ -1594,36 +1520,11 @@ mod tests {
     #[tokio::test]
     async fn pool_reuses_connection_tunneled_through_connect_proxy() {
         let tunnels = Arc::new(AtomicUsize::new(0));
-        let mock = MockConnectorService::new({
-            let tunnels = tunnels.clone();
-            move || {
-                let tunnels = tunnels.clone();
-                // CONNECT proxy: reply 200 and serve the "origin" server over the tunnel
-                HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
-                    let tunnels = tunnels.clone();
-                    async move {
-                        assert_eq!(req.method(), Method::CONNECT);
-                        let on_upgrade = rama_http::io::upgrade::handle_upgrade(&req);
-                        let conn_id = tunnels.fetch_add(1, Ordering::Relaxed);
-                        _ = tokio::spawn(async move {
-                            let tunnel = on_upgrade.await.unwrap();
-                            let origin = HttpServer::auto(WeakScope::detached()).service(
-                                service_fn(move |_req: Request| async move {
-                                    let mut resp = Response::new(Body::from("ok"));
-                                    resp.headers_mut()
-                                        .insert("x-conn-id", HeaderValue::from(conn_id as u64));
-                                    Ok::<_, Infallible>(resp)
-                                }),
-                            );
-                            _ = origin.serve(tunnel).await;
-                        });
-                        Ok::<_, Infallible>(Response::new(Body::empty()))
-                    }
-                }))
-            }
-        });
-        let inner = HttpConnectorLayer::default()
-            .into_layer(HttpProxyConnectorLayer::required().into_layer(mock));
+        let proxy = mock_connect_proxy(Arc::new(AtomicUsize::new(0)), tunnels.clone());
+        let inner = HttpConnectorLayer::default().into_layer(
+            HttpConnectProxyConnectorLayer::new()
+                .into_layer(HttpConnectorLayer::default().into_layer(proxy)),
+        );
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
                 max_connections_total: NonZeroUsize::new(4),
@@ -1671,6 +1572,54 @@ mod tests {
             1,
             "a reused tunnel means a single proxy dial"
         );
+    }
+
+    #[tokio::test]
+    async fn two_tunnels_share_one_h2_proxy_connection() {
+        tunnels_over_a_pooled_proxy(Version::HTTP_2, 1).await;
+    }
+
+    #[tokio::test]
+    async fn each_tunnel_takes_an_h1_proxy_connection_of_its_own() {
+        tunnels_over_a_pooled_proxy(Version::HTTP_11, 2).await;
+    }
+
+    /// Two tunnels to different origins through one proxy, over a pooled connector
+    /// toward that proxy: an h2 proxy carries both on one connection, an h1 proxy needs
+    /// one per tunnel because CONNECT consumes it.
+    async fn tunnels_over_a_pooled_proxy(proxy_version: Version, proxy_dials: usize) {
+        let dials = Arc::new(AtomicUsize::new(0));
+        let proxy = mock_connect_proxy(dials.clone(), Arc::new(AtomicUsize::new(0)));
+        let to_proxy = HttpPooledConnectorConfig::default()
+            .build_connector(HttpConnectorLayer::default().into_layer(proxy));
+        let inner = HttpConnectorLayer::default()
+            .into_layer(HttpConnectProxyConnectorLayer::new().into_layer(to_proxy));
+        let connector = build_test_connector(HttpPooledConnectorConfig::default(), inner);
+
+        let address = "http://proxy.example:8080"
+            .parse::<ProxyAddress>()
+            .unwrap()
+            .with_http_version(proxy_version);
+        for origin in ["http://one.example", "http://two.example"] {
+            let request = Request::builder()
+                .uri(origin)
+                .version(Version::HTTP_11)
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions()
+                .insert(ProxyRoute::Proxy(address.clone()));
+            request.extensions().insert(PlaintextHttpProxyMode::Tunnel);
+            let established = connector.serve(request).await.unwrap();
+            let response = established
+                .conn
+                .serve(create_test_request(Version::HTTP_11))
+                .await
+                .unwrap();
+            response.into_body().collect().await.unwrap();
+        }
+
+        assert_eq!(dials.load(Ordering::Relaxed), proxy_dials);
     }
 
     /// An h1 chunked response consumed through its terminal trailers frame is
