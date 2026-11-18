@@ -567,8 +567,7 @@ impl Extensions {
     /// Iterate over all inserted items of type `T`, walking the parent chain
     /// and the structural [`Egress`] / [`Ingress`] connection wrappers.
     ///
-    /// Yield order matches [`Self::get_ref`] preference (so
-    /// `iter_ref::<T>().next() == get_ref::<T>()`):
+    /// Within each connection, yield order matches [`Self::get_ref`] preference.
     ///
     /// At each level, iterate the local entries newest -> oldest. For each
     /// entry: yield it if its type matches `T`, if it is an
