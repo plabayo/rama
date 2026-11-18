@@ -151,6 +151,17 @@ unsafe impl BufMut for EncodeBuf<'_> {
     fn put_bytes(&mut self, val: u8, cnt: usize) {
         self.buf.put_bytes(val, cnt);
     }
+
+    // Protobuf varints are written one byte at a time.
+    #[inline]
+    fn put_u8(&mut self, n: u8) {
+        self.buf.put_u8(n);
+    }
+
+    #[inline]
+    fn put_i8(&mut self, n: i8) {
+        self.buf.put_i8(n);
+    }
 }
 
 #[cfg(test)]
@@ -210,5 +221,23 @@ mod tests {
 
         buf.put_u8(b'a');
         assert_eq!(buf.remaining_mut(), initial - 20 - 1);
+    }
+
+    #[test]
+    fn encode_buf_writes_what_the_inner_buffer_would() {
+        let mut expected = BytesMut::new();
+        let mut bytes = BytesMut::new();
+        let mut buf = EncodeBuf::new(&mut bytes);
+        for n in [0u8, 1, 0x7F, 0x80, 0xFF] {
+            expected.put_u8(n);
+            buf.put_u8(n);
+            expected.put_i8(n as i8);
+            buf.put_i8(n as i8);
+        }
+        expected.put_u32(0xDEAD_BEEF);
+        buf.put_u32(0xDEAD_BEEF);
+        expected.put_bytes(7, 3);
+        buf.put_bytes(7, 3);
+        assert_eq!(bytes, expected);
     }
 }

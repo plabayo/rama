@@ -574,9 +574,12 @@ impl Status {
             .map_err(header_limit_reached)?;
 
         if !self.0.message.is_empty() {
-            let to_write = Bytes::copy_from_slice(
-                Cow::from(percent_encode(self.message().as_bytes(), ENCODING_SET)).as_bytes(),
-            );
+            let to_write = match Cow::from(percent_encode(self.message().as_bytes(), ENCODING_SET))
+            {
+                // nothing needed escaping: the message itself is the value
+                Cow::Borrowed(_) => Bytes::from_owner(self.0.message.clone()),
+                Cow::Owned(encoded) => Bytes::from(encoded),
+            };
 
             header_map
                 .try_insert(

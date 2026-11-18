@@ -138,6 +138,11 @@ impl io::Write for CappedWriter {
         Ok(bytes.len())
     }
 
+    // `write` consumes the whole buffer or fails.
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.write(bytes).map(drop)
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }

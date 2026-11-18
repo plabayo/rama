@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
 use std::convert::TryFrom;
 use std::error::Error;
@@ -44,6 +44,23 @@ pub struct InvalidHeaderValue {
 #[derive(Debug)]
 pub struct ToStrError {
     _priv: (),
+}
+
+/// Move `src` into a [`Bytes`] when its type converts into one without copying.
+fn try_into_shared<T: 'static>(src: T) -> Result<Bytes, T> {
+    if_downcast_into!(T, Bytes, src, {
+        return Ok(src);
+    });
+    if_downcast_into!(T, Vec<u8>, src, {
+        return Ok(Bytes::from(src));
+    });
+    if_downcast_into!(T, String, src, {
+        return Ok(Bytes::from(src));
+    });
+    if_downcast_into!(T, BytesMut, src, {
+        return Ok(src.freeze());
+    });
+    Err(src)
 }
 
 impl HeaderValue {
@@ -185,16 +202,16 @@ impl HeaderValue {
     /// Attempt to convert a `Bytes` buffer to a `HeaderValue`.
     ///
     /// This will try to prevent a copy if the type passed is the type used
-    /// internally, and will copy the data if it is not.
+    /// internally or an owned buffer that converts into it for free
+    /// (`Vec<u8>`, `String`, `BytesMut`), and will copy the data if it is not.
     pub fn from_maybe_shared<T>(src: T) -> Result<HeaderValue, InvalidHeaderValue>
     where
         T: AsRef<[u8]> + 'static,
     {
-        if_downcast_into!(T, Bytes, src, {
-            return HeaderValue::from_shared(src);
-        });
-
-        HeaderValue::from_bytes(src.as_ref())
+        match try_into_shared(src) {
+            Ok(shared) => HeaderValue::from_shared(shared),
+            Err(src) => HeaderValue::from_bytes(src.as_ref()),
+        }
     }
 
     /// Convert a `Bytes` directly into a `HeaderValue` without validating.
@@ -231,14 +248,8 @@ impl HeaderValue {
                 }
             }
         } else {
-            if_downcast_into!(T, Bytes, src, {
-                return HeaderValue {
-                    inner: src,
-                    is_sensitive: false,
-                };
-            });
-
-            let src = Bytes::copy_from_slice(src.as_ref());
+            let src =
+                try_into_shared(src).unwrap_or_else(|src| Bytes::copy_from_slice(src.as_ref()));
             HeaderValue {
                 inner: src,
                 is_sensitive: false,
@@ -546,6 +557,30 @@ mod from_header_name_tests {
     use super::*;
     use crate::header::map::HeaderMap;
     use crate::header::name;
+
+    #[test]
+    fn owned_buffers_become_header_values_without_a_copy() {
+        let vec = b"from a vec".to_vec();
+        let ptr = vec.as_ptr();
+        let value = HeaderValue::from_maybe_shared(vec).unwrap();
+        assert_eq!(value.as_bytes().as_ptr(), ptr);
+
+        let string = String::from("from a string");
+        let ptr = string.as_ptr();
+        let value = HeaderValue::from_maybe_shared(string).unwrap();
+        assert_eq!(value.as_bytes().as_ptr(), ptr);
+
+        let buf = BytesMut::from(&b"from bytes mut"[..]);
+        let ptr = buf.as_ptr();
+        let value = HeaderValue::from_maybe_shared(buf).unwrap();
+        assert_eq!(value.as_bytes().as_ptr(), ptr);
+
+        assert_eq!(
+            HeaderValue::from_maybe_shared(&b"borrowed"[..]).unwrap(),
+            "borrowed"
+        );
+        HeaderValue::from_maybe_shared(b"line\nbreak".to_vec()).unwrap_err();
+    }
 
     #[test]
     fn it_can_insert_header_name_as_header_value() {

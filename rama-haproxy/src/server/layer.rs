@@ -564,7 +564,8 @@ where
         };
 
         // put back the data that is read too much
-        let mem: HeapReader = buffer[consumed..].into();
+        buffer.drain(..consumed);
+        let mem = HeapReader::new(buffer);
         let stream = PrefixedIo::new(mem, stream);
 
         // read the rest of the data

@@ -1,4 +1,5 @@
 use std::io::ErrorKind;
+use std::ops::Range;
 
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_core::error::{BoxError, ErrorExt};
@@ -31,8 +32,11 @@ pub(super) struct UdpSocketRelay {
     south: UdpSocket,
     south_read_size: usize,
 
-    north_read_buf: BytesMut,
-    south_read_buf: BytesMut,
+    // Both read buffers keep their full length; the ranges below mark the last payload.
+    north_read_buf: Box<[u8]>,
+    north_payload: Range<usize>,
+    south_read_buf: Box<[u8]>,
+    south_payload_len: usize,
 
     north_write_buf: BytesMut,
 
@@ -125,11 +129,13 @@ impl UdpSocketRelay {
             north,
             north_read_size: north_read_buf_size,
             north_read_buf: oversize_detecting_read_buf(north_read_buf_size),
+            north_payload: 0..0,
             north_write_buf: BytesMut::new(),
 
             south,
             south_read_size: south_read_buf_size,
             south_read_buf: oversize_detecting_read_buf(south_read_buf_size),
+            south_payload_len: 0,
 
             #[cfg(feature = "dns")]
             dns_resolve_mode: DnsResolveIpMode::default(),
@@ -149,19 +155,16 @@ impl UdpSocketRelay {
     }
 
     pub(super) fn north_read_buf_slice(&self) -> &[u8] {
-        &self.north_read_buf[..]
+        &self.north_read_buf[self.north_payload.clone()]
     }
 
     pub(super) fn south_read_buf_slice(&self) -> &[u8] {
-        &self.south_read_buf[..]
+        &self.south_read_buf[..self.south_payload_len]
     }
 
     pub(super) async fn recv(&mut self) -> Result<Option<UdpRelayState>, BoxError> {
-        self.north_read_buf.clear();
-        self.north_read_buf.resize(self.north_read_size + 1, 0);
-
-        self.south_read_buf.clear();
-        self.south_read_buf.resize(self.south_read_size + 1, 0);
+        self.north_payload = 0..0;
+        self.south_payload_len = 0;
 
         tokio::select! {
             result = self.north.recv_from(&mut self.north_read_buf[..]) => {
@@ -242,9 +245,8 @@ impl UdpSocketRelay {
                         // Only a datagram the relay forwards selects the client source.
                         self.pin_north_source(src);
 
-                        // remove header from payload
-                        self.north_read_buf.copy_within(offset.., 0);
-                        self.north_read_buf.truncate(len-offset);
+                        // the payload follows the header
+                        self.north_payload = offset..len;
 
                         Ok(Some(UdpRelayState::ReadNorth(server_address)))
                     }
@@ -281,7 +283,7 @@ impl UdpSocketRelay {
                             );
                             return Ok(None);
                         }
-                        self.south_read_buf.truncate(len);
+                        self.south_payload_len = len;
                         Ok(Some(UdpRelayState::ReadSouth(src.into())))
                     }
 
@@ -342,10 +344,10 @@ impl UdpSocketRelay {
                 server.address = %server_address.ip_addr,
                 server.port = %server_address.port,
                 "send packet south: data from north socket (len = {})",
-                self.north_read_buf.len(),
+                self.north_read_buf_slice().len(),
             );
             self.south
-                .send_to(&self.north_read_buf, server_address.into_std())
+                .send_to(self.north_read_buf_slice(), server_address.into_std())
                 .await
         };
 
@@ -357,7 +359,7 @@ impl UdpSocketRelay {
                     server.address = %server_address.ip_addr,
                     server.port = %server_address.port,
                     "send packet south: complete (len = {}; write len = {})",
-                    self.north_read_buf.len(),
+                    self.north_read_buf_slice().len(),
                     len
                 );
                 Ok(())
@@ -438,10 +440,11 @@ impl UdpSocketRelay {
                 server.address = %server_address.ip_addr,
                 server.port = %server_address.port,
                 "send packet north: data from south socket (len = {})",
-                self.south_read_buf.len(),
+                self.south_payload_len,
             );
             header.write_to_buf(&mut self.north_write_buf)?;
-            self.north_write_buf.extend_from_slice(&self.south_read_buf);
+            self.north_write_buf
+                .extend_from_slice(&self.south_read_buf[..self.south_payload_len]);
         };
 
         match self
@@ -543,10 +546,8 @@ impl UdpSocketRelay {
 
 /// A read buffer one byte larger than `size`, so a datagram over `size` shows as oversized
 /// instead of being cut to fit.
-fn oversize_detecting_read_buf(size: usize) -> BytesMut {
-    let mut buf = BytesMut::with_capacity(size + 1);
-    buf.resize(size + 1, 0);
-    buf
+fn oversize_detecting_read_buf(size: usize) -> Box<[u8]> {
+    vec![0; size + 1].into_boxed_slice()
 }
 
 fn is_transient_udp_io_error(err: &std::io::Error) -> bool {

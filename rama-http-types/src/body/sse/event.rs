@@ -98,8 +98,7 @@ impl<T: EventDataWrite> Event<T> {
 
         let mut serialize = |name, value| {
             buffer.extend_from_slice(name);
-            buffer.put_u8(b':');
-            buffer.put_u8(b' ');
+            buffer.put_slice(b": ");
             buffer.extend_from_slice(value);
             buffer.put_u8(b'\n');
         };
@@ -122,9 +121,7 @@ impl<T: EventDataWrite> Event<T> {
 
         let mut buffer = match &self.data {
             Some(data) => {
-                buffer.extend_from_slice(b"data");
-                buffer.put_u8(b':');
-                buffer.put_u8(b' ');
+                buffer.extend_from_slice(b"data: ");
 
                 let mut buf_write = buffer.writer();
                 let mut prefix_writer = LinePrefixWriter::new(&mut buf_write, b"data: ");

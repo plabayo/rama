@@ -241,16 +241,19 @@ impl ScriptSafeJsonWriter {
 
 impl Write for ScriptSafeJsonWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         let mut start = 0;
-        for (index, byte) in buf.iter().copied().enumerate() {
-            if byte == b'<' {
-                self.bytes.extend_from_slice(&buf[start..index]);
-                self.bytes.extend_from_slice(LESS_THAN_ESCAPE);
-                start = index + 1;
-            }
+        for index in memchr::memchr_iter(b'<', buf) {
+            self.bytes.extend_from_slice(&buf[start..index]);
+            self.bytes.extend_from_slice(LESS_THAN_ESCAPE);
+            start = index + 1;
         }
         self.bytes.extend_from_slice(&buf[start..]);
-        Ok(buf.len())
+        Ok(())
     }
 
     fn flush(&mut self) -> io::Result<()> {

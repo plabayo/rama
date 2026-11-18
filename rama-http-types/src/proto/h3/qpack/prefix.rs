@@ -238,10 +238,7 @@ pub fn decode_string(
 ) -> Result<DecodedString, PrefixError> {
     let decoded = decode_string_shared(src, prefix_bits, max_len, None)?;
     Ok(DecodedString {
-        value: decoded
-            .value
-            .try_into_mut()
-            .unwrap_or_else(|bytes| BytesMut::from(bytes.as_ref())),
+        value: BytesMut::from(decoded.value),
         huffman: decoded.huffman,
     })
 }
