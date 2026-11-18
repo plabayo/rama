@@ -13,6 +13,9 @@ use rama_tls::{SecureTransport, client::TlsEchAccepted, server::TlsServerConfig}
 use rama_ua::profile::format::canonical::{CanonicalValue, ValueId};
 use rama_utils::octets::kib;
 
+/// HPKE AEAD identifier of ChaCha20-Poly1305.
+const CHACHA20_POLY1305: u16 = 3;
+
 fn reference(bytes: &'static [u8]) -> TlsCapture {
     TlsCapture::from_canonical(
         &CanonicalValue {
@@ -141,7 +144,27 @@ async fn replay_pair(captured: TlsCapture, outer: TlsCapture) {
         captured.with_grease_placeholders().unwrap(),
         observed.with_grease_placeholders().unwrap()
     );
-    assert_eq!(outer_structure(outer), outer_structure(observed_outer));
+    assert_eq!(
+        outer_structure(native_outer(outer)),
+        outer_structure(observed_outer)
+    );
+}
+
+/// The outer the native stack sends for `capture` on this machine.
+fn native_outer(mut capture: TlsCapture) -> TlsCapture {
+    // SAFETY: `EVP_has_aes_hardware` takes no arguments and only reads the CPU
+    // capabilities the library detected.
+    let has_aes_hardware = unsafe { rama_boring_sys::EVP_has_aes_hardware() } != 0;
+    if !has_aes_hardware {
+        // Real ECH then seals with ChaCha20-Poly1305 whenever the config offers it,
+        // whichever AEAD the capture carries.
+        for extension in &mut capture.extensions {
+            if let TlsCapturedExtensionValue::EchOuter { aead, .. } = &mut extension.value {
+                *aead = CHACHA20_POLY1305;
+            }
+        }
+    }
+    capture
 }
 
 fn outer_structure(mut capture: TlsCapture) -> TlsCapture {
