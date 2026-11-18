@@ -322,14 +322,15 @@ impl Endpoint {
 
     /// Publish route ownership only when identifiers are installed or retired. The observer
     /// must not call back into this endpoint; it runs under the endpoint's state lock.
-    pub(crate) fn observe_routes(&mut self, observer: Arc<dyn RouteObserver>) {
+    pub(crate) fn observe_routes(&mut self, observer: &Arc<impl RouteObserver + 'static>) {
         for cid in self.index.connection_ids.keys() {
             observer.insert(*cid, false);
         }
         for cid in self.index.connection_ids_initial.keys() {
             observer.insert(*cid, true);
         }
-        self.index.observer = Some(Arc::downgrade(&observer));
+        let observer = Arc::downgrade(observer);
+        self.index.observer = Some(observer);
     }
 
     /// Consult the native routing index without copying, admitting or authenticating a packet.

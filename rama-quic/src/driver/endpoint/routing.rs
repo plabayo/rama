@@ -250,7 +250,7 @@ impl EndpointRouteDirectory {
                 telemetry: self.telemetry.clone(),
             })
         };
-        endpoint_state.inner.observe_routes(observer.clone());
+        endpoint_state.inner.observe_routes(&observer);
         drop(endpoint_state);
         self.observe("registered", self.stats());
         Ok(EndpointRouteRegistration { observer })
