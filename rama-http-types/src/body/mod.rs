@@ -292,6 +292,21 @@ impl Body {
         BodyDataStream { inner: self }
     }
 
+    /// Stream the elements of a top-level JSON array.
+    pub fn into_json_array_stream<T: DeserializeOwned>(
+        self,
+    ) -> json::JsonArrayReadStream<T, BodyDataStream> {
+        json::JsonArrayReadStream::new(self.into_data_stream())
+    }
+
+    /// Stream the elements of a top-level JSON array with a custom byte limit.
+    pub fn into_json_array_stream_with_config<T: DeserializeOwned>(
+        self,
+        config: json::ArrayParseConfig,
+    ) -> json::JsonArrayReadStream<T, BodyDataStream> {
+        json::JsonArrayReadStream::new_with_config(self.into_data_stream(), config)
+    }
+
     /// Convert the body into a [`Stream`] of [`sse::Event`]s.
     ///
     /// <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events>.

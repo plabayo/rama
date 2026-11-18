@@ -4,11 +4,15 @@ use std::{
     fmt::{self, Display},
 };
 
-use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use rama_core::{
+    extensions::{Extension, Extensions, ExtensionsRef},
+    stream::json::JsonArrayReadStream,
+};
 use rama_utils::macros::generate_set_and_with;
+use serde::de::DeserializeOwned;
 
 use crate::{
-    Body, Result,
+    Body, BodyDataStream, Result,
     header::{HeaderMap, HeaderName, HeaderValue},
     proto::h1::ext::ReasonPhrase,
     status::StatusCode,
@@ -237,6 +241,15 @@ impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Response<T> {
 #[must_use]
 pub struct Builder {
     inner: Result<Parts>,
+}
+
+impl Response<Body> {
+    /// Stream the elements of the top-level JSON array in this response.
+    pub fn into_json_array_stream<T: DeserializeOwned>(
+        self,
+    ) -> JsonArrayReadStream<T, BodyDataStream> {
+        self.into_body().into_json_array_stream()
+    }
 }
 
 impl Response<()> {

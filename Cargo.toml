@@ -801,6 +801,11 @@ required-features = ["http-full"]
 harness = false
 
 [[bench]]
+name = "json_streaming"
+required-features = ["http-full"]
+harness = false
+
+[[bench]]
 name = "ndjson_parser"
 harness = false
 
