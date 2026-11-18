@@ -583,7 +583,7 @@ mod tests {
             );
         }
         let errors = resolver.lookup_https(Domain::from_static("example.org."));
-        assert!(std::pin::pin!(errors).next().await.unwrap().is_err());
+        std::pin::pin!(errors).next().await.unwrap().unwrap_err();
     }
 
     #[test]
