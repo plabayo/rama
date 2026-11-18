@@ -48,7 +48,7 @@ pub use self::cross_origin_opener_policy::{
     CrossOriginOpenerPolicy, CrossOriginOpenerPolicyReportOnly, CrossOriginOpenerPolicyValue,
 };
 pub use self::cross_origin_resource_policy::CrossOriginResourcePolicy;
-pub use self::date::Date;
+pub use self::date::{Date, DateNow};
 pub use self::early_data::EarlyData;
 pub use self::etag::ETag;
 pub use self::expect::Expect;

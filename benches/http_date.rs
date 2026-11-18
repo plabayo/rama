@@ -3,8 +3,7 @@
 use rama::{
     http::{
         HeaderMap, HeaderValue,
-        header::DATE,
-        headers::{Date, HeaderMapExt, util::HttpDate},
+        headers::{Date, DateNow, HeaderMapExt, util::HttpDate},
     },
     utils::time::now_system_time,
 };
@@ -24,12 +23,12 @@ fn main() {
 fn date_now_insert(bencher: divan::Bencher) {
     let mut headers = HeaderMap::with_capacity(4);
     bencher.bench_local(|| {
-        headers.insert(DATE, HeaderValue::http_date_now());
+        headers.typed_insert(DateNow::new());
         black_box(&mut headers);
     });
 }
 
-/// The typed `Date` header from the current time: formatted on every call.
+/// The typed `Date` header from a `SystemTime` of the current time.
 #[divan::bench(sample_size = 1000)]
 fn date_now_typed_insert(bencher: divan::Bencher) {
     let mut headers = HeaderMap::with_capacity(4);
@@ -37,11 +36,6 @@ fn date_now_typed_insert(bencher: divan::Bencher) {
         headers.typed_insert(Date::from(now_system_time()));
         black_box(&mut headers);
     });
-}
-
-#[divan::bench]
-fn header_value_http_date_now() -> HeaderValue {
-    HeaderValue::http_date_now()
 }
 
 #[divan::bench]

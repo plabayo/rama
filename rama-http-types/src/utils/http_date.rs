@@ -58,14 +58,36 @@ pub fn format_http_date_now() -> [u8; HTTP_DATE_LEN] {
     format_http_date(now_unix_secs())
 }
 
+/// Same as [`format_http_date`] but returned as owned Bytes.
+#[must_use]
+pub fn format_http_date_bytes(unix_secs: u64) -> Bytes {
+    Bytes::copy_from_slice(&format_http_date(unix_secs))
+}
+
+thread_local! {
+    /// The second last formatted by [`format_http_date_now_bytes`], with its bytes.
+    static NOW: RefCell<(u64, Bytes)> = const { RefCell::new((u64::MAX, Bytes::new())) };
+}
+
+/// [`format_http_date_bytes`], sharing the bytes of [`format_http_date_now_bytes`]
+/// when `unix_secs` is the second those were last formatted for on this thread.
+///
+/// Never refreshes the shared bytes: only the clock does.
+#[must_use]
+pub fn format_http_date_bytes_maybe_now(unix_secs: u64) -> Bytes {
+    let secs = unix_secs.min(MAX_HTTP_DATE_UNIX_SECS);
+    NOW.with(|now| {
+        let now = now.borrow();
+        (now.0 == secs).then(|| now.1.clone())
+    })
+    .unwrap_or_else(|| format_http_date_bytes(secs))
+}
+
 /// [`format_http_date_now`] as shared bytes, formatted once per second per thread.
 ///
 /// Suits the `Date` of every response: callers within one second share one allocation.
 #[must_use]
 pub fn format_http_date_now_bytes() -> Bytes {
-    thread_local! {
-        static NOW: RefCell<(u64, Bytes)> = const { RefCell::new((u64::MAX, Bytes::new())) };
-    }
     let secs = now_unix_secs();
     NOW.with(|now| {
         let mut now = now.borrow_mut();
@@ -402,6 +424,30 @@ mod tests {
             assert_eq!(first.as_ptr(), second.as_ptr());
         }
         assert_eq!(first.len(), HTTP_DATE_LEN);
+    }
+
+    #[test]
+    fn maybe_now_shares_the_now_bytes() {
+        let now = format_http_date_now_bytes();
+        let secs = parse_http_date(&now).unwrap();
+        let shared = format_http_date_bytes_maybe_now(secs);
+        // a tick between the two calls leaves the earlier second cached
+        assert_eq!(shared.as_ptr(), now.as_ptr());
+    }
+
+    #[test]
+    fn maybe_now_formats_other_seconds_without_replacing_now() {
+        let now = format_http_date_now_bytes();
+        let secs = parse_http_date(&now).unwrap();
+        for other in [1_000, secs - 1, secs + 1, u64::MAX] {
+            let bytes = format_http_date_bytes_maybe_now(other);
+            assert_eq!(&bytes[..], &format_http_date(other), "{other}");
+            assert_ne!(bytes.as_ptr(), now.as_ptr(), "{other}");
+        }
+        assert_eq!(
+            format_http_date_bytes_maybe_now(secs).as_ptr(),
+            now.as_ptr()
+        );
     }
 
     #[test]

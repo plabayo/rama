@@ -33,6 +33,7 @@ use rama::{
         HeaderName, HeaderValue, Request, Response, Version,
         body::util::BodyExt,
         client::{EasyHttpWebClient, Http3Connector, HttpPooledConnectorConfig},
+        headers::Server,
         layer::{
             compression::CompressionLayer,
             cors::CorsLayer,
@@ -237,8 +238,7 @@ where
     let http_service = (
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
-        AddRequiredResponseHeadersLayer::default()
-            .with_server_header_value(HeaderValue::from_static("foo")),
+        AddRequiredResponseHeadersLayer::default().with_server(Server::from_static("foo")),
         SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("res-header"),
             HeaderValue::from_static("res-bar"),

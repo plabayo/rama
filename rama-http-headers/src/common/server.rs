@@ -48,6 +48,16 @@ impl Server {
         Self(HeaderValueString::from_static(s))
     }
 
+    /// The default rama `Server`: `rama/<version>`.
+    #[must_use]
+    pub const fn rama() -> Self {
+        Self(HeaderValueString::from_static(const_format::formatcp!(
+            "{}/{}",
+            rama_utils::info::NAME,
+            rama_utils::info::VERSION,
+        )))
+    }
+
     /// View this `Server` as a `&str`.
     pub fn as_str(&self) -> &str {
         self.0.as_str()

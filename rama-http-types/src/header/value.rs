@@ -6,10 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::{cmp, fmt, str};
 
-use crate::{
-    header::name::HeaderName,
-    utils::http_date::{format_http_date, format_http_date_now_bytes},
-};
+use crate::header::name::HeaderName;
 use rama_utils::collections::smallvec::SmallVec;
 
 /// Represents an HTTP header field value.
@@ -150,24 +147,6 @@ impl HeaderValue {
     #[inline]
     pub fn from_name(name: HeaderName) -> HeaderValue {
         name.into()
-    }
-
-    /// IMF-fixdate HTTP-date for `unix_secs`, clamped to year 9999.
-    #[must_use]
-    pub fn from_http_date(unix_secs: u64) -> Self {
-        Self {
-            inner: Bytes::copy_from_slice(&format_http_date(unix_secs)),
-            is_sensitive: false,
-        }
-    }
-
-    /// HTTP-date for the current second, shared per thread: see [`format_http_date_now_bytes`].
-    #[must_use]
-    pub fn http_date_now() -> Self {
-        Self {
-            inner: format_http_date_now_bytes(),
-            is_sensitive: false,
-        }
     }
 
     /// Attempt to convert a byte slice to a `HeaderValue`.
@@ -1095,27 +1074,4 @@ fn quoted_field_values_remain_valid() {
     let value = HeaderValue::from_static("\"quoted field value\"");
     assert!(!value.has_outer_whitespace());
     assert!(is_valid_h2_h3_field_value(value.as_bytes()));
-}
-
-#[cfg(test)]
-mod http_date_tests {
-    use super::*;
-    use crate::utils::http_date::MAX_HTTP_DATE_UNIX_SECS;
-
-    #[test]
-    fn from_http_date_formats_and_clamps() {
-        assert_eq!(
-            HeaderValue::from_http_date(1_000).as_bytes(),
-            &format_http_date(1_000)
-        );
-        assert_eq!(
-            HeaderValue::from_http_date(u64::MAX).as_bytes(),
-            &format_http_date(MAX_HTTP_DATE_UNIX_SECS)
-        );
-    }
-
-    #[test]
-    fn http_date_now_is_an_http_date() {
-        assert_eq!(HeaderValue::http_date_now().len(), 29);
-    }
 }
