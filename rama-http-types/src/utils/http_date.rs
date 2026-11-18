@@ -61,7 +61,7 @@ pub fn format_http_date_now() -> [u8; HTTP_DATE_LEN] {
 /// Same as [`format_http_date`] but returned as owned Bytes.
 #[must_use]
 pub fn format_http_date_bytes(unix_secs: u64) -> Bytes {
-    Bytes::copy_from_slice(&format_http_date(unix_secs))
+    Bytes::from_owner(format_http_date(unix_secs))
 }
 
 thread_local! {

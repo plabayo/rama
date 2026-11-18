@@ -338,7 +338,8 @@ stays at 1.96 and the edition at 2024.
 * **No automatic `Date` header**: HTTP/1.1, HTTP/2 and HTTP/3 servers relay
   responses as written and no longer add `Date`; `auto_date_header` was removed.
   Add `AddRequiredResponseHeadersLayer` (it adds `Date` and `Server` when
-  missing) or your own layer (#1355).
+  missing) or your own layer (#1355). That layer now takes a typed `Server`
+  header: `with_server` replaces `with_server_header_value`.
 * **HTTP limits and validation**: received headers share one default limit of
   1 MiB and 4096 fields on HTTP/1.1, HTTP/2 and HTTP/3, answered with `431`
   when exceeded (0.4 allowed 100 fields on HTTP/1.1 and a 16 KiB list on
@@ -814,6 +815,8 @@ as a compiled, compressed binary, so loading it only decodes.
     (`redirect_to_trailing_slash`, `ignore_multi_range_requests`,
     `with_enforce_not_acceptable`) and a Rama-owned HTTP-date formatter and
     parser (`rama::http::utils::http_date`) (#1139, #1321, #1355).
+  * Added the encode-only `DateNow` typed header, which writes the current
+    `Date` from bytes shared per second per thread, and `Server::rama()`.
 * **Core, errors and utilities**:
   * Added graceful scopes (`rama::graceful::{Scope, WeakScope}`), `ScopeLayer`
     for per-input scopes with a maximum age and grace, `AbortableIo`, and
