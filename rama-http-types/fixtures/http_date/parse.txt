@@ -1,5 +1,5 @@
-# HTTP-date parse fixtures for rama-http-types utils::http_date, with the current year
-# pinned to 2026. Each line: <unix seconds | reject> <input>; the input is the rest of the
+# HTTP-date parse fixtures for rama-http-types utils::http_date, with the current instant
+# pinned to 2026-12-31 00:00:00 UTC. Each line: <unix seconds | reject> <input>; the input is the rest of the
 # line, where `\t` stands for a tab. Expected seconds come from Python's calendar.timegm.
 
 # RFC 9110 section 5.6.7 examples

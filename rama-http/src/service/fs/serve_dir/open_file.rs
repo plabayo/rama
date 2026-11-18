@@ -72,10 +72,6 @@ pub(super) enum RangeError {
 
 impl OpenFileOutput {
     /// Create a new FileOpened variant with the given parameters.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "internal helper aggregating the opened-file response data"
-    )]
     pub(super) fn new_file_opened(
         extent: FileRequestExtent,
         chunk_size: usize,
@@ -83,7 +79,6 @@ impl OpenFileOutput {
         maybe_encoding: Option<Encoding>,
         maybe_range: Option<Result<RangeInclusive<u64>, RangeError>>,
         last_modified: Option<LastModified>,
-        precompression_configured: bool,
         etag: Option<ETag>,
     ) -> Self {
         Self::FileOpened(Box::new(FileOpened {
@@ -93,7 +88,6 @@ impl OpenFileOutput {
             maybe_encoding,
             maybe_range,
             last_modified,
-            precompression_configured,
             etag,
         }))
     }
@@ -107,11 +101,6 @@ pub(super) struct FileOpened {
     pub(super) maybe_encoding: Option<Encoding>,
     pub(super) maybe_range: Option<Result<RangeInclusive<u64>, RangeError>>,
     pub(super) last_modified: Option<LastModified>,
-    /// Whether `ServeDir` was configured with any precompressed variants.
-    /// When true, the response advertises `Vary: Accept-Encoding` even if
-    /// this particular response was served uncompressed, per RFC 9110
-    /// §12.5.3 — a different request could yield a different encoding.
-    pub(super) precompression_configured: bool,
     /// Strong [`ETag`] derived from the file metadata, when available.
     pub(super) etag: Option<ETag>,
 }
@@ -172,7 +161,6 @@ pub(super) struct FileRequest {
     is_head: bool,
     ignore_multi_range_requests: bool,
     buf_chunk_size: usize,
-    precompression_configured: bool,
     negotiated_encodings: Vec<QualityValue<Encoding>>,
     enforce_not_acceptable: bool,
 }
@@ -183,7 +171,6 @@ impl FileRequest {
         negotiated_encodings: Vec<QualityValue<Encoding>>,
         ignore_multi_range_requests: bool,
         buf_chunk_size: usize,
-        precompression_configured: bool,
         enforce_not_acceptable: bool,
     ) -> Self {
         Self {
@@ -192,7 +179,6 @@ impl FileRequest {
             is_head: parts.method == Method::HEAD,
             ignore_multi_range_requests,
             buf_chunk_size,
-            precompression_configured,
             negotiated_encodings,
             enforce_not_acceptable,
         }
@@ -245,7 +231,6 @@ impl FileRequest {
             encoding,
             decided.range,
             decided.last_modified,
-            self.precompression_configured,
             decided.etag,
         )
     }
@@ -427,16 +412,16 @@ fn open_embedded(
             Err(err) => return Err(err),
         };
 
-    let content_length = contents.len() as u64;
-    let decided = match request.decide(content_length, metadata.map(|meta| meta.modified())) {
-        Ok(decided) => decided,
-        Err(output) => return Ok(output),
-    };
     if request.not_acceptable(maybe_encoding) {
         return Ok(OpenFileOutput::NotAcceptable);
     }
+    let decided = match request.decide(contents.len() as u64, metadata.map(|meta| meta.modified()))
+    {
+        Ok(decided) => decided,
+        Err(output) => return Ok(output),
+    };
     let extent = if request.is_head {
-        FileRequestExtent::Head(content_length)
+        FileRequestExtent::Head(contents.len() as u64)
     } else {
         FileRequestExtent::Loaded(Bytes::from_static(contents))
     };
@@ -541,26 +526,19 @@ impl FilesystemLookup {
                 }
                 Err(err) => return Err(err),
             };
+        if request.not_acceptable(maybe_encoding) {
+            return Ok(OpenFileOutput::NotAcceptable);
+        }
         let meta = file.metadata()?;
+        let mut decided = match request.decide(meta.len(), meta.modified().ok()) {
+            Ok(decided) => decided,
+            Err(output) => return Ok(output),
+        };
         if request.is_head {
-            let decided = match request.decide(meta.len(), meta.modified().ok()) {
-                Ok(decided) => decided,
-                Err(output) => return Ok(output),
-            };
-            if request.not_acceptable(maybe_encoding) {
-                return Ok(OpenFileOutput::NotAcceptable);
-            }
             let extent = FileRequestExtent::Head(meta.len());
             return Ok(request.opened(extent, mime, maybe_encoding, decided));
         }
         if meta.len() > READ_WHOLE_MAX_LEN {
-            let decided = match request.decide(meta.len(), meta.modified().ok()) {
-                Ok(decided) => decided,
-                Err(output) => return Ok(output),
-            };
-            if request.not_acceptable(maybe_encoding) {
-                return Ok(OpenFileOutput::NotAcceptable);
-            }
             if let Some(Ok(range)) = decided.range.as_ref() {
                 file.seek(SeekFrom::Start(*range.start()))?;
             }
@@ -568,14 +546,6 @@ impl FilesystemLookup {
             return Ok(request.opened(extent, mime, maybe_encoding, decided));
         }
 
-        // Resolve validators before reading, including If-Range's whole-file fallback.
-        let mut decided = match request.decide(meta.len(), meta.modified().ok()) {
-            Ok(decided) => decided,
-            Err(output) => return Ok(output),
-        };
-        if request.not_acceptable(maybe_encoding) {
-            return Ok(OpenFileOutput::NotAcceptable);
-        }
         let range = decided.range.as_ref().and_then(|range| range.as_ref().ok());
         let extent = read_small_file(&mut file, meta.len(), range)?;
         if let FileRequestExtent::Loaded(contents) = &extent
