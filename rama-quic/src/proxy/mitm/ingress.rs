@@ -457,27 +457,20 @@ impl Group {
             .active_peer()
             // Until the handshake establishes a connection, protect its original path.
             .or_else(|| paths.front().copied());
-        if self.sockets.path_count() >= self.max_paths {
-            // Preserve the authenticated current path. Obsolete/pending paths must not
-            // prevent a client from bringing its next transport into a bounded set.
-            if let Some(index) = paths
-                .iter()
-                .position(|path| Some(*path) != active && *path != peer)
-                && let Some(old) = paths.remove(index)
-            {
-                self.sockets.detach(old);
-                self.path_evictions.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        let attachment = match self.sockets.attach(socket) {
-            Ok(attachment) => attachment,
+        let evict = paths.iter().copied().find(|path| Some(*path) != active);
+        let (attachment, evicted) = match self.sockets.attach_with_eviction(socket, evict) {
+            Ok(result) => result,
             Err(error) => {
                 drop(paths);
                 self.observe_paths("attach_failed");
                 return Err(error.into());
             }
         };
-        paths.retain(|path| *path != peer);
+        // A previous attachment for this peer can close between pruning and insertion.
+        paths.retain(|path| *path != peer && Some(*path) != evicted);
+        if evicted.is_some() {
+            self.path_evictions.fetch_add(1, Ordering::Relaxed);
+        }
         paths.push_back(peer);
         self.path_high_water
             .fetch_max(paths.len(), Ordering::Relaxed);
@@ -875,6 +868,13 @@ mod tests {
             assert!(group.sockets.contains_path(([127, 0, 0, 1], port).into()));
             assert_eq!(group.sockets.path_count(), 2);
         }
+        let (invalid, _peer) = MemoryDatagramSocket::pair(
+            SocketAddress::local_ipv4(444),
+            SocketAddress::local_ipv4(1005),
+            n(8),
+        );
+        group.attach(invalid).unwrap_err();
+        assert!(group.sockets.contains_path(SocketAddress::local_ipv4(1004)));
         let (replacement, _peer) = MemoryDatagramSocket::pair(local, ([127, 0, 0, 1], 2000), n(8));
         assert_eq!(
             group

@@ -8,7 +8,7 @@ use std::{
     fmt, mem,
     net::{IpAddr, SocketAddr},
     ops::{Index, IndexMut, Range},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 use ahash::HashMap;
@@ -310,7 +310,10 @@ impl Endpoint {
     }
 
     pub(crate) fn has_route_observer(&self) -> bool {
-        self.index.observer.is_some()
+        self.index
+            .observer
+            .as_ref()
+            .is_some_and(|observer| observer.strong_count() != 0)
     }
 
     pub(crate) fn routing_cid_len(&self) -> usize {
@@ -326,7 +329,7 @@ impl Endpoint {
         for cid in self.index.connection_ids_initial.keys() {
             observer.insert(*cid, true);
         }
-        self.index.observer = Some(observer);
+        self.index.observer = Some(Arc::downgrade(&observer));
     }
 
     /// Consult the native routing index without copying, admitting or authenticating a packet.
@@ -715,7 +718,7 @@ impl Endpoint {
             }
             if let hash_map::Entry::Vacant(e) = self.index.connection_ids.entry(cid) {
                 e.insert(route);
-                if let Some(observer) = &self.index.observer {
+                if let Some(observer) = self.index.route_observer() {
                     observer.insert(cid, false);
                 }
                 break cid;
@@ -2069,7 +2072,7 @@ pub(crate) trait RouteObserver: std::fmt::Debug + Send + Sync {
 /// Maps packets to existing connections
 #[derive(Default, Debug)]
 struct ConnectionIndex {
-    observer: Option<Arc<dyn RouteObserver>>,
+    observer: Option<Weak<dyn RouteObserver>>,
     /// Identifies connections based on the initial DCID the peer utilized
     ///
     /// Uses a standard `HashMap` to protect against hash collision attacks.
@@ -2102,6 +2105,10 @@ struct ConnectionIndex {
 }
 
 impl ConnectionIndex {
+    fn route_observer(&self) -> Option<Arc<dyn RouteObserver>> {
+        self.observer.as_ref().and_then(Weak::upgrade)
+    }
+
     /// Associate an incoming connection with its initial destination CID
     fn insert_initial_incoming(&mut self, dst_cid: ConnectionId, incoming_key: usize) {
         if dst_cid.is_empty() {
@@ -2109,7 +2116,7 @@ impl ConnectionIndex {
         }
         self.connection_ids_initial
             .insert(dst_cid, RouteDatagramTo::Incoming(incoming_key));
-        if let Some(observer) = &self.observer {
+        if let Some(observer) = self.route_observer() {
             observer.insert(dst_cid, true);
         }
     }
@@ -2122,7 +2129,7 @@ impl ConnectionIndex {
         let removed = self.connection_ids_initial.remove(&dst_cid);
         debug_assert!(removed.is_some());
         if removed.is_some()
-            && let Some(observer) = &self.observer
+            && let Some(observer) = self.route_observer()
         {
             observer.remove(dst_cid, true);
         }
@@ -2135,7 +2142,7 @@ impl ConnectionIndex {
         }
         self.connection_ids_initial
             .insert(dst_cid, RouteDatagramTo::Connection(connection));
-        if let Some(observer) = &self.observer {
+        if let Some(observer) = self.route_observer() {
             observer.insert(dst_cid, true);
         }
     }
@@ -2163,7 +2170,7 @@ impl ConnectionIndex {
         } else {
             self.connection_ids
                 .insert(dst_cid, RouteDatagramTo::Connection(connection));
-            if let Some(observer) = &self.observer {
+            if let Some(observer) = self.route_observer() {
                 observer.insert(dst_cid, false);
             }
         }
@@ -2172,7 +2179,7 @@ impl ConnectionIndex {
     /// Discard a connection ID
     fn retire(&mut self, dst_cid: ConnectionId) {
         if self.connection_ids.remove(&dst_cid).is_some()
-            && let Some(observer) = &self.observer
+            && let Some(observer) = self.route_observer()
         {
             observer.remove(dst_cid, false);
         }

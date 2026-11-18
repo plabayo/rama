@@ -400,11 +400,15 @@ where
 #[derive(Debug, Clone)]
 pub struct QuicEgressMigration<F> {
     factory: F,
+    connected_revision: Option<Arc<Mutex<Option<u64>>>>,
 }
 
 impl<F> QuicEgressMigration<F> {
     pub fn new(factory: F) -> Self {
-        Self { factory }
+        Self {
+            factory,
+            connected_revision: None,
+        }
     }
 }
 
@@ -415,10 +419,12 @@ impl<C> QuicEgressMigration<QuicEgressConnector<C>> {
     /// the request's extensions. Serves one connection: it tracks the routing revision its
     /// egress was connected under.
     pub fn from_connector(connector: C, request: ConnectRequest) -> Self {
-        Self::new(QuicEgressConnector {
-            connector: DatagramReplacementConnector::new(connector, request),
-            connected_revision: Arc::new(Mutex::new(None)),
-        })
+        Self {
+            factory: QuicEgressConnector {
+                connector: DatagramReplacementConnector::new(connector, request),
+            },
+            connected_revision: Some(Arc::new(Mutex::new(None))),
+        }
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -427,7 +433,8 @@ impl<C> QuicEgressMigration<QuicEgressConnector<C>> {
         /// The initial evaluation replaces the egress when the observed revision differs.
         /// Without it, the first observed revision is assumed to be the connected one.
         pub fn connected_revision(mut self, revision: u64) -> Self {
-            *self.factory.connected_revision.lock() = Some(revision);
+            let connected = self.connected_revision.get_or_insert_with(Default::default);
+            *connected.lock() = Some(revision);
             self
         }
     }
@@ -435,10 +442,9 @@ impl<C> QuicEgressMigration<QuicEgressConnector<C>> {
 
 /// Replacement factory of [`QuicEgressMigration::from_connector`].
 ///
-/// Connects a replacement on the initial evaluation or a trusted network change when the
-/// egress side is [`NetworkAvailability::Available`] under a routing revision the egress is
-/// not yet connected under. Validated ingress moves, [`NetworkAvailability::Unknown`] and
-/// [`NetworkAvailability::Unavailable`] keep the current egress.
+/// The policy connects a replacement when the egress side is [`NetworkAvailability::Available`]
+/// on a revision it has yet to apply. Path notifications can resume interrupted preparation.
+/// [`NetworkAvailability::Unknown`] and [`NetworkAvailability::Unavailable`] keep the current egress.
 ///
 /// [`NetworkAvailability::Available`]: rama_net::availability::NetworkAvailability::Available
 /// [`NetworkAvailability::Unknown`]: rama_net::availability::NetworkAvailability::Unknown
@@ -446,7 +452,6 @@ impl<C> QuicEgressMigration<QuicEgressConnector<C>> {
 #[derive(Debug, Clone)]
 pub struct QuicEgressConnector<C> {
     connector: DatagramReplacementConnector<C>,
-    connected_revision: Arc<Mutex<Option<u64>>>,
 }
 
 impl<C> Service<QuicMigrationInput> for QuicEgressConnector<C>
@@ -456,25 +461,8 @@ where
     type Output = Option<C::Connection>;
     type Error = BoxError;
 
-    async fn serve(&self, input: QuicMigrationInput) -> Result<Self::Output, BoxError> {
-        if !matches!(
-            input.trigger,
-            QuicMigrationTrigger::Initial | QuicMigrationTrigger::NetworkChanged
-        ) {
-            return Ok(None);
-        }
-        let egress = input.network.egress;
-        {
-            let mut connected = self.connected_revision.lock();
-            let connected = connected.get_or_insert(egress.revision);
-            if *connected == egress.revision || !egress.availability.is_available() {
-                return Ok(None);
-            }
-        }
-        let socket = self.connector.serve(()).await?;
-        // Recorded once prepared: a newer revision supersedes it, an equal one never retries.
-        *self.connected_revision.lock() = Some(egress.revision);
-        Ok(Some(socket))
+    async fn serve(&self, _: QuicMigrationInput) -> Result<Self::Output, BoxError> {
+        self.connector.serve(()).await.map(Some)
     }
 }
 
@@ -487,14 +475,29 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: QuicMigrationInput) -> Result<Self::Output, BoxError> {
-        if matches!(
+        let state = input.network.egress;
+        if let Some(connected) = &self.connected_revision {
+            let mut revision = connected.lock();
+            if *revision.get_or_insert(state.revision) == state.revision
+                || !state.availability.is_available()
+            {
+                return Ok(QuicMigrationDecision::default());
+            }
+        } else if matches!(
             input.trigger,
             QuicMigrationTrigger::ValidatedPath(QuicMigrationSide::Egress)
         ) {
             return Ok(QuicMigrationDecision::default());
         }
         let egress = match self.factory.serve(input).await.map_err(Into::into)? {
-            Some(socket) => QuicPathAction::Replace(QuicTransportReplacement::new(socket)?),
+            Some(socket) => {
+                let mut replacement = QuicTransportReplacement::new(socket)?;
+                if let Some(connected) = &self.connected_revision {
+                    let connected = connected.clone();
+                    replacement.set_on_applied(move || *connected.lock() = Some(state.revision));
+                }
+                QuicPathAction::Replace(replacement)
+            }
             None => QuicPathAction::Keep,
         };
         Ok(QuicMigrationDecision {
@@ -509,7 +512,7 @@ mod tests {
     use super::*;
     use crate::{Endpoint, test_helpers};
     use rama_core::service::service_fn;
-    use rama_net::{availability::NetworkAvailability, stream::Socket as _};
+    use rama_net::availability::NetworkAvailability;
     use rama_udp::proxy::UdpConnector;
     use std::sync::{
         Arc,
@@ -590,10 +593,7 @@ mod tests {
     #[tokio::test]
     async fn connector_migration_replaces_egress_once_per_available_revision() {
         let (client_endpoint, server_endpoint, client, server) = pair().await;
-        let origin = rama_udp::UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
-            .await
-            .unwrap();
-        let request = ConnectRequest::new(origin.local_addr().unwrap().into());
+        let request = ConnectRequest::new(SocketAddress::from(client.remote_address()).into());
         let input = |trigger, revision, availability| QuicMigrationInput {
             trigger,
             ingress: server.clone(),
@@ -613,41 +613,58 @@ mod tests {
         let available = NetworkAvailability::Available;
 
         let policy = QuicEgressMigration::from_connector(UdpConnector::new(), request.clone());
-        for (trigger, revision, availability, expected) in [
-            (QuicMigrationTrigger::Initial, 1, available, false),
-            (QuicMigrationTrigger::NetworkChanged, 1, available, false),
+        for (trigger, revision, availability) in [
+            (QuicMigrationTrigger::Initial, 1, available),
+            (QuicMigrationTrigger::NetworkChanged, 1, available),
             (
                 QuicMigrationTrigger::NetworkChanged,
                 2,
                 NetworkAvailability::Unknown,
-                false,
             ),
             (
                 QuicMigrationTrigger::NetworkChanged,
                 2,
                 NetworkAvailability::Unavailable,
-                false,
             ),
-            (
-                QuicMigrationTrigger::ValidatedPath(QuicMigrationSide::Ingress),
-                2,
-                available,
-                false,
-            ),
-            (QuicMigrationTrigger::NetworkChanged, 2, available, true),
-            (QuicMigrationTrigger::NetworkChanged, 2, available, false),
         ] {
             let decision = policy
                 .serve(input(trigger, revision, availability))
                 .await
                 .unwrap();
-            assert_eq!(
-                replaces(decision),
-                expected,
+            assert!(
+                !replaces(decision),
                 "{trigger:?} {revision} {availability:?}"
             );
         }
 
+        // Reject the prepared transport on a server connection. Both kinds of path
+        // observation must revisit the unapplied network change, even if one interrupted preparation.
+        let decision = policy
+            .serve(input(QuicMigrationTrigger::NetworkChanged, 2, available))
+            .await
+            .unwrap();
+        decision.egress.apply(&server).unwrap_err();
+        for side in [QuicMigrationSide::Ingress, QuicMigrationSide::Egress] {
+            let decision = policy
+                .serve(input(
+                    QuicMigrationTrigger::ValidatedPath(side),
+                    2,
+                    available,
+                ))
+                .await
+                .unwrap();
+            assert!(replaces(decision));
+        }
+        let decision = policy
+            .serve(input(QuicMigrationTrigger::NetworkChanged, 2, available))
+            .await
+            .unwrap();
+        decision.egress.apply(&client).unwrap();
+        let decision = policy
+            .serve(input(QuicMigrationTrigger::NetworkChanged, 2, available))
+            .await
+            .unwrap();
+        assert!(!replaces(decision));
         let policy = QuicEgressMigration::from_connector(UdpConnector::new(), request)
             .with_connected_revision(1);
         let decision = policy
