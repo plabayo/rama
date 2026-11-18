@@ -3,7 +3,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
-use jiff::{Timestamp, Zoned, civil, tz::TimeZone};
+use jiff::{Timestamp, ZonedDateTime, civil, tz::TimeZone};
 use parking_lot::Mutex;
 use rama_core::error::BoxError;
 use rama_core::futures::{Stream, stream};
@@ -65,12 +65,12 @@ const RESOLVED_IPV6: Ipv6Addr = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
 
 /// Saturday 2026-08-01, 12:30:45 UTC — pinned so the date and time
 /// predicates are deterministic.
-fn pinned_now() -> Zoned {
+fn pinned_now() -> ZonedDateTime {
     // a fixed civil timestamp in UTC always converts
     civil::date(2026, 8, 1)
         .at(12, 30, 45, 0)
-        .to_zoned(TimeZone::UTC)
-        .unwrap_or_else(|_| Timestamp::UNIX_EPOCH.to_zoned(TimeZone::UTC))
+        .to_zoned_datetime(TimeZone::UTC)
+        .unwrap_or_else(|_| Timestamp::UNIX_EPOCH.to_zoned_datetime(TimeZone::UTC))
 }
 
 fn env() -> PacEnv {

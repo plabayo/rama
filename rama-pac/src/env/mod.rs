@@ -6,7 +6,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use jiff::Zoned;
+use jiff::ZonedDateTime;
 use rama_core::error::{BoxError, BoxErrorExt};
 use rama_core::telemetry::tracing;
 use rama_dns::client::{
@@ -102,7 +102,7 @@ impl<T: JsArg> JsArg for Lenient<T> {
 }
 
 /// The clock a PAC environment reads the current time from.
-pub type PacClock = Arc<dyn Fn() -> Zoned + Send + Sync + 'static>;
+pub type PacClock = Arc<dyn Fn() -> ZonedDateTime + Send + Sync + 'static>;
 
 /// Builds the PAC javascript environment.
 ///
@@ -411,7 +411,7 @@ impl PacEnv {
             .unwrap_or_else(|| GlobalDnsResolver::new().into_box_dns_address_resolver());
         let state = Arc::new(PacBudgetState::default());
         let bridge = PacDnsBridge::new(runtime, resolver, self.dns_timeout, state.clone());
-        let clock = self.clock.unwrap_or_else(|| Arc::new(Zoned::now));
+        let clock = self.clock.unwrap_or_else(|| Arc::new(ZonedDateTime::now));
 
         Ok(PacRuntimeBuilder {
             runtime: register_host_fns(

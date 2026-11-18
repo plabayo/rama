@@ -238,10 +238,10 @@ pub(in crate::protocols::rss) fn write_rss2_item<W: std::io::Write>(
 pub(in crate::protocols::rss) fn format_rss2_date(ts: &Timestamp) -> String {
     use jiff::fmt::rfc2822;
     use jiff::tz::TimeZone;
-    let zdt = ts.to_zoned(TimeZone::UTC);
+    let zdt = ts.to_zoned_datetime(TimeZone::UTC);
     let mut buf = String::new();
     if rfc2822::DateTimePrinter::new()
-        .print_zoned(&zdt, &mut buf)
+        .print_zoned_datetime(&zdt, &mut buf)
         .is_ok()
     {
         buf
