@@ -45,7 +45,7 @@ pub use sni::{SniPrefixedIo, SniRequest, SniRouter};
 /// instead. Capture consumers can retain both as a matched pair, preserving the
 /// wire offer alongside the effective inner.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 #[non_exhaustive]
 pub struct EchServerObservation {
     pub outer: ClientHello,
@@ -61,7 +61,7 @@ impl EchServerObservation {
 /// Actual ECH acceptance on an ingress server handshake. Kept separate from
 /// client acceptance so ingress observations cannot satisfy egress pool policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 #[non_exhaustive]
 pub struct ServerEchAccepted(pub bool);
 

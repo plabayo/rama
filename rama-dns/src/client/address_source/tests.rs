@@ -145,8 +145,32 @@ impl DnsAddressResolver for DelayedResolver {
         &self,
         _: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Infallible>> + Send + '_ {
-        stream::empty()
+        stream::iter([Ok(Ipv6Addr::LOCALHOST)])
     }
+}
+
+#[tokio::test]
+async fn cached_disallowed_aaaa_preserves_ipv4_hint_while_a_is_pending() {
+    let ready = Arc::new(tokio::sync::Notify::new());
+    let hint = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+    let source = DnsAddressSource::new(DelayedResolver(ready.clone()), domain()).with_hints([hint]);
+    let extensions = Extensions::new();
+    extensions.insert(ConnectIpMode::Ipv4);
+    let mut addresses = source.stream(&extensions);
+    assert_eq!(
+        addresses.next().await.unwrap().unwrap(),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    );
+    assert_eq!(
+        addresses.next().now_or_never().unwrap().unwrap().unwrap(),
+        hint
+    );
+    ready.notify_one();
+    assert_eq!(
+        addresses.next().await.unwrap().unwrap(),
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    );
+    assert!(addresses.next().await.is_none());
 }
 
 #[tokio::test]

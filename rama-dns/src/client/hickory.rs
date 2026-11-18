@@ -12,7 +12,8 @@ use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::{
     ResolverBuilder, TokioResolver,
     config::{CLOUDFLARE, GOOGLE, QUAD9, ResolverConfig},
-    net::runtime::TokioRuntimeProvider,
+    net::{DnsError, NetError, runtime::TokioRuntimeProvider},
+    proto::op::ResponseCode,
     proto::rr::{
         Name, RData, RecordType as HickoryRecordType,
         rdata::{A, AAAA},
@@ -415,12 +416,28 @@ impl HickoryDnsResolver {
                 name_from_domain(domain),
                 "lookup service binding: create name from domain"
             );
-            let lookup = try_or_yield!(
-                yielder,
-                self.0.lookup(name.clone(), record_type).await,
-                "resolve service binding record(s) for name",
-                "name" = name
-            );
+            let lookup = match self.0.lookup(name.clone(), record_type).await {
+                Ok(lookup) => lookup,
+                // Hickory also uses NoRecordsFound for referrals. Only terminal
+                // negative answers establish that this RRset is empty.
+                Err(NetError::Dns(DnsError::NoRecordsFound(records)))
+                    if records.response_code == ResponseCode::NXDomain
+                        || (records.response_code == ResponseCode::NoError
+                            && (records.soa.is_some() || records.ns.is_none())) =>
+                {
+                    return;
+                }
+                Err(error) => {
+                    yielder
+                        .yield_item(
+                            Err(error)
+                                .context("resolve service binding record(s) for name")
+                                .context_debug_field("name", name),
+                        )
+                        .await;
+                    return;
+                }
+            };
             let bindings = decode_hickory_records(record_type, lookup.answers());
             let bindings = match bindings {
                 Ok(bindings) => bindings,
@@ -540,6 +557,34 @@ mod tests {
         Record,
         rdata::svcb::{Alpn, EchConfigList, IpHint, Mandatory, Unknown},
     };
+    use rama_core::futures::StreamExt as _;
+
+    #[tokio::test]
+    async fn negative_service_binding_answers_are_empty_but_lookup_failures_propagate() {
+        let resolver = HickoryDnsResolver::builder()
+            .with_config(ResolverConfig::from_name_servers(vec![]))
+            .try_build()
+            .unwrap();
+        // Hickory synthesizes NODATA for non-address queries under localhost
+        // and NXDOMAIN under invalid, even with no upstream servers.
+        for name in ["test.localhost.", "test.invalid."] {
+            let domain = Domain::from_static(name);
+            assert!(
+                std::pin::pin!(resolver.lookup_https(domain.clone()))
+                    .next()
+                    .await
+                    .is_none()
+            );
+            assert!(
+                std::pin::pin!(resolver.lookup_svcb(domain))
+                    .next()
+                    .await
+                    .is_none()
+            );
+        }
+        let errors = resolver.lookup_https(Domain::from_static("example.org."));
+        assert!(std::pin::pin!(errors).next().await.unwrap().is_err());
+    }
 
     #[test]
     fn typed_service_binding_matches_wire_validation_for_every_parameter() {
