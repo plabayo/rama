@@ -841,6 +841,7 @@ jobs:
       - test-native-relay-contract
       - test-android-on-device
       - cargo-deny-advisories
+      - test-masque-interop-curl
     steps:
       - name: Require every daily check to succeed
         env:
@@ -848,11 +849,16 @@ jobs:
           ONLY: ${{ inputs.only }}
         run: |
           if [ -z "$ONLY" ]; then
-            echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
+            # The experimental curl peer is optional for a full daily run.
+            jq -e 'del(."test-masque-interop-curl") | all(.[]; .result == "success")' <<< "$RESULTS"
           else
-            # Jobs a manual run left out are skipped; at least one named job must have run.
-            echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")
-              and any(to_entries[]; .key != "precheck-rust" and .value.result == "success")'
+            # Each named check must have succeeded, as must any prerequisites that ran.
+            jq -e --arg only "$ONLY" '
+              . as $jobs | ($only | ascii_downcase | split(" ") | map(select(length > 0))) as $requested
+              | ($requested | length > 0)
+                and all($requested[]; $jobs[.].result == "success")
+                and all($jobs[]; .result == "success" or .result == "skipped")
+            ' <<< "$RESULTS"
           fi
 
   test-browser-profiles:
