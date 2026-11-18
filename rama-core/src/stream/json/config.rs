@@ -1,5 +1,6 @@
+use crate::extensions::Extension;
 use core::num::NonZeroUsize;
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{macros::generate_set_and_with, octets::kib};
 
 /// Default for [`ParseConfig::with_max_line_bytes`]: far above any line a real peer sends.
 pub const DEFAULT_MAX_LINE_BYTES: NonZeroUsize =
@@ -98,6 +99,35 @@ impl ParseConfig {
         /// A new config with all the same values as this one, except the max-line-bytes.
         pub fn max_line_bytes(mut self, max_line_bytes: Option<NonZeroUsize>) -> Self {
             self.max_line_bytes = max_line_bytes;
+            self
+        }
+    }
+}
+
+/// Default maximum encoded size of one element in a streamed JSON array.
+pub const DEFAULT_MAX_ELEMENT_BYTES: NonZeroUsize =
+    NonZeroUsize::new(kib(32)).expect("32 KiB is positive");
+
+/// Bounds how many encoded bytes can be buffered for a single JSON array element.
+#[derive(Debug, Clone, Copy, Extension)]
+#[extension(tags(http))]
+pub struct ArrayParseConfig {
+    pub(crate) max_element_bytes: NonZeroUsize,
+}
+
+impl Default for ArrayParseConfig {
+    fn default() -> Self {
+        Self {
+            max_element_bytes: DEFAULT_MAX_ELEMENT_BYTES,
+        }
+    }
+}
+
+impl ArrayParseConfig {
+    generate_set_and_with! {
+        /// Set the per-element byte limit, excluding whitespace surrounding the element.
+        pub fn max_element_bytes(mut self, max_element_bytes: NonZeroUsize) -> Self {
+            self.max_element_bytes = max_element_bytes;
             self
         }
     }

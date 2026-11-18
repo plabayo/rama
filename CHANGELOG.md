@@ -796,6 +796,10 @@ as a compiled, compressed binary, so loading it only decodes.
   * Added a push-driven SSE `EventDecoder` with line and event limits and a
     lenient resync mode, usable by proxies that inspect a stream while
     forwarding it (#1184, #1190).
+  * Added `JsonArrayReadStream`, which reads a top-level JSON array one element
+    at a time with a per-element limit of 32 KiB by default
+    (`ArrayParseConfig`), through `Body::into_json_array_stream`,
+    `Response::into_json_array_stream` or the `JsonArrayItems<T>` extractor.
   * Added a sans-IO `multipart/form-data` codec
     (`rama::http::protocols::multipart`) that replaces `multer` and lets a proxy
     rewrite a form in flight without buffering it (#1328, #1336).
@@ -917,6 +921,9 @@ as a compiled, compressed binary, so loading it only decodes.
   in-memory proxy database filters by transport without scanning every match
   (#1140, #1176, #1184, #1301, #1325, #1328, #1336, #1348; #1240 by Abdelkader
   Boudih; #1268 by Brecht Stamper).
+* `try_into_json_streaming` parses bodies up to 16 KiB in the calling task.
+  Larger bodies are parsed on a blocking thread fed through a bounded channel,
+  which stops once the future is dropped.
 * Endpoint diagnostics explain the `From<Rejection>` requirement, and
   streaming-body plumbing is shared across the rewrite and capture layers
   (#1189, #1244, by Abdelkader Boudih).

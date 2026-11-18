@@ -1,15 +1,16 @@
-//! ndjson support in rama
-//!
-//! Newline Delimited Json streams.
-//!
-//! Use SSE If you can, ndjson if you must.
+//! Streaming readers for JSON arrays and newline-delimited JSON.
 
+mod array;
 mod config;
-pub use config::{DEFAULT_MAX_LINE_BYTES, EmptyLineHandling, ParseConfig};
+pub use config::{
+    ArrayParseConfig, DEFAULT_MAX_ELEMENT_BYTES, DEFAULT_MAX_LINE_BYTES, EmptyLineHandling,
+    ParseConfig,
+};
 
 mod engine;
 
 mod io;
+pub use io::array::JsonArrayReadStream;
 pub use io::read::JsonReadStream;
 pub use io::write::JsonWriteStream;
 
