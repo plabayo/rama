@@ -6,7 +6,7 @@
 //! covers the weekend; the hour-only `timeRange` pair does not, matching
 //! the reference implementations.
 
-use jiff::{Zoned, civil::Weekday, tz::TimeZone};
+use jiff::{ZonedDateTime, civil::Weekday, tz::TimeZone};
 
 const WEEKDAYS: [(&str, Weekday); 7] = [
     ("SUN", Weekday::Sunday),
@@ -31,7 +31,7 @@ fn split_gmt(args: &[String]) -> (&[String], Option<TimeZone>) {
     }
 }
 
-fn in_zone(now: &Zoned, zone: Option<TimeZone>) -> Zoned {
+fn in_zone(now: &ZonedDateTime, zone: Option<TimeZone>) -> ZonedDateTime {
     match zone {
         Some(zone) => now.with_time_zone(zone),
         None => now.clone(),
@@ -62,7 +62,7 @@ fn in_wrapping_range<T: PartialOrd + Copy>(value: T, from: T, to: T) -> bool {
 }
 
 /// `weekdayRange(wd1, [wd2], [gmt])`.
-pub(super) fn weekday_range(now: &Zoned, args: &[String]) -> bool {
+pub(super) fn weekday_range(now: &ZonedDateTime, args: &[String]) -> bool {
     let (args, zone) = split_gmt(args);
     let now = in_zone(now, zone);
     let today = now.weekday();
@@ -83,7 +83,7 @@ pub(super) fn weekday_range(now: &Zoned, args: &[String]) -> bool {
 
 /// `dateRange(...)`: day, month and/or year bounds, in any of the
 /// documented arities.
-pub(super) fn date_range(now: &Zoned, args: &[String]) -> bool {
+pub(super) fn date_range(now: &ZonedDateTime, args: &[String]) -> bool {
     let (args, zone) = split_gmt(args);
     let now = in_zone(now, zone);
     let (day, month_now, year) = (now.day(), now.month(), now.year());
@@ -152,7 +152,7 @@ impl DatePart {
 }
 
 /// `timeRange(...)`: hour, hour+minute or hour+minute+second bounds.
-pub(super) fn time_range(now: &Zoned, args: &[String]) -> bool {
+pub(super) fn time_range(now: &ZonedDateTime, args: &[String]) -> bool {
     let (args, zone) = split_gmt(args);
     let now = in_zone(now, zone);
     let (hour, minute, second) = (
@@ -198,7 +198,7 @@ fn as_seconds(hour: i32, minute: i32, second: i32) -> i64 {
 mod tests {
     use super::*;
 
-    fn at(stamp: &str) -> Zoned {
+    fn at(stamp: &str) -> ZonedDateTime {
         // fixed offset so the tests do not depend on the host time zone
         stamp.parse().unwrap()
     }

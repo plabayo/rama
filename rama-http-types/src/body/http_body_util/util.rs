@@ -90,8 +90,12 @@ impl<T: Buf> Buf for BufList<T> {
         }
         let mut vecs = 0;
         for buf in &self.bufs {
-            vecs += buf.chunks_vectored(&mut dst[vecs..]);
-            if vecs == dst.len() {
+            let n = buf.chunks_vectored(&mut dst[vecs..]);
+            let covered: usize = dst[vecs..vecs + n].iter().map(|slice| slice.len()).sum();
+            vecs += n;
+            // Slices of a later buffer may only follow a fully covered one, or they
+            // would be written ahead of the bytes this buffer still holds back.
+            if vecs == dst.len() || covered < buf.remaining() {
                 break;
             }
         }
@@ -206,6 +210,52 @@ mod tests {
         buf.push(b"Hello World" as &[_]);
         assert_eq!(buf.copy_to_bytes(5), "Hello");
         assert_eq!(buf.chunk(), b" World");
+    }
+
+    /// A buffer that hands out one byte per chunk and keeps the default `chunks_vectored`.
+    struct ByteWise(&'static [u8]);
+
+    impl Buf for ByteWise {
+        fn remaining(&self) -> usize {
+            self.0.len()
+        }
+
+        fn chunk(&self) -> &[u8] {
+            &self.0[..self.0.len().min(1)]
+        }
+
+        fn advance(&mut self, cnt: usize) {
+            self.0 = &self.0[cnt..];
+        }
+    }
+
+    #[test]
+    fn vectored_slices_stop_at_a_partially_covered_buffer() {
+        let mut bufs = BufList::new();
+        bufs.push(ByteWise(b"abc"));
+        bufs.push(ByteWise(b"def"));
+
+        let mut written = Vec::new();
+        while bufs.has_remaining() {
+            let mut dst = [IoSlice::new(&[]); 4];
+            let n = bufs.chunks_vectored(&mut dst);
+            let before = written.len();
+            for slice in &dst[..n] {
+                written.extend_from_slice(slice);
+            }
+            bufs.advance(written.len() - before);
+        }
+        assert_eq!(written, b"abcdef");
+    }
+
+    #[test]
+    fn vectored_slices_span_fully_covered_buffers() {
+        let bufs = hello_world_buf();
+        let mut dst = [IoSlice::new(&[]); 4];
+        assert_eq!(bufs.chunks_vectored(&mut dst), 3);
+        assert_eq!(&*dst[0], b"Hello");
+        assert_eq!(&*dst[1], b" ");
+        assert_eq!(&*dst[2], b"World");
     }
 
     #[test]

@@ -827,6 +827,9 @@ enum WriteStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::h1::encode::{EncodedBuf, Encoder};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use rama_utils::octets::mib;
@@ -891,6 +894,101 @@ mod tests {
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
+    }
+
+    /// IO that takes vectored writes and records the bytes in wire order.
+    struct VectoredSink(Arc<Mutex<Vec<u8>>>);
+
+    impl AsyncRead for VectoredSink {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for VectoredSink {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.poll_write_vectored(cx, &[IoSlice::new(buf)])
+        }
+
+        fn poll_write_vectored(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            bufs: &[IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            let mut written = self.0.lock();
+            let before = written.len();
+            for buf in bufs {
+                written.extend_from_slice(buf);
+            }
+            Poll::Ready(Ok(written.len() - before))
+        }
+
+        fn is_write_vectored(&self) -> bool {
+            true
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A body buffer that hands out one byte per chunk and keeps the default `chunks_vectored`.
+    struct ByteWise(&'static [u8]);
+
+    impl Buf for ByteWise {
+        fn remaining(&self) -> usize {
+            self.0.len()
+        }
+
+        fn chunk(&self) -> &[u8] {
+            &self.0[..self.0.len().min(1)]
+        }
+
+        fn advance(&mut self, cnt: usize) {
+            self.0 = &self.0[cnt..];
+        }
+    }
+
+    async fn queued_wire_bytes(mut encoder: Encoder) -> Vec<u8> {
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let io = rama_core::ServiceInput::new(VectoredSink(written.clone()));
+        let mut buffered = Buffered::<_, EncodedBuf<ByteWise>>::new(io);
+        assert!(matches!(buffered.write_buf.strategy, WriteStrategy::Queue));
+
+        buffered.headers_buf().extend(b"head\r\n\r\n");
+        buffered.buffer(encoder.encode(ByteWise(b"hello")).unwrap());
+        buffered.buffer(encoder.encode(ByteWise(b"world")).unwrap());
+        buffered.flush().await.unwrap();
+
+        written.lock().clone()
+    }
+
+    #[tokio::test]
+    async fn queued_segmented_sized_body_keeps_wire_order() {
+        assert_eq!(
+            queued_wire_bytes(Encoder::length(10)).await,
+            b"head\r\n\r\nhelloworld"
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_segmented_chunked_body_keeps_wire_order() {
+        assert_eq!(
+            queued_wire_bytes(Encoder::chunked()).await,
+            b"head\r\n\r\n5\r\nhello\r\n5\r\nworld\r\n"
+        );
     }
 
     #[test]

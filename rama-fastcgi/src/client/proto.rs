@@ -1,6 +1,7 @@
 //! FastCGI wire protocol: sending requests and reading responses.
 
 use rama_core::error::{BoxError, BoxErrorExt as _};
+use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use rama_core::bytes::{Bytes, BytesMut};
@@ -218,12 +219,7 @@ where
                             ),
                         });
                     }
-                    let start = stdout.len();
-                    stdout.resize(start + cl, 0);
-                    stream
-                        .read_exact(&mut stdout[start..])
-                        .await
-                        .map_err(ClientError::io)?;
+                    read_content(stream, &mut stdout, cl).await?;
                     skip_padding(stream, hdr.padding_length).await?;
                 }
             }
@@ -235,12 +231,7 @@ where
                     let remaining = options.max_stderr_bytes.saturating_sub(stderr.len());
                     let take = cl.min(remaining);
                     if take > 0 {
-                        let start = stderr.len();
-                        stderr.resize(start + take, 0);
-                        stream
-                            .read_exact(&mut stderr[start..])
-                            .await
-                            .map_err(ClientError::io)?;
+                        read_content(stream, &mut stderr, take).await?;
                     }
                     if cl > take {
                         stderr_truncated = true;
@@ -350,6 +341,21 @@ where
 {
     let total = len as u64 + padding as u64;
     discard(r, total).await.map_err(ClientError::io)
+}
+
+/// Append exactly `len` bytes of record content to `dst`, read into its spare capacity.
+async fn read_content<R>(r: &mut R, dst: &mut BytesMut, len: usize) -> Result<(), ClientError>
+where
+    R: AsyncRead + Unpin,
+{
+    dst.reserve(len);
+    let mut content = r.take(len as u64);
+    while content.limit() > 0 {
+        if content.read_buf(dst).await.map_err(ClientError::io)? == 0 {
+            return Err(ClientError::io(io::ErrorKind::UnexpectedEof.into()));
+        }
+    }
+    Ok(())
 }
 
 async fn skip_padding<R>(r: &mut R, padding_length: u8) -> Result<(), ClientError>

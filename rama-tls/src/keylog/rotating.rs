@@ -100,7 +100,7 @@ impl RotationPeriod {
         // making progress rather than panicking.
         match Timestamp::from_second(bucket * self.bucket_size_seconds()) {
             Ok(ts) => ts
-                .to_zoned(TimeZone::UTC)
+                .to_zoned_datetime(TimeZone::UTC)
                 .strftime(self.strftime_pattern())
                 .to_string(),
             Err(_) => format!("bucket-{bucket}"),
@@ -110,7 +110,7 @@ impl RotationPeriod {
     fn parse_bucket_suffix(self, suffix: &str) -> Option<i64> {
         let parsed = jiff::fmt::strtime::parse(self.strftime_pattern(), suffix).ok()?;
         let civil = parsed.to_datetime().ok()?;
-        let ts = civil.to_zoned(TimeZone::UTC).ok()?.timestamp();
+        let ts = civil.to_zoned_datetime(TimeZone::UTC).ok()?.timestamp();
         Some(self.bucket_from_timestamp(ts))
     }
 }

@@ -28,6 +28,11 @@ impl Buf for RawBytes {
     fn advance(&mut self, cnt: usize) {
         self.0.advance(cnt);
     }
+
+    #[inline]
+    fn copy_to_bytes(&mut self, len: usize) -> Bytes {
+        self.0.copy_to_bytes(len)
+    }
 }
 
 /// A single protobuf message field, abstracted over how its payload is (de)serialized.

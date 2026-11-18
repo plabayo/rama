@@ -187,45 +187,21 @@ rama_utils::macros::error::static_str_error! {
 }
 
 impl Codec for VarInt {
-    #[expect(
-        clippy::unwrap_used,
-        clippy::unreachable,
-        reason = "`buf[..2]`/`buf[..4]` are fixed-size prefixes of the 8-byte array and the two-bit tag makes the match exhaustive"
-    )]
     fn decode<B: Buf>(r: &mut B) -> coding::Result<Self> {
-        if !r.has_remaining() {
+        // The two-bit tag is peeked, so a truncated integer leaves `r` untouched.
+        let Some(&first) = r.chunk().first() else {
             return Err(UnexpectedEnd::new());
-        }
-        let mut buf = [0; 8];
-        buf[0] = r.get_u8();
-        let tag = buf[0] >> 6;
-        buf[0] &= 0b0011_1111;
-        let x = match tag {
-            0b00 => u64::from(buf[0]),
-            0b01 => {
-                if r.remaining() < 1 {
-                    return Err(UnexpectedEnd::new());
-                }
-                r.copy_to_slice(&mut buf[1..2]);
-                u64::from(u16::from_be_bytes(buf[..2].try_into().unwrap()))
-            }
-            0b10 => {
-                if r.remaining() < 3 {
-                    return Err(UnexpectedEnd::new());
-                }
-                r.copy_to_slice(&mut buf[1..4]);
-                u64::from(u32::from_be_bytes(buf[..4].try_into().unwrap()))
-            }
-            0b11 => {
-                if r.remaining() < 7 {
-                    return Err(UnexpectedEnd::new());
-                }
-                r.copy_to_slice(&mut buf[1..8]);
-                u64::from_be_bytes(buf)
-            }
-            _ => unreachable!(),
         };
-        Ok(Self(x))
+        let x = match first >> 6 {
+            0b00 => {
+                r.advance(1);
+                Ok(u64::from(first))
+            }
+            0b01 => r.try_get_u16().map(|x| u64::from(x) & ((1 << 14) - 1)),
+            0b10 => r.try_get_u32().map(|x| u64::from(x) & ((1 << 30) - 1)),
+            _ => r.try_get_u64().map(|x| x & ((1 << 62) - 1)),
+        };
+        x.map(Self).map_err(coding::unexpected_end)
     }
 
     #[expect(
@@ -250,10 +226,10 @@ impl Codec for VarInt {
 
 /// Incremental, fragmentation-safe decoder for a single QUIC variable-length integer.
 ///
-/// [`VarInt`]'s [`Codec::decode`](crate::coding::Codec::decode) consumes the leading byte before it
-/// can report that a multi-byte integer was truncated, so retrying it on input delivered in
-/// arbitrary chunks — an HTTP/3 stream, for instance — silently loses framing. This decoder retains
-/// partial state across calls instead: feed it whatever bytes are currently available and it
+/// [`VarInt`]'s [`Codec::decode`](crate::coding::Codec::decode) needs the whole integer in one
+/// buffer and fails on a truncated one, so it cannot follow input delivered in arbitrary
+/// chunks — an HTTP/3 stream, for instance. This decoder retains partial state across calls
+/// instead: feed it whatever bytes are currently available and it
 /// consumes only the bytes belonging to the integer, returning [`None`] when it needs more. It
 /// never consumes a byte it cannot account for, so the same decoder can be driven from
 /// non-contiguous buffers. After it returns [`Some`], it resets and is ready for the next integer.
@@ -376,6 +352,32 @@ mod incremental_tests {
     fn encoded_widths_match_samples() {
         for (v, width) in samples() {
             assert_eq!(encode(v).len(), width, "width mismatch for {v}");
+        }
+    }
+
+    #[test]
+    fn codec_decodes_every_width_and_consumes_exactly_it() {
+        for (v, width) in samples() {
+            let mut enc = encode(v);
+            enc.push(0xFF);
+            let mut buf = &enc[..];
+            assert_eq!(
+                VarInt::decode(&mut buf).ok().map(VarInt::into_inner),
+                Some(v)
+            );
+            assert_eq!(buf.len(), enc.len() - width);
+        }
+    }
+
+    #[test]
+    fn codec_leaves_a_truncated_integer_unconsumed() {
+        for (v, width) in samples() {
+            let enc = encode(v);
+            for len in 0..width {
+                let mut buf = &enc[..len];
+                VarInt::decode(&mut buf).unwrap_err();
+                assert_eq!(buf.len(), len);
+            }
         }
     }
 

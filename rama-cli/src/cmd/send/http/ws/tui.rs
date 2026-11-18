@@ -8,7 +8,7 @@ use rama::{
     telemetry::tracing,
 };
 
-use jiff::Zoned;
+use jiff::ZonedDateTime;
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     prelude::*,
@@ -56,7 +56,7 @@ struct ChatHistory {
 struct ChatMessage {
     role: Role,
     message: Utf8Bytes,
-    ts: Zoned,
+    ts: ZonedDateTime,
 }
 
 impl ChatHistory {
@@ -64,7 +64,7 @@ impl ChatHistory {
         let msg = ChatMessage {
             role: Role::Client,
             message,
-            ts: Zoned::now(),
+            ts: ZonedDateTime::now(),
         };
         self.items.push(msg);
         self.state.select_last();
@@ -74,7 +74,7 @@ impl ChatHistory {
         let msg = ChatMessage {
             role: Role::Server,
             message,
-            ts: Zoned::now(),
+            ts: ZonedDateTime::now(),
         };
         self.items.push(msg);
         self.state.select_last();

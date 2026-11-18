@@ -118,7 +118,7 @@ bitflags = "2.13"
 block2 = "0.6"
 brotli = "9"
 byteorder = "1.5"
-bytes = { version = "1", default-features = false, features = ["serde"] }
+bytes = { version = "1.12.2", default-features = false, features = ["serde"] }
 cc = "1"
 chacha20 = { version = "0.10", default-features = false }
 clap = { version = "4.6", features = ["derive", "unstable-v5", "wrap_help"] }
@@ -128,7 +128,7 @@ const_format = "0.2"
 core-foundation = "0.10"
 csv = "1.4"
 dial9 = { version = "0.5.8", default-features = false, features = ["tokio"] }
-dial9-trace-format = "0.5.4"
+dial9-trace-format = "0.5.5"
 divan = "0.1"
 fastbloom = { version = "0.17", default-features = false }
 flate2 = "1.1"
@@ -142,7 +142,7 @@ hmac = "0.13"
 honggfuzz = "0.5"
 http = "1" # interop-only (rama-http-hyperium / rama-tower); native rama Uri handles CONNECT, so no version pin needed
 http-body = "1" # interop-only (rama-http-hyperium body bridge)
-http-range-header = "1.0.0"
+http-range-header = "1.1.0"
 httparse = "1.10"
 idna = "1"
 indexmap = "2"
@@ -151,7 +151,7 @@ iri-string = "0.7"
 itertools = { version = "0.15", default-features = false }
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.7" }
-jiff = { version = "0.2.41", default-features = false, features = ["std", "serde", "perf-inline"] }
+jiff = { version = "1.0.1", default-features = false, features = ["std", "serde", "perf-inline"] }
 jni = "0.22"
 libc = "0.2"
 libfuzzer-sys = "0.4"
@@ -178,9 +178,9 @@ postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 prettyplease = "0.3"
 proc-macro-crate = "3.5"
 proc-macro2 = "1.0"
-prost = "0.14.4"
-prost-build = "0.14.4"
-prost-types = "0.14.4"
+prost = "0.14.6"
+prost-build = "0.14.6"
+prost-types = "0.14.6"
 protoc-bin-vendored = "3.3.0"
 psl = "2"
 quick-xml = "0.42"
@@ -190,6 +190,7 @@ quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.5.0", path = ".", default-features = false }
 rama-boring = { version = "0.7.2", default-features = false }
+rama-boring-sys = { version = "0.7.2", default-features = false }
 rama-boring-tokio = { version = "0.7.2", default-features = false }
 rama-core = { version = "0.5.0", path = "./rama-core", default-features = false }
 rama-crypto = { version = "0.5.0", path = "./rama-crypto", default-features = false }
@@ -240,12 +241,12 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm",
 rawzip = { version = "0.5" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "x509-parser"] }
 regex = { version = "1.13", default-features = false }
-regex-automata = { version = "0.4.18", default-features = false, features = ["hybrid", "meta", "perf", "std"] }
+regex-automata = { version = "0.4.19", default-features = false, features = ["hybrid", "meta", "perf", "std"] }
 ring = "0.17"
 rustc-hash = "2"
 rustls = { version = "0.23.46", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-pki-types = "^1"
-rustls-webpki = { version = "0.103.16", default-features = false, features = ["std"] }
+rustls-webpki = { version = "0.103.17", default-features = false, features = ["std"] }
 rustversion = "1.0"
 ryu = "1"
 schannel = "0.1"
@@ -288,9 +289,9 @@ unicode-normalization = "0.1"
 uuid = "1.29"
 venndb = "0.7"
 want = "0.3.2"
-wasmtime = { version = "49.0.5", default-features = false }
+wasmtime = { version = "49.0.6", default-features = false }
 webpki-root-certs = "1.0"
-webpki-roots = "1.0.11"
+webpki-roots = "1.0.12"
 wildcard = "0.3"
 windows-sys = "0.61"
 x509-ocsp = "0.2"
@@ -298,7 +299,7 @@ x509-ocsp-der = { package = "der", version = "0.7" }
 x509-parser = { version = "0.18", default-features = false }
 yasna = { version = "0.6", default-features = false }
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
-zstd = "0.14.3"
+zstd = "0.14.4"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
