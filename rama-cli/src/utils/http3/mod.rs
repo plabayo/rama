@@ -280,7 +280,7 @@ async fn bind_http3_with_capture(
     let mut config = ServerConfig::try_from_rama_tls_with_provider(
         &tls,
         TlsOptions::default().with_server_sessions(sessions),
-        &BoringTlsProvider,
+        &BoringTlsProvider::new(),
     )
     .context("QUIC TLS server config")?;
     config.set_transport_config(Arc::new(transport));
@@ -474,7 +474,7 @@ mod tests {
                     .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
                     .with_server_verify(ServerVerifyMode::Disable),
                 TlsOptions::default(),
-                &BoringTlsProvider,
+                &BoringTlsProvider::new(),
             )
             .unwrap();
             let connecting = client
@@ -604,7 +604,7 @@ mod tests {
                     .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
                     .with_server_verify(ServerVerifyMode::Disable),
                 TlsOptions::default(),
-                &BoringTlsProvider,
+                &BoringTlsProvider::new(),
             )
             .unwrap();
             let mut resumed = Vec::new();
@@ -761,7 +761,7 @@ mod tests {
                 .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
                 .with_server_verify(ServerVerifyMode::Disable),
             TlsOptions::default(),
-            &BoringTlsProvider,
+            &BoringTlsProvider::new(),
         )
         .unwrap();
         let connection = client

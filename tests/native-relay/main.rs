@@ -173,7 +173,7 @@ async fn relay_fixture() -> Result<(), BoxError> {
             .with_egress_transport(datagrams)
             .with_mirror_client(config.mirror)
             .into_layer(relay);
-            let peek = PeekQuicClientHelloService::new(BoringTlsProvider, terminate)
+            let peek = PeekQuicClientHelloService::new(BoringTlsProvider::new(), terminate)
                 .with_first_flight_retention(config.mirror);
             let association = DatagramToProxyBridge::new(peek, config.origin);
             let listener = UdpPacketSocket::bind("127.0.0.1:0").await?;

@@ -93,7 +93,7 @@ async fn independent_client_keeps_streams_across_mitm_path_eviction() {
             .with_migration_ingress(ingress.clone())
             .into_layer(Observe(observed.clone()));
         let inspect = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
+            BoringTlsProvider::new(),
             DatagramToProxyBridge::new(relay, origin_address),
         )
         .with_router(ingress);

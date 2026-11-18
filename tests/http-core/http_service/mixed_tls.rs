@@ -192,7 +192,7 @@ async fn rustls_stream_policy_is_independent_of_boring_quic() {
     let h3 = Http3Connector::builder(WeakScope::detached())
         .with_endpoint(endpoint.clone())
         .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
         .build()
         .await
         .unwrap();
@@ -225,7 +225,7 @@ async fn conditional_ech_reliance_uses_each_selected_backend_capability() {
         let h3 = Http3Connector::builder(WeakScope::detached())
             .with_endpoint(endpoint.clone())
             .with_tls_config(tls.clone())
-            .with_tls_provider(Arc::new(BoringTlsProvider))
+            .with_tls_provider(Arc::new(BoringTlsProvider::new()))
             .build()
             .await
             .unwrap();

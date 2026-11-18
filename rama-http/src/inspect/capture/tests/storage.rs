@@ -337,6 +337,67 @@ async fn failed_upstream_response_finishes_the_capture_as_an_error() {
     )));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_body_dropped_while_its_end_is_recorded_stays_complete() {
+    let store = test_store();
+    let hook = Arc::new(AppendTestHook::default());
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).into_layer(rama_core::service::service_fn({
+            let store = store.clone();
+            let hook = hook.clone();
+            move |request: Request| {
+                let store = store.clone();
+                let hook = hook.clone();
+                async move {
+                    *store.0.append_test_hook.lock().await = Some(hook.clone());
+                    // The empty body ends at once, but its end is still being recorded when
+                    // the reader drops it, as a relay does once the response is complete.
+                    let mut body = request.into_body();
+                    assert!(body.frame().now_or_never().is_none());
+                    drop(body);
+                    hook.resume.notify_one();
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                }
+            }
+        }));
+    service
+        .serve(
+            Request::builder()
+                .uri("http://example.test/dropped-end")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap();
+
+    let ends = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let details = store.details(1).await.unwrap();
+            let ends: Vec<_> = details
+                .records
+                .iter()
+                .filter_map(|record| match record {
+                    StoredRecord::RequestEnd { outcome } => Some(*outcome),
+                    _ => None,
+                })
+                .collect();
+            if !ends.is_empty() {
+                assert!(!details.summary.request_truncated);
+                return ends;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the request end is recorded");
+    assert_eq!(ends, [CaptureOutcome::Complete]);
+    store.replay_request(1).await.unwrap();
+}
+
 #[tokio::test]
 async fn cancelled_http_service_finalizes_its_active_exchange() {
     let store = test_store();

@@ -795,17 +795,17 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
     let stranger = identity("untrusted client");
     for (client_backend, server_backend) in [
         (
-            &BoringTlsProvider as &dyn TestTlsProvider,
-            &BoringTlsProvider as &dyn TestTlsProvider,
+            &BoringTlsProvider::new() as &dyn TestTlsProvider,
+            &BoringTlsProvider::new() as &dyn TestTlsProvider,
         ),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
         (
             &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
-            &BoringTlsProvider as &dyn TestTlsProvider,
+            &BoringTlsProvider::new() as &dyn TestTlsProvider,
         ),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
         (
-            &BoringTlsProvider as &dyn TestTlsProvider,
+            &BoringTlsProvider::new() as &dyn TestTlsProvider,
             &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
         ),
     ] {
@@ -873,8 +873,8 @@ fn peer_chains_are_in_the_summary_only_when_stored() {
     let client_auth = client_identity("client");
     for (client_backend, server_backend) in [
         (
-            &BoringTlsProvider as &dyn TestTlsProvider,
-            &BoringTlsProvider as &dyn TestTlsProvider,
+            &BoringTlsProvider::new() as &dyn TestTlsProvider,
+            &BoringTlsProvider::new() as &dyn TestTlsProvider,
         ),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
         (
@@ -990,18 +990,18 @@ async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
 
     let pairs = [
         (
-            &BoringTlsProvider as &dyn TestTlsProvider,
-            &BoringTlsProvider as &dyn TestTlsProvider,
+            &BoringTlsProvider::new() as &dyn TestTlsProvider,
+            &BoringTlsProvider::new() as &dyn TestTlsProvider,
         ),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
         (
-            &BoringTlsProvider as &dyn TestTlsProvider,
+            &BoringTlsProvider::new() as &dyn TestTlsProvider,
             &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
         ),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
         (
             &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
-            &BoringTlsProvider as &dyn TestTlsProvider,
+            &BoringTlsProvider::new() as &dyn TestTlsProvider,
         ),
     ];
     for (client_backend, server_backend) in pairs {
@@ -1137,7 +1137,7 @@ fn cached_quic_draws_resume_without_crossing_profile_policy_or_version() {
     let options = TlsOptions::default()
         .with_early_data(true)
         .with_early_data_context(b"rama-quic-test");
-    let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), options);
+    let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), options);
     let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
     for version in [Version::V1, Version::V2] {
         for (index, (profile, verify, resumed)) in [

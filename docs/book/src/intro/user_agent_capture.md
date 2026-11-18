@@ -85,9 +85,12 @@ as a desktop or mobile app talking to its own API:
 ### Limits
 
 - A client sends only TCP to an HTTP proxy: browsers and apps never use QUIC through one.
-  This captures TLS over TCP, HTTP/1.1 and HTTP/2, not HTTP/3. For HTTP/3 profiles use your
-  own fingerprinting service, or a transparent proxy that sees UDP, such as the
-  [macOS transparent proxy example](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy).
+  This captures TLS over TCP, HTTP/1.1 and HTTP/2, not HTTP/3. The exception is a client
+  that tunnels QUIC through a MASQUE proxy (`--protocol masque`, CONNECT-UDP): its HTTP/3
+  exchanges record the TLS ClientHello over QUIC, the QUIC first flight and transport
+  parameters, and the HTTP/3 settings and headers, and export as an HTTP/3 profile. Few
+  clients use a MASQUE proxy; for HTTP/3 profiles of other clients use your own
+  fingerprinting service.
 - Apps that pin their certificates, or ignore user-installed CAs (Android apps by default
   since Android 7; Firefox uses its own store), cannot be decrypted without modifying the
   device. Their TLS ClientHello and QUIC Initial are still readable in a packet capture,

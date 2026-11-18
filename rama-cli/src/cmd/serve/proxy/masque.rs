@@ -11,20 +11,26 @@ use rama::{
     extensions::ExtensionsRef,
     graceful::WeakScope,
     http::client::DefaultHttpWebClient,
-    net::address::Host,
+    io::BridgeIo,
     net::{
-        address::ProxyPathTemplate,
+        Protocol,
+        address::{Host, ProxyPathTemplate},
         client::{ConnectRequest, ConnectorService},
+        stream::SocketAddresses,
     },
     proxy::masque::connect_udp::{
         ConnectUdpConnector, ConnectUdpService, DestinationScopePolicy, MaybeTunneledSocket,
     },
-    quic::proxy::InputWithQuicClientHello,
+    quic::{Connection, proxy::InputWithQuicClientHello},
     tls::client::TlsClientConfig,
     udp::{UdpPacketSocket, proxy::UdpConnector},
 };
 
-use super::{InspectionState, MitmPolicy, upstream::UpstreamProxyConfig};
+use super::{
+    InspectionState, MitmPolicy,
+    capture::{CaptureStore, ConnectionId},
+    upstream::UpstreamProxyConfig,
+};
 
 /// A tunnel method MASQUE ingress serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -117,5 +123,39 @@ where
             .serve(input.input)
             .await
             .map_err(Into::into)
+    }
+}
+
+/// Records each terminated QUIC connection as an inspector connection, as a TCP connection is
+/// recorded, so its HTTP/3 exchanges share the QUIC and TLS facts published on it.
+#[derive(Debug, Clone)]
+pub(super) struct ObserveQuicConnectionService<S> {
+    pub(super) capture: CaptureStore,
+    pub(super) inner: S,
+}
+
+impl<S> Service<BridgeIo<Connection, Connection>> for ObserveQuicConnectionService<S>
+where
+    S: Service<BridgeIo<Connection, Connection>>,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, input: BridgeIo<Connection, Connection>) -> Result<S::Output, S::Error> {
+        let BridgeIo(ingress, _) = &input;
+        let id = self.capture.begin_connection_if_enabled(
+            Some(SocketAddresses {
+                local_address: None,
+                peer_address: ingress.remote_address().into(),
+            }),
+            Protocol::HTTPS,
+            None,
+        );
+        let _guard = id.map(|id| {
+            ingress.extensions().insert(ConnectionId(id));
+            self.capture.confirm_connection_if_enabled(id);
+            self.capture.connection_guard(id)
+        });
+        self.inner.serve(input).await
     }
 }

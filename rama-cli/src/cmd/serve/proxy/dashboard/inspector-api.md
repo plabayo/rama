@@ -48,7 +48,9 @@ curl -H "Authorization: Bearer $TOKEN" "$INSPECTOR/api/control"
 5. Export `/api/har/export?ids=1,2` and `/api/profiles.json?ids=1,2`, or select whole
    connections with `connection_ids=3,4`. These are internal IDs from API responses;
    the GUI display numbers are separate. Exports describe actual captured traffic.
-   Profile export reports an error if observations cannot form a complete profile.
+   Profile export reports an error if observations cannot form a complete profile;
+   an HTTP/3 exchange whose QUIC or HTTP/3 observations are incomplete is left out
+   instead, and the rest of the selection still exports.
 
 The human can use the GUI throughout this workflow. Filters and selections stay
 local to each GUI tab; traffic decisions, scope and capture lifecycle are shared.
@@ -78,6 +80,9 @@ Capture byte limits apply to stored records. Summaries and protocol observations
 also use memory, bounded by retained connection/exchange counts and protocol limits.
 User-agent profile headers are read from the stored request head on export; TLS
 ClientHello data is shared per connection, rather than copied into each exchange.
+Replay offers the captured ClientHello again: over TCP as captured, and over QUIC
+as the QUIC MITM relay mirrors a client's hello to its origin. A QUIC ClientHello
+the native TLS engine cannot reproduce is replaced by the replay client's own.
 Body and message downloads stream raw bytes; HAR encodes binary content as base64.
 Traffic rules accept two directions: `ingress` (client to server) and `egress`
 (server to client), case-insensitively. A message's `kind` is null for HTTP heads;

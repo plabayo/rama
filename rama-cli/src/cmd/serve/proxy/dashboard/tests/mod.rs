@@ -45,6 +45,18 @@ pub(super) fn test_state() -> DashboardState {
 }
 
 pub(super) async fn capture_request_for_replay(state: &DashboardState, uri: &str) {
+    capture_for_replay(
+        state,
+        Request::builder()
+            .uri(uri)
+            .header("proxy-authorization", "Basic captured-secret")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+}
+
+async fn capture_for_replay(state: &DashboardState, request: Request) {
     let capture = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
         rama::service::service_fn(async |request: Request| {
             request.into_body().collect().await.unwrap();
@@ -52,13 +64,7 @@ pub(super) async fn capture_request_for_replay(state: &DashboardState, uri: &str
         }),
     );
     capture
-        .serve(
-            Request::builder()
-                .uri(uri)
-                .header("proxy-authorization", "Basic captured-secret")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .serve(request)
         .await
         .unwrap()
         .into_body()

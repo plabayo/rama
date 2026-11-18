@@ -28,7 +28,7 @@ fn providers() -> Vec<Arc<dyn QuicClientConfigProvider>> {
     vec![
         default_tls_provider().unwrap(),
         #[cfg(feature = "boring")]
-        Arc::new(BoringTlsProvider),
+        Arc::new(BoringTlsProvider::new()),
     ]
 }
 

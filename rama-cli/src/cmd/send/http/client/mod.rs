@@ -378,7 +378,7 @@ async fn new_inner_client(
     // Otherwise constructing their combined future can exhaust a worker stack.
     // This boundary is only crossed for a new connection; pool hits bypass it.
     let builder = if uses_quic(cfg, &uri) {
-        let provider = Arc::new(BoringTlsProvider);
+        let provider = Arc::new(BoringTlsProvider::new());
         let compiler =
             captured.then(|| QuicProfileCompiler::new(tls_config.clone(), provider.clone()));
         let connector = Http3Connector::builder(scope.clone())

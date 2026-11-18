@@ -13,6 +13,8 @@ mod replay;
 mod tests;
 
 #[cfg(test)]
+use rama::tls::client::ServerVerifyMode;
+#[cfg(test)]
 use std::ops::DerefMut;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -81,10 +83,10 @@ use rama::{
     service::BoxService,
     stream::io::ReaderStream,
     tls::{
-        boring::client::EmulateTlsProfileLayer,
+        client::TlsClientConfig,
         inspect::{CapturedTlsParameters, TlsObservation},
     },
-    ua::{inspect::UserAgentObservation, profile::model::tls::TlsProfile},
+    ua::inspect::UserAgentObservation,
     utils::{
         octets::{kib, kib_u64, mib},
         str::{NonEmptyStr, arcstr::ArcStr},
@@ -122,6 +124,17 @@ const MAX_VISIBLE_CONNECTIONS: usize = 100;
 const MAX_VISIBLE_EXCHANGES: usize = 250;
 const MAX_DASHBOARD_REQUEST_BODY: usize = mib(1);
 const REPLAY_PROTOCOL: Protocol = Protocol::from_static("replay");
+
+/// Replays verify their origins as any client would.
+#[cfg(not(test))]
+fn replay_tls_config() -> TlsClientConfig {
+    TlsClientConfig::default_http()
+}
+/// Test origins are self-signed.
+#[cfg(test)]
+fn replay_tls_config() -> TlsClientConfig {
+    TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable)
+}
 
 #[cfg(not(test))]
 const LIVE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
@@ -198,7 +211,8 @@ impl DashboardState {
     ) -> Result<Self, BoxError> {
         let (ui_changes, _) = watch::channel(0);
         let inspection = capture.inspection_state();
-        let replay_client = replay_client(capture.clone(), tcp_options, upstream)?;
+        let replay_client =
+            replay_client(capture.clone(), tcp_options, upstream, replay_tls_config())?;
         Ok(Self {
             #[cfg(test)]
             render_delay: Duration::ZERO,

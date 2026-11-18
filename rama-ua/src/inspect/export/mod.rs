@@ -13,6 +13,7 @@ use super::*;
 pub struct ProfileExport {
     captures: VecDeque<ExchangeCapture>,
     connection_owners: HashMap<u64, u64>,
+    skipped_http3_exchanges: u64,
     #[cfg(feature = "tls")]
     skipped_tls_connections: u64,
 }
@@ -59,6 +60,7 @@ impl ProfileExport {
         Self {
             captures: captures.into(),
             connection_owners,
+            skipped_http3_exchanges: 0,
             #[cfg(feature = "tls")]
             skipped_tls_connections: 0,
         }
@@ -66,6 +68,12 @@ impl ProfileExport {
 
     pub fn is_empty(&self) -> bool {
         self.captures.is_empty()
+    }
+
+    /// HTTP/3 exchanges whose QUIC or HTTP/3 evidence was incomplete, such as a connection
+    /// served without QUIC observation, and so exported nothing.
+    pub fn skipped_http3_exchanges(&self) -> u64 {
+        self.skipped_http3_exchanges
     }
 
     /// Connections whose TLS evidence was incomplete, such as accepted ECH

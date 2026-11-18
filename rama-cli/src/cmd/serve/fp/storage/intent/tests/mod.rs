@@ -1032,7 +1032,7 @@ async fn h3_wire_reports() -> (CollectionQueue, CollectionReceiver) {
     let h3 = Http3Connector::builder(WeakScope::detached())
         .with_endpoint(client_endpoint.clone())
         .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
         .build()
         .await
         .unwrap();

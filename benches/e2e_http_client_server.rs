@@ -742,7 +742,7 @@ fn load_client(
 fn load_h3_client() -> impl Service<Request, Output = Response, Error = OpaqueError> + Clone {
     let h3 = Http3Connector::builder(WeakScope::detached())
         .with_tls_config(load_tls_client_config(ApplicationProtocol::HTTP_3))
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
         .build_lazy()
         .unwrap();
     EasyHttpWebClient::connector_builder()

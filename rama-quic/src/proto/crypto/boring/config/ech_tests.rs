@@ -176,7 +176,7 @@ async fn quic_connector_publishes_acceptance_before_required_reuse() {
         let connector = QuicConnector::new(
             SharedQuicEndpoint::supplied(endpoint.clone(), WeakScope::detached()),
             tls,
-            Arc::new(BoringTlsProvider),
+            Arc::new(BoringTlsProvider::new()),
         );
         let request = ConnectRequest::new(HostWithPort::localhost_domain_with_port(address.port()));
         request.extensions().insert(ConnectorTarget(address.into()));
@@ -238,7 +238,7 @@ async fn quic_connector_retries_authenticated_ech_rejection_once() {
         let connector = QuicConnector::new(
             SharedQuicEndpoint::supplied(endpoint.clone(), WeakScope::detached()),
             tls,
-            Arc::new(BoringTlsProvider),
+            Arc::new(BoringTlsProvider::new()),
         );
         let request = ConnectRequest::new(HostWithPort::localhost_domain_with_port(address.port()));
         request.extensions().insert(ConnectorTarget(address.into()));
@@ -293,7 +293,7 @@ fn endpoint_ech_requires_independent_physical_target_and_origin_identity() {
         .unwrap();
     assert_eq!(identity, Host::from_static("localhost"));
     let cache = crate::tls::ClientConfigCache::new(
-        Arc::new(crate::tls::BoringTlsProvider),
+        Arc::new(crate::tls::BoringTlsProvider::new()),
         TlsOptions::default(),
     );
     cache
@@ -518,7 +518,7 @@ async fn ech_pending_issuer_receives_inner_and_rejection_public_names() {
         let connector = QuicConnector::new(
             SharedQuicEndpoint::supplied(endpoint.clone(), WeakScope::detached()),
             tls,
-            Arc::new(BoringTlsProvider),
+            Arc::new(BoringTlsProvider::new()),
         );
         for stale in [false, true] {
             let request =

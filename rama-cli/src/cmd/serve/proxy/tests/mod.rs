@@ -61,9 +61,9 @@ use super::*;
 const TEST_ICAP_SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-proxy-test");
 
 #[derive(Debug, Parser)]
-struct TestCli {
+pub(super) struct TestCli {
     #[command(flatten)]
-    proxy: CliCommandProxy,
+    pub(super) proxy: CliCommandProxy,
 }
 
 fn with_local_address(request: Request, local_address: &str) -> Request {
@@ -74,11 +74,11 @@ fn with_local_address(request: Request, local_address: &str) -> Request {
     request
 }
 
-fn loopback_bind_address() -> std::net::SocketAddr {
+pub(super) fn loopback_bind_address() -> std::net::SocketAddr {
     ([127, 0, 0, 1], 0).into()
 }
 
-async fn start_proxy(
+pub(super) async fn start_proxy(
     scope: &Scope,
     cfg: CliCommandProxy,
 ) -> (std::net::SocketAddr, Option<std::net::SocketAddr>) {
@@ -457,7 +457,7 @@ async fn next_sse_event(body: &mut Body) -> String {
     String::from_utf8(bytes).expect("inspector event is UTF-8")
 }
 
-async fn shutdown_proxy(shutdown_tx: tokio::sync::oneshot::Sender<()>, shutdown: Scope) {
+pub(super) async fn shutdown_proxy(shutdown_tx: tokio::sync::oneshot::Sender<()>, shutdown: Scope) {
     _ = shutdown_tx.send(());
     shutdown
         .with_grace(Duration::from_secs(5))

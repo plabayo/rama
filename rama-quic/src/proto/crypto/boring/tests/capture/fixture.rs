@@ -16,7 +16,7 @@ use rama_ua::profile::{
 };
 
 pub(super) fn reference(policy: &TlsClientConfig, version: Version) -> TlsCapture {
-    let client = BoringTlsProvider
+    let client = BoringTlsProvider::new()
         .client_config(policy, TlsOptions::default())
         .unwrap();
     first_capture(client.crypto, version)
@@ -74,7 +74,7 @@ pub(super) fn prepare_tls(
     peer: &Host,
     capture: &TlsCapture,
 ) -> Result<ClientConfig, BoxError> {
-    let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), options);
+    let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), options);
     prepare_with_cache(&cache, policy, peer, capture)
 }
 

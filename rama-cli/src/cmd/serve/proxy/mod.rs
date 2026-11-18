@@ -161,7 +161,7 @@ use upstream::UpstreamProxyConfig;
 
 use crate::utils::{
     connection::ConnectionGraceArgs,
-    http3::{Http3Endpoints, bind_http3_with_transport},
+    http3::{Http3Endpoints, OBSERVATION_LIMITS, bind_http3_with_transport},
     rate::opt_per_sec,
 };
 
@@ -1005,7 +1005,9 @@ macro_rules! build_quic_mitm_relay {
         } else {
             tracing::Level::DEBUG
         };
+        // As h2 early frames over TCP: the inspector exports what the client's HTTP/3 sent.
         let h3 = Http3MitmRelay::new(scope.clone())
+            .with_ingress_observation(OBSERVATION_LIMITS)
             .with_datagram_relay(rama::proxy::masque::connect_udp::mitm::relay(scope.clone()))
             .with_http_middleware((
                 rama::proxy::masque::connect_udp::mitm::ConnectUdpMitmLayer::new(),
@@ -1018,7 +1020,7 @@ macro_rules! build_quic_mitm_relay {
                     MitmPortalMatcher::http(inspection.clone(), mitm_policy.clone()),
                     $portal,
                 ),
-                CaptureHttpLayer::new(Some(capture)),
+                CaptureHttpLayer::new(Some(capture.clone())),
                 icap,
                 HARExportLayer::new(har.clone(), har),
                 DecompressionLayer::new()
@@ -1042,8 +1044,14 @@ macro_rules! build_quic_mitm_relay {
         .with_ingress_transport(transport.clone())
         .with_egress_transport(transport)
         .into_layer(
-            AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
-                .with_fallback(QuicRelay::new(VarInt::from_u32(QUIC_RELAY_FAILURE))),
+            AlpnRouter::new(
+                ApplicationProtocol::HTTP_3,
+                masque::ObserveQuicConnectionService {
+                    capture: capture.clone(),
+                    inner: h3,
+                },
+            )
+            .with_fallback(QuicRelay::new(VarInt::from_u32(QUIC_RELAY_FAILURE))),
         );
         let policy = masque::QuicHelloMitmPolicyService {
             inspection,
@@ -1051,7 +1059,7 @@ macro_rules! build_quic_mitm_relay {
             passthrough: ConnectUdpRelay::new(),
             policy: mitm_policy,
         };
-        PeekQuicClientHelloService::new(BoringTlsProvider, policy)
+        PeekQuicClientHelloService::new(BoringTlsProvider::new(), policy)
             .with_fallback(ConnectUdpRelay::new())
     }};
 }

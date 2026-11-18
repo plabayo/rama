@@ -36,7 +36,7 @@ fn sources(
     version: Version,
 ) -> (TlsCapture, TlsCapture) {
     let full = reference(policy, version);
-    let client = BoringTlsProvider
+    let client = BoringTlsProvider::new()
         .client_config(policy, TlsOptions::default())
         .unwrap()
         .crypto;
@@ -55,13 +55,14 @@ fn sources(
 fn captured_full_offers_retain_current_tickets_for_captured_resumed_offers() {
     for version in [Version::V1, Version::V2] {
         let (policy, server) = policy();
-        let server = BoringTlsProvider
+        let server = BoringTlsProvider::new()
             .server_config(&server, TlsOptions::default())
             .unwrap()
             .crypto
             .into_fixed();
         let (full, resumed) = sources(&policy, server.clone(), version);
-        let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
+        let cache =
+            ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default());
 
         // Even a warm store must produce another full offer when selected.
         for _ in 0..3 {
@@ -81,13 +82,14 @@ fn captured_resumed_offers_resume_only_with_the_current_peer_version_and_policy(
         let (policy, server) = policy();
         let policy = policy
             .with_session_profile_scope(TlsSessionProfileScope("profile A / tenant A".into()));
-        let server = BoringTlsProvider
+        let server = BoringTlsProvider::new()
             .server_config(&server, TlsOptions::default())
             .unwrap()
             .crypto
             .into_fixed();
         let (full, resumed) = sources(&policy, server.clone(), version);
-        let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
+        let cache =
+            ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default());
 
         // Without a current peer-issued ticket a resumed offer is a full handshake.
         exchange(
@@ -152,14 +154,14 @@ fn captured_resumed_offers_resume_only_with_the_current_peer_version_and_policy(
 fn fresh_capture_cache_neither_retains_tickets_nor_resumes_a_resumed_offer() {
     for version in [Version::V1, Version::V2] {
         let (policy, server) = policy();
-        let server = BoringTlsProvider
+        let server = BoringTlsProvider::new()
             .server_config(&server, TlsOptions::default())
             .unwrap()
             .crypto
             .into_fixed();
         let (full, resumed) = sources(&policy, server.clone(), version);
         let fresh = ClientConfigCache::new(
-            Arc::new(BoringTlsProvider),
+            Arc::new(BoringTlsProvider::new()),
             TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),
         );
         for _ in 0..3 {
@@ -179,7 +181,8 @@ fn fresh_capture_cache_neither_retains_tickets_nor_resumes_a_resumed_offer() {
         .unwrap();
 
         // A sibling cache has its own domain, including when policy is identical.
-        let empty = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
+        let empty =
+            ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default());
         let (_, resumed) = sources(&policy, server.clone(), version);
         let client = prepared(&empty, &policy, &resumed).crypto;
         let _session = client
@@ -192,13 +195,14 @@ fn fresh_capture_cache_neither_retains_tickets_nor_resumes_a_resumed_offer() {
 fn captured_ticket_lengths_do_not_replace_peer_issued_tickets() {
     for version in [Version::V1, Version::V2] {
         let (policy, server) = policy();
-        let server = BoringTlsProvider
+        let server = BoringTlsProvider::new()
             .server_config(&server, TlsOptions::default())
             .unwrap()
             .crypto
             .into_fixed();
         let (full, resumed) = sources(&policy, server.clone(), version);
-        let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
+        let cache =
+            ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default());
         exchange(
             prepared(&cache, &policy, &full).crypto,
             server.clone(),
@@ -232,7 +236,7 @@ fn captured_ticket_lengths_do_not_replace_peer_issued_tickets() {
 fn captured_cipher_grease_draws_share_current_tickets() {
     for version in [Version::V1, Version::V2] {
         let (policy, server) = policy();
-        let server = BoringTlsProvider
+        let server = BoringTlsProvider::new()
             .server_config(&server, TlsOptions::default())
             .unwrap()
             .crypto
@@ -244,7 +248,8 @@ fn captured_cipher_grease_draws_share_current_tickets() {
         resumed.ciphers = std::iter::once(0x1a1a)
             .chain(resumed.ciphers.iter().copied())
             .collect();
-        let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
+        let cache =
+            ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default());
 
         // GREASE draws change the offer; only peer-issued session state carries
         // across compatible native policies.

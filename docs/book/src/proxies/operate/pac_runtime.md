@@ -11,9 +11,14 @@ Enable `js-interpreter` to use PAC without dynamically executable memory:
 rama = { version = "0.5", default-features = false, features = ["pac", "js-interpreter"] }
 ```
 
-This selects Wasmtime's Pulley interpreter for all `rama-js` users in the
-build. Direct crate users can enable `rama-pac/js-interpreter` or
-`rama-js/interpreter`. iOS always uses Pulley; other targets default to Winch.
+The feature makes Wasmtime's Pulley interpreter available without changing the
+default backend, also not through Cargo feature unification. Select it per
+resolver with `PacResolverBuilder::with_backend(JsBackend::Interpreter)`, or on
+the runtime blueprint passed to `PacEnv::register`. A `rama` CLI built with its
+`js-interpreter` feature takes `--js-backend interpreter` for `rama pac eval`
+and `--pac-backend interpreter` for the system PAC of `rama serve proxy`. Direct
+crate users can enable `rama-pac/js-interpreter` or `rama-js/interpreter`. iOS
+always uses Pulley; other targets default to Winch.
 
 Pulley needs neither `com.apple.security.cs.allow-unsigned-executable-memory`
 nor `com.apple.security.cs.allow-jit`, making it suitable for hardened macOS

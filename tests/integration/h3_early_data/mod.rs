@@ -83,8 +83,12 @@ impl Provider {
         match self {
             #[cfg(feature = "boring")]
             Self::Boring => (
-                BoringTlsProvider.client_config(client, options).unwrap(),
-                BoringTlsProvider.server_config(server, options).unwrap(),
+                BoringTlsProvider::new()
+                    .client_config(client, options)
+                    .unwrap(),
+                BoringTlsProvider::new()
+                    .server_config(server, options)
+                    .unwrap(),
             ),
             #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
             Self::Rustls => {

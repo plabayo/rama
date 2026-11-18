@@ -143,7 +143,7 @@ enum QuicTls {
 impl QuicTls {
     fn client(self) -> Arc<dyn QuicClientConfigProvider> {
         match self {
-            Self::Boring => Arc::new(BoringTlsProvider),
+            Self::Boring => Arc::new(BoringTlsProvider::new()),
             Self::Rustls => default_tls_provider().unwrap(),
         }
     }
@@ -153,7 +153,7 @@ impl QuicTls {
             Self::Boring => ServerConfig::try_from_rama_tls_with_provider(
                 tls,
                 TlsOptions::default(),
-                &BoringTlsProvider,
+                &BoringTlsProvider::new(),
             ),
             Self::Rustls => ServerConfig::try_from_rama_tls_with_provider(
                 tls,
@@ -1453,7 +1453,7 @@ async fn quic_mitm_with(
             }
         }
     });
-    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route).with_fallback(
+    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider::new(), route).with_fallback(
         service_fn(move |input: MitmAssociation| async move {
             forward.serve(input).await.map_err(BoxError::from)
         }),

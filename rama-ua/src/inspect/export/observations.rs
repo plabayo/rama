@@ -3,12 +3,13 @@ use std::time::{Duration, SystemTime};
 use rama_http::{Version, inspect::capture::HttpExchangeSummary};
 use sha2::{Digest as _, Sha256};
 
-#[cfg(feature = "tls")]
 use rama_core::telemetry::tracing;
 #[cfg(feature = "tls")]
 use rama_tls::server::{EchServerObservation, ServerClientHellos, ServerEchAccepted};
 
-use super::super::protocol::{H3ProfileConnection, H3ProfileRequest, connection_slots};
+use super::super::protocol::{
+    ConnectionFacts, H3ProfileConnection, H3ProfileRequest, connection_slots,
+};
 #[cfg(feature = "tls")]
 use super::super::tls::tls_connection_slots;
 use super::*;
@@ -39,6 +40,25 @@ fn day(summary: &HttpExchangeSummary) -> Result<u32, BoxError> {
         .checked_add(Duration::from_secs(seconds))
         .ok_or(ProfileDataError::Invalid("capture timestamp"))?;
     Ok(profile_utc_day(time)?)
+}
+
+/// The connection facts and request slots of one HTTP/3 exchange.
+fn h3_evidence(
+    connection: Option<&H3ProfileConnection>,
+    metadata: &CaptureMetadata,
+) -> Result<(Arc<ConnectionFacts>, Vec<CapturedSlot>), ProfileDataError> {
+    let facts = connection
+        .ok_or(ProfileDataError::Incomplete("retained H3 connection"))?
+        .facts()?;
+    let request = metadata
+        .exchange
+        .get_ref::<H3ProfileRequest>()
+        .ok_or(ProfileDataError::Incomplete("retained H3 request"))?
+        .0
+        .as_ref()
+        .map_err(Clone::clone)?
+        .to_vec();
+    Ok((facts, request))
 }
 
 impl ProfileExport {
@@ -83,6 +103,7 @@ impl ProfileExport {
                 current_day,
                 limits,
             )?;
+            let mut skipped_http3 = 0;
             #[cfg(feature = "tls")]
             let mut skipped_tls = 0;
             for capture in self.captures.iter().take(count) {
@@ -108,16 +129,29 @@ impl ProfileExport {
                     return Err(ProfileDataError::Incomplete("selected request head").into());
                 };
                 let h3 = if version == Version::HTTP_3 {
-                    Some(
-                        metadata
-                            .connection
-                            .get_ref::<H3ProfileConnection>()
-                            .ok_or(ProfileDataError::Incomplete("retained H3 connection"))?
-                            .facts()?,
-                    )
+                    let connection = metadata.connection.get_ref::<H3ProfileConnection>();
+                    match h3_evidence(connection, metadata) {
+                        Ok(evidence) => Some(evidence),
+                        // As for TLS below: evidence that cannot complete, such as a connection
+                        // served without QUIC observation, skips this exchange only.
+                        Err(ProfileDataError::Incomplete(reason))
+                            if !connection
+                                .is_some_and(H3ProfileConnection::awaits_first_request) =>
+                        {
+                            skipped_http3 += 1;
+                            tracing::debug!(
+                                connection_id = details.summary.connection_id,
+                                reason,
+                                "profile export skipped exchange with incomplete HTTP/3 evidence"
+                            );
+                            continue;
+                        }
+                        Err(err) => return Err(err.into()),
+                    }
                 } else {
                     None
                 };
+                let (h3, h3_request) = h3.unzip();
                 let h3 = h3.as_deref();
                 let connection = ConnectionContext {
                     token_present: h3.map(|facts| facts.token_present),
@@ -168,15 +202,8 @@ impl ProfileExport {
                         value: pseudo.canonical(policy.bytes)?,
                     });
                 }
-                if version == Version::HTTP_3 {
-                    slots = metadata
-                        .exchange
-                        .get_ref::<H3ProfileRequest>()
-                        .ok_or(ProfileDataError::Incomplete("retained H3 request"))?
-                        .0
-                        .as_ref()
-                        .map_err(Clone::clone)?
-                        .to_vec();
+                if let Some(request) = h3_request {
+                    slots = request;
                 }
                 let request = ProfileCapture {
                     revision: CAPTURE_REVISION,
@@ -279,6 +306,7 @@ impl ProfileExport {
             }
             let evidence = collected.finish();
             self.captures.drain(..count);
+            self.skipped_http3_exchanges += skipped_http3;
             #[cfg(feature = "tls")]
             {
                 self.skipped_tls_connections += skipped_tls;

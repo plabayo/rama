@@ -36,7 +36,7 @@ async fn spin_mitm_applies_unilateral_policy_to_each_terminated_hop() {
                 },
             );
             let service = PeekQuicClientHelloService::new(
-                BoringTlsProvider,
+                BoringTlsProvider::new(),
                 relay(issuer(&mitm_identity), &origin_identity)
                     .with_ingress_transport(ingress_transport)
                     .with_egress_transport(egress_transport)

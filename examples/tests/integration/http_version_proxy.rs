@@ -67,7 +67,7 @@ fn client(outer: Version) -> (BoxService<Request, Response, OpaqueError>, Certif
         .with_store_server_cert_chain(true);
     let h3 = Http3Connector::builder(WeakScope::detached())
         .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
         .build_lazy()
         .unwrap();
     let certificates = Certificates::default();

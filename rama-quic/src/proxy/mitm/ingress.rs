@@ -622,7 +622,7 @@ mod tests {
             .await
             .unwrap();
         let policy = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
+            BoringTlsProvider::new(),
             RejectService::<(), _>::new(NoQuicRejectError),
         )
         .with_router(ingress)
@@ -696,7 +696,7 @@ mod tests {
         let (socket, _client) =
             MemoryDatagramSocket::pair(([127, 0, 0, 1], 443), ([127, 0, 0, 1], 1234), n(1));
         let policy = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
+            BoringTlsProvider::new(),
             RejectService::<(), _>::new(NoQuicRejectError),
         )
         .with_router(ingress)

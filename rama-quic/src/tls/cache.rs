@@ -81,7 +81,7 @@ impl ClientConfigCache {
             .map_or(options, |policy| options.with_alpn(*policy));
 
         #[cfg(feature = "boring")]
-        if self.provider.pool_classifier() == BoringTlsProvider.pool_classifier() {
+        if self.provider.pool_classifier() == BoringTlsProvider::new().pool_classifier() {
             if config.as_extensions().contains::<BoringExtensionOrder>() {
                 return options.with_early_data(false);
             }
@@ -766,10 +766,11 @@ mod tests {
     #[test]
     fn early_options_are_explicit_and_pinned_client_hello_shapes_win() {
         let tls = TlsClientConfig::new();
-        let ordinary = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
+        let ordinary =
+            ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default());
         assert!(!ordinary.allows_early_data(&tls));
         let early = ClientConfigCache::new(
-            Arc::new(BoringTlsProvider),
+            Arc::new(BoringTlsProvider::new()),
             TlsOptions::default().with_early_data(true),
         );
         assert!(early.allows_early_data(&tls));
