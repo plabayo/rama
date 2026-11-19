@@ -1,23 +1,34 @@
-🦙 **rama** (ラマ) is a modular service framework for building network
-services in Rust.
+🦙 **rama** (ラマ) is a modular Rust framework for building network clients,
+servers, proxies, and gateways.
 
-Rama is intentionally explicit: clients, servers, transports, protocols,
-middleware, and state are composed as services and layers. This keeps the
-shape of your network stack visible in code.
+A [`Service`] handles an input, such as a connection or an HTTP request. A
+[`Layer`] wraps a service to add behavior. The same model works across network
+layers and protocols, so you can start with a built-in stack and plug in your
+own Rust code where you need it. For synchronous callers, [`BlockingService`]
+and [`rt::blocking`] provide a blocking boundary around an async stack.
 
-Rama is async-first, but [`BlockingService`] and [`rt::blocking`] let
-synchronous applications use the same composed stacks at their boundary.
+> **Tip for newcomers**
+>
+> Start with the [project README] to see how the pieces fit together, or visit
+> [ramaproxy.org](https://ramaproxy.org/) to explore what you can build.
 
-## Start here
+## Common entry points
 
-| If you want to... | Go here |
+| Goal | API |
 |---|---|
-| Learn the model | <https://ramaproxy.org/book/intro.html> |
-| Understand why Rama exists | <https://ramaproxy.org/book/why_rama.html> |
-| Run examples | <https://github.com/plabayo/rama/tree/main/examples> |
-| Build proxies | <https://ramaproxy.org/book/proxies/intro.html> |
-| Build HTTP services | <https://ramaproxy.org/book/web_servers.html> |
-| Use the CLI | <https://ramaproxy.org/book/deploy/rama-cli.html> |
+| Implement a service or wrap one in middleware | [`Service`], [`Layer`] |
+| Serve HTTP requests and route them to handlers | [`http::server`], [`http::service::web`] |
+| Send HTTP requests with a configurable client | [`http::client::EasyHttpWebClient`], [`http::service::client::HttpClientExt`] |
+| Use an HTTP client from synchronous code | [`http::client::BlockingHttpWebClient`] |
+| Send selected or unmatched requests to a FastCGI backend | [`gateway::fastcgi`] |
+| Capture or inspect traffic | [`inspect`] |
+| Build HTTP proxy flows | [`http::proxy`] |
+| Adapt HTTP through ICAP | [`icap::http::layer`] |
+| Build standalone ICAP services | [`icap::client`], [`icap::server`] |
+| Build SOCKS5 proxy flows | [`proxy::socks5`] |
+| Build MASQUE CONNECT-UDP and CONNECT-IP clients and proxies | [`proxy::masque`] |
+| Build Linux transparent proxy flows | [`linux_tproxy_tcp.rs`](https://github.com/plabayo/rama/blob/main/examples/src/linux_tproxy_tcp.rs) |
+| Build Apple transparent proxy flows | [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy) |
 
 ## Main API areas
 
@@ -35,42 +46,38 @@ synchronous applications use the same composed stacks at their boundary.
 | [`tls`] | TLS abstractions, Rustls, BoringSSL, ACME |
 | [`crypto`] | Certificates, PEM, ASN.1, OCSP, CRL, JOSE, digests and native root certificates |
 | [`dns`] | DNS resolvers and related types |
-| [`net`] | Network addresses, sockets, forwarding, fingerprints; `net::apple` on Apple targets |
+| [`net`] | Network addresses, sockets, forwarding, fingerprints, and Apple platform integrations in `net::apple` |
 | [`ua`] | User-Agent parsing, profiles, and emulation |
 | [`inspect`] | Protocol-independent inspection, interception and capture storage |
 | [`json`] | Streaming JSON tokenizer, JSONPath selection and rewriting |
 | [`js`] | Embedded JavaScript runtime and Proxy Auto-Configuration (PAC) support via [`js::pac`] |
-| [`telemetry`] | tracing, OpenTelemetry, and dial9 integration |
+| [`telemetry`] | Tracing spans, OpenTelemetry metrics, and dial9 recordings of runtime and protocol activity |
 | [`utils`] | Utilities, including Tower compatibility |
-
-## Common entry points
-
-| Goal | API |
-|---|---|
-| Write a service | [`Service`] |
-| Add middleware | [`Layer`] |
-| Build an HTTP server | [`http::server`] |
-| Route HTTP requests | [`http::service::web`] |
-| Build an HTTP client | [`http::client::EasyHttpWebClient`] |
-| Use high-level client helpers | [`http::service::client::HttpClientExt`] |
-| Use an HTTP client from synchronous code | [`http::client::BlockingHttpWebClient`] |
-| Build HTTP proxy flows | [`http::proxy`] |
-| Adapt HTTP through ICAP | [`icap::http::layer`] |
-| Build standalone ICAP services | [`icap::client`], [`icap::server`] |
-| Build SOCKS5 proxy flows | [`proxy::socks5`] |
-| Build MASQUE CONNECT-UDP and CONNECT-IP clients and proxies | [`proxy::masque`] |
-| Build Linux transparent proxy flows | [`linux_tproxy_tcp.rs`](https://github.com/plabayo/rama/blob/main/examples/src/linux_tproxy_tcp.rs) |
-| Build Apple transparent proxy flows | [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy) |
 
 ## Feature flags
 
-The top-level `rama` crate is modular. Many modules are enabled through feature
-flags. The docs on docs.rs are built with all features enabled.
+The default feature is `std`. Enable the features for the APIs you use. For
+example, `http-full` enables the HTTP client and server stacks. The docs.rs
+build enables all features, so it also shows APIs you can opt into separately.
 
-## More
+## Explore a working stack
 
-- Website and full feature overview: <https://ramaproxy.org/#features-table>
-- Book: <https://ramaproxy.org/book>
-- Examples: <https://github.com/plabayo/rama/tree/main/examples>
-- README and crate overview: <https://github.com/plabayo/rama>
-- Edge docs: <https://ramaproxy.org/docs/rama>
+The [client and server example] applies the same HTTP tracing layer to outbound
+requests and incoming routes. Run it, then try changing the layers on either
+side. The [examples directory] has more starting points, including transparent
+proxies and application gateways. Check the example’s run instructions for its feature flags.
+
+The [Rama Book] explains the service model and has guides to [proxies],
+[HTTP services], and the [Rama CLI]. The [project README] maps the available
+building blocks to network roles and protocols. Use [docs.rs] for published
+versions and the [edge docs] for the API on `main`.
+
+[client and server example]: https://github.com/plabayo/rama/blob/main/examples/src/http_high_level_client.rs
+[examples directory]: https://github.com/plabayo/rama/tree/main/examples
+[Rama Book]: https://ramaproxy.org/book/intro.html
+[proxies]: https://ramaproxy.org/book/proxies/intro.html
+[HTTP services]: https://ramaproxy.org/book/web_servers.html
+[Rama CLI]: https://ramaproxy.org/book/deploy/rama-cli.html
+[project README]: https://github.com/plabayo/rama#how-the-pieces-fit-together
+[docs.rs]: https://docs.rs/rama
+[edge docs]: https://ramaproxy.org/docs/rama

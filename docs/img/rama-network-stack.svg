@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 334" width="900" height="334" role="img" aria-labelledby="title desc">
+  <title id="title">How Rama services connect</title>
+  <desc id="desc">DNS, PAC and system proxy settings inform the client's route. Traffic can reach the server directly or use a proxy, a gateway, or both. The server can answer locally or call an application backend. Alternatively, a platform SDK can deliver OS-redirected flows to a Rama service in any role.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 8 4 0 8Z" class="arrowhead"/>
+    </marker>
+    <style>
+      .canvas { fill: #f5faf4; }
+      text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #172617; }
+      .name { font-size: 21px; font-weight: 700; }
+      .detail { font-size: 16px; fill: #405440; }
+      .label { font: 15px Menlo, Consolas, monospace; }
+      .label, .arrowhead { fill: #16752e; }
+      .node { fill: #fff; stroke: #778e77; stroke-width: 1.5; }
+      .optional .node { stroke-dasharray: 6 4; }
+      .divider { stroke: #b8c8b8; }
+      .route { fill: none; stroke: #16752e; stroke-width: 2; marker-end: url(#arrow); }
+      @media (prefers-color-scheme: dark) {
+        .canvas { fill: #070907; }
+        text { fill: #f2f5f2; }
+        .detail { fill: #b3bdb4; }
+        .label, .arrowhead { fill: #3be064; }
+        .route { stroke: #3be064; }
+        .node { fill: #101310; stroke: #839183; }
+        .divider { stroke: #2e382e; }
+      }
+    </style>
+  </defs>
+  <rect width="900" height="334" rx="14" class="canvas"/>
+
+  <!-- Inputs to route selection are distinct from traffic paths. -->
+  <g id="discovery">
+    <rect x="24" y="20" width="456" height="44" rx="8" class="node"/>
+    <text x="40" y="48" class="name">Discovery</text>
+    <text x="155" y="47" class="detail">DNS · PAC · system proxy settings</text>
+    <path class="route" stroke-dasharray="4 5" d="M68 64v66"/>
+  </g>
+
+  <g class="optional" aria-label="Dashed outline means optional">
+    <rect x="680" y="31" width="29" height="17" rx="4" class="node"/>
+    <text x="722" y="46" class="detail">Optional</text>
+  </g>
+  <g id="routes">
+    <path class="route" d="M132 134V96H766v34"/>
+    <text x="449" y="87" text-anchor="middle" class="label">direct</text>
+    <path class="route" d="M199 166h44"/>
+    <path class="route" d="M424 166h44"/>
+    <path class="route" d="M649 166h44"/>
+    <path class="route" d="M787 199v31"/>
+  </g>
+  <g id="client" transform="translate(24 134)">
+    <rect class="node" width="175" height="65" rx="8"/>
+    <text x="15" y="28" class="name">Client</text>
+    <text x="15" y="51" class="detail">Open a connection</text>
+  </g>
+  <g id="proxy" class="optional" transform="translate(249 134)">
+    <rect class="node" width="175" height="65" rx="8"/>
+    <text x="15" y="28" class="name">Proxy</text>
+    <text x="15" y="51" class="detail">Inspect or relay</text>
+  </g>
+  <g id="gateway" class="optional" transform="translate(474 134)">
+    <rect class="node" width="175" height="65" rx="8"/>
+    <text x="15" y="28" class="name">Gateway</text>
+    <text x="15" y="51" class="detail">Terminate or route</text>
+  </g>
+  <g id="server" transform="translate(699 134)">
+    <rect class="node" width="177" height="65" rx="8"/>
+    <text x="15" y="28" class="name">Server</text>
+    <text x="15" y="51" class="detail">Handle the request</text>
+  </g>
+  <g id="backend" class="optional" transform="translate(622 235)">
+    <rect class="node" width="254" height="42" rx="8"/>
+    <text x="15" y="28" class="name">Application backend</text>
+    <text x="151" y="-15" text-anchor="end" class="label">delegate or fall back</text>
+  </g>
+  <!-- A separate ingress path can feed a service in any role above. -->
+  <g id="platform" class="optional" transform="translate(24 237)">
+    <rect class="node" width="154" height="40" rx="8"/>
+    <text x="14" y="26" class="name">OS / SDK</text>
+    <path class="route" d="M154 20h67"/>
+    <text x="168" y="8" class="label">flows</text>
+    <text x="234" y="26" class="name">Rama service · any role</text>
+  </g>
+  <path d="M24 294H876" class="divider"/>
+  <text x="24" y="320" class="label">Across the stack</text>
+  <text x="208" y="320" class="detail">Services · Layers · Shared state · Telemetry</text>
+</svg>
