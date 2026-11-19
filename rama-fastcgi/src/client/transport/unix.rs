@@ -128,7 +128,7 @@ mod tests {
     /// on the server side, verify the staged params landed on the wire.
     #[tokio::test]
     async fn test_connector_writes_staged_params_over_unix_socket() {
-        let dir = TempDir::with_prefix("rfcgi-test.").unwrap();
+        let dir = TempDir::with_prefix("rfcgi-test.").await.unwrap();
         let socket_path = dir.path().join("test.sock");
         let listener = UnixListener::bind(&socket_path).unwrap();
 

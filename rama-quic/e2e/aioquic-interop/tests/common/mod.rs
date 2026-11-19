@@ -211,7 +211,7 @@ impl Identity {
 
     fn written(auth: ServerAuthData) -> Self {
         let directory =
-            TempDir::with_prefix("rama-aioquic-interop-").expect("a directory of our own");
+            TempDir::with_prefix_sync("rama-aioquic-interop-").expect("a directory of our own");
         let certificate = directory.path().join("cert.pem");
         let key = directory.path().join("key.pem");
         interop_common::identity::write_pem(&auth, &certificate, &key);

@@ -27,7 +27,7 @@ async fn runner_file_transfer_retry_and_http3() {
         "ecn",
         "connectionmigration",
     ] {
-        let directory = TempDir::with_prefix("rama-runner-smoke-").unwrap();
+        let directory = TempDir::with_prefix("rama-runner-smoke-").await.unwrap();
         let root = directory.path();
         let www = root.join("www");
         let downloads = root.join("downloads");
@@ -296,7 +296,7 @@ fn assert_complete_qlog(path: &Path) {
 #[tokio::test]
 async fn interrupted_client_drains_qlog_and_reports_failure() {
     for signal in ["TERM", "INT"] {
-        let directory = TempDir::with_prefix("rama-runner-cancel-").unwrap();
+        let directory = TempDir::with_prefix("rama-runner-cancel-").await.unwrap();
         let root = directory.path();
         // Keep a UDP receiver alive without replying: the client's handshake remains pending.
         let peer = tokio::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0))

@@ -149,7 +149,7 @@ mod tests {
     use rama::{ua::profile::format::input::UserAgentProfileInput, utils::fs::TempDir};
     #[test]
     fn viewer_loads_partial_profiles_and_escapes_terminal_controls() {
-        let directory = TempDir::new().unwrap();
+        let directory = TempDir::new_sync().unwrap();
         let file = directory.path().join("profiles.json");
         std::fs::write(
             &file,

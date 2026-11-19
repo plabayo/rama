@@ -22,7 +22,7 @@ use rama::{
         },
     },
     utils::{
-        fs::{CreatedFilePermissions, OpenOptionsSync, TempDir},
+        fs::{CreatedFilePermissions, OpenOptions, TempDir},
         octets::kib,
     },
 };
@@ -42,13 +42,13 @@ fn stage(output: &Path) -> Result<(TempDir, File), BoxError> {
     for byte in nonce {
         write!(name, "{byte:02x}")?;
     }
-    let staging = TempDir::create(parent.join(name))?;
-    let file = OpenOptionsSync::new()
+    let staging = TempDir::create_sync(parent.join(name))?;
+    let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
         .jail(staging.path())
-        .open("profiles.json")?;
+        .open_sync("profiles.json")?;
     Ok((staging, file))
 }
 

@@ -1,4 +1,7 @@
-use super::RetryBody;
+use super::{
+    RetryBody,
+    storage::{DEFAULT_MAX_BYTES, MemoryReplay, ReplayStore},
+};
 use crate::{
     Request,
     body::{CollectOptions, SizeHint},
@@ -42,7 +45,7 @@ use crate::{
 ///                 if *attempts > 0 {
 ///                     // Try again!
 ///                     *attempts -= 1;
-///                     PolicyResult::Retry { req }
+///                     PolicyResult::Retry { req, result }
 ///                 } else {
 ///                     // Used all our attempts, no retry...
 ///                     PolicyResult::Abort(result)
@@ -60,8 +63,8 @@ pub trait Policy<R, E>: Send + Sync + 'static {
     /// Decide whether to prepare a replay before polling the request body.
     ///
     /// `None` streams the request once, without cloning it or calling `retry`.
-    /// Collection size/time limits also fall back to streaming the complete
-    /// body once. A body source error remains an error.
+    /// These options can tighten the selected store's byte limit and timeout.
+    /// Exceeding a limit disables retries while the first upload continues.
     ///
     /// `is_end_stream` is the body's own assertion that no frames remain.
     /// A zero size hint alone does not exclude trailers. Each policy explicitly
@@ -73,17 +76,25 @@ pub trait Policy<R, E>: Send + Sync + 'static {
         size_hint: &SizeHint,
     ) -> Option<CollectOptions>;
 
-    /// Check the policy if a certain request should be retried.
+    /// Select storage for an approved, nonempty body before it is first polled.
     ///
-    /// This method is passed a reference to the original request, and either
-    /// the [`Service::Output`] or [`Service::Error`] from the inner service.
+    /// Override this method to select a store using request metadata. The
+    /// default store keeps up to 64 KiB in memory with a 30-second deadline.
+    fn replay_store(&self, _parts: &Parts) -> &dyn ReplayStore {
+        static MEMORY: MemoryReplay = MemoryReplay::new(DEFAULT_MAX_BYTES);
+        &MEMORY
+    }
+
+    /// Classify the result of an attempt and optionally prepare the next request.
     ///
-    /// If the request should **not** be retried, return `None`.
-    ///
-    /// If the request *should* be retried, return `Some` future that will delay
-    /// the next retry of the request. This can be used to sleep for a certain
-    /// duration, to wait for some external condition to be met before retrying,
-    /// or resolve right away, if the request should be retried immediately.
+    /// Returning [`PolicyResult::Abort`] forwards the result immediately.
+    /// Returning [`PolicyResult::Retry`] asks the middleware to finish any
+    /// outstanding capture before issuing the next request. Supply the current
+    /// result as the fallback if the body cannot be recovered. Reading the
+    /// candidate body inside this method also requests that capture be finished.
+    /// If the inner service retains an unfinished first reader, the middleware
+    /// returns its result immediately and skips this method. If the reader
+    /// was dropped, the coordinator can drain the remaining upload for replay.
     ///
     /// ## Mutating Requests
     ///
@@ -118,10 +129,19 @@ pub trait Policy<R, E>: Send + Sync + 'static {
         result: Result<R, E>,
     ) -> impl Future<Output = PolicyResult<R, E>> + Send + '_;
 
+    /// Apply the retry delay or attempt budget after a complete body is ready.
+    ///
+    /// Return `false` to return the candidate outcome to the caller. Keeping
+    /// backoff here allows a pending upload to finish before a delay begins.
+    fn next_attempt(&self) -> impl Future<Output = bool> + Send + '_ {
+        std::future::ready(true)
+    }
+
     /// Tries to clone a request before being passed to the inner service.
     ///
-    /// If the request cannot be cloned, return [`None`]. Moreover, the retry
-    /// function will not be called if the [`None`] is returned.
+    /// Return [`None`] to skip retry classification and abandon capture. Use
+    /// [`RetryBody::try_clone`] to retain a candidate while a streamed upload
+    /// is still being captured. Capture can later exceed its limits.
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>>;
 }
 
@@ -138,6 +158,10 @@ where
         (**self).prepare_body(parts, is_end_stream, size_hint)
     }
 
+    fn replay_store(&self, parts: &Parts) -> &dyn ReplayStore {
+        (**self).replay_store(parts)
+    }
+
     #[inline(always)]
     fn retry(
         &self,
@@ -145,6 +169,11 @@ where
         result: Result<R, E>,
     ) -> impl Future<Output = PolicyResult<R, E>> + Send + '_ {
         (**self).retry(req, result)
+    }
+
+    #[inline(always)]
+    fn next_attempt(&self) -> impl Future<Output = bool> + Send + '_ {
+        (**self).next_attempt()
     }
 
     #[inline(always)]
@@ -166,6 +195,10 @@ where
         (**self).prepare_body(parts, is_end_stream, size_hint)
     }
 
+    fn replay_store(&self, parts: &Parts) -> &dyn ReplayStore {
+        (**self).replay_store(parts)
+    }
+
     #[inline(always)]
     fn retry(
         &self,
@@ -177,15 +210,17 @@ where
     }
 
     #[inline(always)]
+    fn next_attempt(&self) -> impl Future<Output = bool> + Send + '_ {
+        (**self).next_attempt()
+    }
+
+    #[inline(always)]
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
         (**self).clone_input(req)
     }
 }
 
-// TODO revisit PolicyResult after we remove Context concept
-// and see to be smarter about async fns in general
-
-/// The full result of a limit policy.
+/// A retry decision and the result to forward if no further attempt is made.
 #[expect(
     clippy::large_enum_variant,
     reason = "keep the retry request inline instead of allocating on every retry"
@@ -194,11 +229,12 @@ pub enum PolicyResult<R, E> {
     /// The result should not be retried,
     /// and the result should be returned to the caller.
     Abort(Result<R, E>),
-    /// The result should be retried,
-    /// and the request should be passed to the inner service again.
+    /// Request another attempt once capture and the policy's delay or budget allow it.
     Retry {
-        /// The request to be retried, with the above context.
+        /// The request for the next attempt.
         req: Request<RetryBody>,
+        /// Return this result if capture fails or [`Policy::next_attempt`] declines.
+        result: Result<R, E>,
     },
 }
 
@@ -210,8 +246,11 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Abort(err) => write!(f, "PolicyResult::Abort({err:?})"),
-            Self::Retry { req } => {
-                write!(f, "PolicyResult::Retry {{ req: {req:?} }}",)
+            Self::Retry { req, result } => {
+                write!(
+                    f,
+                    "PolicyResult::Retry {{ req: {req:?}, result: {result:?} }}"
+                )
             }
         }
     }
@@ -237,6 +276,12 @@ macro_rules! impl_retry_policy_either {
                 }
             }
 
+            fn replay_store(&self, parts: &Parts) -> &dyn ReplayStore {
+                match self {
+                    $(rama_core::combinators::$id::$param(policy) => policy.replay_store(parts),)+
+                }
+            }
+
             async fn retry(
                 &self,
                 req: rama_http_types::Request<RetryBody>,
@@ -246,6 +291,12 @@ macro_rules! impl_retry_policy_either {
                     $(
                         rama_core::combinators::$id::$param(policy) => policy.retry(req, result).await,
                     )+
+                }
+            }
+
+            async fn next_attempt(&self) -> bool {
+                match self {
+                    $(rama_core::combinators::$id::$param(policy) => policy.next_attempt().await,)+
                 }
             }
 

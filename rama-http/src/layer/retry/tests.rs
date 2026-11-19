@@ -7,8 +7,10 @@ use super::*;
 use crate::BodyExtractExt;
 use crate::service::web::response::IntoResponse;
 use crate::{
-    Request, Response,
+    Body, Request, Response, StatusCode,
     body::{CollectOptions, SizeHint},
+    header::LOCATION,
+    layer::follow_redirect::{FollowRedirectLayer, RequestUri, policy::Action},
     request::Parts,
 };
 use parking_lot::Mutex;
@@ -333,7 +335,7 @@ impl Policy<Response, Error> for StampingRetry {
         if result.is_err() && *remaining > 0 {
             *remaining -= 1;
             req.extensions().insert(RetryRound(*remaining));
-            PolicyResult::Retry { req }
+            PolicyResult::Retry { req, result }
         } else {
             PolicyResult::Abort(result)
         }
@@ -391,7 +393,7 @@ impl Policy<Response, Error> for RetryServerErrors {
                 .is_ok_and(|res| res.status().is_server_error());
         if retry {
             *attempts -= 1;
-            PolicyResult::Retry { req }
+            PolicyResult::Retry { req, result }
         } else {
             PolicyResult::Abort(result)
         }
@@ -407,9 +409,6 @@ impl Policy<Response, Error> for RetryServerErrors {
 
 #[tokio::test]
 async fn retry_inside_follow_redirect_replays_one_hop() {
-    use crate::layer::follow_redirect::{FollowRedirectLayer, RequestUri, policy::Action};
-    use crate::{Body, StatusCode, header::LOCATION};
-
     #[derive(Clone, Debug, PartialEq, Extension)]
     struct AttemptStamp(usize);
 
@@ -508,7 +507,7 @@ impl Policy<Response, Error> for RetryErrors {
         result: Result<Response, Error>,
     ) -> PolicyResult<Response, Error> {
         if result.is_err() {
-            PolicyResult::Retry { req }
+            PolicyResult::Retry { req, result }
         } else {
             PolicyResult::Abort(result)
         }
@@ -539,7 +538,7 @@ impl Policy<Response, Error> for Limit {
         let mut attempts = self.0.lock();
         if result.is_err() && *attempts > 0 {
             *attempts -= 1;
-            PolicyResult::Retry { req }
+            PolicyResult::Retry { req, result }
         } else {
             PolicyResult::Abort(result)
         }
@@ -573,7 +572,7 @@ impl Policy<Response, Error> for UnlessErr {
             .map(|err| err.to_string() != self.0)
             .unwrap_or_default()
         {
-            PolicyResult::Retry { req }
+            PolicyResult::Retry { req, result }
         } else {
             PolicyResult::Abort(result)
         }
@@ -627,7 +626,7 @@ where
     async fn retry(
         &self,
         _req: Request<RetryBody>,
-        _result: Result<Response, Error>,
+        result: Result<Response, Error>,
     ) -> PolicyResult<Response, Error> {
         let mut remaining = self.remaining.lock();
         if *remaining == 0 {
@@ -636,6 +635,7 @@ where
             *remaining -= 1;
             PolicyResult::Retry {
                 req: request("retrying"),
+                result,
             }
         }
     }

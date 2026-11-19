@@ -91,6 +91,7 @@ pub(super) async fn export_selected(
     }
 
     let staging = TempDir::with_prefix("rama-proxy-selected-har-")
+        .await
         .context("create private selected HAR staging directory")?;
     let mut writer = BufWriter::new(
         OpenOptions::new()
@@ -232,6 +233,7 @@ impl HarController {
             .into());
         }
         let staging = TempDir::with_prefix("rama-proxy-har-")
+            .await
             .context("create private HAR staging directory")?;
         let path = staging.path().join("recording.har");
         self.start_at(path, file_name.to_owned(), Some(staging), false)
@@ -535,7 +537,9 @@ mod tests {
     async fn selected_export_limit_is_held_until_the_download_reader_is_dropped() {
         let limit = Arc::new(tokio::sync::Semaphore::new(1));
         let permit = limit.clone().try_acquire_owned().unwrap();
-        let staging = TempDir::with_prefix("rama-proxy-selected-har-limit-test-").unwrap();
+        let staging = TempDir::with_prefix("rama-proxy-selected-har-limit-test-")
+            .await
+            .unwrap();
         let path = staging.path().join("selected.har");
         tokio::fs::write(&path, b"{}" as &[u8]).await.unwrap();
         let reader = HarDownloadReader {

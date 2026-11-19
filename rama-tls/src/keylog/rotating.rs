@@ -27,7 +27,7 @@ use std::{
 use jiff::{Timestamp, tz::TimeZone};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
-use rama_utils::fs::{CreatedFilePermissions, OpenOptionsSync};
+use rama_utils::fs::{CreatedFilePermissions, OpenOptions};
 
 use super::sink::KeyLogSink;
 
@@ -267,11 +267,11 @@ fn writer_loop(
                     continue;
                 }
             };
-            match OpenOptionsSync::new()
+            match OpenOptions::new()
                 .append(true)
                 .create(true)
                 .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
-                .open(&new_path)
+                .open_sync(&new_path)
             {
                 Ok(file) => {
                     if let Some(retain) = retention_buckets {

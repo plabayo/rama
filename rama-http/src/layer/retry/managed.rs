@@ -4,7 +4,10 @@
 //!
 //! [`Policy`]: super::Policy
 
-use super::{Policy, PolicyResult, RetryBody};
+use super::{
+    Policy, PolicyResult, RetryBody,
+    storage::{MemoryReplay, ReplayStore},
+};
 use crate::{
     Request, Response,
     body::{CollectOptions, SizeHint},
@@ -35,9 +38,10 @@ pub struct DoNotRetry;
 /// A managed retry [`Policy`],
 /// which allows for an easier interface to configure retrying requests.
 ///
-/// By default, replay preparation collects without a bound. Use
-/// [`Self::with_prepare_body`] with [`CollectOptions::with_max_size`] and/or
-/// [`CollectOptions::with_timeout`] to bound it or decline collection entirely.
+/// The default [`MemoryReplay`] retains up to 64 KiB per request for up to
+/// 30 seconds. [`Self::with_replay_store`] configures a different budget or
+/// storage backend. [`Self::with_prepare_body`] can skip capture or impose
+/// tighter limits for individual requests.
 ///
 /// [`DoNotRetry`] can be added to the [`Extensions`] of a [`Request`]
 /// to signal that the request should not be retried, regardless
@@ -45,17 +49,25 @@ pub struct DoNotRetry;
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 #[derive(Debug, Clone)]
-pub struct ManagedPolicy<B = Undefined, C = Undefined, R = Undefined, P = Undefined> {
+pub struct ManagedPolicy<
+    B = Undefined,
+    C = Undefined,
+    R = Undefined,
+    P = Undefined,
+    S = MemoryReplay,
+> {
     backoff: B,
     clone: C,
     retry: R,
     prepare: P,
+    store: S,
 }
 
-impl<B, C, R, P, Response, Error> Policy<Response, Error> for ManagedPolicy<B, C, R, P>
+impl<B, C, R, P, S, Response, Error> Policy<Response, Error> for ManagedPolicy<B, C, R, P, S>
 where
     B: Backoff,
     P: PrepareBody,
+    S: ReplayStore,
     C: CloneInput,
     R: RetryRule<Request<RetryBody>, Response, Error>,
     Response: Send + 'static,
@@ -74,6 +86,10 @@ where
         }
     }
 
+    fn replay_store(&self, _: &Parts) -> &dyn ReplayStore {
+        &self.store
+    }
+
     async fn retry(
         &self,
         req: Request<RetryBody>,
@@ -85,11 +101,20 @@ where
         }
 
         let (req, result, retry) = self.retry.retry(req, result).await;
-        if retry && self.backoff.next_backoff().await {
-            PolicyResult::Retry { req }
+        if retry {
+            PolicyResult::Retry { req, result }
         } else {
             self.backoff.reset().await;
             PolicyResult::Abort(result)
+        }
+    }
+
+    async fn next_attempt(&self) -> bool {
+        if self.backoff.next_backoff().await {
+            true
+        } else {
+            self.backoff.reset().await;
+            false
         }
     }
 
@@ -109,6 +134,7 @@ impl Default for ManagedPolicy<Undefined, Undefined, Undefined> {
             clone: Undefined,
             retry: Undefined,
             prepare: Undefined,
+            store: MemoryReplay::default(),
         }
     }
 }
@@ -124,60 +150,82 @@ impl<F> ManagedPolicy<Undefined, Undefined, F> {
     }
 }
 
-impl<C, R, P> ManagedPolicy<Undefined, C, R, P> {
+impl<C, R, P, S> ManagedPolicy<Undefined, C, R, P, S> {
     /// add a backoff to this [`ManagedPolicy`].
-    pub fn with_backoff<B>(self, backoff: B) -> ManagedPolicy<B, C, R, P> {
+    pub fn with_backoff<B>(self, backoff: B) -> ManagedPolicy<B, C, R, P, S> {
         ManagedPolicy {
             backoff,
             clone: self.clone,
             retry: self.retry,
             prepare: self.prepare,
+            store: self.store,
         }
     }
 }
 
-impl<B, R, P> ManagedPolicy<B, Undefined, R, P> {
+impl<B, R, P, S> ManagedPolicy<B, Undefined, R, P, S> {
     /// add a cloning function to this [`ManagedPolicy`].
     /// to determine if a request should be cloned
-    pub fn with_clone<C>(self, clone: C) -> ManagedPolicy<B, C, R, P> {
+    pub fn with_clone<C>(self, clone: C) -> ManagedPolicy<B, C, R, P, S> {
         ManagedPolicy {
             backoff: self.backoff,
             clone,
             retry: self.retry,
             prepare: self.prepare,
+            store: self.store,
         }
     }
 }
 
-impl<B, C, P> ManagedPolicy<B, C, Undefined, P> {
+impl<B, C, P, S> ManagedPolicy<B, C, Undefined, P, S> {
     /// add a retry function to this [`ManagedPolicy`].
     /// to determine if a request should be retried.
-    pub fn with_retry<R>(self, retry: R) -> ManagedPolicy<B, C, R, P> {
+    pub fn with_retry<R>(self, retry: R) -> ManagedPolicy<B, C, R, P, S> {
         ManagedPolicy {
             backoff: self.backoff,
             clone: self.clone,
             retry,
             prepare: self.prepare,
+            store: self.store,
         }
     }
 }
 
-impl<B, C, R> ManagedPolicy<B, C, R, Undefined> {
+impl<B, C, R, S> ManagedPolicy<B, C, R, Undefined, S> {
     /// Configure replay preparation before the body is read.
     ///
     /// Return `None` to stream once, or collection options to prepare a replay.
     /// `DoNotRetry` takes precedence over this function.
-    pub fn with_prepare_body<P>(self, prepare: P) -> ManagedPolicy<B, C, R, P> {
+    pub fn with_prepare_body<P>(self, prepare: P) -> ManagedPolicy<B, C, R, P, S> {
         ManagedPolicy {
             backoff: self.backoff,
             clone: self.clone,
             retry: self.retry,
             prepare,
+            store: self.store,
         }
     }
 }
 
-/// Decide whether and how to collect a body for replay.
+impl<B, C, R, P, S> ManagedPolicy<B, C, R, P, S> {
+    /// Set the backend that captures approved bodies while the first attempt reads them.
+    ///
+    /// This store is shared across requests served by this policy. A custom
+    /// backend can allocate a distinct writer for each capture in [`ReplayStore::start`].
+    ///
+    /// See the [storage examples](super::storage) for memory and filesystem configuration.
+    pub fn with_replay_store<T: ReplayStore>(self, store: T) -> ManagedPolicy<B, C, R, P, T> {
+        ManagedPolicy {
+            backoff: self.backoff,
+            clone: self.clone,
+            retry: self.retry,
+            prepare: self.prepare,
+            store,
+        }
+    }
+}
+
+/// Decide whether to capture a body for replay and optionally tighten the store limits.
 ///
 /// Implemented for functions taking request parts, the body's end-of-stream
 /// assertion, and its size hint, and returning optional collection limits.
@@ -344,10 +392,19 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{StatusCode, service::web::response::IntoResponse};
-    use rama_core::extensions::ExtensionsRef;
+    use crate::{
+        Body, BodyExtractExt as _, StatusCode, body::Frame, layer::retry::Retry,
+        service::web::response::IntoResponse,
+    };
+    use rama_core::{
+        Service as _, bytes::Bytes, error::BoxError, extensions::ExtensionsRef, futures::stream,
+        service::service_fn,
+    };
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
-    use std::time::Duration;
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
 
     fn assert_clone_input_none(req: &Request<RetryBody>, policy: &impl Policy<Response, ()>) {
         assert!(policy.clone_input(req).is_none());
@@ -377,6 +434,68 @@ mod tests {
             PolicyResult::Retry { .. } => panic!("expected abort"),
             PolicyResult::Abort(_) => (),
         };
+    }
+
+    #[tokio::test]
+    async fn managed_policy_resets_exhausted_backoff() {
+        #[derive(Default)]
+        struct OneRetry(AtomicBool);
+
+        impl Backoff for OneRetry {
+            async fn next_backoff(&self) -> bool {
+                !self.0.swap(true, Ordering::Relaxed)
+            }
+
+            async fn reset(&self) {
+                self.0.store(false, Ordering::Relaxed);
+            }
+        }
+
+        let policy = ManagedPolicy::default().with_backoff(OneRetry::default());
+        assert!(Policy::<Response, ()>::next_attempt(&policy).await);
+        assert!(!Policy::<Response, ()>::next_attempt(&policy).await);
+        assert!(Policy::<Response, ()>::next_attempt(&policy).await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_finishes_the_upload_before_backoff_starts() {
+        #[derive(Clone)]
+        struct DelayedBackoff;
+        impl Backoff for DelayedBackoff {
+            async fn next_backoff(&self) -> bool {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                true
+            }
+
+            async fn reset(&self) {}
+        }
+
+        let first = AtomicBool::new(true);
+        let policy = ManagedPolicy::default()
+            .with_replay_store(MemoryReplay::new(32).with_timeout(Duration::from_millis(10)))
+            .with_backoff(DelayedBackoff);
+        let retry = Retry::new(
+            policy,
+            service_fn(move |req: Request<RetryBody>| {
+                let is_first = first.swap(false, Ordering::Relaxed);
+                async move {
+                    let status = if is_first {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    } else {
+                        assert_eq!(req.try_into_string().await.unwrap(), "hello");
+                        StatusCode::OK
+                    };
+                    Ok::<_, BoxError>(status.into_response())
+                }
+            }),
+        );
+        let body = Body::from_frame_stream(stream::iter([Ok::<_, BoxError>(Frame::data(
+            Bytes::from_static(b"hello"),
+        ))]));
+        assert_eq!(
+            retry.serve(Request::new(body)).await.unwrap().status(),
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]
