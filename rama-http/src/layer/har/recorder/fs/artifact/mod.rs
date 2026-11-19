@@ -4,7 +4,7 @@ use std::{
 };
 
 use rama_core::error::{BoxError, ErrorContext as _};
-use rama_utils::fs::{CreatedFilePermissions, OpenOptionsSync, TempPath, TempPathCleanup};
+use rama_utils::fs::{CreatedFilePermissions, OpenOptions, TempPath, TempPathCleanup};
 use tokio::fs::File;
 use uuid::Uuid;
 
@@ -44,12 +44,12 @@ pub(super) fn create_temp_file_sync(
 ) -> Result<(TempPath, StdFile), BoxError> {
     let file_name = format!(".rama-har-{kind}-{}", Uuid::new_v4().as_simple());
     let path = dir.join(&file_name);
-    let file = OpenOptionsSync::new()
+    let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
         .jail(dir)
-        .open(file_name)
+        .open_sync(file_name)
         .context("create private HAR artifact")?;
     // Destructuring callers drop the file before its path guard.
     Ok((TempPath::new(path, temp_cleanup), file))

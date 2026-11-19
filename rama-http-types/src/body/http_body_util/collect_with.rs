@@ -46,6 +46,18 @@ impl CollectOptions {
         }
     }
 
+    /// The configured data byte limit.
+    #[must_use]
+    pub const fn max_size(&self) -> Option<usize> {
+        self.max_size
+    }
+
+    /// The configured collection deadline, relative to the start of collection.
+    #[must_use]
+    pub const fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
     generate_set_and_with! {
         /// Cap the number of bytes buffered. When reached, collecting stops with
         /// [`CollectErrorKind::CapReached`]; the bytes up to the cap are read and

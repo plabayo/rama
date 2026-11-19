@@ -763,6 +763,11 @@ harness = false
 required-features = ["http-full"]
 
 [[bench]]
+name = "http_retry_body"
+harness = false
+required-features = ["http"]
+
+[[bench]]
 name = "http_typed_headers"
 harness = false
 required-features = ["http", "net"]

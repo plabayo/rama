@@ -13,7 +13,11 @@ use rama_http::{
     conn::{H2ClientContextParams, H2SettingsLimits},
     layer::{
         remove_header::RemoveResponseHeaderLayer,
-        retry::{ManagedPolicy, Retry, RetryBody, managed::DoNotRetry},
+        retry::{
+            ManagedPolicy, Retry, RetryBody,
+            managed::DoNotRetry,
+            storage::{FsReplayStore, MemoryReplay, ReplayStore},
+        },
         version_adapter::{ResponseVersionAdapter, adapt_request_version},
     },
     request::Parts,
@@ -691,8 +695,17 @@ async fn all_http_version_pairs_reject_truncated_responses() {
 }
 
 #[tokio::test]
-async fn one_shot_retry_bodies_preserve_content_length_on_the_wire() {
+async fn one_shot_and_replayed_bodies_preserve_content_length_on_the_wire() {
     timeout(LIMIT, async {
+        let parent = rama_utils::fs::TempDir::new()
+            .await
+            .expect("temp directory");
+        let disk: Arc<dyn ReplayStore> = Arc::new(
+            FsReplayStore::new(parent.path(), 0, 5, 5)
+                .await
+                .expect("disk store"),
+        );
+        let memory: Arc<dyn ReplayStore> = Arc::new(MemoryReplay::default());
         for version in VERSIONS {
             let origin = Hop::start(
                 version,
@@ -714,24 +727,45 @@ async fn one_shot_retry_bodies_preserve_content_length_on_the_wire() {
                 }),
             )
             .await;
-            for (do_not_retry, cap) in [(true, None), (false, None), (false, Some(3))] {
+            for (store, do_not_retry, cap, expected_attempts) in [
+                (&memory, true, Some(5), 1),
+                (&memory, false, None, 1),
+                (&memory, false, Some(3), 1),
+                (&memory, false, Some(5), 2),
+                (&disk, false, Some(5), 2),
+            ] {
+                let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let service_attempts = attempts.clone();
                 let client = origin.client.clone();
                 let retry = Retry::new(
-                    ManagedPolicy::default().with_prepare_body(
-                        move |_: &Parts, _: bool, _: &SizeHint| {
+                    ManagedPolicy::default()
+                        .with_replay_store(store.clone())
+                        .with_prepare_body(move |_: &Parts, _: bool, _: &SizeHint| {
                             cap.map(|cap| CollectOptions::new().with_max_size(cap))
-                        },
-                    ),
+                        }),
                     service_fn(move |req: Request<RetryBody>| {
                         let client = client.clone();
-                        async move { client.serve(req.map(Body::from)).await }
+                        let attempt =
+                            service_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        async move {
+                            let mut response = client.serve(req.map(Body::from)).await?;
+                            if attempt == 0 {
+                                *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+                            }
+                            Ok::<_, rama_core::error::BoxError>(response)
+                        }
                     }),
                 );
                 let request = handshake_request(version).map(|_| Body::from("hello"));
                 if do_not_retry {
                     request.extensions().insert(DoNotRetry::default());
                 }
-                retry.serve(request).await.expect("response");
+                let response = retry.serve(request).await.expect("response");
+                assert_eq!(response.status().is_success(), expected_attempts == 2);
+                assert_eq!(
+                    attempts.load(std::sync::atomic::Ordering::Relaxed),
+                    expected_attempts
+                );
             }
             origin.close().await;
         }

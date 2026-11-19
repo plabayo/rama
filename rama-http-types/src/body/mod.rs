@@ -171,6 +171,17 @@ impl Body {
         Self(BodyInner::Full(body))
     }
 
+    /// Share the remaining payload if this body holds a single inline chunk.
+    ///
+    /// Streaming bodies and empty bodies return `None`. This never polls the
+    /// body or strips trailers from a wrapped stream.
+    pub fn full_bytes(&self) -> Option<Bytes> {
+        match &self.0 {
+            BodyInner::Full(full) => full.clone().into_inner(),
+            BodyInner::Boxed(_) => None,
+        }
+    }
+
     /// Create a new `Body` with a maximum size limit.
     pub fn with_limit<B>(body: B, limit: usize) -> Self
     where

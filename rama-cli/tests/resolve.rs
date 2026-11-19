@@ -122,7 +122,7 @@ fn run_resolve_from_local_dns(
         Ok(())
     });
 
-    let trace_dir = rama::utils::fs::TempDir::with_prefix("rama-resolve-test-")?;
+    let trace_dir = rama::utils::fs::TempDir::with_prefix_sync("rama-resolve-test-")?;
     let trace = trace_dir.path().join("trace.log");
     let output = Command::new(env!("CARGO_BIN_EXE_rama"))
         .stdin(std::process::Stdio::null())

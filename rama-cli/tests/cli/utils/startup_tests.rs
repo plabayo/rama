@@ -268,7 +268,7 @@ fn child() {
 #[test]
 #[ignore = "spawns rama processes"]
 fn idle_ech_reload_does_not_hold_graceful_shutdown() {
-    let directory = rama::utils::fs::TempDir::new().unwrap();
+    let directory = rama::utils::fs::TempDir::new_sync().unwrap();
     let keys = directory.path().join("ech-keys.json");
     // Fixed test keys, shared with the TLS backend fixtures; never production keys.
     std::fs::write(&keys, include_bytes!("../../fixtures/ech-keys.json")).unwrap();

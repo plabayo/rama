@@ -1307,7 +1307,8 @@ impl<T> EasyHttpConnectorBuilder<T, PoolStage> {
     /// The custom owner must isolate each attempt's extensions, retain its
     /// replayable request, and bound recovery itself.
     ///
-    /// `prepare_body` decides which bodies to collect and the collection bounds.
+    /// `prepare_body` selects which uploads to capture for replay and can tighten
+    /// the default memory store's 64 KiB byte limit and 30-second deadline.
     /// Use [`rama_http::layer::retry::early_data::prepare_bodyless`] to stream
     /// payloads once, or provide a bounded preparation policy for ordinary payload
     /// retries. Only safe, truly empty requests may send early, regardless of that

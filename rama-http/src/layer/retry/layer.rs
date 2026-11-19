@@ -1,7 +1,7 @@
 use super::Retry;
 use rama_core::Layer;
 
-/// Retry requests based on a policy
+/// Retry requests based on a policy. See the [retry module](super) for default body limits.
 #[derive(Debug, Clone)]
 pub struct RetryLayer<P> {
     policy: P,

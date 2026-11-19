@@ -180,7 +180,7 @@ impl IssuedIdentities {
     #[must_use]
     pub fn generate() -> Self {
         let directory =
-            TempDir::with_prefix("rama-quic-interop-issued-").expect("a directory of our own");
+            TempDir::with_prefix_sync("rama-quic-interop-issued-").expect("a directory of our own");
         let authority =
             rama::crypto::cert::CertificateAuthorityData::generate(SelfSignedCaConfig {
                 subject: CertificateSubject {
