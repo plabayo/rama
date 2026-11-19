@@ -947,8 +947,7 @@ async fn default_middleware_replaces_invalid_upstream_length_with_complete_502()
     );
     assert!(lower.contains("content-length: 0\r\n"), "{head:?}");
     assert!(!lower.contains("transfer-encoding:"));
-    // The synthetic response is complete without origin EOF. Do not require
-    // downstream closure: default error middleware does not currently request it.
+    assert!(lower.contains("connection: close\r\n"));
     assert_eof(&mut relay.upstream).await;
     relay.finish(false).await;
 }
@@ -1032,5 +1031,103 @@ async fn repeated_content_lengths_are_normalized_and_keep_the_relay_reusable() {
             1
         );
         relay.finish(false).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn custom_error_reaches_http1_client_after_upstream_disconnects() {
+    use rama_http::{Body, Method, Version};
+    use rama_http_backend::proxy::mitm::RelayErrorReason;
+    let (mut client, ingress) = tokio::io::duplex(4096);
+    let (egress, upstream) = tokio::io::duplex(4096);
+    let relay = HttpMitmRelay::new(WeakScope::detached()).with_error_response(|ctx| {
+        assert_eq!(ctx.version, Version::HTTP_11);
+        assert_eq!(ctx.method, Method::GET);
+        assert_eq!(ctx.uri.path().unwrap(), "/item");
+        assert_eq!(ctx.reason, RelayErrorReason::RequestFailed);
+        Response::builder()
+            .status(503)
+            .header("server", "custom")
+            .body(Body::from("offline"))
+            .unwrap()
+    });
+    let task = tokio::spawn(async move {
+        relay
+            .serve(BridgeIo(MockSocket::new(ingress), MockSocket::new(egress)))
+            .await
+    });
+    write(
+        &mut client,
+        b"GET /item HTTP/1.1\r\nHost: example.com\r\n\r\n",
+    )
+    .await;
+    let mut upstream = BufReader::new(upstream);
+    read_head(&mut upstream).await;
+    drop(upstream);
+    let mut client = BufReader::new(client);
+    let head = read_head(&mut client).await.to_ascii_lowercase();
+    assert!(head.starts_with("http/1.1 503 "));
+    assert!(head.contains("server: custom\r\n"));
+    assert!(head.contains("connection: close\r\n"));
+    assert_eq!(read_bytes(&mut client, 7).await, b"offline");
+    assert_eof(&mut client).await;
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn egress_connect_failure_sends_a_complete_response_before_closing() {
+    use rama_core::extensions::ExtensionsRef as _;
+    use rama_http::{
+        Body, Version,
+        conn::TargetHttpVersion,
+        headers::{Date, HeaderDecode},
+    };
+    use rama_http_backend::proxy::mitm::RelayErrorReason;
+
+    for custom in [false, true] {
+        let (mut client, ingress) = tokio::io::duplex(4096);
+        let (egress, _upstream) = tokio::io::duplex(4096);
+        let egress = MockSocket::new(egress);
+        egress
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        let mut relay = HttpMitmRelay::new(WeakScope::detached());
+        if custom {
+            relay = relay.with_error_response(|ctx| {
+                assert_eq!(ctx.reason, RelayErrorReason::EgressConnectFailed);
+                assert_eq!(ctx.version, Version::HTTP_11);
+                Response::builder()
+                    .status(503)
+                    .header("connection", "keep-alive")
+                    .body(Body::from("offline"))
+                    .unwrap()
+            });
+        }
+        let task = tokio::spawn(async move {
+            relay
+                .serve(BridgeIo(MockSocket::new(ingress), egress))
+                .await
+        });
+        write(&mut client, b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n").await;
+        let mut client = BufReader::new(client);
+        let head = read_head(&mut client).await;
+        assert!(head.to_ascii_lowercase().contains("connection: close\r\n"));
+        if custom {
+            assert!(head.starts_with("HTTP/1.1 503 "));
+            assert_eq!(read_bytes(&mut client, 7).await, b"offline");
+        } else {
+            assert!(head.starts_with("HTTP/1.1 502 "));
+            let date: HeaderValue = head
+                .lines()
+                .filter_map(|line| line.split_once(": "))
+                .find(|(name, _)| name.eq_ignore_ascii_case("date"))
+                .unwrap()
+                .1
+                .parse()
+                .unwrap();
+            Date::decode(&mut std::iter::once(&date)).unwrap();
+        }
+        assert_eof(&mut client).await;
+        task.await.unwrap().unwrap();
     }
 }
