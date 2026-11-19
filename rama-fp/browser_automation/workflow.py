@@ -742,6 +742,14 @@ def run_capture_flow(
         if urlsplit(driver.current_url).path != "/report":
             print("RETRY report: the browser did not leave its previous page", flush=True)
             driver.get(urljoin(origin, report_path))
+        if not all_flows:
+            # Safari can expose the destination URL while scripts still see the old DOM.
+            # The H3 bootstrap may append its retry counter to the query.
+            report_loaded = navigated_to(
+                lambda url: url.scheme == parsed.scheme and url.netloc == parsed.netloc
+                and url.path == "/report" and parse_qs(url.query).get("connection_only") == ["1"]
+            )
+            await_navigation(driver, wait, report_loaded, "connection report did not load")
         user_agent = driver.execute_script("return navigator.userAgent")
         if not all_flows:
             protocol = driver.execute_script(

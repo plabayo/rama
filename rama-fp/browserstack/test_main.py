@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import quote
 
 from selenium.common.exceptions import TimeoutException
@@ -218,6 +218,26 @@ class NightlyTests(unittest.TestCase):
                 self.assertEqual(code, expected)
                 if not expected:
                     self.assertEqual(receipts["000-0"]["site_protocols"], site_protocols)
+
+    def test_echo_timeout_uses_one_fresh_session(self):
+        for repeated_timeout in (False, True):
+            with self.subTest(repeated_timeout=repeated_timeout):
+                first, second = Mock(), Mock()
+                first.get.side_effect = TimeoutException()
+                if repeated_timeout:
+                    second.get.side_effect = TimeoutException()
+                else:
+                    second.execute_async_script.return_value = {"tls": {"ja4": {"hash": "seen"}}}
+                with tempfile.TemporaryDirectory() as directory, patch.object(
+                    main, "device_session", side_effect=[nullcontext(first), nullcontext(second)]
+                ) as sessions:
+                    output = Path(directory)
+                    passed = main.check_echo(("ios-simulator", "26.2"), output, secrets=())
+                    receipt = json.loads((output / "echo.json").read_text())
+                self.assertEqual(passed, not repeated_timeout)
+                self.assertEqual(sessions.call_count, 2)
+                self.assertEqual(receipt["attempts"], 2)
+                self.assertEqual(receipt["first_failure_reason"], "TimeoutException")
 
     def test_fingerprint_mismatch_fails_but_matching_or_absent_profiles_do_not(self):
         for profile, expected in (

@@ -85,6 +85,29 @@ class EchCaptureTests(unittest.TestCase):
             self.assertFalse(capture.call_args.kwargs["all_flows"])
             self.assertEqual(capture.call_args.kwargs["cookies"], {"storage": "value"})
 
+    def test_connection_capture_waits_for_the_report_document(self):
+        driver = Mock()
+        driver.current_url = "https://ech.example/report?connection_only=1&h3-bootstrap=1"
+        driver.capabilities = {}
+        ready = iter((False, True))
+        observed = []
+
+        def script(source, *args):
+            if "document.readyState" in source:
+                observed.append(next(ready))
+                return observed[-1]
+            self.assertEqual(observed, [False, True])
+            if "nextHopProtocol" in source:
+                return "h2"
+            if "rama-ech-accepted" in source:
+                return "false"
+            return SAFARI_26
+
+        driver.execute_script.side_effect = script
+        result = workflow.run_ech_capture(driver, "https://ech.example/", timeout=2)
+        self.assertEqual(result["protocol"], "h2")
+        self.assertIs(result["accepted"], False)
+
     def test_missing_server_evidence_is_not_classified_as_non_acceptance(self):
         driver = Mock()
         for value in (None, "", "unknown", "True"):
