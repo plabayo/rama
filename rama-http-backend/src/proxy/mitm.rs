@@ -80,20 +80,11 @@ impl DefaultErrorResponse {
 impl From<DefaultErrorResponse> for Response {
     #[inline(always)]
     fn from(_: DefaultErrorResponse) -> Self {
-        let mut response = (
-            [
-                (
-                    HeaderName::from_static("x-proxy-framework-name"),
-                    HeaderValue::from_static(rama_utils::info::NAME),
-                ),
-                (
-                    HeaderName::from_static("x-proxy-framework-version"),
-                    HeaderValue::from_static(rama_utils::info::VERSION),
-                ),
-            ],
-            StatusCode::BAD_GATEWAY,
-        )
-            .into_response();
+        let mut response = StatusCode::BAD_GATEWAY.into_response();
+        response.headers_mut().insert(
+            HeaderName::from_static("x-proxy-framework"),
+            header::identity_header().clone(),
+        );
         response.headers_mut().typed_insert(DateNow::new());
         response
     }

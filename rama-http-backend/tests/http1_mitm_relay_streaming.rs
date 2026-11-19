@@ -948,6 +948,7 @@ async fn default_middleware_replaces_invalid_upstream_length_with_complete_502()
     assert!(lower.contains("content-length: 0\r\n"), "{head:?}");
     assert!(!lower.contains("transfer-encoding:"));
     assert!(lower.contains("connection: close\r\n"));
+    assert!(lower.contains("x-proxy-framework: "));
     assert_eof(&mut relay.upstream).await;
     relay.finish(false).await;
 }
@@ -1126,6 +1127,10 @@ async fn egress_connect_failure_sends_a_complete_response_before_closing() {
                 .parse()
                 .unwrap();
             Date::decode(&mut std::iter::once(&date)).unwrap();
+            assert!(
+                head.to_ascii_lowercase()
+                    .contains(&format!("x-proxy-framework: {}\r\n", header::identity()))
+            );
         }
         assert_eof(&mut client).await;
         task.await.unwrap().unwrap();

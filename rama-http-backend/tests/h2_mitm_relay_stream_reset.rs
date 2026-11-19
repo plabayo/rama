@@ -159,7 +159,8 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
             // The 502 is the relay's synthesized DefaultErrorResponse, not a
             // transport failure leaking through.
             assert!(
-                response.headers().contains_key("x-proxy-framework-name"),
+                response.headers().get("x-proxy-framework")
+                    == Some(rama_http::header::identity_header()),
                 "the per-stream failure must be the relay's DefaultErrorResponse"
             );
         } else {

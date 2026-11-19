@@ -58,3 +58,44 @@ fn http_date_display() -> String {
 fn http_date_parse(value: &str) -> HttpDate {
     black_box(value).parse().unwrap()
 }
+
+mod required_headers {
+    use super::*;
+    use rama::{
+        Layer, Service,
+        futures::FutureExt as _,
+        http::{
+            Body, Request, Response,
+            layer::required_header::{
+                AddRequiredRequestHeadersLayer, AddRequiredResponseHeadersLayer,
+            },
+        },
+        service::service_fn,
+    };
+
+    #[divan::bench(sample_size = 128)]
+    fn request(b: divan::Bencher) {
+        let svc =
+            AddRequiredRequestHeadersLayer::new().into_layer(service_fn(async |req: Request| {
+                black_box(req.headers());
+                Ok::<_, std::convert::Infallible>(Response::new(()))
+            }));
+        b.with_inputs(|| {
+            Request::builder()
+                .uri("https://example.com/")
+                .body(Body::empty())
+                .unwrap()
+        })
+        .bench_local_values(|req| svc.serve(req).now_or_never().unwrap().unwrap());
+    }
+
+    #[divan::bench(sample_size = 128)]
+    fn response(b: divan::Bencher) {
+        let svc =
+            AddRequiredResponseHeadersLayer::new().into_layer(service_fn(async |_: Request| {
+                Ok::<_, std::convert::Infallible>(Response::new(()))
+            }));
+        b.with_inputs(|| Request::new(Body::empty()))
+            .bench_local_values(|req| svc.serve(req).now_or_never().unwrap().unwrap());
+    }
+}

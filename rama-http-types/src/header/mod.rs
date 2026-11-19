@@ -233,9 +233,9 @@ pub use self::name::{
 /// represent offsets when dealing with header names.
 const MAX_HEADER_NAME_LEN: usize = (1 << 16) - 1;
 
-/// Static Header Value that is can be used as `User-Agent` or `Server` header.
-pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(const_format::formatcp!(
-    "{}/{}",
-    rama_utils::info::NAME,
-    rama_utils::info::VERSION
-));
+/// Rama's built-in HTTP product identifier.
+pub const RAMA_ID: &str =
+    const_format::formatcp!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION);
+
+/// Rama's built-in `User-Agent` or `Server` header value.
+pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(RAMA_ID);

@@ -17,7 +17,7 @@ use std::fmt;
 #[derive(Debug, Clone)]
 pub struct AddRequiredResponseHeadersLayer {
     overwrite: bool,
-    server: Server,
+    server: Option<Server>,
 }
 
 impl Default for AddRequiredResponseHeadersLayer {
@@ -34,7 +34,7 @@ impl AddRequiredResponseHeadersLayer {
     pub const fn new() -> Self {
         Self {
             overwrite: false,
-            server: Server::rama(),
+            server: None,
         }
     }
 
@@ -52,9 +52,9 @@ impl AddRequiredResponseHeadersLayer {
     rama_utils::macros::generate_set_and_with! {
         /// Set the [`Server`] header to add.
         ///
-        /// Defaults to [`Server::rama`] (`rama/<version>`).
+        /// Defaults to the [application identity](crate::header::identity).
         pub fn server(mut self, server: Server) -> Self {
-            self.server = server;
+            self.server = Some(server);
             self
         }
     }
@@ -83,7 +83,7 @@ impl<S> Layer<S> for AddRequiredResponseHeadersLayer {
 /// Middleware that adds the `Server` and `Date` headers to the response
 /// returned by the inner service.
 ///
-/// - `Server`: the configured value, or [`Server::rama`] by default.
+/// - `Server`: the configured value, or the [application identity](crate::header::identity) by default.
 /// - `Date`: the current time, formatted as an HTTP-date.
 ///
 /// Existing headers are kept unless overwriting is enabled,
@@ -94,7 +94,7 @@ impl<S> Layer<S> for AddRequiredResponseHeadersLayer {
 pub struct AddRequiredResponseHeaders<S> {
     inner: S,
     overwrite: bool,
-    server: Server,
+    server: Option<Server>,
 }
 
 impl<S> AddRequiredResponseHeaders<S> {
@@ -104,7 +104,7 @@ impl<S> AddRequiredResponseHeaders<S> {
         Self {
             inner,
             overwrite: false,
-            server: Server::rama(),
+            server: None,
         }
     }
 
@@ -122,9 +122,9 @@ impl<S> AddRequiredResponseHeaders<S> {
     rama_utils::macros::generate_set_and_with! {
         /// Set the [`Server`] header to add.
         ///
-        /// Defaults to [`Server::rama`] (`rama/<version>`).
+        /// Defaults to the [application identity](crate::header::identity).
         pub fn server(mut self, server: Server) -> Self {
-            self.server = server;
+            self.server = Some(server);
             self
         }
     }
@@ -158,10 +158,11 @@ where
         let mut resp = self.inner.serve(req).await?;
 
         let headers = resp.headers_mut();
-        if self.overwrite || !headers.contains_key(SERVER) {
-            headers.typed_insert(self.server.clone());
+        let insert_both = self.overwrite || headers.is_empty();
+        if insert_both || !headers.contains_key(SERVER) {
+            headers.typed_insert(self.server.clone().unwrap_or_default());
         }
-        if self.overwrite || !headers.contains_key(DATE) {
+        if insert_both || !headers.contains_key(DATE) {
             headers.typed_insert(DateNow::new());
         }
 

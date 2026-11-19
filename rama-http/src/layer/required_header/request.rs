@@ -4,7 +4,7 @@
 
 use crate::{
     HeaderValue, Request, Response,
-    header::{self, HOST, RAMA_ID_HEADER_VALUE, USER_AGENT},
+    header::{self, HOST, USER_AGENT},
     headers::HeaderMapExt,
     utils::is_plain_connect,
 };
@@ -53,7 +53,7 @@ impl AddRequiredRequestHeadersLayer {
     rama_utils::macros::generate_set_and_with! {
         /// Set the [`USER_AGENT`] header value to add.
         ///
-        /// `None` (the default) uses [`RAMA_ID_HEADER_VALUE`] (`rama/<version>`).
+        /// `None` (the default) uses the [application identity](header::identity).
         pub fn user_agent_header_value(mut self, value: Option<HeaderValue>) -> Self {
             self.user_agent_header_value = value;
             self
@@ -87,7 +87,7 @@ impl<S> Layer<S> for AddRequiredRequestHeadersLayer {
 /// - `Host`: derived from the request's target authority. A plain `CONNECT`
 ///   keeps its port; any other request drops the port when it is the default
 ///   one for the target protocol. This is done for all http versions.
-/// - `User-Agent`: the configured value, or [`RAMA_ID_HEADER_VALUE`] by default.
+/// - `User-Agent`: the configured value, or the [application identity](header::identity) by default.
 ///
 /// Existing headers are kept unless overwriting is enabled,
 /// see [`AddRequiredRequestHeaders::set_overwrite`].
@@ -129,7 +129,7 @@ impl<S> AddRequiredRequestHeaders<S> {
     rama_utils::macros::generate_set_and_with! {
         /// Set the [`USER_AGENT`] header value to add.
         ///
-        /// `None` (the default) uses [`RAMA_ID_HEADER_VALUE`] (`rama/<version>`).
+        /// `None` (the default) uses the [application identity](header::identity).
         pub fn user_agent_header_value(mut self, value: Option<HeaderValue>) -> Self {
             self.user_agent_header_value = value;
             self
@@ -184,14 +184,14 @@ where
                 USER_AGENT,
                 self.user_agent_header_value
                     .as_ref()
-                    .unwrap_or(&RAMA_ID_HEADER_VALUE)
+                    .unwrap_or_else(|| header::identity_header())
                     .clone(),
             );
         } else if let header::Entry::Vacant(header) = req.headers_mut().entry(USER_AGENT) {
             header.insert(
                 self.user_agent_header_value
                     .as_ref()
-                    .unwrap_or(&RAMA_ID_HEADER_VALUE)
+                    .unwrap_or_else(|| header::identity_header())
                     .clone(),
             );
         }
@@ -259,7 +259,7 @@ mod test {
                 assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1");
                 assert_eq!(
                     req.headers().get(USER_AGENT).unwrap(),
-                    RAMA_ID_HEADER_VALUE.to_str().unwrap()
+                    header::RAMA_ID_HEADER_VALUE.to_str().unwrap()
                 );
                 Ok::<_, Infallible>(rama_http_types::Response::new(Body::empty()))
             }));

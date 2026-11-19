@@ -37,6 +37,13 @@ derive_header! {
     name: SERVER
 }
 
+/// Uses the application's [default identity](crate::identity()).
+impl Default for Server {
+    fn default() -> Self {
+        Self(crate::identity_header_str().clone())
+    }
+}
+
 impl Server {
     /// Construct a `Server` from a static string.
     ///
@@ -51,11 +58,9 @@ impl Server {
     /// The default rama `Server`: `rama/<version>`.
     #[must_use]
     pub const fn rama() -> Self {
-        Self(HeaderValueString::from_static(const_format::formatcp!(
-            "{}/{}",
-            rama_utils::info::NAME,
-            rama_utils::info::VERSION,
-        )))
+        Self(HeaderValueString::from_static(
+            rama_http_types::header::RAMA_ID,
+        ))
     }
 
     /// View this `Server` as a `&str`.

@@ -96,6 +96,11 @@ impl HeaderValue {
         }
     }
 
+    /// Validate a static string without copying or allocating its bytes.
+    pub fn try_from_static(src: &'static str) -> Result<Self, InvalidHeaderValue> {
+        Self::try_from_generic(src.as_bytes(), Bytes::from_static, is_valid_ascii)
+    }
+
     /// Attempt to convert a string to a `HeaderValue`.
     ///
     /// If the argument contains invalid header value characters, an error is
