@@ -433,7 +433,8 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
             if opts.http2 {
                 tokio::spawn({
                     let mut builder =
-                        rama::http::core::server::conn::http2::Builder::new(WeakScope::detached());
+                        rama::http::core::server::conn::http2::Builder::new(WeakScope::detached())
+                            .with_adaptive_window(opts.http2_adaptive_window);
                     if let Some(http2_stream_window) = opts.http2_stream_window {
                         builder.set_initial_stream_window_size(http2_stream_window);
                     }
