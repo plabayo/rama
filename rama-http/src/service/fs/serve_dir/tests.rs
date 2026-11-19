@@ -3050,6 +3050,50 @@ async fn precompressed_negotiation_matches_compression_layer() {
     }
 }
 
+#[tokio::test]
+async fn strict_encoding_negotiation_precedes_conditionals_and_varies_on_identity() {
+    const EMBEDDED_FILES: Dir = Dir::new(
+        "",
+        &[DirEntry::File(
+            EmbeddedFile::new("precompressed.txt", b"file").with_metadata(
+                rama_utils::include_dir::Metadata::new(
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                ),
+            ),
+        )],
+    );
+    for svc in [
+        ServeDir::new("../test-files"),
+        ServeDir::new_embedded(EMBEDDED_FILES),
+    ] {
+        let svc = svc.with_enforce_not_acceptable(true);
+        for method in [Method::GET, Method::HEAD] {
+            for (encoding, conditional, expected) in [
+                ("identity", false, StatusCode::OK),
+                ("identity", true, StatusCode::NOT_MODIFIED),
+                ("*;q=0", false, StatusCode::NOT_ACCEPTABLE),
+                ("*;q=0", true, StatusCode::NOT_ACCEPTABLE),
+            ] {
+                let mut request = Request::builder()
+                    .method(method.clone())
+                    .uri("/precompressed.txt")
+                    .header(header::ACCEPT_ENCODING, encoding);
+                if conditional {
+                    request = request.header(header::IF_NONE_MATCH, "*");
+                }
+                let response = svc
+                    .serve(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), expected);
+                assert_eq!(response.headers()[header::VARY], "accept-encoding");
+            }
+        }
+    }
+}
+
 /// Asserts that HEAD answers what GET answers for `uri`, minus the content.
 async fn assert_head_matches_get<S>(svc: &S, uri: &str, accept_encoding: Option<&str>)
 where

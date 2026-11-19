@@ -51,12 +51,12 @@ fn captured_request_transport_header_policy_is_explicit() {
         metadata: Default::default(),
     };
 
-    let (preserved, body, _) = build_captured_request(captured.clone(), false).unwrap();
+    let (preserved, body) = build_captured_request(captured.clone(), false).unwrap();
     assert_eq!(preserved.version(), Version::HTTP_2);
     assert_eq!(preserved.headers().len(), 4);
     assert_eq!(body.as_ref(), b"body");
 
-    let (stripped, _, _) = build_captured_request(captured, true).unwrap();
+    let (stripped, _) = build_captured_request(captured, true).unwrap();
     assert_eq!(stripped.headers().len(), 1);
     assert_eq!(stripped.headers()["x-captured"], "yes");
 }
@@ -1026,6 +1026,7 @@ async fn capture_h3_request_with_hello(
     state: &DashboardState,
     origin: SocketAddr,
     hello: ClientHello,
+    connection: Option<u64>,
 ) {
     let request = Request::builder()
         .version(Version::HTTP_3)
@@ -1035,6 +1036,9 @@ async fn capture_h3_request_with_hello(
     request
         .extensions()
         .insert(SecureTransport::with_client_hello(hello));
+    if let Some(id) = connection {
+        request.extensions().insert(ConnectionId(id));
+    }
     capture_for_replay(state, request).await;
 }
 
@@ -1053,7 +1057,13 @@ async fn replay_over_http3_offers_the_captured_quic_client_hello() {
     let default = hellos.recv().await.unwrap();
 
     let captured = with_reversed_cipher_suites(&default);
-    capture_h3_request_with_hello(&state, origin, captured.clone()).await;
+    let connection = state
+        .capture
+        .begin_connection_if_enabled(None, Protocol::HTTPS, None)
+        .unwrap();
+    state.capture.confirm_connection(connection);
+    capture_h3_request_with_hello(&state, origin, captured.clone(), Some(connection)).await;
+    capture_h3_request_with_hello(&state, origin, captured.clone(), Some(connection)).await;
     // The first replay is captured as exchange #2.
     assert_eq!(
         replay_within_deadline(&state, 3).await.unwrap(),
@@ -1068,6 +1078,25 @@ async fn replay_over_http3_offers_the_captured_quic_client_hello() {
         offered_cipher_suites(&replayed),
         offered_cipher_suites(&captured)
     );
+    let first = state.capture.exchange_capture(3).unwrap();
+    let offer = first
+        .metadata()
+        .connection
+        .get_ref::<CapturedQuicOffer>()
+        .unwrap();
+    assert_eq!(
+        replay_within_deadline(&state, 4).await.unwrap(),
+        StatusCode::OK
+    );
+    let second = state.capture.exchange_capture(4).unwrap();
+    assert!(std::ptr::eq(
+        offer,
+        second
+            .metadata()
+            .connection
+            .get_ref::<CapturedQuicOffer>()
+            .unwrap()
+    ));
     endpoint.close(0u32, b"done");
 }
 
@@ -1101,7 +1130,7 @@ async fn replay_over_http3_falls_back_when_the_captured_hello_is_not_reproducibl
         reordered.compression_algorithms().to_vec(),
         extensions,
     );
-    capture_h3_request_with_hello(&state, origin, captured).await;
+    capture_h3_request_with_hello(&state, origin, captured, None).await;
     assert_eq!(
         replay_within_deadline(&state, 3).await.unwrap(),
         StatusCode::OK

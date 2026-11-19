@@ -112,6 +112,21 @@ mod tests {
     }
 
     #[test]
+    fn nested_handshake_does_not_inherit_outer_ech_observations() {
+        let proxy = Extensions::new();
+        proxy.insert(ServerEchAccepted::new(true));
+        proxy.insert(EchServerObservation::new(hello(2)));
+        let origin = proxy.fork_nested_connection(&rama_core::extensions::NoConnectionTransfer);
+        origin.insert(SecureTransport::with_client_hello(hello(3)));
+
+        let hellos = ServerClientHellos::from_extensions(&origin);
+        assert_eq!(hellos.ech_accepted(), None);
+        assert!(origin.get_ref::<EchServerObservation>().is_none());
+        assert!(hellos.ech_inner().is_none());
+        assert_eq!(suite(hellos.wire()), Some(CipherSuite::from(3)));
+    }
+
+    #[test]
     fn accepted_ech_without_outer_keeps_the_inner_effective() {
         let inner = hello(1);
         let hellos =

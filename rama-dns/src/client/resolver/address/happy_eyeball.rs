@@ -139,7 +139,15 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         let hints = family(preferred_v4).chain(family(!preferred_v4));
         self.hints = hints_source;
         let (source, fallback) = self.lookup_ip_source();
-        HappyEyeballIpStream::new(source, fallback, hints)
+        HappyEyeballIpStream {
+            source,
+            seen: SmallVec::new(),
+            source_done: false,
+            hints,
+            use_hints: !hints_source.is_empty(),
+            connect,
+            fallback: fallback.into_iter(),
+        }
     }
 
     /// The candidate source, and the loopback answer for a loopback name whose overwrite
@@ -322,21 +330,9 @@ pin_project! {
         source_done: bool,
         hints: H,
         use_hints: bool,
+        connect: ConnectIpMode,
         // Yielded when the source ends without an address.
         fallback: smallvec::IntoIter<[Result<IpAddr, OpaqueError>; 2]>,
-    }
-}
-
-impl<V4, V6, H> HappyEyeballIpStream<V4, V6, H> {
-    fn new(source: HappyEyeballIpSource<V4, V6>, fallback: LoopbackCandidates, hints: H) -> Self {
-        Self {
-            source,
-            seen: SmallVec::new(),
-            source_done: false,
-            hints,
-            use_hints: true,
-            fallback: fallback.into_iter(),
-        }
     }
 }
 
@@ -354,9 +350,10 @@ impl<
             if !*this.source_done {
                 match this.source.as_mut().poll_next(cx) {
                     Poll::Ready(Some(Ok(ip))) => {
-                        // Fresh DNS answers supersede remaining hints, including
-                        // when they arrive after a hint has already been used.
-                        *this.use_hints = false;
+                        // Only a dialable DNS answer supersedes the remaining hints.
+                        if *this.use_hints && this.connect.validate_ip(ip).is_ok() {
+                            *this.use_hints = false;
+                        }
                         if !this.seen.contains(&ip) {
                             this.seen.push(ip);
                             return Poll::Ready(Some(Ok(ip)));

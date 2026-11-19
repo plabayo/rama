@@ -478,7 +478,6 @@ impl<F> ServeDir<F> {
             negotiated_encodings,
             self.ignore_multi_range_requests,
             self.buf_chunk_size,
-            self.precompressed_variants.is_some(),
             self.enforce_not_acceptable,
         );
 
@@ -499,7 +498,14 @@ impl<F> ServeDir<F> {
             .fallback
             .as_ref()
             .map(|fallback| (fallback, Request::from_parts(parts, body)));
-        future::consume_open_file_result(open_file_result, fallback_and_request).await
+        let vary_accept_encoding =
+            self.precompressed_variants.is_some() || self.enforce_not_acceptable;
+        future::consume_open_file_result(
+            open_file_result,
+            fallback_and_request,
+            vary_accept_encoding,
+        )
+        .await
     }
 }
 

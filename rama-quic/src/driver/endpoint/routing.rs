@@ -250,7 +250,7 @@ impl EndpointRouteDirectory {
                 telemetry: self.telemetry.clone(),
             })
         };
-        endpoint_state.inner.observe_routes(observer.clone());
+        endpoint_state.inner.observe_routes(&observer);
         drop(endpoint_state);
         self.observe("registered", self.stats());
         Ok(EndpointRouteRegistration { observer })
@@ -405,7 +405,12 @@ mod tests {
     async fn routes_are_destination_scoped_retireable_and_removed_with_registration() {
         let directory = EndpointRouteDirectory::new(rama_utils::macros::nonzero!(2));
         let local = ([127, 0, 0, 1], 443).into();
-        let registration = directory.register(&endpoint(443), local).unwrap();
+        let endpoint = endpoint(443);
+        let registration = directory.register(&endpoint, local).unwrap();
+        assert_eq!(
+            directory.register(&endpoint, local).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists,
+        );
         let cid = ConnectionId::new(&[7; 8]);
         registration.observer.insert(cid, false);
         let packet = packet(cid);
@@ -442,6 +447,8 @@ mod tests {
         assert_eq!(stats.route_hits, 1);
         assert_eq!(stats.route_misses, 2);
         assert_eq!(stats.ambiguous_routes, 0);
+        drop(observer);
+        let _next = directory.register(&endpoint, local).unwrap();
     }
 
     #[tokio::test]

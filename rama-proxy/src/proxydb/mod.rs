@@ -82,6 +82,10 @@ impl From<NonEmptyStr> for ProxyID {
 /// candidates. The database defines their preference order; [`MemoryProxyDB`]
 /// randomizes its complete matching set.
 ///
+/// An omitted list of values leaves its column unrestricted. An empty list
+/// matches no proxies. A wildcard value in a proxy row matches any requested
+/// value for that column. Requesting only a wildcard selects wildcard rows.
+///
 /// Filters can be combined to make combinations with special meaning.
 /// E.g. `datacenter:true, residential:true` is essentially an ISP proxy.
 ///
@@ -688,28 +692,35 @@ mod memdb {
             &self,
             ctx: ProxyContext,
             filter: ProxyFilter,
-        ) -> internal::ProxyDBQuery<'_> {
+        ) -> Result<internal::ProxyDBQuery<'_>, MemoryProxyDBQueryError> {
+            fn values<T>(filter: Option<Vec<T>>) -> Result<Vec<T>, MemoryProxyDBQueryError> {
+                match filter {
+                    Some(values) if values.is_empty() => Err(MemoryProxyDBQueryError::not_found()),
+                    values => Ok(values.unwrap_or_default()),
+                }
+            }
+
             let mut query = self.inner.data.query();
 
-            for pool_id in filter.pool_id.into_iter().flatten() {
+            for pool_id in values(filter.pool_id)? {
                 query.pool_id(pool_id);
             }
-            for continent in filter.continent.into_iter().flatten() {
+            for continent in values(filter.continent)? {
                 query.continent(continent);
             }
-            for country in filter.country.into_iter().flatten() {
+            for country in values(filter.country)? {
                 query.country(country);
             }
-            for state in filter.state.into_iter().flatten() {
+            for state in values(filter.state)? {
                 query.state(state);
             }
-            for city in filter.city.into_iter().flatten() {
+            for city in values(filter.city)? {
                 query.city(city);
             }
-            for carrier in filter.carrier.into_iter().flatten() {
+            for carrier in values(filter.carrier)? {
                 query.carrier(carrier);
             }
-            for asn in filter.asn.into_iter().flatten() {
+            for asn in values(filter.asn)? {
                 query.asn(asn);
             }
 
@@ -732,7 +743,7 @@ mod memdb {
                 query.and(Filter::Runtime(rows, *value));
             }
 
-            query
+            Ok(query)
         }
     }
 
@@ -856,7 +867,7 @@ mod memdb {
                 self.get_by_id(id, &ctx, &filter, &predicate)
                     .map(|proxy| NonEmptyVec::new(proxy.clone()))
             } else {
-                let query = self.query_from_filter(ctx, filter);
+                let query = self.query_from_filter(ctx, filter)?;
                 let result = query
                     .execute()
                     .ok_or_else(MemoryProxyDBQueryError::not_found)?;
@@ -890,7 +901,7 @@ mod memdb {
             } else {
                 // A random match, found without working out all of them
                 // if many proxies match the filter.
-                self.query_from_filter(ctx, filter)
+                self.query_from_filter(ctx, filter)?
                     .any_where(|proxy| predicate.execute(proxy))
                     .cloned()
                     .ok_or_else(MemoryProxyDBQueryError::not_found)
@@ -1871,6 +1882,94 @@ mod memdb {
 
         fn ids(column: &ProxyRuntimeColumn) -> BTreeSet<&str> {
             column.iter().map(|proxy| proxy.id.as_ref()).collect()
+        }
+
+        #[tokio::test]
+        async fn indexed_and_id_lookups_agree_on_column_filters() {
+            let mut wildcard = proxy("wildcard");
+            wildcard.asn = Some(Asn::unspecified());
+            wildcard.country = Some(StringFilter::any());
+            let mut exact = proxy("exact");
+            exact.asn = Some(Asn::from_static(42));
+            exact.country = Some("BE".into());
+            let db = MemoryProxyDB::try_from_iter([wildcard, exact, proxy("absent")]).unwrap();
+
+            for (filter, expected) in [
+                (ProxyFilter::default(), &["absent", "exact", "wildcard"][..]),
+                (
+                    ProxyFilter {
+                        asn: Some(vec![Asn::from_static(42)]),
+                        ..Default::default()
+                    },
+                    &["exact", "wildcard"],
+                ),
+                (
+                    ProxyFilter {
+                        asn: Some(vec![Asn::from_static(1)]),
+                        ..Default::default()
+                    },
+                    &["wildcard"],
+                ),
+                (
+                    ProxyFilter {
+                        asn: Some(vec![Asn::unspecified()]),
+                        ..Default::default()
+                    },
+                    &["wildcard"],
+                ),
+                (
+                    ProxyFilter {
+                        country: Some(vec![StringFilter::any()]),
+                        ..Default::default()
+                    },
+                    &["wildcard"],
+                ),
+                (
+                    ProxyFilter {
+                        country: Some(vec!["NL".into(), "BE".into()]),
+                        ..Default::default()
+                    },
+                    &["exact", "wildcard"],
+                ),
+                (
+                    ProxyFilter {
+                        country: Some(vec![]),
+                        ..Default::default()
+                    },
+                    &[],
+                ),
+                (
+                    ProxyFilter {
+                        asn: Some(vec![]),
+                        ..Default::default()
+                    },
+                    &[],
+                ),
+            ] {
+                let ids = match db.get_proxies(tcp(), filter.clone(), None).await {
+                    Ok(rows) => rows.iter().map(|row| row.id.to_string()).sorted().collect(),
+                    Err(err) => {
+                        assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::NotFound);
+                        Vec::new()
+                    }
+                };
+                assert_eq!(ids, expected, "{filter:?}");
+                assert_eq!(
+                    db.get_proxy(tcp(), filter.clone()).await.is_ok(),
+                    !expected.is_empty()
+                );
+                for id in ["absent", "exact", "wildcard"] {
+                    let by_id = ProxyFilter {
+                        id: Some(NonEmptyStr::try_from(id).unwrap()),
+                        ..filter.clone()
+                    };
+                    assert_eq!(
+                        db.get_proxy(tcp(), by_id).await.is_ok(),
+                        expected.contains(&id),
+                        "{filter:?}, {id}"
+                    );
+                }
+            }
         }
 
         #[tokio::test]

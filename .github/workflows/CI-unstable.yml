@@ -406,7 +406,10 @@ jobs:
     permissions:
       contents: read
     needs: check-rust
-    if: failure() && github.ref == 'refs/heads/main'
+    if: >-
+      failure() && github.ref == 'refs/heads/main' &&
+      (inputs.only == '' || contains(format(' {0} ', inputs.only), ' clippy-autofix ') ||
+      contains(format(' {0} ', inputs.only), ' clippy-autofix-pr '))
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: beta
@@ -455,8 +458,10 @@ jobs:
 
   clippy-autofix-pr:
     needs: clippy-autofix
-    if: always() && github.ref == 'refs/heads/main' && needs.clippy-autofix.result == 'success' && needs.clippy-autofix.outputs.has-changes
-      == 'true'
+    if: >-
+      always() && github.ref == 'refs/heads/main' &&
+      (inputs.only == '' || contains(format(' {0} ', inputs.only), ' clippy-autofix-pr ')) &&
+      needs.clippy-autofix.result == 'success' && needs.clippy-autofix.outputs.has-changes == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -817,8 +822,10 @@ jobs:
 
   refresh-docsrs-bindings-pr:
     needs: refresh-docsrs-bindings
-    if: always() && github.ref == 'refs/heads/main' && needs.refresh-docsrs-bindings.result == 'success' && needs.refresh-docsrs-bindings.outputs.has-changes
-      == 'true'
+    if: >-
+      always() && github.ref == 'refs/heads/main' &&
+      (inputs.only == '' || contains(format(' {0} ', inputs.only), ' refresh-docsrs-bindings-pr ')) &&
+      needs.refresh-docsrs-bindings.result == 'success' && needs.refresh-docsrs-bindings.outputs.has-changes == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

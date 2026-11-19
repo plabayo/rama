@@ -108,35 +108,20 @@ fn now_unix_secs() -> u64 {
 ///
 /// `None` for anything else, including dates before 1970, impossible dates such as
 /// 31 Feb, and a weekday that does not match the date. An RFC 850 two-digit year more
-/// than 50 years ahead of the current year (rama's cached clock) falls in the past century.
+/// than 50 years ahead of the current instant (rama's cached clock) falls in the past century.
 #[must_use]
 pub fn parse_http_date(value: &[u8]) -> Option<u64> {
-    parse_http_date_in(value, year_of(now_unix_secs()))
+    parse_http_date_in(value, now_unix_secs)
 }
 
-/// [`parse_http_date`] with `current_year` pinned, for deterministic tests.
-fn parse_http_date_in(value: &[u8], current_year: u64) -> Option<u64> {
+fn parse_http_date_in(value: &[u8], now: impl FnOnce() -> u64) -> Option<u64> {
     let value = trim_ows(value);
     let fields = match value.len() {
         29 => parse_imf_fixdate(value),
         24 => parse_asctime(value),
-        _ => parse_rfc850(value, current_year),
+        _ => parse_rfc850(value, now()),
     }?;
     fields.unix_secs()
-}
-
-const fn year_of(unix_secs: u64) -> u64 {
-    civil_from_days(unix_secs / SECS_PER_DAY).0
-}
-
-/// RFC 9110 §5.6.7: a two-digit year more than 50 years ahead belongs to the past century.
-const fn expand_two_digit_year(two_digits: u64, current_year: u64) -> u64 {
-    let year = current_year - current_year % 100 + two_digits;
-    if year > current_year + 50 {
-        year - 100
-    } else {
-        year
-    }
 }
 
 /// Calendar fields as written; [`Fields::unix_secs`] validates them.
@@ -211,7 +196,7 @@ fn parse_imf_fixdate(s: &[u8]) -> Option<Fields> {
 
 /// `Sunday, 06-Nov-94 08:49:37 GMT`; the byte before the hour is not checked, as established
 /// parsers accept any.
-fn parse_rfc850(s: &[u8], current_year: u64) -> Option<Fields> {
+fn parse_rfc850(s: &[u8], now: u64) -> Option<Fields> {
     let comma = s.iter().position(|&b| b == b',')?;
     let (name, rest) = s.split_at(comma);
     let weekday = WEEKDAY_NAMES.iter().position(|full| *full == name)? as u64;
@@ -244,16 +229,25 @@ fn parse_rfc850(s: &[u8], current_year: u64) -> Option<Fields> {
     else {
         return None;
     };
-    let year = two_digits(*y0, *y1)?;
-    Some(Fields {
+    let (current_year, current_month, current_day) = civil_from_days(now / SECS_PER_DAY);
+    let cutoff_year = current_year + 50;
+    let cutoff_day = current_day.min(days_in_month(cutoff_year, current_month));
+    let mut fields = Fields {
         weekday,
         day: two_digits(*d0, *d1)?,
         month: month([*m0, *m1, *m2])?,
-        year: expand_two_digit_year(year, current_year),
+        year: current_year - current_year % 100 + two_digits(*y0, *y1)?,
         hour: two_digits(*h0, *h1)?,
         minute: two_digits(*i0, *i1)?,
         second: two_digits(*s0, *s1)?,
-    })
+    };
+    let time = fields.hour * 3600 + fields.minute * 60 + fields.second;
+    if (fields.year, fields.month, fields.day, time)
+        > (cutoff_year, current_month, cutoff_day, now % SECS_PER_DAY)
+    {
+        fields.year -= 100;
+    }
+    Some(fields)
 }
 
 /// `Sun Nov  6 08:49:37 1994`
@@ -392,6 +386,10 @@ const fn civil_from_days(days: u64) -> (u64, u64, u64) {
 mod tests {
     use super::*;
 
+    fn fixture_now() -> u64 {
+        days_from_civil(2026, 12, 31) * SECS_PER_DAY
+    }
+
     fn formatted(secs: u64) -> String {
         String::from_utf8(format_http_date(secs).to_vec()).unwrap()
     }
@@ -458,21 +456,21 @@ mod tests {
             "Sun Nov  6 08:49:37 1994",
         ] {
             assert_eq!(
-                parse_http_date_in(value.as_bytes(), 2026),
+                parse_http_date_in(value.as_bytes(), fixture_now),
                 Some(784_111_777),
                 "{value}"
             );
         }
         assert_eq!(
-            parse_http_date_in(b" \tSun, 06 Nov 1994 08:49:37 GMT ", 2026),
+            parse_http_date_in(b" \tSun, 06 Nov 1994 08:49:37 GMT ", fixture_now),
             Some(784_111_777)
         );
         assert_eq!(
-            parse_http_date_in(b"Saturday, 01-Jan-00 00:00:00 GMT", 2026),
+            parse_http_date_in(b"Saturday, 01-Jan-00 00:00:00 GMT", fixture_now),
             Some(946_684_800)
         );
         assert_eq!(
-            parse_http_date_in(b"Tue, 29 Feb 2000 00:00:00 GMT", 2026),
+            parse_http_date_in(b"Tue, 29 Feb 2000 00:00:00 GMT", fixture_now),
             Some(951_782_400)
         );
     }
@@ -495,18 +493,51 @@ mod tests {
     }
 
     #[test]
-    fn two_digit_years_follow_the_current_year() {
-        assert_eq!(expand_two_digit_year(76, 2026), 2076);
-        assert_eq!(expand_two_digit_year(77, 2026), 1977);
-        assert_eq!(expand_two_digit_year(0, 2026), 2000);
-        assert_eq!(expand_two_digit_year(95, 2090), 2095);
-        assert_eq!(expand_two_digit_year(40, 2090), 2040);
+    fn two_digit_year_cutoff_is_precise_to_the_second() {
+        let now = || days_from_civil(2026, 11, 18) * SECS_PER_DAY + 12 * 3600;
+        for (date, expected) in [
+            (
+                "Wednesday, 18-Nov-76 11:59:59 GMT",
+                "Wed, 18 Nov 2076 11:59:59 GMT",
+            ),
+            (
+                "Wednesday, 18-Nov-76 12:00:00 GMT",
+                "Wed, 18 Nov 2076 12:00:00 GMT",
+            ),
+            (
+                "Thursday, 18-Nov-76 12:00:01 GMT",
+                "Thu, 18 Nov 1976 12:00:01 GMT",
+            ),
+            (
+                "Friday, 31-Dec-76 00:00:00 GMT",
+                "Fri, 31 Dec 1976 00:00:00 GMT",
+            ),
+        ] {
+            let seconds = parse_http_date_in(date.as_bytes(), now).unwrap();
+            assert_eq!(formatted(seconds), expected);
+        }
+    }
+
+    #[test]
+    fn two_digit_years_follow_the_current_century() {
+        for (year, date, expected_year) in [
+            (2026, "Saturday, 01-Jan-00 00:00:00 GMT", 2000),
+            (2090, "Saturday, 01-Jan-95 00:00:00 GMT", 2095),
+            (2090, "Sunday, 01-Jan-40 00:00:00 GMT", 2040),
+        ] {
+            let now = || days_from_civil(year, 1, 1) * SECS_PER_DAY;
+            assert_eq!(
+                parse_http_date_in(date.as_bytes(), now),
+                Some(days_from_civil(expected_year, 1, 1) * SECS_PER_DAY)
+            );
+        }
+        let date = b"Thursday, 01-Jan-70 00:00:00 GMT";
         assert_eq!(
-            parse_http_date_in(b"Thursday, 01-Jan-70 00:00:00 GMT", 2019),
+            parse_http_date_in(date, || days_from_civil(2019, 1, 1) * SECS_PER_DAY),
             Some(0)
         );
         assert_eq!(
-            parse_http_date_in(b"Thursday, 01-Jan-70 00:00:00 GMT", 2020),
+            parse_http_date_in(date, || days_from_civil(2020, 1, 1) * SECS_PER_DAY),
             None
         );
     }
@@ -523,13 +554,13 @@ mod tests {
             let expected = (expected != "reject").then(|| expected.parse::<u64>().unwrap());
             let input = input.replace("\\t", "\t");
             assert_eq!(
-                parse_http_date_in(input.as_bytes(), 2026),
+                parse_http_date_in(input.as_bytes(), fixture_now),
                 expected,
                 "{input:?}"
             );
             if let Some(secs) = expected {
                 assert_eq!(
-                    parse_http_date_in(&format_http_date(secs), 2026),
+                    parse_http_date_in(&format_http_date(secs), fixture_now),
                     Some(secs)
                 );
             }

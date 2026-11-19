@@ -126,7 +126,7 @@ pub(super) async fn request_curl(
             "WebSocket handshakes cannot be represented as a replayable cURL command",
         );
     }
-    let (request, body, _) = match build_captured_request(captured, false) {
+    let (request, body) = match build_captured_request(captured, false) {
         Ok(request) => request,
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     };
@@ -212,19 +212,23 @@ pub(super) async fn replay_captured(
         ReplaySource::Connection(connection_id)
     };
     let captured = state.capture.replay_request(id).await?;
-    let (request, body, tls_client_hello) = build_captured_request(captured, true)?;
+    let (request, body) = build_captured_request(captured, true)?;
     let (parts, ()) = request.into_parts();
     let mut request = Request::from_parts(parts, Body::from_stream(body.stream(None)));
     request.extensions().insert(source);
-    if let Some(client_hello) = tls_client_hello {
+    let connection = &exchange.metadata().connection;
+    if let Some(client_hello) = connection
+        .get_ref::<TlsObservation>()
+        .and_then(|tls| tls.client_hello.as_ref())
+    {
         // Replay the captured connection's offer, including its extension order.
-        let offer = if request.version() == Version::HTTP_3 {
-            quic_offer(&client_hello)
+        if request.version() == Version::HTTP_3 {
+            let offer = connection.get_or_insert(|| CapturedQuicOffer(quic_offer(client_hello)));
+            if let Some(config) = &offer.0 {
+                config.write_to(request.extensions());
+            }
         } else {
-            Some(TlsClientConfig::new_from_client_hello(&client_hello))
-        };
-        if let Some(offer) = offer {
-            offer.write_to(request.extensions());
+            TlsClientConfig::new_from_client_hello(client_hello).write_to(request.extensions());
         }
     }
     let replay_connection = state.capture.begin_connection_if_enabled(
@@ -255,6 +259,10 @@ pub(super) async fn replay_captured(
     Ok(status)
 }
 
+/// The result of checking the captured connection's QUIC offer, shared by all its exchanges.
+#[derive(Debug)]
+pub(super) struct CapturedQuicOffer(Option<TlsClientConfig>);
+
 /// A captured QUIC ClientHello as the QUIC MITM relay mirrors it to an origin, or `None`
 /// when the native engine cannot reproduce it and the replay client's own offer is used.
 fn quic_offer(client_hello: &ClientHello) -> Option<TlsClientConfig> {
@@ -275,7 +283,7 @@ fn quic_offer(client_hello: &ClientHello) -> Option<TlsClientConfig> {
 pub(super) fn build_captured_request<B>(
     captured: ReplayRequest<B>,
     strip_transport_headers: bool,
-) -> Result<(Request<()>, B, Option<ClientHello>), BoxError> {
+) -> Result<(Request<()>, B), BoxError> {
     let mut request = Request::builder()
         .method(captured.method)
         .version(captured.version)
@@ -287,12 +295,7 @@ pub(super) fn build_captured_request<B>(
             request.headers_mut().remove(name);
         }
     }
-    let hello = captured
-        .metadata
-        .connection
-        .get_ref::<TlsObservation>()
-        .and_then(|tls| tls.client_hello.clone());
-    Ok((request, captured.body, hello))
+    Ok((request, captured.body))
 }
 
 pub(super) fn error_response(status: StatusCode, error: impl fmt::Display) -> Response {
