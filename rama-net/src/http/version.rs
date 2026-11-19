@@ -187,7 +187,7 @@ impl TryFrom<&ApplicationProtocol> for Version {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::extensions::{Extensions, NoConnectionTransfer};
+    use rama_core::extensions::{Extensions, NoExtensionsTransfer};
 
     #[test]
     fn http_versions_and_application_protocols_round_trip() {
@@ -215,7 +215,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(TargetHttpVersion(Version::HTTP_2));
 
-        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer);
         assert_eq!(origin.get_ref::<TargetHttpVersion>(), None);
         assert_eq!(
             proxy.get_ref::<TargetHttpVersion>(),

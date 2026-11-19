@@ -150,8 +150,10 @@ async fn main() {
         let forwarder = (
             TraceErrLayer::new(),
             IoToProxyBridgeIoLayer::new(SERVER_AUTHORITY).with_connector(
-                TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.ip_addr.into()))
-                    .with_base_config(tls_client_data)
+                TlsConnectorLayer::secure()
+                    .with_base_config(
+                        tls_client_data.with_server_name(SERVER_AUTHORITY.ip_addr.into()),
+                    )
                     .into_layer(TcpConnector::new()),
             ),
         )

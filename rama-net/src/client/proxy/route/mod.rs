@@ -269,7 +269,7 @@ impl<'a> IntoIterator for &'a ProxyRoutes {
 mod tests {
     use super::*;
     use crate::address::ProxyProtocol;
-    use rama_core::extensions::NoConnectionTransfer;
+    use rama_core::extensions::NoExtensionsTransfer;
     use rama_utils::str::smol_str::SmolStr;
 
     #[derive(Debug)]
@@ -327,7 +327,7 @@ mod tests {
         let proxy_leg = Extensions::new();
         proxy_leg.insert(EstablishedProxyRoute::Forward(proxy_address("selected")));
 
-        let tunnel = proxy_leg.fork_nested_connection(&NoConnectionTransfer);
+        let tunnel = proxy_leg.fork_connection(&NoExtensionsTransfer);
         assert_eq!(tunnel.get_ref::<EstablishedProxyRoute>(), None);
 
         let route = EstablishedProxyRoute::Tunnel(proxy_address("selected"));

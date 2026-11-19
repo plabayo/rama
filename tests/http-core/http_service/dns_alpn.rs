@@ -61,11 +61,10 @@ async fn dns_stream_negotiates_and_reuses_either_http_version() {
     ] {
         let (auth, tls) = credentials();
         let server = Server::start_with_alpn(auth, version, advertise_alpn).await;
-        let builder = EasyHttpConnectorBuilder::new()
+        let builder = EasyHttpConnectorBuilder::new(WeakScope::detached())
             .with_default_transport_connector()
             .with_default_dns_connector()
-            .without_tls_proxy_support()
-            .with_http_proxy_support();
+            .without_proxy_support();
         #[cfg(feature = "boring")]
         let builder =
             builder.with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_3);
@@ -73,7 +72,7 @@ async fn dns_stream_negotiates_and_reuses_either_http_version() {
         let builder =
             builder.with_tls_support_using_rustls_and_default_http_version(tls, Version::HTTP_3);
         let client = builder
-            .with_default_http_connector::<Body>(WeakScope::detached())
+            .with_default_http_connector()
             .with_default_connection_pool()
             .build_client();
         let resolver = CountingResolver::default();

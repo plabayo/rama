@@ -30,8 +30,7 @@ use rama::{
         ws::{Message, handshake::client::HttpClientWebSocketExt},
     },
     net::{
-        Protocol,
-        address::{Domain, HostWithPort, ProxyAddress, SocketAddress},
+        address::{Domain, HostWithPort, ProxyAddress, ProxyProtocol, SocketAddress},
         client::ProxyRoute,
         stream::Socket as NetSocket,
     },
@@ -197,11 +196,10 @@ unsafe extern "C" fn on_udp_client_read_demand(ctx: *mut c_void, probe_id: u64) 
 pub(crate) fn build_http_client(
     cert_store: Option<Arc<rama::tls::boring::core::x509::store::X509Store>>,
 ) -> ClientService {
-    let builder = EasyHttpWebClient::connector_builder()
+    let builder = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support();
+        .with_default_proxy_support();
 
     let inner = match cert_store {
         Some(store) => {
@@ -210,13 +208,13 @@ pub(crate) fn build_http_client(
                 .with_server_verify_cert_store(store);
             builder
                 .with_tls_support_using_boringssl_and_default_http_version(config, Version::HTTP_11)
-                .with_default_http_connector(WeakScope::detached())
+                .with_default_http_connector()
                 .without_connection_pool()
                 .build_client()
         }
         None => builder
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .without_connection_pool()
             .build_client(),
     };
@@ -1154,16 +1152,14 @@ fn proxy_address(proxy_kind: ProxyKind, proxy_addr: std::net::SocketAddr) -> Opt
     let proxy_address = match proxy_kind {
         ProxyKind::None => return None,
         ProxyKind::Http => ProxyAddress {
-            protocol: Some(Protocol::HTTP),
+            protocol: ProxyProtocol::HTTP,
             address: HostWithPort::from(proxy_addr),
             credential: None,
-            template: None,
         },
         ProxyKind::Socks5 => ProxyAddress {
-            protocol: Some(Protocol::SOCKS5),
+            protocol: ProxyProtocol::SOCKS5,
             address: HostWithPort::from(proxy_addr),
             credential: None,
-            template: None,
         },
     };
     Some(proxy_address)

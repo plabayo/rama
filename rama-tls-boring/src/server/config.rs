@@ -107,32 +107,32 @@ impl BoringServerConfigExt for TlsServerConfig {
 
 /// Issue server certs on the fly. See [`BoringServerConfigExt::with_cert_issuer`].
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringServerCertIssuer(pub ServerCertIssuerData);
 
 /// Server cipher suites for TLS 1.2 and below, in preference order.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringServerCipherSuites(pub Vec<CipherSuite>);
 
 /// Server key exchange groups, in preference order.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringServerSupportedGroups(pub Vec<SupportedGroup>);
 
 /// Signature schemes the server signs with, in preference order.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringServerSignatureSchemes(pub Vec<SignatureScheme>);
 
 /// Certificate compression algorithms the server can compress with.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringServerCertCompression(pub Vec<CertificateCompressionAlgorithm>);
 
 /// A synchronous source of immutable prepared ECH key generations.
 #[derive(Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 #[non_exhaustive]
 pub struct BoringServerEchKeys(pub std::sync::Arc<dyn super::EchServerKeysProvider>);
 

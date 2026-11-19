@@ -445,6 +445,7 @@ mod tests {
     use rama_core::graceful::WeakScope;
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
+    use rama_http::io::upgrade::handle_upgrade;
     use rama_http_types::body::util::BodyExt as _;
     use rama_http_types::proto::h3::{
         ClientSettingsProfile, FrameType, SettingId, Settings,
@@ -457,7 +458,7 @@ mod tests {
     use rama_net::address::{HostWithPort, ProxyAddress, ProxyProtocol};
     use rama_net::client::pool::{
         BasicConnIdentifier, ConnID as _, MultiplexPool, MuxSelection, PooledConnector,
-        ReqToConnID, ReuseKey, SaturationPolicy,
+        ReqToConnID, SaturationPolicy,
     };
     use rama_net::client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
@@ -470,13 +471,7 @@ mod tests {
     use rama_net::{HttpVersionInputExt, Protocol, transport::TransportProtocol};
     #[cfg(feature = "quic")]
     use rama_quic_proto::profile::QuicProfile;
-    use rama_tls::{
-        TlsTunnel,
-        client::{
-            ServerVerifyMode, TlsClientConfigProvider, TlsConnectionReuse, TlsPoolId,
-            TlsServerVerify,
-        },
-    };
+    use rama_tls::client::{ServerVerifyMode, TlsPoolId, TlsServerVerify};
     use rama_utils::octets::kib;
     use tokio::time::sleep;
 
@@ -518,6 +513,21 @@ mod tests {
         setup(&input.extensions);
         let id = HttpConnIdentifier::new().id(&input).unwrap();
         expected_streams(&id, &input.extensions)
+    }
+
+    #[test]
+    fn a_pool_id_debug_keeps_proxy_credentials_out() {
+        let input = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_application_protocol(Protocol::HTTPS);
+        input.extensions.insert(ProxyRoute::Proxy(
+            "http://user:pw-secret@p:8080".parse().unwrap(),
+        ));
+
+        let id = HttpConnIdentifier::new().id(&input).unwrap();
+        let debug = format!("{id:?}");
+        assert!(debug.contains("8080"), "{debug}");
+        assert!(debug.contains("\"user\""), "{debug}");
+        assert!(!debug.contains("pw-secret"), "{debug}");
     }
 
     #[test]
@@ -583,63 +593,6 @@ mod tests {
         input.extensions.insert(TlsPoolId::non_reusable());
         assert!(!identifier.id(&input).unwrap().is_reusable());
     }
-
-    #[derive(Debug)]
-    struct FixedTunnelProvider;
-
-    impl TlsClientConfigProvider for FixedTunnelProvider {
-        fn pool_id(&self, _: &Extensions) -> Option<TlsPoolId> {
-            None
-        }
-
-        fn pool_classifier(&self) -> ReuseKey {
-            ReuseKey::of::<Self>()
-        }
-
-        fn authenticates_server(&self, _: &Extensions) -> bool {
-            true
-        }
-    }
-
-    #[tokio::test]
-    async fn request_tls_tunnel_reuses_only_matching_policy() {
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let inner = service_fn({
-            let attempts = Arc::clone(&attempts);
-            move |input: ConnectRequest| {
-                attempts.fetch_add(1, Ordering::Relaxed);
-                async move {
-                    let conn = ServiceInput::new(());
-                    TlsConnectionReuse::tunnel(FixedTunnelProvider, input.extensions())
-                        .publish(conn.extensions(), None);
-                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
-                }
-            }
-        });
-        let pool = MultiplexPool::new()
-            .with_max_streams_per_connection(NonZeroUsize::new(10).unwrap())
-            .with_max_connections_total(NonZeroUsize::new(10).unwrap());
-        // No origin TLS provider is installed.
-        let connector = PooledConnector::new(inner, pool, HttpConnIdentifier::new());
-        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
-        for (tunnel, expected_attempts) in [(true, 1), (false, 2), (true, 2), (true, 2), (false, 2)]
-        {
-            let input = ConnectRequest::new(HostWithPort::example_domain_http())
-                .with_application_protocol(Protocol::HTTP);
-            input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
-            input.extensions.insert(PlaintextHttpProxyMode::Tunnel);
-            if tunnel {
-                input.extensions.insert(TlsTunnel {
-                    server_identity: Some("proxy.example".parse().unwrap()),
-                    application_protocol: Some(Protocol::HTTP),
-                    alpn: None,
-                });
-            }
-            drop(connector.serve(input).await.unwrap().conn);
-            assert_eq!(attempts.load(Ordering::Relaxed), expected_attempts);
-        }
-    }
-
     #[test]
     fn explicit_connector_target_never_reuses_forward_proxy() {
         use rama_core::Fork as _;
@@ -1099,7 +1052,7 @@ mod tests {
         Connection: Service<Request, Output = Response, Error = BoxError> + ExtensionsRef,
     > {
         let conns = Arc::new(AtomicUsize::new(0));
-        HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+        HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
             let conn_id = conns.fetch_add(1, Ordering::Relaxed);
             let resps = Arc::new(AtomicUsize::new(0));
             HttpServer::auto(WeakScope::detached()).service(service_fn(move |_req: Request| {
@@ -1193,7 +1146,7 @@ mod tests {
     async fn pool_does_not_reuse_h1_connection_after_server_close() {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
@@ -1238,13 +1191,13 @@ mod tests {
     async fn pool_does_not_reuse_h1_connection_after_upgrade() {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |req: Request| async move {
                         let is_upgrade = req.uri().path().is_some_and(|path| path == "/upgrade");
                         if is_upgrade {
-                            let on_upgrade = rama_http::io::upgrade::handle_upgrade(&req);
+                            let on_upgrade = handle_upgrade(&req);
                             _ = tokio::spawn(async move {
                                 _ = on_upgrade.await;
                             });
@@ -1288,7 +1241,7 @@ mod tests {
             ConnectionHealth::Broken,
             "an h1 upgrade must be marked broken before returning its response"
         );
-        let on_upgrade = rama_http::io::upgrade::handle_upgrade(&response);
+        let on_upgrade = handle_upgrade(&response);
         let body = response.into_body();
         drop(body);
 
@@ -1318,7 +1271,7 @@ mod tests {
     ) {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
@@ -1377,7 +1330,7 @@ mod tests {
     async fn h1_streaming_body_abandoned_is_not_handed_out(drain: Option<Http1BodyDrainConfig>) {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
@@ -1433,7 +1386,7 @@ mod tests {
     async fn pool_evicts_h1_connection_when_inflight_request_cancelled() {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
@@ -1474,9 +1427,6 @@ mod tests {
         );
     }
 
-    /// A mock proxy which answers CONNECT with a tunnel serving an "origin" that tags
-    /// each response with the index of its tunnel, and counts the connections dialed to
-    /// the proxy itself.
     fn mock_connect_proxy(
         dials: Arc<AtomicUsize>,
         tunnels: Arc<AtomicUsize>,
@@ -1485,14 +1435,14 @@ mod tests {
         Output = EstablishedClientConnection<MockSocket, ConnectRequest>,
         Error = Infallible,
     > {
-        MockConnectorService::new(move || {
+        MockConnectorService::new(move |_| {
             dials.fetch_add(1, Ordering::Relaxed);
             let tunnels = tunnels.clone();
             HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
                 let tunnels = tunnels.clone();
                 async move {
                     assert_eq!(req.method(), Method::CONNECT);
-                    let on_upgrade = rama_http::io::upgrade::handle_upgrade(&req);
+                    let on_upgrade = handle_upgrade(&req);
                     let tunnel_id = tunnels.fetch_add(1, Ordering::Relaxed);
                     _ = tokio::spawn(async move {
                         let tunnel = on_upgrade.await.unwrap();
@@ -1584,9 +1534,6 @@ mod tests {
         tunnels_over_a_pooled_proxy(Version::HTTP_11, 2).await;
     }
 
-    /// Two tunnels to different origins through one proxy, over a pooled connector
-    /// toward that proxy: an h2 proxy carries both on one connection, an h1 proxy needs
-    /// one per tunnel because CONNECT consumes it.
     async fn tunnels_over_a_pooled_proxy(proxy_version: Version, proxy_dials: usize) {
         let dials = Arc::new(AtomicUsize::new(0));
         let proxy = mock_connect_proxy(dials.clone(), Arc::new(AtomicUsize::new(0)));
@@ -1630,7 +1577,7 @@ mod tests {
     async fn pool_reuses_h1_connection_after_body_consumed_through_trailers() {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
@@ -1856,7 +1803,7 @@ mod tests {
         Connection: Service<Request, Output = Response, Error = BoxError> + ExtensionsRef,
     > {
         let conns = Arc::new(AtomicUsize::new(0));
-        HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+        HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
             let conn_id = conns.fetch_add(1, Ordering::Relaxed);
             HttpServer::auto(WeakScope::detached()).service(service_fn(
                 move |_req: Request| async move {

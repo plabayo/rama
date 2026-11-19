@@ -6,7 +6,7 @@ use crate::datagram::{
 use parking_lot::Mutex;
 use rama_core::{
     ServiceInput,
-    extensions::{Extensions, ExtensionsRef, NoConnectionTransfer},
+    extensions::{Extensions, ExtensionsRef, NoExtensionsTransfer},
 };
 use std::assert_matches;
 use std::{
@@ -231,7 +231,7 @@ async fn a_nested_session_does_not_reach_the_outer_streams_native_carrier() {
 
     let (a, b) = tokio::io::duplex(256);
     let mut io = ServiceInput::new(a);
-    io.extensions = stream.fork_nested_connection(&NoConnectionTransfer);
+    io.extensions = stream.fork_connection(&NoExtensionsTransfer);
     let mut local = HttpDatagramSession::with_config(io, config());
     let mut peer = HttpDatagramSession::with_config(ServiceInput::new(b), config());
 
@@ -289,7 +289,7 @@ async fn malformed_capsule_over(stream: &Extensions, extensions: Extensions) -> 
 #[tokio::test]
 async fn a_nested_session_does_not_reach_the_outer_streams_malformed_hook() {
     let stream = Extensions::new();
-    let nested = stream.fork_nested_connection(&NoConnectionTransfer);
+    let nested = stream.fork_connection(&NoExtensionsTransfer);
     assert_eq!(malformed_capsule_over(&stream, nested).await, 0);
 }
 

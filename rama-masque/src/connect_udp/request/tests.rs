@@ -24,7 +24,7 @@ const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP
 #[test]
 fn http1_request_is_a_get_upgrade() {
     let request = connect_udp_request::<Body>(
-        &proxy("h3://user:pass@proxy.example:4443"),
+        &proxy("h3+udp://user:pass@proxy.example:4443"),
         &target("2001:db8::42", 443),
         Version::HTTP_11,
     )
@@ -78,6 +78,7 @@ fn refuses_proxies_without_connect_udp_and_old_versions() {
     for proxy_address in [
         "socks5://proxy.example",
         "https://proxy.example/ip/{target}/{ipproto}",
+        "h3://proxy.example",
     ] {
         assert_eq!(
             connect_udp_request::<Body>(&proxy(proxy_address), &t, Version::HTTP_2).unwrap_err(),
@@ -86,7 +87,7 @@ fn refuses_proxies_without_connect_udp_and_old_versions() {
         );
     }
     assert_eq!(
-        connect_udp_request::<Body>(&proxy("h3://proxy.example"), &t, Version::HTTP_10)
+        connect_udp_request::<Body>(&proxy("h3+udp://proxy.example"), &t, Version::HTTP_10)
             .unwrap_err(),
         ConnectUdpRequestError::UnsupportedVersion(Version::HTTP_10)
     );
@@ -95,7 +96,7 @@ fn refuses_proxies_without_connect_udp_and_old_versions() {
 #[test]
 fn built_requests_match_on_the_proxy() {
     for (proxy_address, server_template) in [
-        ("h3://proxy.example", None),
+        ("h3+udp://proxy.example", None),
         (
             "h3://proxy.example/masque?h={target_host}&p={target_port}",
             Some("/masque?h={target_host}&p={target_port}"),

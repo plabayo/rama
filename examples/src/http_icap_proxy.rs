@@ -179,10 +179,9 @@ async fn main() -> Result<(), BoxError> {
         adaptation.clone(),
         RemoveResponseHeaderLayer::hop_by_hop(),
     )
-        .into_layer(
-            EasyHttpWebClient::default_with_scope(weak_scope.clone())
-                .with_isolate_forward_proxy_auth_error(true),
-        );
+        .into_layer(EasyHttpWebClient::default_for_proxy_with_scope(
+            weak_scope.clone(),
+        ));
 
     // CONNECT already owns its egress socket. Peek/Relay preserves that
     // socket while applying the same ICAP layer to intercepted HTTP.

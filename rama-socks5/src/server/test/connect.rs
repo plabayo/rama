@@ -1,7 +1,7 @@
 use rama_core::{
     Layer, Service, ServiceInput,
     error::BoxError,
-    extensions::{Extension, Extensions, ExtensionsRef, NestedConnectionTransfer},
+    extensions::{Extension, Extensions, ExtensionsRef, ExtensionsTransfer},
     io::{BridgeIo, rewind::Rewind},
     layer::TimeoutLayer,
     service::service_fn,
@@ -14,7 +14,7 @@ use rama_net::{
         EstablishedClientConnection,
     },
     proxy::IoForwardService,
-    stream::{DefaultConnectionTransfer, NestedConnection, SocketAddresses, SocketInfo},
+    stream::{DefaultExtensionsTransfer, NestedConnection, SocketAddresses, SocketInfo},
     test_utils::client::MockSocket,
 };
 use rama_utils::str::non_empty_str;
@@ -544,7 +544,7 @@ fn established_egress() -> impl Service<
     })
 }
 
-async fn eager_tunnel_facts(transfer: impl NestedConnectionTransfer) -> (bool, bool) {
+async fn eager_tunnel_facts(transfer: impl ExtensionsTransfer) -> (bool, bool) {
     let seen = Arc::new(parking_lot::Mutex::new(None));
     let service = service_fn({
         let seen = seen.clone();
@@ -557,7 +557,7 @@ async fn eager_tunnel_facts(transfer: impl NestedConnectionTransfer) -> (bool, b
         }
     });
     let connector =
-        Connector::new(established_egress(), service).with_nested_connection_transfer(transfer);
+        Connector::new(established_egress(), service).with_extensions_transfer(transfer);
     Socks5Acceptor::new(WeakScope::detached())
         .with_connector(connector)
         .accept(socks5_connection(
@@ -568,7 +568,7 @@ async fn eager_tunnel_facts(transfer: impl NestedConnectionTransfer) -> (bool, b
     seen.lock().take().expect("tunnel served")
 }
 
-async fn lazy_tunnel_facts(transfer: impl NestedConnectionTransfer) -> (bool, bool) {
+async fn lazy_tunnel_facts(transfer: impl ExtensionsTransfer) -> (bool, bool) {
     let seen = Arc::new(parking_lot::Mutex::new(None));
     let lazy = LazyConnector::new(service_fn({
         let seen = seen.clone();
@@ -577,7 +577,7 @@ async fn lazy_tunnel_facts(transfer: impl NestedConnectionTransfer) -> (bool, bo
             std::future::ready(Ok::<_, BoxError>(()))
         }
     }))
-    .with_nested_connection_transfer(transfer);
+    .with_extensions_transfer(transfer);
     Socks5Acceptor::new(WeakScope::detached())
         .with_connector(lazy)
         .accept(socks5_connection(
@@ -597,19 +597,19 @@ fn carry_conn_fact(outer: &Extensions, nested: &Extensions) {
 #[tokio::test]
 async fn connect_tunnel_keeps_flow_facts_and_drops_connection_facts() {
     assert_eq!(
-        eager_tunnel_facts(DefaultConnectionTransfer).await,
+        eager_tunnel_facts(DefaultExtensionsTransfer).await,
         (false, true)
     );
     assert_eq!(
-        lazy_tunnel_facts(DefaultConnectionTransfer).await,
+        lazy_tunnel_facts(DefaultExtensionsTransfer).await,
         (false, true)
     );
 }
 
 #[tokio::test]
 async fn connect_tunnel_custom_transfer_carries_a_chosen_fact() {
-    let transfer = DefaultConnectionTransfer.and(carry_conn_fact);
+    let transfer = DefaultExtensionsTransfer.and(carry_conn_fact);
     assert_eq!(eager_tunnel_facts(transfer).await, (true, true));
-    let transfer = DefaultConnectionTransfer.and(carry_conn_fact);
+    let transfer = DefaultExtensionsTransfer.and(carry_conn_fact);
     assert_eq!(lazy_tunnel_facts(transfer).await, (true, true));
 }

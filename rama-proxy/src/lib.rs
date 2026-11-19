@@ -111,7 +111,6 @@
 //!                 ProxyProtocol::Socks5 {
 //!                     remote_dns: false,
 //!                     transport: Some(TransportProtocol::Udp),
-//!                     secure: false,
 //!                 },
 //!             ]),
 //!             kind: ProxyType::Mobile,
@@ -215,7 +214,6 @@
 //!             ProxyProtocol::Socks5 {
 //!                 remote_dns: false,
 //!                 transport: Some(TransportProtocol::Udp),
-//!                 secure: false,
 //!             },
 //!         ]),
 //!         kind: ProxyType::Residential,

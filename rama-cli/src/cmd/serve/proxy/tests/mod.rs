@@ -312,13 +312,15 @@ async fn spawn_tls_websocket_origin() -> (std::net::SocketAddr, tokio::task::Joi
 fn proxy_websocket_client()
 -> impl Service<Request, Output = Response, Error: Into<BoxError>> + Clone {
     let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    EasyHttpWebClient::connector_builder()
+    EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl_config(insecure.clone())
-        .with_proxy_support()
+        .with_proxy_support(ProxyConnector::default_using_tls(
+            WeakScope::detached(),
+            insecure.clone(),
+        ))
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client()
 }
@@ -328,13 +330,15 @@ async fn get_via_proxy(
     proxy: &str,
 ) -> (StatusCode, rama::bytes::Bytes) {
     let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl_config(insecure.clone())
-        .with_proxy_support()
+        .with_proxy_support(ProxyConnector::default_using_tls(
+            WeakScope::detached(),
+            insecure.clone(),
+        ))
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     let request = Request::builder()
@@ -383,13 +387,15 @@ async fn fetch(
     tunnel: bool,
 ) -> Result<(StatusCode, Bytes), BoxError> {
     let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl_config(insecure.clone())
-        .with_proxy_support()
+        .with_proxy_support(ProxyConnector::default_using_tls(
+            WeakScope::detached(),
+            insecure.clone(),
+        ))
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client()
         .with_tunnel_plaintext_http(tunnel);

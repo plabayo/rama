@@ -1,3 +1,7 @@
+//! Client Http Proxy Connector
+//!
+//! As defined in <https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9112.txt>.
+
 use super::HttpProxyError;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_http::HeaderMap;
@@ -12,7 +16,7 @@ use rama_net::user::ProxyCredential;
 ///
 /// `version` is the version spoken to the proxy; the connection it is sent on has to
 /// speak that same version.
-pub fn connect_request<B: Default>(
+pub(super) fn connect_request<B: Default>(
     target: HostWithPort,
     credential: Option<&ProxyCredential>,
     version: Version,
@@ -48,7 +52,7 @@ pub fn connect_request<B: Default>(
 }
 
 /// Turn the proxy's answer to [`connect_request`] into the tunnel it promised.
-pub async fn upgrade_connect_response(
+pub(super) async fn upgrade_connect_response(
     response: Response,
 ) -> Result<(HeaderMap, Upgraded), HttpProxyError> {
     match response.status() {

@@ -110,7 +110,7 @@ async fn main() {
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
-    let client = EasyHttpWebClient::default().with_isolate_forward_proxy_auth_error(true);
+    let client = EasyHttpWebClient::default_for_proxy();
     match client.serve(req).await {
         Ok(resp) => {
             // We can also just directly fetch SocketInfo and it will traverse into egress/ingress chains,

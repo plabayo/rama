@@ -9,14 +9,11 @@ use rama::{
     Layer, Service,
     graceful::WeakScope,
     http::{
-        Request, Version,
-        body::util::BodyExt as _,
-        client::{EasyHttpWebClient, Http3Connector},
-        conn::TargetHttpVersion,
-        server::HttpServer,
+        Request, Version, body::util::BodyExt as _, client::EasyHttpWebClient,
+        conn::TargetHttpVersion, server::HttpServer,
     },
     net::{Protocol, address::SocketAddress},
-    quic::{Endpoint, tls::BoringTlsProvider},
+    quic::{Endpoint, client::SharedQuicEndpoint},
     service::service_fn,
     tls::{
         client::{ServerVerifyMode, TlsClientConfig},
@@ -164,21 +161,16 @@ async fn real_h3_inspector_export_preserves_connection_and_request_evidence() {
             .await
             .unwrap();
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let h3 = Http3Connector::builder(WeakScope::detached())
-        .with_endpoint(client_endpoint.clone())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
-        .build()
-        .await
-        .unwrap();
-    let client = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_tcp_connector()
+        .with_custom_quic_connector(SharedQuicEndpoint::supplied(
+            client_endpoint.clone(),
+            WeakScope::detached(),
+        ))
         .without_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(WeakScope::detached())
-        .with_http3_support(h3)
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
     tokio::time::timeout(Duration::from_secs(10), async {

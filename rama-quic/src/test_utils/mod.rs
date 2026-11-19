@@ -1,5 +1,8 @@
 //! TLS selection for downstream protocol tests.
 
+mod mock_connector;
+pub use mock_connector::MockQuicConnectorService;
+
 use crate::tls::{QuicClientConfigProvider, QuicServerConfigProvider, TlsConfigError};
 use std::sync::Arc;
 

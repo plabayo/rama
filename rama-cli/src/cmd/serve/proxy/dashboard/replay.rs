@@ -21,6 +21,8 @@ use rama::{
 };
 use tokio::io::AsyncReadExt as _;
 
+use crate::cmd::serve::proxy::upstream_proxies;
+
 use super::*;
 
 /// Captured connections may have different TLS profiles even for the same route.
@@ -56,16 +58,19 @@ pub(super) fn replay_client(
     upstream: &UpstreamProxyConfig,
 ) -> Result<BoxService<Request, Response, BoxError>, BoxError> {
     let tls_config = TlsClientConfig::default_http();
-    let transport = TcpConnector::new().with_connector(tcp_options);
+    let transport = TcpConnector::new().with_connector(tcp_options.clone());
     let config = HttpPooledConnectorConfig::default();
     let pool = config.build_pool();
-    let client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(transport)
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(transport)
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
+        .with_proxy_support(upstream_proxies(
+            upstream,
+            WeakScope::detached(),
+            tcp_options,
+        )?)
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .with_custom_connection_pool(pool, replay_pool_id, config.wait_for_pool_timeout)
         .map_connector(|connector| {
             let connector = BindBodyToConnLayer::new().into_layer(connector);
@@ -74,9 +79,7 @@ pub(super) fn replay_client(
             RequestVersionAdapter::new(connector)
         })
         .build_client()
-        .with_forward_proxy_auth(upstream.forward_proxy_auth())
-        .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http())
-        .with_isolate_forward_proxy_auth_error(true);
+        .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http());
     let client = upstream.http_service(client);
     let client = RemoveRequestHeaderLayer::hop_by_hop().into_layer(client);
     let client = EmulateTlsProfileLayer::new().into_layer(client);

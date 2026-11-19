@@ -82,9 +82,16 @@ pub struct SendCommand {
     fail: bool,
 
     #[arg(long, short = 'x')]
-    /// Upstream proxy to use. NO_PROXY still applies. Without this option,
-    /// scheme-specific and all-protocol proxy environment variables are tried
-    /// before operating-system settings.
+    /// Upstream proxy to use, as `[scheme://][user:pass@]host[:port][/template]`.
+    /// An HTTP proxy is `http` or `h2c` in plaintext, `https` over TLS with the version
+    /// negotiated, or `h1`, `h2` or `h3` over TLS with that version; it carries TCP with
+    /// CONNECT, and UDP with CONNECT-UDP only where its address says the tunnels are:
+    /// `+udp` for the default template, or a path as the template to use.
+    /// A SOCKS5 proxy is `socks5` or `socks5h`, with `+tcp` or `+udp` to use it for that
+    /// transport only.
+    ///
+    /// NO_PROXY still applies. Without this option, scheme-specific and all-protocol
+    /// proxy environment variables are tried before operating-system settings.
     proxy: Option<ProxyAddress>,
 
     /// Backend for system PAC JavaScript execution.

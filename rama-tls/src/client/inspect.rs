@@ -31,7 +31,7 @@ pub enum MalformedTlsPolicy {
 /// The functional helper with explicit policies returns it separately and does
 /// not require an extension-bearing stream.
 #[derive(Debug, Clone, Copy, Default, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct ClientHelloPeekStatus {
     /// Why inspection failed and selected fallback, if it did.
     /// `Rejected` includes malformed messages, unsupported QUIC versions, and

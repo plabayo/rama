@@ -13,19 +13,18 @@ const H2C: &str = "h2c";
 const H3: &str = "h3";
 const TCP: &str = "tcp";
 const UDP: &str = "udp";
-const TLS: &str = "tls";
 
 impl ProxyProtocol {
     /// Parse the scheme of a proxy address, such as `https`, `h3` or `socks5h+udp`.
     ///
     /// The scheme names how a proxy is reached: `http` (HTTP/1.1) and `h2c` (HTTP/2) in
     /// plaintext, `https` over TLS with the version negotiated by ALPN, and `h1`, `h2` or
-    /// `h3` over TLS with that version. An HTTP proxy is asked for CONNECT, CONNECT-UDP
-    /// or CONNECT-IP, whichever the traffic needs; `+udp` is short for the default
-    /// CONNECT-UDP template as its path.
+    /// `h3` over TLS with that version. An HTTP proxy is asked for CONNECT, and for
+    /// CONNECT-UDP or CONNECT-IP only when a path template says where its MASQUE tunnels
+    /// are; `+udp` is short for the default CONNECT-UDP template as that path.
     ///
-    /// A SOCKS5 proxy (`socks5`, `socks5h`) takes options: `+tcp` for CONNECT only,
-    /// `+udp` for UDP ASSOCIATE only, and `+tls` for TLS to the proxy itself.
+    /// A SOCKS5 proxy (`socks5`, `socks5h`) takes options: `+tcp` for CONNECT only and
+    /// `+udp` for UDP ASSOCIATE only.
     pub fn try_from_scheme(scheme: &str) -> Result<Self, BoxError> {
         Self::try_from_scheme_and_path(scheme, "")
     }
@@ -36,13 +35,11 @@ impl ProxyProtocol {
         let mut parts = scheme.split('+');
         let name = parts.next().unwrap_or_default();
         let mut only = None;
-        let mut tls = false;
         for option in parts {
             let duplicate = match_ignore_ascii_case_str! {
                 match(option) {
                     "tcp" => only.replace(TransportProtocol::Tcp).is_some(),
                     "udp" => only.replace(TransportProtocol::Udp).is_some(),
-                    "tls" => core::mem::replace(&mut tls, true),
                     _ => {
                         return Err(BoxError::from_static_str("unknown proxy scheme option")
                             .context_str_field("option", SmolStr::new(option)));
@@ -66,11 +63,11 @@ impl ProxyProtocol {
         match Self::from_scheme_name(name)? {
             Self::Http {
                 version, secure, ..
-            } if only != Some(TransportProtocol::Tcp) && !tls => {
+            } if only != Some(TransportProtocol::Tcp) => {
                 let path_template = match (only, path_template) {
                     (Some(_), Some(_)) => {
                         return Err(BoxError::from_static_str(
-                            "the udp option of an HTTP proxy scheme is its path",
+                            "`+udp` already means the default CONNECT-UDP template: use either `+udp` or a path template, not both",
                         )
                         .context_str_field("scheme", SmolStr::new(scheme)));
                     }
@@ -86,9 +83,8 @@ impl ProxyProtocol {
             Self::Socks5 { remote_dns, .. } if path_template.is_none() => Ok(Self::Socks5 {
                 remote_dns,
                 transport: only,
-                secure: tls,
             }),
-            Self::Custom(custom) if only.is_none() && !tls && path_template.is_none() => {
+            Self::Custom(custom) if only.is_none() && path_template.is_none() => {
                 Ok(Self::Custom(custom))
             }
             _ if path_template.is_some() => Err(BoxError::from_static_str(
@@ -119,6 +115,9 @@ impl ProxyProtocol {
                 "https" => Self::HTTPS,
                 "socks5" => Self::SOCKS5,
                 "socks5h" => Self::SOCKS5H,
+                "masque" => return Err(BoxError::from_static_str(
+                    "masque is not a proxy scheme: use h3+udp:// or an http scheme with a path template",
+                )),
                 _ => Self::Custom(SmolStr::new(protocol.as_str())),
             }
         })
@@ -160,7 +159,6 @@ impl Display for Scheme<'_> {
             ProxyProtocol::Socks5 {
                 remote_dns,
                 transport,
-                secure,
             } => {
                 f.write_str(if *remote_dns {
                     Protocol::SOCKS5H_SCHEME
@@ -171,9 +169,6 @@ impl Display for Scheme<'_> {
                     Some(TransportProtocol::Tcp) => write!(f, "+{TCP}")?,
                     Some(TransportProtocol::Udp) => write!(f, "+{UDP}")?,
                     None => {}
-                }
-                if *secure {
-                    write!(f, "+{TLS}")?;
                 }
                 Ok(())
             }
@@ -194,15 +189,10 @@ mod tests {
         }
     }
 
-    fn socks5(
-        remote_dns: bool,
-        transport: Option<TransportProtocol>,
-        secure: bool,
-    ) -> ProxyProtocol {
+    fn socks5(remote_dns: bool, transport: Option<TransportProtocol>) -> ProxyProtocol {
         ProxyProtocol::Socks5 {
             remote_dns,
             transport,
-            secure,
         }
     }
 
@@ -217,19 +207,9 @@ mod tests {
             ("h3", http(Some(Version::HTTP_3), true)),
             ("socks5", ProxyProtocol::SOCKS5),
             ("socks5h", ProxyProtocol::SOCKS5H),
-            (
-                "socks5+tcp",
-                socks5(false, Some(TransportProtocol::Tcp), false),
-            ),
-            (
-                "socks5+udp",
-                socks5(false, Some(TransportProtocol::Udp), false),
-            ),
-            (
-                "socks5h+udp+tls",
-                socks5(true, Some(TransportProtocol::Udp), true),
-            ),
-            ("socks5+tls", socks5(false, None, true)),
+            ("socks5+tcp", socks5(false, Some(TransportProtocol::Tcp))),
+            ("socks5+udp", socks5(false, Some(TransportProtocol::Udp))),
+            ("socks5h+udp", socks5(true, Some(TransportProtocol::Udp))),
             (
                 "h3+udp",
                 ProxyProtocol::Http {
@@ -253,7 +233,7 @@ mod tests {
         for (path, udp) in [
             ("/t/{target_host}/{target_port}/", true),
             ("/t/ip/{target}/{ipproto}/", false),
-            ("/t/ip", false),
+            ("/.well-known/masque/ip/", false),
         ] {
             for scheme in ["https", "h2", "h3", "http"] {
                 let protocol = ProxyProtocol::try_from_scheme_and_path(scheme, path).unwrap();
@@ -268,7 +248,7 @@ mod tests {
                     "{scheme} {path}"
                 );
                 assert_eq!(
-                    protocol.connect_ip_template().is_some(),
+                    protocol.path_template().unwrap().is_connect_ip(),
                     !udp,
                     "{scheme} {path}"
                 );
@@ -285,7 +265,8 @@ mod tests {
             "https+tls",
             "socks5+udp+udp",
             "socks5+tcp+udp",
-            "socks5+tls+tls",
+            "socks5+tls",
+            "socks5h+udp+tls",
             "socks5+h2",
             "warp+udp",
         ] {
@@ -294,6 +275,12 @@ mod tests {
                 "{scheme} parsed"
             );
         }
+        let masque = ProxyProtocol::try_from_scheme("masque")
+            .unwrap_err()
+            .to_string();
+        assert!(masque.contains("h3+udp"), "{masque}");
+        ProxyProtocol::try_from_scheme_and_path("masque", "/t/{target_host}/{target_port}/")
+            .unwrap_err();
         ProxyProtocol::try_from_scheme_and_path("socks5", "/t/{target_host}/{target_port}/")
             .unwrap_err();
         ProxyProtocol::try_from_scheme_and_path("h3", "/t/{target_host}/").unwrap_err();

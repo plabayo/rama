@@ -8,11 +8,15 @@ use std::{fmt, io};
 use crate::{
     Layer, Service,
     error::BoxError,
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     graceful::WeakScope,
     http::{Body as ResponseBody, Request, Response, StreamingBody},
-    net::client::EstablishedClientConnection,
+    net::client::{
+        ConnectRequest, ConnectorService, EstablishedClientConnection, EstablishedProxyRoute,
+        ProxyDialer,
+    },
     service::BoxService,
+    tcp::client::service::TcpConnector,
     telemetry::tracing,
 };
 
@@ -28,10 +32,7 @@ use rama_core::{
     layer::MapErr,
 };
 use rama_http::{
-    layer::{
-        forward_proxy::{HttpForwardProxyLayer, HttpForwardProxyService},
-        map_response_body::MapResponseBody,
-    },
+    layer::{map_response_body::MapResponseBody, remove_header::remove_proxy_auth_request_headers},
     proxy::PlaintextHttpProxyMode,
 };
 
@@ -39,44 +40,50 @@ use rama_http::{
 use crate::tls::client::TlsClientConfig;
 
 #[cfg(feature = "boring")]
-use {crate::tls::boring::client::TlsClientSessionCache, std::sync::Arc};
+use crate::tls::boring::client::TlsClientSessionCache;
 
-#[cfg(all(feature = "boring", feature = "quic"))]
-use crate::quic::tls::BoringTlsProvider;
+#[cfg(any(
+    feature = "boring",
+    all(
+        feature = "quic",
+        feature = "rustls",
+        any(feature = "aws-lc", feature = "ring")
+    )
+))]
+use std::sync::Arc;
 
 #[cfg(all(
     feature = "quic",
     any(
         feature = "boring",
-        feature = "masque",
-        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
     )
 ))]
-use crate::quic::TransportConfig;
+use crate::quic::tls::QuicClientConfigProvider;
 
 #[cfg(all(feature = "masque", feature = "quic"))]
 use crate::{
     proxy::masque::connect_udp::{OUTER_IDLE_TIMEOUT, OUTER_INITIAL_MTU},
-    quic::{IdleTimeout, proto::VarInt},
+    quic::{IdleTimeout, TransportConfig, proto::VarInt},
 };
 
 pub mod builder;
 #[doc(inline)]
 pub use builder::EasyHttpConnectorBuilder;
-#[cfg(all(feature = "masque", feature = "quic"))]
-#[doc(inline)]
-pub use builder::MasqueQuicEndpoints;
 
-#[cfg(feature = "socks5")]
 mod proxy_connector;
-#[cfg(feature = "socks5")]
-#[cfg_attr(docsrs, doc(cfg(feature = "socks5")))]
+use proxy_connector::DefaultProxyHttpConnector;
 #[doc(inline)]
-pub use proxy_connector::{MaybeProxiedConnection, ProxyConnector, ProxyConnectorLayer};
+pub use proxy_connector::{
+    DefaultProxyConnector, MaybeForwardedConnection, MaybeForwardedConnector, NoProxyConnection,
+    ProxyConnectUdpMethod, ProxyConnectUdpNotEnabled, ProxyConnector, ProxyConnectorBuilder,
+    ProxyConnectorParts, ProxyHttpStage, ProxyMethodBuilder, ProxyMethodNotEnabled,
+    ProxySocksMethod, ProxyStream, ProxyStreamConnector,
+};
 
 /// An opiniated http client that can be used to serve HTTP requests.
 ///
-/// Use [`EasyHttpWebClient::connector_builder()`] to easily create a client with
+/// Use [`EasyHttpWebClient::connector_builder`] to easily create a client with
 /// a common Http connector setup (tcp + proxy + tls + http) or bring your
 /// own http connector.
 ///
@@ -92,7 +99,6 @@ pub use proxy_connector::{MaybeProxiedConnection, ProxyConnector, ProxyConnector
 /// with your own service fork and use the full power of Rust at your fingertips ;)
 pub struct EasyHttpWebClient<BodyIn, ConnResponse, L> {
     connector: BoxService<Request<BodyIn>, ConnResponse, OpaqueError>,
-    forward_proxy_layer: HttpForwardProxyLayer,
     plaintext_http_proxy_mode: Option<PlaintextHttpProxyMode>,
     jit_layers: L,
 }
@@ -107,7 +113,6 @@ impl<BodyIn, ConnResponse, L: Clone> Clone for EasyHttpWebClient<BodyIn, ConnRes
     fn clone(&self) -> Self {
         Self {
             connector: self.connector.clone(),
-            forward_proxy_layer: self.forward_proxy_layer.clone(),
             plaintext_http_proxy_mode: self.plaintext_http_proxy_mode,
             jit_layers: self.jit_layers.clone(),
         }
@@ -115,10 +120,11 @@ impl<BodyIn, ConnResponse, L: Clone> Clone for EasyHttpWebClient<BodyIn, ConnRes
 }
 
 impl EasyHttpWebClient<(), (), ()> {
-    /// Create a [`EasyHttpConnectorBuilder`] to easily create a [`EasyHttpWebClient`] with a custom connector
+    /// Create a [`EasyHttpConnectorBuilder`] to easily create a [`EasyHttpWebClient`] with a
+    /// custom connector, whose connections and tunnels run in `scope`.
     #[must_use]
-    pub fn connector_builder() -> EasyHttpConnectorBuilder {
-        EasyHttpConnectorBuilder::new()
+    pub fn connector_builder(scope: impl Into<WeakScope>) -> EasyHttpConnectorBuilder {
+        EasyHttpConnectorBuilder::new(scope)
     }
 
     /// Create a cloneable blocking HTTP(S) client with its own dedicated
@@ -160,7 +166,10 @@ pub type DefaultHttpWebClient<Body = crate::http::Body> = EasyHttpWebClient<
         rama_http::layer::alt_svc::AltSvc<
             BindBodyToConn<
                 crate::net::client::pool::MultiplexedConnection<
-                    HttpClientService<Body>,
+                    MaybeForwardedConnection<
+                        HttpClientService<Body>,
+                        DefaultForwardConnection<Body>,
+                    >,
                     HttpConnId,
                 >,
             >,
@@ -170,12 +179,20 @@ pub type DefaultHttpWebClient<Body = crate::http::Body> = EasyHttpWebClient<
     (),
 >;
 
+type DefaultForwardConnection<Body> = <proxy::HttpForwardProxyConnector<
+    ProxyDialer<DefaultProxyHttpConnector<TcpConnector, Body>>,
+> as ConnectorService<ConnectRequest>>::Connection;
+
 /// A blocking HTTP(S) client using Rama's default pooled web connector stack.
 pub type BlockingHttpWebClient = BlockingHttpClient<DefaultHttpWebClient>;
 
 impl<Body> Default for DefaultHttpWebClient<Body>
 where
-    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    Body: Default
+        + StreamingBody<Data: Send + 'static, Error: Into<BoxError>>
+        + Unpin
+        + Send
+        + 'static,
 {
     #[inline(always)]
     fn default() -> Self {
@@ -185,282 +202,150 @@ where
 
 impl<Body> DefaultHttpWebClient<Body>
 where
-    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    Body: Default
+        + StreamingBody<Data: Send + 'static, Error: Into<BoxError>>
+        + Unpin
+        + Send
+        + 'static,
 {
+    /// Rama's default client stack, with its connections and tunnels in `scope`.
+    pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
+        let proxies = ProxyConnector::default_with_scope(scope.clone());
+        Self::default_using_proxies(scope, proxies)
+    }
+
+    /// [`Self::default_with_scope`] for the client of a proxy: a `407` an upstream proxy
+    /// answers with is isolated, so this proxy never hands it to its own clients.
+    #[must_use]
+    pub fn default_for_proxy() -> Self {
+        Self::default_for_proxy_with_scope(WeakScope::detached())
+    }
+
+    /// [`Self::default_for_proxy`], with its connections and tunnels in `scope`.
+    pub fn default_for_proxy_with_scope(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
+        let proxies = ProxyConnector::default_with_scope(scope.clone())
+            .with_isolate_forward_proxy_auth_error(true);
+        Self::default_using_proxies(scope, proxies)
+    }
+
     core::cfg_select! {
         all(feature = "boring", feature = "quic") => {
-            pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
-                let scope = scope.into();
-                #[expect(
-                    clippy::expect_used,
-                    reason = "fixed default H3 limits and BoringSSL TLS configuration are valid"
-                )]
-                Self::boringssl_default(scope, TlsClientConfig::default_http(), None)
-                    .expect("default BoringSSL HTTP/3 configuration is valid")
-            }
-
-            #[cfg(feature = "masque")]
-            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// A client to MASQUE proxies, for the tunnels another client's HTTP/3 runs in:
-            /// the default client, with room in its own HTTP/3 connections for the tunneled
-            /// QUIC packets ([`masque_quic_transport`]).
-            pub fn default_masque_proxy_client_with_scope(scope: impl Into<WeakScope>) -> Self {
-                let scope = scope.into();
-                #[expect(
-                    clippy::expect_used,
-                    reason = "fixed default H3 limits and BoringSSL TLS configuration are valid"
-                )]
-                Self::try_default_masque_proxy_client_using_boringssl(
-                    scope,
-                    TlsClientConfig::default_http(),
-                )
-                .expect("default BoringSSL HTTP/3 configuration is valid")
-            }
-
-            #[cfg(feature = "masque")]
-            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// [`Self::default_masque_proxy_client_with_scope`], with `proxy_tls` towards the
-            /// proxies, such as [`TlsClientConfig::default_http`] with a server verification of
-            /// its own.
-            pub fn try_default_masque_proxy_client_using_boringssl(
-                scope: impl Into<WeakScope>,
-                proxy_tls: TlsClientConfig,
-            ) -> Result<Self, BoxError> {
-                let scope = scope.into();
-                Self::boringssl_default(scope, proxy_tls, Some(masque_quic_transport()))
-            }
-
-            #[cfg(feature = "masque")]
-            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// The default client, with its HTTP/3 also through MASQUE proxies: in
-            /// CONNECT-UDP tunnels ([RFC 9298]) opened by a
-            /// [`Self::default_masque_proxy_client_with_scope`] client.
-            ///
-            /// Each HTTP/3 connection has a UDP socket or tunnel of its own.
-            ///
-            /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
-            pub fn default_masque_with_scope(scope: impl Into<WeakScope>) -> Self {
-                let scope = scope.into();
-                #[expect(
-                    clippy::expect_used,
-                    reason = "fixed default H3 limits and BoringSSL TLS configuration are valid"
-                )]
-                Self::try_default_masque_using_boringssl(
-                    scope,
-                    TlsClientConfig::default_http(),
-                    TlsClientConfig::default_http(),
-                )
-                .expect("default BoringSSL HTTP/3 configuration is valid")
-            }
-
-            #[cfg(feature = "masque")]
-            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// [`Self::default_masque_with_scope`], with `tls` towards origins and
-            /// `proxy_tls` towards proxies, MASQUE and HTTPS proxies alike.
-            pub fn try_default_masque_using_boringssl(
+            /// [`Self::default_with_scope`], with `tls` towards origins and `proxy_tls`
+            /// towards proxies, such as [`TlsClientConfig::default_http`] with a server
+            /// verification of its own.
+            pub fn default_using_boringssl(
                 scope: impl Into<WeakScope>,
                 tls: TlsClientConfig,
                 proxy_tls: TlsClientConfig,
-            ) -> Result<Self, BoxError> {
+            ) -> Self {
                 let scope = scope.into();
-                let h3 = Http3Connector::builder(scope.clone())
-                    .with_tls_provider(Arc::new(BoringTlsProvider))
-                    .with_tls_config(tls.clone());
-                let proxy_client =
-                    DefaultHttpWebClient::<crate::http::Body>::try_default_masque_proxy_client_using_boringssl(
-                        scope.clone(),
-                        proxy_tls.clone(),
-                    )?;
-                Ok(EasyHttpConnectorBuilder::new()
-                    .with_default_transport_connector()
-                    .with_default_dns_connector()
-                    .with_tls_proxy_support_using_boringssl_config(proxy_tls)
-                    .with_proxy_support()
-                    .with_tls_support_using_boringssl(tls)
-                    .with_tls_session_store(Arc::new(TlsClientSessionCache::default()))
-                    .with_default_http_connector(scope)
-                    .with_http3_masque_support(h3, proxy_client)?
-                    .with_default_connection_pool()
-                    .build_client())
+                let proxies = ProxyConnector::default_using_tls(scope.clone(), proxy_tls);
+                Self::default_using(scope, tls, proxies)
             }
 
-            fn boringssl_default(
+            fn default_using_proxies(
+                scope: WeakScope,
+                proxies: DefaultProxyConnector<TcpConnector, Body>,
+            ) -> Self {
+                Self::default_using(scope, TlsClientConfig::default_http(), proxies)
+            }
+
+            fn default_using(
                 scope: WeakScope,
                 tls: TlsClientConfig,
-                transport: Option<TransportConfig>,
-            ) -> Result<Self, BoxError> {
-                let h3 = Http3Connector::builder(scope.clone())
-                    .with_tls_provider(Arc::new(BoringTlsProvider))
-                    .with_tls_config(tls.clone())
-                    .maybe_with_transport(transport)
-                    .build_lazy()?;
-                Ok(EasyHttpConnectorBuilder::new()
+                proxies: DefaultProxyConnector<TcpConnector, Body>,
+            ) -> Self {
+                EasyHttpConnectorBuilder::new(scope)
                     .with_default_transport_connector()
                     .with_default_dns_connector()
-                    .with_tls_proxy_support_using_boringssl()
-                    .with_proxy_support()
+                    .with_proxy_support(proxies)
                     .with_tls_support_using_boringssl(tls)
                     .with_tls_session_store(Arc::new(TlsClientSessionCache::default()))
-                    .with_default_http_connector(scope)
-                    .with_http3_support(h3)
+                    .with_default_http_connector()
                     .with_default_connection_pool()
-                    .build_client())
+                    .build_client()
             }
         }
         all(feature = "rustls", any(feature = "ring", feature = "aws-lc"), feature = "quic") => {
-            pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
-                let scope = scope.into();
-                #[expect(
-                    clippy::expect_used,
-                    reason = "fixed default H3 limits and Rustls TLS configuration are valid"
-                )]
-                Self::rustls_default(scope, TlsClientConfig::default_http(), None)
-                    .expect("default Rustls HTTP/3 configuration is valid")
-            }
-
-            #[cfg(feature = "masque")]
-            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// A client to MASQUE proxies, for the tunnels another client's HTTP/3 runs in:
-            /// the default client, with room in its own HTTP/3 connections for the tunneled
-            /// QUIC packets ([`masque_quic_transport`]).
-            pub fn default_masque_proxy_client_with_scope(scope: impl Into<WeakScope>) -> Self {
-                let scope = scope.into();
-                #[expect(
-                    clippy::expect_used,
-                    reason = "fixed default H3 limits and Rustls TLS configuration are valid"
-                )]
-                Self::try_default_masque_proxy_client_using_rustls(
-                    scope,
-                    TlsClientConfig::default_http(),
-                )
-                .expect("default Rustls HTTP/3 configuration is valid")
-            }
-
-            #[cfg(feature = "masque")]
-            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// [`Self::default_masque_proxy_client_with_scope`], with `proxy_tls` towards the
-            /// proxies, such as [`TlsClientConfig::default_http`] with a server verification of
-            /// its own.
-            pub fn try_default_masque_proxy_client_using_rustls(
-                scope: impl Into<WeakScope>,
-                proxy_tls: TlsClientConfig,
-            ) -> Result<Self, BoxError> {
-                let scope = scope.into();
-                Self::rustls_default(scope, proxy_tls, Some(masque_quic_transport()))
-            }
-
-            #[cfg(feature = "masque")]
-            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// The default client, with its HTTP/3 also through MASQUE proxies: in
-            /// CONNECT-UDP tunnels ([RFC 9298]) opened by a
-            /// [`Self::default_masque_proxy_client_with_scope`] client.
-            ///
-            /// Each HTTP/3 connection has a UDP socket or tunnel of its own.
-            ///
-            /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
-            pub fn default_masque_with_scope(scope: impl Into<WeakScope>) -> Self {
-                let scope = scope.into();
-                #[expect(
-                    clippy::expect_used,
-                    reason = "fixed default H3 limits and Rustls TLS configuration are valid"
-                )]
-                Self::try_default_masque_using_rustls(
-                    scope,
-                    TlsClientConfig::default_http(),
-                    TlsClientConfig::default_http(),
-                )
-                .expect("default Rustls HTTP/3 configuration is valid")
-            }
-
-            #[cfg(feature = "masque")]
-            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// [`Self::default_masque_with_scope`], with `tls` towards origins and
-            /// `proxy_tls` towards proxies, MASQUE and HTTPS proxies alike.
-            pub fn try_default_masque_using_rustls(
+            /// [`Self::default_with_scope`], with `tls` towards origins and `proxy_tls`
+            /// towards proxies, such as [`TlsClientConfig::default_http`] with a server
+            /// verification of its own.
+            pub fn default_using_rustls(
                 scope: impl Into<WeakScope>,
                 tls: TlsClientConfig,
                 proxy_tls: TlsClientConfig,
-            ) -> Result<Self, BoxError> {
+            ) -> Self {
                 let scope = scope.into();
-                let h3 = Http3Connector::builder(scope.clone())
-                    .with_tls_config(tls.clone());
-                let proxy_client =
-                    DefaultHttpWebClient::<crate::http::Body>::try_default_masque_proxy_client_using_rustls(
-                        scope.clone(),
-                        proxy_tls.clone(),
-                    )?;
-                Ok(EasyHttpConnectorBuilder::new()
-                    .with_default_transport_connector()
-                    .with_default_dns_connector()
-                    .with_tls_proxy_support_using_rustls_config(proxy_tls)
-                    .with_proxy_support()
-                    .with_tls_support_using_rustls(tls)
-                    .with_default_http_connector(scope)
-                    .with_http3_masque_support(h3, proxy_client)?
-                    .with_default_connection_pool()
-                    .build_client())
+                let proxies = ProxyConnector::default_using_tls(scope.clone(), proxy_tls);
+                Self::default_using(scope, tls, proxies)
             }
 
-            fn rustls_default(
+            fn default_using_proxies(
+                scope: WeakScope,
+                proxies: DefaultProxyConnector<TcpConnector, Body>,
+            ) -> Self {
+                Self::default_using(scope, TlsClientConfig::default_http(), proxies)
+            }
+
+            fn default_using(
                 scope: WeakScope,
                 tls: TlsClientConfig,
-                transport: Option<TransportConfig>,
-            ) -> Result<Self, BoxError> {
-                let h3 = Http3Connector::builder(scope.clone())
-                    .with_tls_config(tls.clone())
-                    .maybe_with_transport(transport)
-                    .build_lazy()?;
-                Ok(EasyHttpConnectorBuilder::new()
+                proxies: DefaultProxyConnector<TcpConnector, Body>,
+            ) -> Self {
+                EasyHttpConnectorBuilder::new(scope)
                     .with_default_transport_connector()
                     .with_default_dns_connector()
-                    .with_tls_proxy_support_using_rustls()
-                    .with_proxy_support()
+                    .with_proxy_support(proxies)
                     .with_tls_support_using_rustls(tls)
-                    .with_default_http_connector(scope)
-                    .with_http3_support(h3)
+                    .with_default_http_connector()
                     .with_default_connection_pool()
-                    .build_client())
+                    .build_client()
             }
         }
         feature = "boring" => {
-            pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
-                let scope = scope.into();
-                EasyHttpConnectorBuilder::new()
+            fn default_using_proxies(
+                scope: WeakScope,
+                proxies: DefaultProxyConnector<TcpConnector, Body>,
+            ) -> Self {
+                EasyHttpConnectorBuilder::new(scope)
                     .with_default_transport_connector()
                     .with_default_dns_connector()
-                    .with_tls_proxy_support_using_boringssl()
-                    .with_proxy_support()
+                    .with_proxy_support(proxies)
                     .with_tls_support_using_boringssl(TlsClientConfig::default_http())
                     .with_tls_session_store(Arc::new(TlsClientSessionCache::default()))
-                    .with_default_http_connector(scope)
+                    .with_default_http_connector()
                     .with_default_connection_pool()
                     .build_client()
             }
         }
         feature = "rustls" => {
-            pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
-                let scope = scope.into();
-                EasyHttpConnectorBuilder::new()
+            fn default_using_proxies(
+                scope: WeakScope,
+                proxies: DefaultProxyConnector<TcpConnector, Body>,
+            ) -> Self {
+                EasyHttpConnectorBuilder::new(scope)
                     .with_default_transport_connector()
                     .with_default_dns_connector()
-                    .with_tls_proxy_support_using_rustls()
-                    .with_proxy_support()
+                    .with_proxy_support(proxies)
                     .with_tls_support_using_rustls(TlsClientConfig::default_http())
-                    .with_default_http_connector(scope)
+                    .with_default_http_connector()
                     .with_default_connection_pool()
                     .build_client()
             }
         }
         _ => {
-            pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
-                let scope = scope.into();
-                EasyHttpConnectorBuilder::new()
+            fn default_using_proxies(
+                scope: WeakScope,
+                proxies: DefaultProxyConnector<TcpConnector, Body>,
+            ) -> Self {
+                EasyHttpConnectorBuilder::new(scope)
                     .with_default_transport_connector()
                     .with_default_dns_connector()
-                    .without_tls_proxy_support()
-                    .with_proxy_support()
+                    .with_proxy_support(proxies)
                     .without_tls_support()
-                    .with_default_http_connector(scope)
+                    .with_default_http_connector()
                     .with_default_connection_pool()
                     .build_client()
             }
@@ -482,6 +367,23 @@ pub fn masque_quic_transport() -> TransportConfig {
         .with_max_idle_timeout(IdleTimeout::from(VarInt::from_u32(idle)))
 }
 
+#[cfg(all(
+    feature = "quic",
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+pub(crate) fn default_http3_builder(
+    scope: impl Into<WeakScope>,
+    tls: TlsClientConfig,
+    provider: Arc<dyn QuicClientConfigProvider>,
+) -> Http3ConnectorBuilder {
+    Http3Connector::builder(scope)
+        .with_tls_config(tls)
+        .with_tls_provider(provider)
+}
+
 impl<BodyIn, ConnResponse> EasyHttpWebClient<BodyIn, ConnResponse, ()>
 where
     BodyIn: Send + 'static,
@@ -489,8 +391,11 @@ where
     /// Create a new [`EasyHttpWebClient`] using the provided connector.
     ///
     /// Custom proxy connectors must honor [`PlaintextHttpProxyMode`] and publish
-    /// [`EstablishedProxyRoute`](crate::net::client::EstablishedProxyRoute).
+    /// [`EstablishedProxyRoute`].
     /// Connection wrappers must preserve that metadata through [`ExtensionsRef`].
+    /// Forward credentials and challenge isolation come from [`ProxyConnector`]: a
+    /// connection which does not report [`EstablishedProxyRoute::Forward`] carries no
+    /// `Proxy-Authorization` at all.
     #[must_use]
     pub fn new<S>(connector: S) -> Self
     where
@@ -498,7 +403,6 @@ where
     {
         Self {
             connector: MapErr::into_opaque_error(connector).boxed(),
-            forward_proxy_layer: HttpForwardProxyLayer::new(),
             plaintext_http_proxy_mode: None,
             jit_layers: (),
         }
@@ -536,56 +440,32 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
     {
         EasyHttpWebClient {
             connector: MapErr::into_opaque_error(connector).boxed(),
-            forward_proxy_layer: self.forward_proxy_layer,
             plaintext_http_proxy_mode: self.plaintext_http_proxy_mode,
             jit_layers: self.jit_layers,
         }
     }
 
     /// [`Layer`] which will be applied just in time (JIT) before the request is sent, but after
-    /// the connection has been established. Rama's built-in forward-proxy
-    /// policy is the innermost JIT service so it can act on the actual
-    /// connection after caller middleware has processed the request, and can
-    /// isolate a proxy challenge before caller middleware sees the response.
+    /// the connection has been established. A forwarded request's proxy policy (credentials,
+    /// challenge isolation) is part of that connection, so it runs inside these layers: after
+    /// caller middleware has processed the request, and before it sees the response.
+    ///
+    /// That credential is the one of the request's own [`ProxyRoute`], which has to name the
+    /// proxy its connection reaches. A layer here which rewrites that route leaves the
+    /// request without credentials, rather than sending another proxy's.
+    ///
+    /// [`ProxyRoute`]: rama_net::client::ProxyRoute
     ///
     /// Simplified flow of how the [`EasyHttpWebClient`] works:
     /// 1. External: let response = client.serve(request)
     /// 2. Internal: let http_connection = self.connector.serve(request)
-    /// 3. Internal: wrap the connection in Rama's forward-proxy policy
-    /// 4. Internal: let response = jit_layers.layer(http_connection).serve(request)
+    /// 3. Internal: let response = jit_layers.layer(http_connection).serve(request)
     pub fn with_jit_layer<T>(self, jit_layers: T) -> EasyHttpWebClient<BodyIn, ConnResponse, T> {
         EasyHttpWebClient {
             connector: self.connector,
-            forward_proxy_layer: self.forward_proxy_layer,
             plaintext_http_proxy_mode: self.plaintext_http_proxy_mode,
             jit_layers,
         }
-    }
-
-    crate::utils::macros::generate_set_and_with! {
-        /// Enable or disable automatic Basic or Bearer credentials on requests
-        /// sent directly to an HTTP forward proxy.
-        ///
-        /// This is enabled by default and acts only when the established connection
-        /// is positively identified as an HTTP forward-proxy connection. It never
-        /// adds credentials to direct, SOCKS, or HTTP CONNECT-tunneled requests.
-        ///
-        /// Disabling this only disables insertion. Caller-provided
-        /// `Proxy-Authorization` headers are preserved on established HTTP
-        /// forward routes and always stripped on every other route, including
-        /// connections without established route metadata.
-        pub fn forward_proxy_auth(mut self, enabled: bool) -> Self {
-            self.forward_proxy_layer.set_proxy_auth(enabled);
-            self
-        }
-    }
-
-    /// Disable automatic Basic or Bearer credentials on HTTP forward-proxy
-    /// requests. The credential-stripping policy described by
-    /// [`Self::with_forward_proxy_auth`] still applies.
-    #[must_use]
-    pub fn without_forward_proxy_auth(self) -> Self {
-        self.with_forward_proxy_auth(false)
     }
 
     crate::utils::macros::generate_set_and_with! {
@@ -609,18 +489,50 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
             self
         }
     }
+}
 
-    crate::utils::macros::generate_set_and_with! {
-        /// Enable or disable isolation of `407 Proxy Authentication Required`
-        /// responses received from an established HTTP forward proxy.
-        ///
-        /// Ordinary clients expose such responses by default. Intermediaries should
-        /// enable this option so an upstream proxy's challenge, headers, and body
-        /// cannot be forwarded to a different downstream proxy client.
-        pub fn isolate_forward_proxy_auth_error(mut self, enabled: bool) -> Self {
-            self.forward_proxy_layer.set_isolate_auth_error(enabled);
-            self
+/// The connection a request is served on, with the facts of that connection applied to it
+/// closest to the wire: whatever middleware did to the request, its [`Egress`] snapshot is
+/// the one of this connection, and a `Proxy-Authorization` field only stays on it when it
+/// reaches an HTTP proxy which forwards the request.
+#[derive(Debug, Clone)]
+pub struct ConnectionEgress<S> {
+    inner: S,
+    extensions: Extensions,
+}
+
+impl<S: ExtensionsRef> ConnectionEgress<S> {
+    /// Serve requests on `inner` with the facts of that connection.
+    pub fn new(inner: S) -> Self {
+        let extensions = inner.extensions().clone();
+        Self { inner, extensions }
+    }
+}
+
+impl<S> ExtensionsRef for ConnectionEgress<S> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<S, RequestBody> Service<Request<RequestBody>> for ConnectionEgress<S>
+where
+    S: Service<Request<RequestBody>>,
+    RequestBody: Send + 'static,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, mut request: Request<RequestBody>) -> Result<Self::Output, Self::Error> {
+        let forwarded = self
+            .extensions
+            .get_ref::<EstablishedProxyRoute>()
+            .is_some_and(EstablishedProxyRoute::is_http_forward);
+        request.extensions().insert(Egress(self.extensions.clone()));
+        if !forwarded {
+            remove_proxy_auth_request_headers(request.headers_mut());
         }
+        self.inner.serve(request).await
     }
 }
 
@@ -637,7 +549,7 @@ where
     ConnectionBody:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     L: Layer<
-            HttpForwardProxyService<MapResponseBody<Connection, fn(IncomingBody) -> ResponseBody>>,
+            MapResponseBody<ConnectionEgress<Connection>, fn(IncomingBody) -> ResponseBody>,
             Service: Service<Request<ConnectionBody>, Output = Response, Error = BoxError>,
         > + Send
         + Sync
@@ -658,14 +570,13 @@ where
             conn: http_connection,
         } = self.connector.serve(req).await.into_opaque_error()?;
 
-        // Publish connection metadata for JIT middleware. The forward-proxy
-        // layer refreshes it after those layers run; the backend independently
-        // refreshes it for callers that use the backend without this client.
+        // Published for the JIT layers above; the connection publishes its own facts again
+        // once those layers have run.
+        let http_connection = ConnectionEgress::new(http_connection);
         req.extensions()
             .insert(Egress(http_connection.extensions().clone()));
 
         let http_connection = MapResponseBody::into_boxed_streaming_body(http_connection);
-        let http_connection = self.forward_proxy_layer.layer(http_connection);
         let http_connection = self.jit_layers.layer(http_connection);
 
         // NOTE: stack might change request version based on connector data,
@@ -698,6 +609,7 @@ mod tests {
         time::Duration,
     };
 
+    use crate::net::address::HostWithPort;
     use rama_core::extensions::Extensions;
     use rama_core::{error::BoxErrorExt as _, service::service_fn};
     use rama_http::{Body, BodyExtractExt, Version};
@@ -706,9 +618,9 @@ mod tests {
         address::ProxyAddress,
         client::{
             ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
-            ConnectorService, ConnectorTarget, EstablishedProxyRoute, ProxyRoute,
-            ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheScope,
-            ProxyRoutes,
+            ConnectorService, ConnectorTarget, EstablishedProxyRoute, PlaintextProxyOnly,
+            ProxyRoute, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig,
+            ProxyRouteFailureCacheScope, ProxyRoutes,
         },
         test_utils::client::{MockConnectorService, MockSocket},
     };
@@ -793,14 +705,13 @@ mod tests {
         }
     }
 
-    fn dummy_server<Input: Send + 'static>()
-    -> impl Service<
-        Input,
-        Output = EstablishedClientConnection<MockSocket, Input>,
+    fn dummy_server() -> impl Service<
+        ConnectRequest,
+        Output = EstablishedClientConnection<MockSocket, ConnectRequest>,
         Error = Infallible,
     > + Clone {
         let created_connections = Arc::new(AtomicUsize::new(0));
-        MockConnectorService::new(move || {
+        MockConnectorService::new(move |_| {
             let created_connections = created_connections.clone();
             let conn = created_connections.fetch_add(1, Ordering::Relaxed);
 
@@ -818,6 +729,91 @@ mod tests {
                 }
             }))
         })
+    }
+
+    /// The restriction the tunnel carries describes the connection to the
+    /// proxy, which the origin's TLS inputs cannot change: it serves the next
+    /// origin request whether or not that one carries the same overrides.
+    #[cfg(any(feature = "boring", feature = "rustls"))]
+    fn assert_tunnel_serves_the_same_proxy(
+        conn: &crate::extensions::Extensions,
+        route: &ProxyRoute,
+    ) {
+        use crate::extensions::Extensions;
+        use crate::net::client::pool::ConnectionReuse;
+        use crate::tls::client::{ServerVerifyMode, TlsServerName, TlsServerVerify};
+
+        // The rules of the connection to the proxy crossed the CONNECT boundary first; the origin's own
+        // were published on top of them.
+        let leg = conn
+            .self_first_ref::<ConnectionReuse>()
+            .expect("the tunnel carries the rules of the connection to the proxy");
+        assert!(
+            !leg.is_complete(),
+            "the connection to the proxy does not describe the origin"
+        );
+
+        let routed = || {
+            let request = Extensions::new();
+            request.insert(route.clone());
+            request
+        };
+        let same = routed();
+        same.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        same.insert(TlsServerName(crate::net::address::Host::from_static(
+            "elsewhere.example",
+        )));
+        assert!(
+            leg.matches(&same),
+            "a request with the same TLS inputs reuses the tunnel"
+        );
+        assert!(
+            leg.matches(&routed()),
+            "the rules of the connection to the proxy do not read the origin's TLS inputs"
+        );
+
+        // A request that asks for other settings towards the proxy is a
+        // different connection to the proxy, even with the same origin TLS inputs.
+        let other_hop = routed();
+        let bag = Extensions::new();
+        bag.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        other_hop.insert(crate::net::client::ProxyConnectionExtensions(bag));
+        assert!(
+            !leg.matches(&other_hop),
+            "a request with other hop settings never shares this tunnel"
+        );
+    }
+
+    fn proxy_authority() -> HostWithPort {
+        HostWithPort::try_from("proxy.example:8080").unwrap()
+    }
+
+    fn origin_authority() -> HostWithPort {
+        HostWithPort::try_from("example.com:80").unwrap()
+    }
+
+    fn proxies_over<T>(
+        transport: T,
+    ) -> ProxyConnector<
+        ProxySocksMethod<PlaintextProxyOnly<T>>,
+        proxy::layer::HttpConnectProxyConnector<
+            ProxyDialer<HttpConnector<PlaintextProxyOnly<T>, Body>>,
+        >,
+        ProxyConnectUdpMethod<HttpConnector<PlaintextProxyOnly<T>, Body>>,
+        proxy::HttpForwardProxyConnector<ProxyDialer<HttpConnector<PlaintextProxyOnly<T>, Body>>>,
+    >
+    where
+        T: Clone + Service<ConnectRequest>,
+        HttpConnector<PlaintextProxyOnly<T>, Body>: ConnectorService<ConnectRequest>,
+    {
+        ProxyConnector::builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport)
+            .without_dns_connector()
+            .without_tls_support()
+            .with_default_http_connector()
+            .without_connection_pool()
+            .with_every_method()
+            .build()
     }
 
     #[tokio::test]
@@ -867,9 +863,147 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn jit_request_metadata_cannot_change_proxy_credentials_target_or_challenge_isolation() {
+    async fn a_custom_connector_sends_proxy_credentials_only_over_a_forward_connection() {
+        use rama_core::layer::MapInputLayer;
+        use rama_http::{HeaderValue, header::PROXY_AUTHORIZATION};
+
+        #[derive(Debug, Clone, ExtensionsRef)]
+        struct RecordingConnection {
+            extensions: Extensions,
+            observed: Arc<parking_lot::Mutex<Option<HeaderValue>>>,
+        }
+
+        impl Service<Request> for RecordingConnection {
+            type Output = Response;
+            type Error = BoxError;
+
+            async fn serve(&self, request: Request) -> Result<Self::Output, Self::Error> {
+                *self.observed.lock() = request.headers().get(PROXY_AUTHORIZATION).cloned();
+                Ok(Response::new(Body::empty()))
+            }
+        }
+
+        let proxy: ProxyAddress = "http://upstream:secret@proxy.example:8080".parse().unwrap();
+        let forward = EstablishedProxyRoute::Forward(proxy.clone());
+        for (route, jit, expected) in [
+            (
+                Some(EstablishedProxyRoute::Direct),
+                Some("Basic aml0"),
+                None,
+            ),
+            (
+                Some(EstablishedProxyRoute::Tunnel(proxy.clone())),
+                Some("Basic aml0"),
+                None,
+            ),
+            (
+                Some(forward.clone()),
+                Some("Basic aml0"),
+                Some("Basic aml0"),
+            ),
+            (Some(forward.clone()), None, Some("Basic Y2FsbGVy")),
+            (None, None, None),
+        ] {
+            let observed = Arc::new(parking_lot::Mutex::new(None));
+            let connector = service_fn({
+                let observed = observed.clone();
+                move |request: Request| {
+                    let route = route.clone();
+                    let observed = observed.clone();
+                    async move {
+                        let extensions = Extensions::new();
+                        if let Some(route) = route {
+                            extensions.insert(route);
+                        }
+                        Ok::<_, Infallible>(EstablishedClientConnection {
+                            input: request,
+                            conn: RecordingConnection {
+                                extensions,
+                                observed,
+                            },
+                        })
+                    }
+                }
+            });
+            let request = Request::builder()
+                .uri("http://origin.example/resource")
+                .header(PROXY_AUTHORIZATION, "Basic Y2FsbGVy")
+                .body(Body::empty())
+                .unwrap();
+
+            EasyHttpWebClient::new(connector)
+                .with_jit_layer(MapInputLayer::new(move |mut request: Request| {
+                    if let Some(jit) = jit {
+                        request
+                            .headers_mut()
+                            .insert(PROXY_AUTHORIZATION, HeaderValue::from_static(jit));
+                    }
+                    request
+                }))
+                .serve(request)
+                .await
+                .unwrap();
+
+            assert_eq!(*observed.lock(), expected.map(HeaderValue::from_static));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_jit_layer_which_rewrites_the_requested_route_sends_no_credentials() {
+        use rama_core::layer::MapInputLayer;
+
+        let log = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let proxies = ProxyConnector::builder(WeakScope::detached())
+            .with_custom_tcp_connector(())
+            .without_dns_connector()
+            .without_tls_support()
+            .with_custom_http_connector::<Body, _>(RecordingConnector::new(None, &log))
+            .without_connection_pool()
+            .with_http_forward()
+            .build();
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(())
+            .without_dns_connector()
+            .with_proxy_support(proxies)
+            .without_tls_support()
+            .with_custom_http_connector(RecordingConnector::new(None, &log))
+            .without_proxy_route_failure_cache()
+            .without_connection_pool()
+            .build_client()
+            .with_jit_layer(MapInputLayer::new(|request: Request| {
+                request.extensions().insert(ProxyRoute::Direct);
+                request
+            }));
+        let request = Request::builder()
+            .uri("http://origin.example/resource")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions().insert(ProxyRoute::Proxy(
+            "http://u:p@proxy.example:8080".parse().unwrap(),
+        ));
+
+        client.serve(request).await.unwrap();
+
+        let log = log.lock();
+        assert_eq!(log.len(), 1);
+        let (authority, target, auth) = &log[0];
+        assert_eq!(
+            authority,
+            &HostWithPort::try_from("proxy.example:8080").unwrap(),
+            "the connection is the one the route asked for",
+        );
+        assert_eq!(target, "http://origin.example/resource");
+        assert_eq!(
+            auth.as_deref(),
+            None,
+            "a route which no longer names the proxy reached names no credentials",
+        );
+    }
+
+    #[tokio::test]
+    async fn jit_request_metadata_cannot_change_a_custom_connectors_route_or_credentials() {
         use rama_core::layer::{MapInputLayer, MapOutputLayer};
-        use rama_http::{HeaderValue, StatusCode, header::PROXY_AUTHORIZATION};
+        use rama_http::{HeaderValue, StatusCode, header::PROXY_AUTHORIZATION, proto::h1::head};
 
         #[derive(Debug, Clone, ExtensionsRef)]
         struct InspectProxyConnection {
@@ -891,6 +1025,7 @@ mod tests {
                         .0
                         .get_ref::<EstablishedProxyRoute>(),
                     route,
+                    "the client publishes the facts of the connection, not stale metadata",
                 );
                 assert_eq!(
                     request.extensions().get_ref::<ProxyRoute>(),
@@ -899,10 +1034,10 @@ mod tests {
                             .parse()
                             .unwrap(),
                     )),
-                    "forward policy must preserve the caller's requested route",
+                    "the caller's requested route is preserved",
                 );
                 let mut target = Vec::new();
-                rama_http::proto::h1::head::encode_request_target(
+                head::encode_request_target(
                     request.method(),
                     request.uri(),
                     request.extensions(),
@@ -910,6 +1045,126 @@ mod tests {
                 )
                 .unwrap();
                 if is_forward {
+                    // A custom connector owns the credentials of the proxy it reaches.
+                    assert_eq!(
+                        request.headers().get(PROXY_AUTHORIZATION).unwrap(),
+                        "Basic downstream-secret",
+                    );
+                    assert_eq!(&target[..], b"http://origin.example/resource");
+                } else {
+                    assert!(request.headers().get(PROXY_AUTHORIZATION).is_none());
+                    assert_eq!(&target[..], b"/resource");
+                }
+                Ok(Response::builder()
+                    .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                    .header("proxy-authenticate", "Basic realm=private-upstream")
+                    .body(Body::from("private upstream challenge"))
+                    .unwrap())
+            }
+        }
+
+        let proxy: ProxyAddress = "http://upstream:secret@proxy.example:8080".parse().unwrap();
+        for route in [
+            None,
+            Some(EstablishedProxyRoute::Direct),
+            Some(EstablishedProxyRoute::Tunnel(proxy.clone())),
+            Some(EstablishedProxyRoute::Tunnel(
+                "socks5://proxy.example:1080".parse().unwrap(),
+            )),
+            Some(EstablishedProxyRoute::Forward(proxy.clone())),
+        ] {
+            let is_forward = route
+                .as_ref()
+                .is_some_and(EstablishedProxyRoute::is_http_forward);
+            let connector = service_fn(move |request: Request| {
+                let route = route.clone();
+                async move {
+                    let extensions = Extensions::new();
+                    if let Some(route) = route {
+                        extensions.insert(route);
+                    }
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        input: request,
+                        conn: InspectProxyConnection { extensions },
+                    })
+                }
+            });
+            let stale_route = if is_forward {
+                EstablishedProxyRoute::Direct
+            } else {
+                EstablishedProxyRoute::Forward(proxy.clone())
+            };
+            let observed_responses = Arc::new(AtomicUsize::new(0));
+            let client = EasyHttpWebClient::new(connector).with_jit_layer((
+                MapInputLayer::new(move |mut request: Request| {
+                    request.extensions().insert(stale_route.clone());
+                    let stale_egress = Extensions::new();
+                    stale_egress.insert(stale_route.clone());
+                    request.extensions().insert(Egress(stale_egress));
+                    request.headers_mut().insert(
+                        PROXY_AUTHORIZATION,
+                        HeaderValue::from_static("Basic downstream-secret"),
+                    );
+                    request
+                }),
+                MapOutputLayer::new({
+                    let observed_responses = observed_responses.clone();
+                    move |response: Response| {
+                        observed_responses.fetch_add(1, Ordering::Relaxed);
+                        response
+                    }
+                }),
+            ));
+            let request = Request::builder()
+                .uri("http://origin.example/resource")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions().insert(ProxyRoute::Proxy(
+                "http://wrong:request-secret@requested.example:8080"
+                    .parse()
+                    .unwrap(),
+            ));
+
+            let response = client.serve(request).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::PROXY_AUTHENTICATION_REQUIRED);
+            assert_eq!(observed_responses.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn jit_request_metadata_cannot_change_proxy_credentials_target_or_challenge_isolation() {
+        use rama_core::layer::{MapInputLayer, MapOutputLayer};
+        use rama_http::{HeaderValue, StatusCode, header::PROXY_AUTHORIZATION, proto::h1::head};
+
+        #[derive(Debug, Clone, ExtensionsRef)]
+        struct InspectProxyConnection {
+            extensions: Extensions,
+        }
+
+        impl Service<Request> for InspectProxyConnection {
+            type Output = Response;
+            type Error = BoxError;
+
+            async fn serve(&self, request: Request) -> Result<Response, BoxError> {
+                let route = self.extensions.get_ref::<EstablishedProxyRoute>();
+                let is_forward = route.is_some_and(EstablishedProxyRoute::is_http_forward);
+                let mut target = Vec::new();
+                head::encode_request_target(
+                    request.method(),
+                    request.uri(),
+                    request.extensions(),
+                    &mut target,
+                )
+                .unwrap();
+                if is_forward {
+                    assert_eq!(
+                        request.extensions().get_ref::<ProxyRoute>(),
+                        Some(&ProxyRoute::Proxy(
+                            "http://upstream:secret@proxy.example:8080".parse().unwrap(),
+                        )),
+                        "forward policy must preserve the caller's requested route",
+                    );
                     assert_eq!(
                         request.headers().get(PROXY_AUTHORIZATION).unwrap(),
                         "Basic dXBzdHJlYW06c2VjcmV0",
@@ -927,41 +1182,59 @@ mod tests {
             }
         }
 
-        let proxy: ProxyAddress = "http://upstream:secret@proxy.example:8080".parse().unwrap();
+        #[derive(Debug, Clone, Copy)]
+        struct InspectingConnector;
+
+        impl Service<ConnectRequest> for InspectingConnector {
+            type Output = EstablishedClientConnection<InspectProxyConnection, ConnectRequest>;
+            type Error = ConnectionError;
+
+            async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
+                Ok(EstablishedClientConnection {
+                    input,
+                    conn: InspectProxyConnection {
+                        extensions: Extensions::new(),
+                    },
+                })
+            }
+        }
+
+        impl<S> Layer<S> for InspectingConnector {
+            type Service = Self;
+
+            fn layer(&self, _: S) -> Self::Service {
+                *self
+            }
+        }
+
+        let proxy = ProxyRoute::Proxy("http://upstream:secret@proxy.example:8080".parse().unwrap());
         for isolate in [false, true] {
-            for route in [
-                None,
-                Some(EstablishedProxyRoute::Direct),
-                Some(EstablishedProxyRoute::Tunnel(proxy.clone())),
-                Some(EstablishedProxyRoute::Tunnel(
-                    "socks5://proxy.example:1080".parse().unwrap(),
-                )),
-                Some(EstablishedProxyRoute::Forward(proxy.clone())),
-            ] {
-                let is_forward = route
-                    .as_ref()
-                    .is_some_and(EstablishedProxyRoute::is_http_forward);
-                let connector = service_fn(move |request: Request| {
-                    let route = route.clone();
-                    async move {
-                        let extensions = Extensions::new();
-                        if let Some(route) = route {
-                            extensions.insert(route);
-                        }
-                        Ok::<_, Infallible>(EstablishedClientConnection {
-                            input: request,
-                            conn: InspectProxyConnection { extensions },
-                        })
-                    }
-                });
+            for is_forward in [false, true] {
+                let proxies = ProxyConnector::builder(WeakScope::detached())
+                    .with_custom_tcp_connector(())
+                    .without_dns_connector()
+                    .without_tls_support()
+                    .with_custom_http_connector::<Body, _>(InspectingConnector)
+                    .without_connection_pool()
+                    .with_http_forward()
+                    .build()
+                    .with_isolate_forward_proxy_auth_error(isolate);
                 let stale_route = if is_forward {
                     EstablishedProxyRoute::Direct
                 } else {
-                    EstablishedProxyRoute::Forward(proxy.clone())
+                    EstablishedProxyRoute::Forward(
+                        "http://upstream:secret@proxy.example:8080".parse().unwrap(),
+                    )
                 };
                 let observed_responses = Arc::new(AtomicUsize::new(0));
-                let client = EasyHttpWebClient::new(connector)
-                    .with_isolate_forward_proxy_auth_error(isolate)
+                let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+                    .with_custom_tcp_connector(())
+                    .without_dns_connector()
+                    .with_proxy_support(proxies)
+                    .without_tls_support()
+                    .with_custom_http_connector(InspectingConnector)
+                    .without_connection_pool()
+                    .build_client()
                     .with_jit_layer((
                         MapInputLayer::new(move |mut request: Request| {
                             request.extensions().insert(stale_route.clone());
@@ -986,11 +1259,9 @@ mod tests {
                     .uri("http://origin.example/resource")
                     .body(Body::empty())
                     .unwrap();
-                request.extensions().insert(ProxyRoute::Proxy(
-                    "http://wrong:request-secret@requested.example:8080"
-                        .parse()
-                        .unwrap(),
-                ));
+                if is_forward {
+                    request.extensions().insert(proxy.clone());
+                }
                 let result = client.serve(request).await;
                 if isolate && is_forward {
                     assert!(result.is_err());
@@ -1006,15 +1277,199 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, ExtensionsRef)]
+    struct RecordingConnection {
+        extensions: Extensions,
+        authority: HostWithPort,
+        log: Arc<parking_lot::Mutex<Vec<(HostWithPort, String, Option<String>)>>>,
+    }
+
+    impl Service<Request> for RecordingConnection {
+        type Output = Response;
+        type Error = BoxError;
+
+        async fn serve(&self, request: Request) -> Result<Self::Output, Self::Error> {
+            use rama_http::{header::PROXY_AUTHORIZATION, proto::h1::head};
+
+            let mut target = Vec::new();
+            head::encode_request_target(
+                request.method(),
+                request.uri(),
+                request.extensions(),
+                &mut target,
+            )
+            .unwrap();
+            self.log.lock().push((
+                self.authority.clone(),
+                String::from_utf8(target).unwrap(),
+                request
+                    .headers()
+                    .get(PROXY_AUTHORIZATION)
+                    .map(|auth| auth.to_str().unwrap().to_owned()),
+            ));
+            Ok(Response::new(Body::empty()))
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct RecordingConnector {
+        unavailable: Option<HostWithPort>,
+        failures: Arc<AtomicUsize>,
+        log: Arc<parking_lot::Mutex<Vec<(HostWithPort, String, Option<String>)>>>,
+    }
+
+    impl RecordingConnector {
+        fn new(
+            unavailable: Option<HostWithPort>,
+            log: &Arc<parking_lot::Mutex<Vec<(HostWithPort, String, Option<String>)>>>,
+        ) -> Self {
+            Self {
+                unavailable,
+                failures: Arc::new(AtomicUsize::new(0)),
+                log: log.clone(),
+            }
+        }
+    }
+
+    impl Service<ConnectRequest> for RecordingConnector {
+        type Output = EstablishedClientConnection<RecordingConnection, ConnectRequest>;
+        type Error = ConnectionError;
+
+        async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
+            // Only the first attempt of a route fails, so a plan can reach the same proxy
+            // again with another credential.
+            if self.unavailable.as_ref() == Some(&input.authority)
+                && self.failures.fetch_add(1, Ordering::Relaxed) == 0
+            {
+                return Err(ConnectionError::transport(
+                    BoxError::from_static_str("proxy unavailable"),
+                    ConnectionErrorKind::Unavailable,
+                ));
+            }
+            let conn = RecordingConnection {
+                extensions: Extensions::new(),
+                authority: input.authority.clone(),
+                log: self.log.clone(),
+            };
+            Ok(EstablishedClientConnection { input, conn })
+        }
+    }
+
+    impl<S> Layer<S> for RecordingConnector {
+        type Service = Self;
+
+        fn layer(&self, _: S) -> Self::Service {
+            self.clone()
+        }
+    }
+
+    fn recording_client(
+        proxy_http: RecordingConnector,
+        origin_http: RecordingConnector,
+    ) -> impl Service<Request, Output = Response, Error = OpaqueError> {
+        let proxies = ProxyConnector::builder(WeakScope::detached())
+            .with_custom_tcp_connector(())
+            .without_dns_connector()
+            .without_tls_support()
+            .with_custom_http_connector::<Body, _>(proxy_http)
+            .without_connection_pool()
+            .with_http_forward()
+            .build();
+        EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(())
+            .without_dns_connector()
+            .with_proxy_support(proxies)
+            .without_tls_support()
+            .with_custom_http_connector(origin_http)
+            .without_proxy_route_failure_cache()
+            .without_connection_pool()
+            .build_client()
+    }
+
+    #[tokio::test]
+    async fn every_forward_attempt_of_a_plan_sends_the_credentials_of_its_own_proxy() {
+        for second in [
+            "http://b:sb@second.example:8080",
+            "http://b:sb@first.example:8080",
+        ] {
+            let log = Arc::new(parking_lot::Mutex::new(Vec::new()));
+            let client = recording_client(
+                RecordingConnector::new(
+                    Some(HostWithPort::try_from("first.example:8080").unwrap()),
+                    &log,
+                ),
+                RecordingConnector::new(None, &log),
+            );
+            let request = Request::builder()
+                .uri("http://origin.example/resource")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions().insert(ProxyRoutes::new([
+                ProxyRoute::Proxy("http://a:sa@first.example:8080".parse().unwrap()),
+                ProxyRoute::Proxy(second.parse().unwrap()),
+            ]));
+
+            client.serve(request).await.unwrap();
+
+            let log = log.lock();
+            assert_eq!(log.len(), 1, "{second}: only the reached proxy is served");
+            let (authority, target, auth) = &log[0];
+            assert_eq!(
+                authority,
+                &HostWithPort::try_from(second.rsplit('@').next().unwrap()).unwrap(),
+            );
+            assert_eq!(target, "http://origin.example/resource");
+            assert_eq!(
+                auth.as_deref(),
+                Some("Basic YjpzYg=="),
+                "{second}: the credentials of the proxy actually reached",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fallback_to_direct_carries_no_proxy_credentials() {
+        use rama_http::header::PROXY_AUTHORIZATION;
+
+        let log = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let client = recording_client(
+            RecordingConnector::new(
+                Some(HostWithPort::try_from("proxy.example:8080").unwrap()),
+                &log,
+            ),
+            RecordingConnector::new(None, &log),
+        );
+        let request = Request::builder()
+            .uri("http://origin.example/resource")
+            .header(PROXY_AUTHORIZATION, "Basic ZG93bnN0cmVhbQ==")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions().insert(ProxyRoutes::new([
+            ProxyRoute::Proxy("http://u:p@proxy.example:8080".parse().unwrap()),
+            ProxyRoute::Direct,
+        ]));
+
+        client.serve(request).await.unwrap();
+
+        let log = log.lock();
+        assert_eq!(log.len(), 1);
+        let (authority, target, auth) = &log[0];
+        assert_eq!(
+            authority,
+            &HostWithPort::try_from("origin.example:80").unwrap()
+        );
+        assert_eq!(target, "/resource");
+        assert_eq!(auth.as_deref(), None);
+    }
+
     #[test]
     fn blocking_client_drives_the_composed_http_stack() {
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(dummy_server())
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
             .without_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .without_connection_pool()
             .build_client()
             .try_into_blocking()
@@ -1063,14 +1518,14 @@ mod tests {
         let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let transport = service_fn({
             let attempts = attempts.clone();
-            let direct = dummy_server::<ConnectRequest>();
+            let direct = dummy_server();
             move |input: ConnectRequest| {
                 let attempts = attempts.clone();
                 let direct = direct.clone();
                 async move {
-                    let route = input.extensions.get_ref::<ProxyRoute>().unwrap();
-                    attempts.lock().push(route.clone());
-                    if route.proxy_address().is_some() {
+                    let dialed = input.authority.clone();
+                    attempts.lock().push(dialed.clone());
+                    if dialed == proxy_authority() {
                         Err(ConnectionError::transport(
                             BoxError::from_static_str("proxy unavailable"),
                             ConnectionErrorKind::Unavailable,
@@ -1081,13 +1536,12 @@ mod tests {
                 }
             }
         });
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(transport)
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport.clone())
             .without_dns_connector()
-            .without_tls_proxy_support()
-            .with_custom_proxy_connector(())
+            .with_proxy_support(proxies_over(transport))
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .without_connection_pool()
             .build_client();
         let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
@@ -1112,19 +1566,18 @@ mod tests {
 
         assert_eq!(
             attempts.lock().as_slice(),
-            [proxy, ProxyRoute::Direct, ProxyRoute::Direct]
+            [proxy_authority(), origin_authority(), origin_authority()],
         );
     }
 
     #[tokio::test]
     async fn no_proxy_tls_support_rejects_https_proxy() {
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(dummy_server())
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
             .without_dns_connector()
-            .without_tls_proxy_support()
-            .with_proxy_support()
+            .with_proxy_support(proxies_over(dummy_server()))
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .without_connection_pool()
             .build_client();
         let request = Request::builder()
@@ -1151,7 +1604,7 @@ mod tests {
         let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
         let dials = Arc::new(AtomicUsize::new(0));
         let transport = service_fn({
-            let inner = dummy_server::<ConnectRequest>();
+            let inner = dummy_server();
             let proxy = proxy.clone();
             let dials = dials.clone();
             move |input: ConnectRequest| {
@@ -1164,24 +1617,20 @@ mod tests {
                         Some(&ConnectorTarget(proxy.address.clone())),
                     );
                     assert_eq!(
-                        input
-                            .extensions
-                            .get_ref::<ProxyRoute>()
-                            .and_then(ProxyRoute::proxy_address),
-                        Some(&proxy),
+                        input.extensions.get_ref::<ProxyRoute>(),
+                        Some(&ProxyRoute::Direct),
                     );
                     dials.fetch_add(1, Ordering::Relaxed);
                     inner.connect(input).await
                 }
             }
         });
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(transport)
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport.clone())
             .without_dns_connector()
-            .without_tls_proxy_support()
-            .with_proxy_support()
+            .with_proxy_support(proxies_over(transport))
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .with_default_connection_pool()
             .build_client();
 
@@ -1193,7 +1642,7 @@ mod tests {
                 .unwrap();
             request
                 .extensions()
-                .insert(ProxyRoutes::from(proxy.clone()));
+                .insert(ProxyRoutes::from(proxy.clone().with_http_version(version)));
 
             let response = client.serve(request).await.unwrap();
             assert_eq!(response.version(), version);
@@ -1214,31 +1663,30 @@ mod tests {
         let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let transport = service_fn({
             let attempts = attempts.clone();
-            let direct = dummy_server::<ConnectRequest>();
+            let direct = dummy_server();
             move |input: ConnectRequest| {
                 let attempts = attempts.clone();
                 let direct = direct.clone();
                 async move {
-                    let route = input.extensions.get_ref::<ProxyRoute>().unwrap().clone();
-                    attempts.lock().push(route.clone());
-                    if route.proxy_address().is_some() {
+                    let dialed = input.authority.clone();
+                    attempts.lock().push(dialed.clone());
+                    if dialed == origin_authority() {
+                        direct.connect(input).await
+                    } else {
                         Err(ConnectionError::transport(
                             BoxError::from_static_str("proxy unavailable"),
                             ConnectionErrorKind::Unavailable,
                         ))
-                    } else {
-                        direct.connect(input).await
                     }
                 }
             }
         });
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(transport)
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport.clone())
             .without_dns_connector()
-            .without_tls_proxy_support()
-            .with_proxy_support()
+            .with_proxy_support(proxies_over(transport))
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .without_connection_pool()
             .build_client();
         let request = Request::builder()
@@ -1262,7 +1710,11 @@ mod tests {
         assert_eq!(output, Output { conn: 0, resp: 0 });
         assert_eq!(
             attempts.lock().as_slice(),
-            [socks, http, ProxyRoute::Direct]
+            [
+                HostWithPort::try_from("socks.example:1080").unwrap(),
+                HostWithPort::try_from("http.example:8080").unwrap(),
+                origin_authority(),
+            ],
         );
     }
 
@@ -1271,14 +1723,14 @@ mod tests {
         let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let transport = service_fn({
             let attempts = attempts.clone();
-            let direct = dummy_server::<ConnectRequest>();
+            let direct = dummy_server();
             move |input: ConnectRequest| {
                 let attempts = attempts.clone();
                 let direct = direct.clone();
                 async move {
-                    let route = input.extensions.get_ref::<ProxyRoute>().unwrap();
-                    attempts.lock().push(route.clone());
-                    if route.proxy_address().is_some() {
+                    let dialed = input.authority.clone();
+                    attempts.lock().push(dialed.clone());
+                    if dialed == proxy_authority() {
                         Err(ConnectionError::transport(
                             BoxError::from_static_str("proxy unavailable"),
                             ConnectionErrorKind::Unavailable,
@@ -1289,13 +1741,12 @@ mod tests {
                 }
             }
         });
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(transport)
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport.clone())
             .without_dns_connector()
-            .without_tls_proxy_support()
-            .with_custom_proxy_connector(())
+            .with_proxy_support(proxies_over(transport))
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .with_default_connection_pool()
             .build_client();
         let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
@@ -1317,7 +1768,10 @@ mod tests {
             assert_eq!(output.resp, expected_response_index);
         }
 
-        assert_eq!(attempts.lock().as_slice(), [proxy, ProxyRoute::Direct]);
+        assert_eq!(
+            attempts.lock().as_slice(),
+            [proxy_authority(), origin_authority()],
+        );
     }
 
     #[tokio::test]
@@ -1325,14 +1779,14 @@ mod tests {
         let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let transport = service_fn({
             let attempts = attempts.clone();
-            let direct = dummy_server::<ConnectRequest>();
+            let direct = dummy_server();
             move |input: ConnectRequest| {
                 let attempts = attempts.clone();
                 let direct = direct.clone();
                 async move {
-                    let route = input.extensions.get_ref::<ProxyRoute>().unwrap();
-                    attempts.lock().push(route.clone());
-                    if route.proxy_address().is_some() {
+                    let dialed = input.authority.clone();
+                    attempts.lock().push(dialed.clone());
+                    if dialed == proxy_authority() {
                         Err(ConnectionError::transport(
                             BoxError::from_static_str("proxy unavailable"),
                             ConnectionErrorKind::Unavailable,
@@ -1343,13 +1797,12 @@ mod tests {
                 }
             }
         });
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(transport)
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport.clone())
             .without_dns_connector()
-            .without_tls_proxy_support()
-            .with_custom_proxy_connector(())
+            .with_proxy_support(proxies_over(transport))
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .without_proxy_route_failure_cache()
             .without_connection_pool()
             .build_client();
@@ -1368,58 +1821,158 @@ mod tests {
 
         assert_eq!(
             attempts.lock().as_slice(),
-            [proxy.clone(), ProxyRoute::Direct, proxy, ProxyRoute::Direct]
+            [
+                proxy_authority(),
+                origin_authority(),
+                proxy_authority(),
+                origin_authority(),
+            ],
         );
     }
 
     #[tokio::test]
-    async fn proxy_free_easy_client_omits_proxy_route_failure_cache() {
-        let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    async fn a_proxy_free_client_does_not_fall_back_from_a_refused_proxy_route() {
+        let attempts = Arc::new(parking_lot::Mutex::new(0usize));
         let transport = service_fn({
             let attempts = attempts.clone();
-            let direct = dummy_server::<ConnectRequest>();
+            let direct = dummy_server();
             move |input: ConnectRequest| {
                 let attempts = attempts.clone();
                 let direct = direct.clone();
                 async move {
-                    let route = input.extensions.get_ref::<ProxyRoute>().unwrap();
-                    attempts.lock().push(route.clone());
-                    if route.proxy_address().is_some() {
-                        Err(ConnectionError::transport(
-                            BoxError::from_static_str("proxy unavailable"),
-                            ConnectionErrorKind::Unavailable,
-                        ))
-                    } else {
-                        direct.connect(input).await
-                    }
+                    *attempts.lock() += 1;
+                    direct.connect(input).await
                 }
             }
         });
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(transport)
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport)
             .without_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .without_connection_pool()
             .build_client();
-        let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse().unwrap());
+        let request = Request::builder()
+            .uri("http://example.com")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions().insert(ProxyRoutes::new([
+            ProxyRoute::Proxy("http://proxy.example:8080".parse().unwrap()),
+            ProxyRoute::Direct,
+        ]));
 
-        for _ in 0..2 {
+        client.serve(request).await.expect_err(
+            "a refused proxy route is a configuration error, not a reason to go direct",
+        );
+        assert_eq!(*attempts.lock(), 0);
+    }
+
+    #[tokio::test]
+    async fn forwarded_requests_reuse_the_connection_to_their_proxy() {
+        let proxy_dials = Arc::new(AtomicUsize::new(0));
+        let transport = service_fn({
+            let proxy_dials = proxy_dials.clone();
+            let server = dummy_server();
+            move |input: ConnectRequest| {
+                if input.authority.host == "proxy.example" {
+                    proxy_dials.fetch_add(1, Ordering::Relaxed);
+                }
+                let server = server.clone();
+                async move { server.connect(input).await }
+            }
+        });
+        let proxies = ProxyConnector::builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport.clone())
+            .without_dns_connector()
+            .without_tls_support()
+            .with_default_http_connector()
+            .with_default_connection_pool()
+            .with_http_forward()
+            .build();
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport)
+            .without_dns_connector()
+            .with_proxy_support(proxies)
+            .without_tls_support()
+            .with_default_http_connector()
+            .with_default_connection_pool()
+            .build_client();
+
+        for path in ["/first", "/second"] {
             let request = Request::builder()
-                .uri("http://example.com")
+                .uri(format!("http://example.com{path}"))
+                .version(Version::HTTP_11)
                 .body(Body::empty())
                 .unwrap();
-            request
-                .extensions()
-                .insert(ProxyRoutes::new([proxy.clone(), ProxyRoute::Direct]));
-            client.serve(request).await.unwrap();
+            request.extensions().insert(ProxyRoute::Proxy(
+                "http://proxy.example:8080".parse().unwrap(),
+            ));
+            client
+                .serve(request)
+                .await
+                .expect("every forwarded request is served")
+                .try_into_string()
+                .await
+                .expect("the response body reaches its end");
         }
 
-        assert_eq!(
-            attempts.lock().as_slice(),
-            [proxy.clone(), ProxyRoute::Direct, proxy, ProxyRoute::Direct]
+        assert_eq!(proxy_dials.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn a_proxy_free_client_refuses_a_tunneled_route() {
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
+            .without_dns_connector()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector()
+            .without_connection_pool()
+            .build_client();
+        let request = Request::builder()
+            .uri("http://example.com")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions().insert(ProxyRoute::Proxy(
+            "socks5://proxy.example:1080".parse().unwrap(),
+        ));
+
+        let error = client.serve(request).await.unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("proxy route on a client without proxy support"),
+            "a client without proxy support must refuse the route, not connect around it: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_proxy_free_client_refuses_a_forwarded_route() {
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
+            .without_dns_connector()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector()
+            .without_connection_pool()
+            .build_client();
+        let request = Request::builder()
+            .uri("http://example.com")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions().insert(ProxyRoute::Proxy(
+            "http://proxy.example:8080".parse().unwrap(),
+        ));
+
+        let error = client.serve(request).await.unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("http forward proxying is not enabled"),
+            "a client without proxy support must refuse the route, not serve it another way: {error}"
         );
     }
 
@@ -1428,34 +1981,41 @@ mod tests {
         let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let transport = service_fn({
             let attempts = attempts.clone();
-            let direct = dummy_server::<ConnectRequest>();
+            let direct = dummy_server();
             move |input: ConnectRequest| {
                 let attempts = attempts.clone();
                 let direct = direct.clone();
                 async move {
-                    let route = input.extensions.get_ref::<ProxyRoute>().unwrap();
-                    attempts.lock().push(route.clone());
-                    if route.proxy_address().is_some() {
+                    if input.authority.host == "proxy.example" {
+                        attempts.lock().push("proxy");
                         Err(ConnectionError::transport(
                             BoxError::from_static_str("proxy unavailable"),
                             ConnectionErrorKind::Unavailable,
                         ))
                     } else {
+                        attempts.lock().push("direct");
                         direct.connect(input).await
                     }
                 }
             }
         });
+        let proxies = ProxyConnector::builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport.clone())
+            .without_dns_connector()
+            .without_tls_support()
+            .with_default_http_connector()
+            .without_connection_pool()
+            .with_http_forward()
+            .build();
         let mut failure_cache_config = ProxyRouteFailureCacheConfig::default();
         failure_cache_config.scope = ProxyRouteFailureCacheScope::PerProxy;
         let failure_cache = ProxyRouteFailureCache::try_new(failure_cache_config).unwrap();
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(transport)
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport)
             .without_dns_connector()
-            .without_tls_proxy_support()
-            .without_proxy_support()
+            .with_proxy_support(proxies)
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .with_proxy_route_failure_cache(failure_cache)
             .without_connection_pool()
             .build_client();
@@ -1472,10 +2032,7 @@ mod tests {
             client.serve(request).await.unwrap();
         }
 
-        assert_eq!(
-            attempts.lock().as_slice(),
-            [proxy, ProxyRoute::Direct, ProxyRoute::Direct]
-        );
+        assert_eq!(attempts.lock().as_slice(), ["proxy", "direct", "direct"]);
     }
 
     #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
@@ -1488,9 +2045,14 @@ mod tests {
                 address::HostWithPort,
                 client::{EstablishedClientConnection, ProxyRoute},
                 stream::service::EchoService,
+                tls::{ApplicationProtocol, TlsAlpn},
             },
             tls::{
-                client::{NegotiatedTlsParameters, TlsClientConfig},
+                SecureTransport,
+                client::{
+                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerName,
+                    TlsServerVerify,
+                },
                 rustls::{client::TlsConnector, server::TlsAcceptorLayer},
                 server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
             },
@@ -1498,7 +2060,7 @@ mod tests {
         use rama_core::ServiceInput;
         use rama_crypto::cert::generate_server_auth;
         use rama_http::io::upgrade::handle_upgrade;
-        use rama_http_backend::client::proxy::layer::HttpProxyConnectorLayer;
+        use rama_http_backend::client::proxy::layer::HttpConnectProxyConnectorLayer;
         use rama_net::http::TargetHttpVersion;
         use std::sync::Arc;
 
@@ -1509,26 +2071,37 @@ mod tests {
             generate_server_auth(GeneratedServerAuthConfig::default()).expect("origin auth");
         let origin_trust = origin_chain.last().expect("origin trust anchor").clone();
 
-        let origin_server =
-            TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
-                cert_chain: origin_chain,
-                private_key: origin_key,
-                ocsp: None,
-            }))
-            .into_layer(EchoService::new());
+        let origin_server = TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_single_cert(ServerAuthData {
+                    cert_chain: origin_chain,
+                    private_key: origin_key,
+                    ocsp: None,
+                })
+                .with_alpn_http_1(),
+        )
+        .into_layer(EchoService::new());
         let (origin_done_tx, origin_done_rx) = tokio::sync::oneshot::channel();
         let origin_done_tx = Arc::new(parking_lot::Mutex::new(Some(origin_done_tx)));
 
         let connect_version = Arc::new(parking_lot::Mutex::new(None));
         let observed_version = connect_version.clone();
+        let proxy_sni = Arc::new(parking_lot::Mutex::new(None));
+        let observed_sni = proxy_sni.clone();
         let proxy_http =
             HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
                 let origin_server = origin_server.clone();
                 let origin_done_tx = origin_done_tx.clone();
                 let observed_version = observed_version.clone();
+                let observed_sni = observed_sni.clone();
                 async move {
                     assert_eq!(req.method(), rama_http::Method::CONNECT);
                     *observed_version.lock() = Some(req.version());
+                    *observed_sni.lock() = req
+                        .extensions()
+                        .get_ref::<SecureTransport>()
+                        .and_then(SecureTransport::client_hello)
+                        .and_then(|hello| hello.ext_server_name().cloned());
                     let upgrade = handle_upgrade(&req);
                     tokio::spawn(async move {
                         let tunnel = upgrade.await.expect("server CONNECT upgrade");
@@ -1552,6 +2125,7 @@ mod tests {
                 })
                 .with_alpn_http_2(),
         )
+        .with_store_client_hello(true)
         .into_layer(proxy_http);
 
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
@@ -1566,8 +2140,9 @@ mod tests {
             .with_server_name(crate::net::address::Host::from_static("localhost"))
             .try_with_server_trust_anchors([proxy_trust])
             .expect("proxy trust");
-        let proxy_tls = TlsConnector::tunnel(transport, None).with_base_config(proxy_config);
-        let proxy = HttpProxyConnectorLayer::default().into_layer(proxy_tls);
+        let proxy_tls = TlsConnector::auto(transport).with_base_config(proxy_config);
+        let proxy_connections = HttpConnector::<_, Body>::new(proxy_tls, WeakScope::detached());
+        let proxy = HttpConnectProxyConnectorLayer::new().into_layer(proxy_connections);
         let origin_config = TlsClientConfig::new()
             .with_alpn(Default::default())
             .with_server_name(crate::net::address::Host::from_static("localhost"))
@@ -1577,31 +2152,245 @@ mod tests {
 
         let input = ConnectRequest::new(HostWithPort::try_from("localhost:443").unwrap())
             .with_application_protocol(Protocol::HTTPS);
+        input.extensions.insert(ProxyRoute::Proxy(
+            "https://localhost:8443"
+                .parse::<ProxyAddress>()
+                .unwrap()
+                .with_http_version(Version::HTTP_2),
+        ));
+        // Origin TLS inputs: they configure the origin handshake over the
+        // tunnel and must not reach the handshake with the proxy.
+        input.extensions.insert(TlsAlpn::http_1());
         input
             .extensions
-            .insert(ProxyRoute::Proxy("https://localhost:8443".parse().unwrap()));
+            .insert(TlsServerVerify(ServerVerifyMode::Disable));
+        input
+            .extensions
+            .insert(TlsServerName(crate::net::address::Host::from_static(
+                "elsewhere.example",
+            )));
         let client = async move {
             let established = Box::pin(connector.serve(input))
                 .await
                 .expect("two TLS handshakes");
 
-            assert_eq!(*connect_version.lock(), Some(Version::HTTP_2));
             assert_eq!(
-                established
-                    .conn
-                    .extensions()
-                    .get_ref::<NegotiatedTlsParameters>()
+                *connect_version.lock(),
+                Some(Version::HTTP_2),
+                "the connection to the proxy offers its own ALPN, never the origin's"
+            );
+            assert_eq!(
+                proxy_sni
+                    .lock()
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .as_deref(),
+                Some("localhost"),
+                "the connection to the proxy names the proxy, never the origin's server name"
+            );
+            let conn = established.conn.extensions();
+            assert_eq!(
+                conn.get_ref::<NegotiatedTlsParameters>()
                     .expect("origin TLS parameters")
                     .application_layer_protocol,
-                None
+                Some(ApplicationProtocol::HTTP_11),
+                "the origin handshake over the tunnel offers the request's ALPN"
+            );
+            assert_eq!(
+                conn.get_ref::<TargetHttpVersion>().map(|version| version.0),
+                Some(Version::HTTP_11),
+                "proxy HTTP/2 must not leak past CONNECT into the origin"
+            );
+            assert_tunnel_serves_the_same_proxy(
+                conn,
+                established
+                    .input
+                    .extensions
+                    .get_ref::<ProxyRoute>()
+                    .unwrap(),
+            );
+            drop(established);
+        };
+        let (proxy_result, ()) =
+            Box::pin(tokio::time::timeout(Duration::from_secs(5), async move {
+                tokio::join!(proxy_server.serve(ServiceInput::new(server_io)), client)
+            }))
+            .await
+            .expect("proxy/origin exchange");
+        proxy_result.expect("proxy server");
+        tokio::time::timeout(Duration::from_secs(5), origin_done_rx)
+            .await
+            .expect("origin server shutdown")
+            .expect("origin completion signal");
+    }
+
+    #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[tokio::test]
+    async fn rustls_proxy_alpn_never_reaches_a_no_alpn_origin() {
+        use crate::{
+            extensions::ExtensionsRef as _,
+            net::{
+                Protocol,
+                address::HostWithPort,
+                client::{EstablishedClientConnection, ProxyRoute},
+                stream::service::EchoService,
+            },
+            tls::{
+                SecureTransport,
+                client::{
+                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerName,
+                    TlsServerVerify,
+                },
+                rustls::{client::TlsConnector, server::TlsAcceptorLayer},
+                server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+            },
+        };
+        use rama_core::ServiceInput;
+        use rama_crypto::cert::generate_server_auth;
+        use rama_http::io::upgrade::handle_upgrade;
+        use rama_http_backend::client::proxy::layer::HttpConnectProxyConnectorLayer;
+        use rama_net::http::TargetHttpVersion;
+        use std::sync::Arc;
+
+        let (proxy_chain, proxy_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("proxy auth");
+        let proxy_trust = proxy_chain.last().expect("proxy trust anchor").clone();
+        let (origin_chain, origin_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("origin auth");
+        let origin_trust = origin_chain.last().expect("origin trust anchor").clone();
+
+        let origin_server =
+            TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain: origin_chain,
+                private_key: origin_key,
+                ocsp: None,
+            }))
+            .into_layer(EchoService::new());
+        let (origin_done_tx, origin_done_rx) = tokio::sync::oneshot::channel();
+        let origin_done_tx = Arc::new(parking_lot::Mutex::new(Some(origin_done_tx)));
+
+        let connect_version = Arc::new(parking_lot::Mutex::new(None));
+        let observed_version = connect_version.clone();
+        let proxy_sni = Arc::new(parking_lot::Mutex::new(None));
+        let observed_sni = proxy_sni.clone();
+        let proxy_http =
+            HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
+                let origin_server = origin_server.clone();
+                let origin_done_tx = origin_done_tx.clone();
+                let observed_version = observed_version.clone();
+                let observed_sni = observed_sni.clone();
+                async move {
+                    assert_eq!(req.method(), rama_http::Method::CONNECT);
+                    *observed_version.lock() = Some(req.version());
+                    *observed_sni.lock() = req
+                        .extensions()
+                        .get_ref::<SecureTransport>()
+                        .and_then(SecureTransport::client_hello)
+                        .and_then(|hello| hello.ext_server_name().cloned());
+                    let upgrade = handle_upgrade(&req);
+                    tokio::spawn(async move {
+                        let tunnel = upgrade.await.expect("server CONNECT upgrade");
+                        // The client deliberately drops immediately after the
+                        // handshake assertions, so the TLS server may finish
+                        // with an EOF/close-notify error.
+                        let _origin_result = origin_server.serve(tunnel).await;
+                        if let Some(tx) = origin_done_tx.lock().take() {
+                            tx.send(()).expect("origin completion receiver");
+                        }
+                    });
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                }
+            }));
+        let proxy_server = TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_single_cert(ServerAuthData {
+                    cert_chain: proxy_chain,
+                    private_key: proxy_key,
+                    ocsp: None,
+                })
+                .with_alpn_http_2(),
+        )
+        .with_store_client_hello(true)
+        .into_layer(proxy_http);
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let client_io = Arc::new(parking_lot::Mutex::new(Some(client_io)));
+        let transport = service_fn(move |input: ConnectRequest| {
+            let conn = ServiceInput::new(client_io.lock().take().expect("one proxy connection"));
+            async move { Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn }) }
+        });
+
+        let proxy_config = TlsClientConfig::new()
+            .with_alpn_http_2()
+            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .try_with_server_trust_anchors([proxy_trust])
+            .expect("proxy trust");
+        let proxy_tls = TlsConnector::auto(transport).with_base_config(proxy_config);
+        let proxy_connections = HttpConnector::<_, Body>::new(proxy_tls, WeakScope::detached());
+        let proxy = HttpConnectProxyConnectorLayer::new().into_layer(proxy_connections);
+        let origin_config = TlsClientConfig::new()
+            .with_alpn(Default::default())
+            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .try_with_server_trust_anchors([origin_trust])
+            .expect("origin trust");
+        let connector = TlsConnector::auto(proxy).with_base_config(origin_config);
+
+        let input = ConnectRequest::new(HostWithPort::try_from("localhost:443").unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        input.extensions.insert(ProxyRoute::Proxy(
+            "https://localhost:8443"
+                .parse::<ProxyAddress>()
+                .unwrap()
+                .with_http_version(Version::HTTP_2),
+        ));
+        // Origin TLS inputs: they configure the origin handshake over the
+        // tunnel and must not reach the handshake with the proxy.
+        input
+            .extensions
+            .insert(TlsServerVerify(ServerVerifyMode::Disable));
+        input
+            .extensions
+            .insert(TlsServerName(crate::net::address::Host::from_static(
+                "elsewhere.example",
+            )));
+        let client = async move {
+            let established = Box::pin(connector.serve(input))
+                .await
+                .expect("two TLS handshakes");
+
+            assert_eq!(
+                *connect_version.lock(),
+                Some(Version::HTTP_2),
+                "the connection to the proxy offers its own ALPN, never the origin's"
+            );
+            assert_eq!(
+                proxy_sni
+                    .lock()
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .as_deref(),
+                Some("localhost"),
+                "the connection to the proxy names the proxy, never the origin's server name"
+            );
+            let conn = established.conn.extensions();
+            assert_eq!(
+                conn.get_ref::<NegotiatedTlsParameters>()
+                    .expect("origin TLS parameters")
+                    .application_layer_protocol,
+                None,
+                "an origin without an ALPN offer negotiates none"
             );
             assert!(
-                established
-                    .conn
-                    .extensions()
-                    .get_ref::<TargetHttpVersion>()
-                    .is_none(),
+                conn.get_ref::<TargetHttpVersion>().is_none(),
                 "proxy HTTP/2 must not leak past CONNECT into a no-ALPN origin"
+            );
+            assert_tunnel_serves_the_same_proxy(
+                conn,
+                established
+                    .input
+                    .extensions
+                    .get_ref::<ProxyRoute>()
+                    .unwrap(),
             );
             drop(established);
         };
@@ -1628,17 +2417,22 @@ mod tests {
                 address::HostWithPort,
                 client::{EstablishedClientConnection, ProxyRoute},
                 stream::service::EchoService,
+                tls::{ApplicationProtocol, TlsAlpn},
             },
             tls::{
+                SecureTransport,
                 boring::{client::TlsConnector, server::TlsAcceptorLayer},
-                client::{NegotiatedTlsParameters, TlsClientConfig},
+                client::{
+                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerName,
+                    TlsServerVerify,
+                },
                 server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
             },
         };
         use rama_core::ServiceInput;
         use rama_crypto::cert::generate_server_auth;
         use rama_http::io::upgrade::handle_upgrade;
-        use rama_http_backend::client::proxy::layer::HttpProxyConnectorLayer;
+        use rama_http_backend::client::proxy::layer::HttpConnectProxyConnectorLayer;
         use rama_net::http::TargetHttpVersion;
         use std::sync::Arc;
 
@@ -1649,26 +2443,37 @@ mod tests {
             generate_server_auth(GeneratedServerAuthConfig::default()).expect("origin auth");
         let origin_trust = origin_chain.last().expect("origin trust anchor").clone();
 
-        let origin_server =
-            TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
-                cert_chain: origin_chain,
-                private_key: origin_key,
-                ocsp: None,
-            }))
-            .into_layer(EchoService::new());
+        let origin_server = TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_single_cert(ServerAuthData {
+                    cert_chain: origin_chain,
+                    private_key: origin_key,
+                    ocsp: None,
+                })
+                .with_alpn_http_1(),
+        )
+        .into_layer(EchoService::new());
         let (origin_done_tx, origin_done_rx) = tokio::sync::oneshot::channel();
         let origin_done_tx = Arc::new(parking_lot::Mutex::new(Some(origin_done_tx)));
 
         let connect_version = Arc::new(parking_lot::Mutex::new(None));
         let observed_version = connect_version.clone();
+        let proxy_sni = Arc::new(parking_lot::Mutex::new(None));
+        let observed_sni = proxy_sni.clone();
         let proxy_http =
             HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
                 let origin_server = origin_server.clone();
                 let origin_done_tx = origin_done_tx.clone();
                 let observed_version = observed_version.clone();
+                let observed_sni = observed_sni.clone();
                 async move {
                     assert_eq!(req.method(), rama_http::Method::CONNECT);
                     *observed_version.lock() = Some(req.version());
+                    *observed_sni.lock() = req
+                        .extensions()
+                        .get_ref::<SecureTransport>()
+                        .and_then(SecureTransport::client_hello)
+                        .and_then(|hello| hello.ext_server_name().cloned());
                     let upgrade = handle_upgrade(&req);
                     tokio::spawn(async move {
                         let tunnel = upgrade.await.expect("server CONNECT upgrade");
@@ -1692,6 +2497,7 @@ mod tests {
                 })
                 .with_alpn_http_2(),
         )
+        .with_store_client_hello(true)
         .into_layer(proxy_http);
 
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
@@ -1706,8 +2512,9 @@ mod tests {
             .with_server_name(crate::net::address::Host::from_static("localhost"))
             .try_with_server_trust_anchors([proxy_trust])
             .expect("proxy trust");
-        let proxy_tls = TlsConnector::tunnel(transport, None).with_base_config(proxy_config);
-        let proxy = HttpProxyConnectorLayer::default().into_layer(proxy_tls);
+        let proxy_tls = TlsConnector::auto(transport).with_base_config(proxy_config);
+        let proxy_connections = HttpConnector::<_, Body>::new(proxy_tls, WeakScope::detached());
+        let proxy = HttpConnectProxyConnectorLayer::new().into_layer(proxy_connections);
         let origin_config = TlsClientConfig::new()
             .with_alpn(Default::default())
             .with_server_name(crate::net::address::Host::from_static("localhost"))
@@ -1717,29 +2524,241 @@ mod tests {
 
         let input = ConnectRequest::new(HostWithPort::try_from("localhost:443").unwrap())
             .with_application_protocol(Protocol::HTTPS);
+        input.extensions.insert(ProxyRoute::Proxy(
+            "https://localhost:8443"
+                .parse::<ProxyAddress>()
+                .unwrap()
+                .with_http_version(Version::HTTP_2),
+        ));
+        // Origin TLS inputs: they configure the origin handshake over the
+        // tunnel and must not reach the handshake with the proxy.
+        input.extensions.insert(TlsAlpn::http_1());
         input
             .extensions
-            .insert(ProxyRoute::Proxy("https://localhost:8443".parse().unwrap()));
+            .insert(TlsServerVerify(ServerVerifyMode::Disable));
+        input
+            .extensions
+            .insert(TlsServerName(crate::net::address::Host::from_static(
+                "elsewhere.example",
+            )));
         let client = async move {
             let established = connector.serve(input).await.expect("two TLS handshakes");
 
-            assert_eq!(*connect_version.lock(), Some(Version::HTTP_2));
             assert_eq!(
-                established
-                    .conn
-                    .extensions()
-                    .get_ref::<NegotiatedTlsParameters>()
+                *connect_version.lock(),
+                Some(Version::HTTP_2),
+                "the connection to the proxy offers its own ALPN, never the origin's"
+            );
+            assert_eq!(
+                proxy_sni
+                    .lock()
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .as_deref(),
+                Some("localhost"),
+                "the connection to the proxy names the proxy, never the origin's server name"
+            );
+            let conn = established.conn.extensions();
+            assert_eq!(
+                conn.get_ref::<NegotiatedTlsParameters>()
                     .expect("origin TLS parameters")
                     .application_layer_protocol,
-                None
+                Some(ApplicationProtocol::HTTP_11),
+                "the origin handshake over the tunnel offers the request's ALPN"
+            );
+            assert_eq!(
+                conn.get_ref::<TargetHttpVersion>().map(|version| version.0),
+                Some(Version::HTTP_11),
+                "proxy HTTP/2 must not leak past CONNECT into the origin"
+            );
+            assert_tunnel_serves_the_same_proxy(
+                conn,
+                established
+                    .input
+                    .extensions
+                    .get_ref::<ProxyRoute>()
+                    .unwrap(),
+            );
+            drop(established);
+        };
+        let (proxy_result, ()) =
+            Box::pin(tokio::time::timeout(Duration::from_secs(5), async move {
+                tokio::join!(proxy_server.serve(ServiceInput::new(server_io)), client)
+            }))
+            .await
+            .expect("proxy/origin exchange");
+        proxy_result.expect("proxy server");
+        tokio::time::timeout(Duration::from_secs(5), origin_done_rx)
+            .await
+            .expect("origin server shutdown")
+            .expect("origin completion signal");
+    }
+
+    #[cfg(feature = "boring")]
+    #[tokio::test]
+    async fn boring_proxy_alpn_never_reaches_a_no_alpn_origin() {
+        use crate::{
+            extensions::ExtensionsRef as _,
+            net::{
+                Protocol,
+                address::HostWithPort,
+                client::{EstablishedClientConnection, ProxyRoute},
+                stream::service::EchoService,
+            },
+            tls::{
+                SecureTransport,
+                boring::{client::TlsConnector, server::TlsAcceptorLayer},
+                client::{
+                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerName,
+                    TlsServerVerify,
+                },
+                server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+            },
+        };
+        use rama_core::ServiceInput;
+        use rama_crypto::cert::generate_server_auth;
+        use rama_http::io::upgrade::handle_upgrade;
+        use rama_http_backend::client::proxy::layer::HttpConnectProxyConnectorLayer;
+        use rama_net::http::TargetHttpVersion;
+        use std::sync::Arc;
+
+        let (proxy_chain, proxy_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("proxy auth");
+        let proxy_trust = proxy_chain.last().expect("proxy trust anchor").clone();
+        let (origin_chain, origin_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("origin auth");
+        let origin_trust = origin_chain.last().expect("origin trust anchor").clone();
+
+        let origin_server =
+            TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain: origin_chain,
+                private_key: origin_key,
+                ocsp: None,
+            }))
+            .into_layer(EchoService::new());
+        let (origin_done_tx, origin_done_rx) = tokio::sync::oneshot::channel();
+        let origin_done_tx = Arc::new(parking_lot::Mutex::new(Some(origin_done_tx)));
+
+        let connect_version = Arc::new(parking_lot::Mutex::new(None));
+        let observed_version = connect_version.clone();
+        let proxy_sni = Arc::new(parking_lot::Mutex::new(None));
+        let observed_sni = proxy_sni.clone();
+        let proxy_http =
+            HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
+                let origin_server = origin_server.clone();
+                let origin_done_tx = origin_done_tx.clone();
+                let observed_version = observed_version.clone();
+                let observed_sni = observed_sni.clone();
+                async move {
+                    assert_eq!(req.method(), rama_http::Method::CONNECT);
+                    *observed_version.lock() = Some(req.version());
+                    *observed_sni.lock() = req
+                        .extensions()
+                        .get_ref::<SecureTransport>()
+                        .and_then(SecureTransport::client_hello)
+                        .and_then(|hello| hello.ext_server_name().cloned());
+                    let upgrade = handle_upgrade(&req);
+                    tokio::spawn(async move {
+                        let tunnel = upgrade.await.expect("server CONNECT upgrade");
+                        // The client deliberately drops immediately after the
+                        // handshake assertions, so the TLS server may finish
+                        // with an EOF/close-notify error.
+                        let _origin_result = origin_server.serve(tunnel).await;
+                        if let Some(tx) = origin_done_tx.lock().take() {
+                            tx.send(()).expect("origin completion receiver");
+                        }
+                    });
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                }
+            }));
+        let proxy_server = TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_single_cert(ServerAuthData {
+                    cert_chain: proxy_chain,
+                    private_key: proxy_key,
+                    ocsp: None,
+                })
+                .with_alpn_http_2(),
+        )
+        .with_store_client_hello(true)
+        .into_layer(proxy_http);
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let client_io = Arc::new(parking_lot::Mutex::new(Some(client_io)));
+        let transport = service_fn(move |input: ConnectRequest| {
+            let conn = ServiceInput::new(client_io.lock().take().expect("one proxy connection"));
+            async move { Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn }) }
+        });
+
+        let proxy_config = TlsClientConfig::new()
+            .with_alpn_http_2()
+            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .try_with_server_trust_anchors([proxy_trust])
+            .expect("proxy trust");
+        let proxy_tls = TlsConnector::auto(transport).with_base_config(proxy_config);
+        let proxy_connections = HttpConnector::<_, Body>::new(proxy_tls, WeakScope::detached());
+        let proxy = HttpConnectProxyConnectorLayer::new().into_layer(proxy_connections);
+        let origin_config = TlsClientConfig::new()
+            .with_alpn(Default::default())
+            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .try_with_server_trust_anchors([origin_trust])
+            .expect("origin trust");
+        let connector = TlsConnector::auto(proxy).with_base_config(origin_config);
+
+        let input = ConnectRequest::new(HostWithPort::try_from("localhost:443").unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        input.extensions.insert(ProxyRoute::Proxy(
+            "https://localhost:8443"
+                .parse::<ProxyAddress>()
+                .unwrap()
+                .with_http_version(Version::HTTP_2),
+        ));
+        // Origin TLS inputs: they configure the origin handshake over the
+        // tunnel and must not reach the handshake with the proxy.
+        input
+            .extensions
+            .insert(TlsServerVerify(ServerVerifyMode::Disable));
+        input
+            .extensions
+            .insert(TlsServerName(crate::net::address::Host::from_static(
+                "elsewhere.example",
+            )));
+        let client = async move {
+            let established = connector.serve(input).await.expect("two TLS handshakes");
+
+            assert_eq!(
+                *connect_version.lock(),
+                Some(Version::HTTP_2),
+                "the connection to the proxy offers its own ALPN, never the origin's"
+            );
+            assert_eq!(
+                proxy_sni
+                    .lock()
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .as_deref(),
+                Some("localhost"),
+                "the connection to the proxy names the proxy, never the origin's server name"
+            );
+            let conn = established.conn.extensions();
+            assert_eq!(
+                conn.get_ref::<NegotiatedTlsParameters>()
+                    .expect("origin TLS parameters")
+                    .application_layer_protocol,
+                None,
+                "an origin without an ALPN offer negotiates none"
             );
             assert!(
-                established
-                    .conn
-                    .extensions()
-                    .get_ref::<TargetHttpVersion>()
-                    .is_none(),
+                conn.get_ref::<TargetHttpVersion>().is_none(),
                 "proxy HTTP/2 must not leak past CONNECT into a no-ALPN origin"
+            );
+            assert_tunnel_serves_the_same_proxy(
+                conn,
+                established
+                    .input
+                    .extensions
+                    .get_ref::<ProxyRoute>()
+                    .unwrap(),
             );
             drop(established);
         };
@@ -1816,16 +2835,15 @@ mod tests {
     #[cfg(feature = "boring")]
     #[test]
     fn proxy_failure_cache_keeps_tls_client_future_bounded() {
-        let client = EasyHttpWebClient::connector_builder()
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
             .with_default_transport_connector()
             .with_default_dns_connector()
-            .without_tls_proxy_support()
-            .with_proxy_support()
+            .with_proxy_support(proxies_over(TcpConnector::new()))
             .with_tls_support_using_boringssl_and_default_http_version(
-                crate::tls::client::TlsClientConfig::default_http(),
+                TlsClientConfig::default_http(),
                 Version::HTTP_11,
             )
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .without_connection_pool()
             .build_client();
         let request = Request::builder()
@@ -1844,13 +2862,12 @@ mod tests {
 
     #[tokio::test]
     async fn connection_is_in_use_until_response_body_is_consumed() {
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(dummy_server())
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
             .without_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .with_connection_pool(HttpPooledConnectorConfig {
                 max_streams_per_connection: NonZeroUsize::new(1),
                 max_connections_total: NonZeroUsize::new(4),
@@ -1890,13 +2907,12 @@ mod tests {
 
     #[tokio::test]
     async fn default_pool_multiplexes_on_h2() {
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(dummy_server())
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
             .without_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .with_default_connection_pool()
             .build_client();
 
@@ -1923,13 +2939,12 @@ mod tests {
 
     #[tokio::test]
     async fn default_pool_does_not_multiplexes_on_h1() {
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(dummy_server())
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
             .without_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .with_default_connection_pool()
             .build_client();
 
@@ -1957,13 +2972,12 @@ mod tests {
 
     #[tokio::test]
     async fn multiplex_on_h2_respects_limits() {
-        let client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(dummy_server())
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
             .without_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .with_connection_pool(HttpPooledConnectorConfig {
                 max_streams_per_connection: NonZeroUsize::new(2),
                 ..Default::default()

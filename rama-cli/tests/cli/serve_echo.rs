@@ -301,17 +301,16 @@ async fn test_https_echo() {
 
     // test default WS protocol
 
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(
             TlsClientConfig::new()
                 .with_alpn_http_1()
                 .with_server_verify(ServerVerifyMode::Disable),
         )
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
 
@@ -358,11 +357,7 @@ async fn test_https_echo() {
 #[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_http3_echo() {
-    use rama::{
-        futures::StreamExt as _,
-        graceful::WeakScope,
-        http::{client::Http3Connector, ws::Message},
-    };
+    use rama::{futures::StreamExt as _, graceful::WeakScope, http::ws::Message};
 
     utils::init_tracing();
 
@@ -396,19 +391,12 @@ async fn test_http3_echo() {
 
     // WebSockets over HTTP/3 (RFC 9220)
     let tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let connector = Http3Connector::builder(WeakScope::detached())
-        .with_tls_config(tls.clone())
-        .build()
-        .await
-        .unwrap();
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(WeakScope::detached())
-        .with_http3_support(connector)
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     let mut ws = client

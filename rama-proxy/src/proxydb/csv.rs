@@ -28,6 +28,7 @@ use tokio::{
 /// A `,` separates columns and a `;` protocols, so neither can appear in a template here.
 pub struct ProxyCsvRowReader {
     data: ProxyCsvRowReaderData,
+    line: usize,
 }
 
 impl ProxyCsvRowReader {
@@ -38,6 +39,7 @@ impl ProxyCsvRowReader {
         let lines = reader.lines();
         Ok(Self {
             data: ProxyCsvRowReaderData::File(lines),
+            line: 0,
         })
     }
 
@@ -46,37 +48,25 @@ impl ProxyCsvRowReader {
         let lines: Vec<_> = data.as_ref().lines().rev().map(str::to_owned).collect();
         Self {
             data: ProxyCsvRowReaderData::Raw(lines),
+            line: 0,
         }
     }
 
     /// Read the next row from the CSV file.
     pub async fn next(&mut self) -> Result<Option<Proxy>, ProxyCsvRowReaderError> {
-        match &mut self.data {
-            ProxyCsvRowReaderData::File(lines) => {
-                let line = lines.next_line().await?;
-                match line {
-                    Some(line) => Ok(Some(match parse_csv_row(&line) {
-                        Some(proxy) => proxy,
-                        None => {
-                            return Err(ProxyCsvRowReaderError {
-                                kind: ProxyCsvRowReaderErrorKind::InvalidRow(line),
-                            });
-                        }
-                    })),
-                    None => Ok(None),
-                }
-            }
-            ProxyCsvRowReaderData::Raw(lines) => match lines.pop() {
-                Some(line) => Ok(Some(match parse_csv_row(&line) {
-                    Some(proxy) => proxy,
-                    None => {
-                        return Err(ProxyCsvRowReaderError {
-                            kind: ProxyCsvRowReaderErrorKind::InvalidRow(line),
-                        });
-                    }
-                })),
-                None => Ok(None),
-            },
+        let line = match &mut self.data {
+            ProxyCsvRowReaderData::File(lines) => lines.next_line().await?,
+            ProxyCsvRowReaderData::Raw(lines) => lines.pop(),
+        };
+        let Some(line) = line else {
+            return Ok(None);
+        };
+        self.line += 1;
+        match parse_csv_row(&line) {
+            Some(proxy) => Ok(Some(proxy)),
+            None => Err(ProxyCsvRowReaderError {
+                kind: ProxyCsvRowReaderErrorKind::InvalidRow { line: self.line },
+            }),
         }
     }
 }
@@ -174,14 +164,21 @@ pub enum ProxyCsvRowReaderErrorKind {
     /// An I/O error occurred while reading the CSV row.
     IoError(std::io::Error),
     /// The CSV row is invalid, and could not be parsed.
-    InvalidRow(String),
+    ///
+    /// A row holds credentials, so it is named by its 1-based line number only.
+    InvalidRow {
+        /// The 1-based line number of the row.
+        line: usize,
+    },
 }
 
 impl std::fmt::Display for ProxyCsvRowReaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.kind {
             ProxyCsvRowReaderErrorKind::IoError(err) => write!(f, "I/O error: {err}"),
-            ProxyCsvRowReaderErrorKind::InvalidRow(row) => write!(f, "Invalid row: {row}"),
+            ProxyCsvRowReaderErrorKind::InvalidRow { line } => {
+                write!(f, "Invalid row at line {line}")
+            }
         }
     }
 }
@@ -190,7 +187,7 @@ impl std::error::Error for ProxyCsvRowReaderError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.kind {
             ProxyCsvRowReaderErrorKind::IoError(err) => Some(err),
-            ProxyCsvRowReaderErrorKind::InvalidRow(_) => None,
+            ProxyCsvRowReaderErrorKind::InvalidRow { .. } => None,
         }
     }
 }
@@ -281,7 +278,6 @@ mod tests {
                     protocols: ProxyProtocols::from([ProxyProtocol::Socks5 {
                         remote_dns: false,
                         transport: Some(TransportProtocol::Tcp),
-                        secure: false,
                     }]),
                     continent: Some("americas".into()),
                     country: Some("*".into()),
@@ -301,7 +297,6 @@ mod tests {
                         ProxyProtocol::Socks5 {
                             remote_dns: true,
                             transport: Some(TransportProtocol::Udp),
-                            secure: false,
                         },
                     ]),
                     continent: Some("europe".into()),
@@ -395,6 +390,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_proxy_csv_row_reader_happy_one_row() {
+        let mut reader = ProxyCsvRowReader::raw(
+            "id,datacenter,authority:80,pool_id,continent,country,state,city,carrier,13335,Basic dXNlcm5hbWU6cGFzc3dvcmQ=,http",
+        );
+        let proxy = reader.next().await.unwrap().unwrap();
+
+        assert_eq!(proxy.id, "id");
+        assert_eq!(proxy.address, "authority:80".parse().unwrap());
+        assert_eq!(
+            proxy.credential,
+            Some(basic!("username", "password").into())
+        );
+        assert_eq!(proxy.protocols, ProxyProtocols::from([ProxyProtocol::HTTP]));
+        assert_eq!(proxy.kind, ProxyType::Datacenter);
+        assert_eq!(proxy.pool_id, Some("pool_id".into()));
+        assert_eq!(proxy.continent, Some("continent".into()));
+        assert_eq!(proxy.country, Some("country".into()));
+        assert_eq!(proxy.state, Some("state".into()));
+        assert_eq!(proxy.city, Some("city".into()));
+        assert_eq!(proxy.carrier, Some("carrier".into()));
+        assert_eq!(proxy.asn, Some(Asn::from_static(13335)));
+
+        // no more rows to read
+        assert!(reader.next().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn test_proxy_csv_row_reader_happy_multi_row() {
         let mut reader = ProxyCsvRowReader::raw(
             "id,datacenter,authority:80,pool_id,continent,country,state,city,carrier,42,Basic dXNlcm5hbWU6cGFzc3dvcmQ=,https;socks5+tcp\nid2,residential,authority2:80,pool_id2,continent2,country2,state2,city2,carrier2,1,,http",
@@ -414,7 +436,6 @@ mod tests {
                 ProxyProtocol::Socks5 {
                     remote_dns: false,
                     transport: Some(TransportProtocol::Tcp),
-                    secure: false
                 }
             ]),
         );
@@ -433,6 +454,12 @@ mod tests {
         assert_eq!(proxy.credential, None);
         assert_eq!(proxy.protocols, ProxyProtocols::from([ProxyProtocol::HTTP]));
         assert_eq!(proxy.kind, ProxyType::Residential);
+        assert_eq!(proxy.pool_id, Some("pool_id2".into()));
+        assert_eq!(proxy.continent, Some("continent2".into()));
+        assert_eq!(proxy.country, Some("country2".into()));
+        assert_eq!(proxy.state, Some("state2".into()));
+        assert_eq!(proxy.city, Some("city2".into()));
+        assert_eq!(proxy.carrier, Some("carrier2".into()));
         assert_eq!(proxy.asn, Some(Asn::from_static(1)));
 
         assert!(reader.next().await.unwrap().is_none());
@@ -448,6 +475,17 @@ mod tests {
     async fn test_proxy_csv_row_reader_failure_invalid_row() {
         let mut reader = ProxyCsvRowReader::raw(",,,,,,,,,,,");
         reader.next().await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn an_invalid_row_error_names_the_line_and_not_the_row() {
+        let mut reader = ProxyCsvRowReader::raw(
+            "id,true,false,true,,false,,true,false,true,authority:80,pool_id,continent,country,state,city,carrier,13335,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+        );
+        let error = reader.next().await.unwrap_err().to_string();
+        assert!(!error.contains("dXNlcm5hbWU6cGFzc3dvcmQ="), "{error}");
+        assert!(!error.contains("password"), "{error}");
+        assert!(error.contains("line 1"), "{error}");
     }
 
     #[test]

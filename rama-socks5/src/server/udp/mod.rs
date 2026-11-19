@@ -4,7 +4,7 @@ use rama_core::{
     Service,
     combinators::Either,
     error::BoxError,
-    extensions::{ExtensionsRef, NestedConnectionTransfer, SharedNestedConnectionTransfer},
+    extensions::{ExtensionsRef, ExtensionsTransfer, SharedExtensionsTransfer},
     io::Io,
     layer::timeout::DefaultTimeout,
     telemetry::tracing,
@@ -12,7 +12,7 @@ use rama_core::{
 use rama_net::{
     address::{HostWithPort, SocketAddress},
     socket::SocketService,
-    stream::{DefaultConnectionTransfer, SocketInfo},
+    stream::{DefaultExtensionsTransfer, SocketInfo},
 };
 use rama_udp::{UdpSocket, bind_udp_with_address};
 use rama_utils::macros::generate_set_and_with;
@@ -134,7 +134,7 @@ pub struct UdpRelay<B, I> {
     unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
     declared_client_udp_address_policy: DeclaredClientUdpAddressPolicy,
 
-    nested_connection_transfer: SharedNestedConnectionTransfer,
+    extensions_transfer: SharedExtensionsTransfer,
 }
 
 impl<B> UdpRelay<B, DirectUdpRelay> {
@@ -152,7 +152,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             relay_timeout: None,
             unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy::default(),
             declared_client_udp_address_policy: DeclaredClientUdpAddressPolicy::default(),
-            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
         }
     }
 
@@ -171,7 +171,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             relay_timeout: self.relay_timeout,
             unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
             declared_client_udp_address_policy: self.declared_client_udp_address_policy,
-            nested_connection_transfer: self.nested_connection_transfer,
+            extensions_transfer: self.extensions_transfer,
         }
     }
 
@@ -190,7 +190,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             relay_timeout: self.relay_timeout,
             unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
             declared_client_udp_address_policy: self.declared_client_udp_address_policy,
-            nested_connection_transfer: self.nested_connection_transfer,
+            extensions_transfer: self.extensions_transfer,
         }
     }
 }
@@ -212,7 +212,7 @@ impl<B, I> UdpRelay<B, I> {
             relay_timeout: self.relay_timeout,
             unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
             declared_client_udp_address_policy: self.declared_client_udp_address_policy,
-            nested_connection_transfer: self.nested_connection_transfer,
+            extensions_transfer: self.extensions_transfer,
         }
     }
 
@@ -317,11 +317,11 @@ impl<B, I> UdpRelay<B, I> {
         /// Set what the relayed datagrams keep from the SOCKS5 connection that
         /// asked for the association.
         ///
-        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
-        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// Defaults to [`DefaultExtensionsTransfer`]. Chain transfers with
+        /// [`ExtensionsTransfer::and`] to also carry your own connection-scoped
         /// extension types to the inspector.
-        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
-            self.nested_connection_transfer = transfer.into_shared();
+        pub fn extensions_transfer(mut self, transfer: impl ExtensionsTransfer) -> Self {
+            self.extensions_transfer = transfer.into_shared();
             self
         }
     }
@@ -402,7 +402,7 @@ where
         // Datagrams travel beside the SOCKS5 connection, not inside it.
         let extensions = stream
             .extensions()
-            .fork_nested_connection(&self.nested_connection_transfer);
+            .fork_connection(&self.extensions_transfer);
 
         let HostWithPort {
             host: dest_host,

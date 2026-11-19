@@ -150,13 +150,13 @@ Custom connectors use these contracts:
 | --- | --- |
 | `HttpServiceSelection` | Request-local advertisement snapshot, index and lookup route plan; never store it on a pooled connection. |
 | `EstablishedHttpService` | Verified connection endpoint and logical origin; selection alone proves neither. |
-| `TlsTunnel::from_extensions` | Resolve routing-supplied tunnel settings before caller settings; preserve their distinct reuse scopes. |
+| `proxy_request` | Build the input that dials a proxy; its TLS follows the route, never the origin's TLS inputs. |
 | `TargetHttpVersion` | Honor the requested version; report the established version. |
 | `ConnectorTarget` / `ConnectorTargetStream` | Dial the selected endpoint using matching DNS results, preserving the origin. |
 | `TlsServerAuthentication` / `NegotiatedTlsParameters` | Report verified origin identity and actual ALPN; missing proof prevents alternative use. |
 | `ConnectionReuse` | Publish endpoint reuse rules after connecting; pools check them against each request. |
 | `AltSvcObserverExtension` | Install before H2 handshake; authorize origins and process frames promptly. |
-| `ConnectionAttempt` / `ConnectionPolicyScope` | Check peer requirements and restrict request-specific DNS/TLS policy; preserve failure scope across timeouts and pool hits. |
+| `ConnectionAttempt` / `ConnectionPolicyScope` | Check peer requirements and restrict request-specific DNS/TLS policy; preserve failure scope across timeouts and pool hits. Both belong to one connection: a connection to a proxy neither answers them nor records into them. |
 
 TLS configuration stays in its connector. Built-in connectors publish reuse rules
 automatically. Custom components publish owned `TlsPoolComponent::Identity`
@@ -172,6 +172,66 @@ The CLI enables command-local discovery by default; `--http3` requires H3
 directly. `--no-alt-svc` disables advertisement learning and use, independently
 of HTTPS DNS discovery.
 Disk persistence is not implemented.
+
+## Proxies
+
+A client reaches proxies over connections of its own: a [`ProxyConnector`] with its own
+transport, DNS, TLS and connection pool, which share nothing with the connections to
+origins. Pass one to `with_proxy_support(proxies)`, or take rama's defaults with
+`with_default_proxy_support()`. A client built with `without_proxy_support()`
+refuses a proxied route instead of connecting around it.
+
+Which proxy a request takes is its own `ProxyRoute`, or an ordered `ProxyRoutes` plan that
+is tried in order and may end in `ProxyRoute::Direct`. A proxy address names the protocol
+it speaks:
+
+- `http://` and `https://` for an HTTP proxy, which tunnels with CONNECT and forwards
+  plaintext HTTP requests. Add `+h1`, `+h2` or `+h2c` to pin the version spoken to the
+  proxy itself, `h3://` for an HTTP/3 proxy over QUIC.
+- `+udp` (such as `https+udp://`) for a proxy which also opens datagram tunnels with
+  CONNECT-UDP, as HTTP/3 through a proxy needs. A plain HTTP proxy carries no UDP.
+- `socks5://` and `socks5h://`, the latter leaving the target's name to the proxy;
+  `+tcp` and `+udp` pin which flows the proxy serves.
+
+Credentials in the address, such as `http://user:secret@proxy.example:8080`, are sent to
+that proxy only: the route of a request is matched against the proxy its connection
+actually reaches, and a connection to the origin never carries a `Proxy-Authorization`.
+
+A proxy which answers `407` to a forwarded request answers the client with it. An
+intermediary should not hand its upstream's challenge to its own clients, so it isolates
+that answer into an error with
+`ProxyConnector::with_isolate_forward_proxy_auth_error(true)`, or takes the default client
+of a proxy with `EasyHttpWebClient::default_for_proxy()`.
+
+### TLS to a proxy
+
+The scheme decides by default: `https://` and `h3://` reach the proxy over TLS, `http://`
+and `socks5://` in plaintext. For an HTTP proxy, name it with `https://` or `h3://`; that is
+the normal way and needs nothing else.
+
+To force TLS to every proxy of a connector, whatever its scheme, call `require_tls()` after
+its TLS stage. A proxy that already speaks TLS is unaffected, a plaintext one is reached
+over TLS anyway. It is meant for proxies whose scheme has no TLS form, such as a SOCKS5
+proxy or a custom protocol served behind TLS, not as a replacement for `https://`:
+
+```rust,ignore
+let proxies = ProxyConnector::builder(scope)
+    .with_default_transport_connector()
+    .with_default_dns_connector()
+    .with_default_tls_support(tls_config)
+    .require_tls()
+    .with_default_http_connector::<Body>()
+    .with_default_connection_pool()
+    .with_every_method()
+    .build();
+```
+
+For one route only, put `TlsRequired` in that route's `ProxyConnectionExtensions` bag: the
+bag configures the connection to the proxy, not the one to the origin. A connection to a
+proxy over TLS is never shared with a plaintext one to the same address, and a client built
+without TLS support refuses such a route instead of dialing it in plaintext.
+
+[`ProxyConnector`]: https://ramaproxy.org/docs/rama/http/client/struct.ProxyConnector.html
 
 ## Server certificate pinning
 

@@ -119,13 +119,12 @@ async fn main() {
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
 
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(scope.clone_weak())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(scope.clone_weak())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client()
         .boxed();

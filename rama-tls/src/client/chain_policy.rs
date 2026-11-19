@@ -126,7 +126,7 @@ impl<'a> ServerChainCertificate<'a> {
 /// A shared, type-erased [`TlsServerCertChainPolicy`], as enforced by a TLS
 /// client. Every policy converts into one.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct DynTlsServerCertChainPolicy(Arc<dyn TlsServerCertChainPolicy>);
 
 impl DynTlsServerCertChainPolicy {

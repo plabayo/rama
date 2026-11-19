@@ -301,16 +301,16 @@ pub enum ClientVerifyMode {
 
 /// Server auth (cert chain + key) to use, as configured on [`TlsServerConfig`].
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsServerAuth(pub ServerAuthData);
 
 /// How the client is verified (mTLS).
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsClientVerify(pub ClientVerifyMode);
 
 /// Whether to capture the client certificate chain into
 /// `NegotiatedTlsParameters`.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsStoreClientCertChain(pub bool);

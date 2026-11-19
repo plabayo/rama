@@ -92,7 +92,7 @@ use rama::{
     graceful::{Scope, WeakScope},
     http::{
         HeaderValue, Request, Response,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, ProxyConnector},
         layer::{
             map_response_body::MapResponseBodyLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -164,11 +164,15 @@ async fn main() -> Result<(), BoxError> {
         .context("bind tcp proxy")
         .context_field("interface", INTERFACE)?;
 
-    let https_client = EasyHttpWebClient::connector_builder()
+    let https_client = EasyHttpWebClient::connector_builder(weak_scope.clone())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
+        .with_proxy_support(
+            // This client relays requests for another peer. Keep any upstream
+            // forward-proxy challenge private to that hop.
+            ProxyConnector::default_with_scope(weak_scope.clone())
+                .with_isolate_forward_proxy_auth_error(true),
+        )
         // NOTE: in a production svc you would probably want a dynamic proxy config,
         // based on a combination of static knowledge and dynamic input. You most likely
         // also wouldn't want to disable server verification... This is however a good
@@ -176,13 +180,10 @@ async fn main() -> Result<(), BoxError> {
         .with_tls_support_using_boringssl(
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
-        .with_default_http_connector(weak_scope)
+        .with_default_http_connector()
         // NOTE: up to you define if a pool is acceptable, and especially a global one...
         .with_default_connection_pool()
-        .build_client()
-        // This client relays requests for another peer. Keep any upstream
-        // forward-proxy challenge private to that hop.
-        .with_isolate_forward_proxy_auth_error(true);
+        .build_client();
 
     let optional_dns_overwrite_layer_used_for_e2e_only =
         std::env::var("EXAMPLE_EGRESS_SERVER_ADDR")

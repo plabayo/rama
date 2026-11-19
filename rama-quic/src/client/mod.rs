@@ -191,6 +191,10 @@ impl<E> QuicConnector<E> {
 
     /// The TLS configuration a connection for `input` is established with: the defaults with
     /// the request's overrides, its ALPN offer kept within what the connections serve.
+    ///
+    /// A TLS input belongs to the connection it configures, so the request's chain answers
+    /// none of them past a connection boundary, such as the request that dials a
+    /// proxy. This connector's own configuration still answers for that connection.
     #[must_use]
     pub fn tls_config_for(&self, input: &ConnectRequest) -> TlsClientConfig {
         let mut tls = self.tls.clone().with_overrides(input.extensions());

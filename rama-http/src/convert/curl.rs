@@ -19,12 +19,12 @@ use crate::{HeaderName, Method, Version};
 
 use rama_core::bytes::Bytes;
 use rama_http_types::HttpRequestParts;
-use rama_net::address::ProxyAddress;
+use rama_net::address::{ProxyAddress, ProxyProtocol};
 use rama_net::client::ProxyRoute;
 use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 use rama_net::uri::Uri;
 use rama_net::user::ProxyCredential;
-use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
+use rama_net::{AuthorityInputExt, ProtocolInputExt};
 
 /// Policies used while converting an HTTP request into curl arguments.
 ///
@@ -676,31 +676,41 @@ fn write_curl_command_for_request_parts(
     if let Some(route) = parts.extensions().get_ref::<ProxyRoute>()
         && let Some(proxy_addr) = route.proxy_address()
     {
-        // curl reaches a MASQUE proxy as an HTTPS proxy: CONNECT for TCP and, with
-        // `--proxy-http3`, CONNECT-UDP for HTTP/3 on the RFC 9298 default template only.
-        let is_masque = proxy_addr
-            .protocol
-            .as_ref()
-            .is_some_and(Protocol::is_masque);
-        if is_masque {
-            let https = ProxyAddress {
-                protocol: Some(Protocol::HTTPS),
-                template: None,
-                ..proxy_addr.clone()
-            };
-            writer.write_tuple("-x", &https, true);
-            if parts.version() == Version::HTTP_3 {
+        // curl names a proxy by `http`, `https`, `socks5` or `socks5h` alone.
+        let protocol = match &proxy_addr.protocol {
+            ProxyProtocol::Http { secure: true, .. } => ProxyProtocol::HTTPS,
+            ProxyProtocol::Http { secure: false, .. } => ProxyProtocol::HTTP,
+            ProxyProtocol::Socks5 {
+                remote_dns: true, ..
+            } => ProxyProtocol::SOCKS5H,
+            ProxyProtocol::Socks5 { .. } => ProxyProtocol::SOCKS5,
+            custom @ ProxyProtocol::Custom(_) => custom.clone(),
+        };
+        let curl_proxy = ProxyAddress {
+            protocol,
+            ..proxy_addr.clone()
+        };
+        writer.write_tuple("-x", &curl_proxy, true);
+        // Both flags negotiate the connection to an HTTPS proxy, and curl offers neither
+        // for a plaintext one.
+        match &proxy_addr.protocol {
+            ProxyProtocol::Http {
+                secure: true,
+                version: Some(Version::HTTP_3),
+                ..
+            } => {
                 writer.write_single("--proxy-http3");
             }
-        } else {
-            writer.write_tuple("-x", proxy_addr, true);
+            ProxyProtocol::Http {
+                secure: true,
+                version: Some(Version::HTTP_2),
+                ..
+            } => {
+                writer.write_single("--proxy-http2");
+            }
+            _ => (),
         }
-        if options.proxy_tunnel
-            && proxy_addr
-                .protocol
-                .as_ref()
-                .is_none_or(|protocol| protocol.is_http() || protocol.is_masque())
-        {
+        if options.proxy_tunnel && proxy_addr.protocol.is_http() {
             writer.write_single("--proxytunnel");
         }
         if let Some(ProxyCredential::Bearer(bearer)) = &proxy_addr.credential
@@ -780,8 +790,7 @@ fn write_curl_command_for_request_parts(
 
 #[cfg(test)]
 mod tests {
-    use rama_net::Protocol;
-    use rama_net::address::{HostWithPort, ProxyAddress};
+    use rama_net::address::{HostWithPort, ProxyAddress, ProxyProtocol};
     use rama_net::client::ProxyRoute;
     use rama_net::user::credentials::{basic, bearer};
 
@@ -1040,17 +1049,16 @@ mod tests {
             .into_parts();
 
         parts.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
-            protocol: None,
+            protocol: ProxyProtocol::HTTP,
             address: HostWithPort::local_ipv4(8080),
             credential: None,
-            template: None,
         }));
 
         let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
             s,
             format!(
-                r##"curl 'example.com' \{NL}  -X GET \{NL}  --http1.1 \{NL}  -x '127.0.0.1:8080'"##,
+                r##"curl 'example.com' \{NL}  -X GET \{NL}  --http1.1 \{NL}  -x 'http://127.0.0.1:8080'"##,
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );
@@ -1062,7 +1070,7 @@ mod tests {
             ("http://proxy.example:8080", true),
             ("https://proxy.example:8443", true),
             ("socks5://proxy.example:1080", false),
-            ("masque://proxy.example:443", true),
+            ("h3://proxy.example:443", true),
         ] {
             let (parts, _) = crate::Request::builder()
                 .uri("http://origin.example/path")
@@ -1130,17 +1138,16 @@ mod tests {
             .into_parts();
 
         parts.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
-            protocol: None,
+            protocol: ProxyProtocol::HTTP,
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(basic!("john"))),
-            template: None,
         }));
 
         let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
             s,
             format!(
-                r##"curl 'example.com' \{NL}  -X GET \{NL}  --http1.1 \{NL}  -x 'john@127.0.0.1:8080'"##,
+                r##"curl 'example.com' \{NL}  -X GET \{NL}  --http1.1 \{NL}  -x 'http://john@127.0.0.1:8080'"##,
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );
@@ -1155,17 +1162,16 @@ mod tests {
             .into_parts();
 
         parts.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
-            protocol: None,
+            protocol: ProxyProtocol::HTTP,
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
-            template: None,
         }));
 
         let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
             s,
             format!(
-                r##"curl 'example.com' \{NL}  -X GET \{NL}  --http1.1 \{NL}  -x 'john:secret@127.0.0.1:8080'"##,
+                r##"curl 'example.com' \{NL}  -X GET \{NL}  --http1.1 \{NL}  -x 'http://john:secret@127.0.0.1:8080'"##,
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         )
@@ -1180,32 +1186,58 @@ mod tests {
             .into_parts();
 
         parts.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
-            protocol: None,
+            protocol: ProxyProtocol::HTTP,
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Bearer(bearer!("abc123"))),
-            template: None,
         }));
 
         let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
             s,
             format!(
-                r##"curl 'example.com' \{NL}  -X GET \{NL}  --http1.1 \{NL}  -x '127.0.0.1:8080' \{NL}  --proxy-header 'proxy-authorization: Bearer abc123'"##,
+                r##"curl 'example.com' \{NL}  -X GET \{NL}  --http1.1 \{NL}  -x 'http://127.0.0.1:8080' \{NL}  --proxy-header 'proxy-authorization: Bearer abc123'"##,
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );
     }
 
     #[test]
-    fn masque_proxies_become_https_proxies_with_proxy_http3_for_h3() {
-        for (version, flags) in [
+    fn proxy_version_flags_follow_the_proxy() {
+        for (proxy, version, flags) in [
             (
+                "h3://user:pass@proxy.example/masque?h={target_host}&p={target_port}",
                 Version::HTTP_3,
                 "--http3-only \\{NL}  -x 'https://user:pass@proxy.example:443' \\{NL}  --proxy-http3",
             ),
             (
+                "h3://user:pass@proxy.example/masque?h={target_host}&p={target_port}",
                 Version::HTTP_2,
-                "--http2-prior-knowledge \\{NL}  -x 'https://user:pass@proxy.example:443'",
+                "--http2-prior-knowledge \\{NL}  -x 'https://user:pass@proxy.example:443' \\{NL}  --proxy-http3",
+            ),
+            (
+                "h2://user:pass@proxy.example",
+                Version::HTTP_3,
+                "--http3-only \\{NL}  -x 'https://user:pass@proxy.example:443' \\{NL}  --proxy-http2",
+            ),
+            (
+                "h2://user:pass@proxy.example",
+                Version::HTTP_11,
+                "--http1.1 \\{NL}  -x 'https://user:pass@proxy.example:443' \\{NL}  --proxy-http2",
+            ),
+            (
+                "h2c://user:pass@proxy.example",
+                Version::HTTP_2,
+                "--http2-prior-knowledge \\{NL}  -x 'http://user:pass@proxy.example:1080'",
+            ),
+            (
+                "h3://user:pass@proxy.example",
+                Version::HTTP_3,
+                "--http3-only \\{NL}  -x 'https://user:pass@proxy.example:443' \\{NL}  --proxy-http3",
+            ),
+            (
+                "h3+udp://user:pass@proxy.example",
+                Version::HTTP_3,
+                "--http3-only \\{NL}  -x 'https://user:pass@proxy.example:443' \\{NL}  --proxy-http3",
             ),
         ] {
             let (parts, _) = crate::Request::builder()
@@ -1214,12 +1246,9 @@ mod tests {
                 .body(())
                 .unwrap()
                 .into_parts();
-            // curl has no template option: it always uses the RFC 9298 default.
-            parts.extensions.insert(ProxyRoute::Proxy(
-                "masque://user:pass@proxy.example/masque?h={target_host}&p={target_port}"
-                    .parse::<ProxyAddress>()
-                    .unwrap(),
-            ));
+            parts
+                .extensions
+                .insert(ProxyRoute::Proxy(proxy.parse::<ProxyAddress>().unwrap()));
             let s = cmd_string_for_request_parts(&&parts);
             assert_eq!(
                 s,
@@ -1228,7 +1257,7 @@ mod tests {
                     NL = rama_utils::str::NATIVE_NEWLINE,
                     flags = flags.replace("{NL}", rama_utils::str::NATIVE_NEWLINE),
                 ),
-                "{version:?}"
+                "{proxy} {version:?}"
             );
         }
     }
@@ -1243,10 +1272,9 @@ mod tests {
             .into_parts();
 
         parts.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
-            protocol: Some(Protocol::SOCKS5),
+            protocol: ProxyProtocol::SOCKS5,
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(basic!("user", "pass"))),
-            template: None,
         }));
 
         let s = cmd_string_for_request_parts(&&parts);

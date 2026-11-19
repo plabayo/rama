@@ -471,7 +471,8 @@ async fn forward_client_applies_icap_reqmod_and_respmod() {
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap,
-    });
+    })
+    .unwrap();
     let request = Request::builder()
         .method("POST")
         .uri(format!("http://{origin_address}/adapt"))
@@ -541,7 +542,8 @@ async fn forward_client_consumes_proxy_auth_without_icap() {
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap: None,
-    });
+    })
+    .unwrap();
     let response = client
         .serve(
             Request::builder()
@@ -605,7 +607,8 @@ async fn default_icap_directions_follow_single_method_capabilities() {
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap,
-    });
+    })
+    .unwrap();
 
     let response = timeout(
         Duration::from_secs(5),
@@ -664,7 +667,8 @@ async fn stalled_icap_options_is_bounded_for_all_waiters() {
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap,
-    });
+    })
+    .unwrap();
     let request = || {
         Request::builder()
             .uri("http://origin.test/bounded-options")

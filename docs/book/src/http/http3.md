@@ -39,9 +39,11 @@ With a QUIC TLS backend enabled, `DefaultHttpWebClient` supports HTTP/3 in two w
 - otherwise the client learns `Alt-Svc` advertisements and uses HTTP/3 for later requests
   to the same origin, falling back to the origin connection when that fails.
 
-For your own stack, build an `Http3Connector` and add it with
-`EasyHttpConnectorBuilder::with_http3_support`. HTTP/3 connections share the multiplexed
-connection pool with HTTP/2. See
+For your own stack, `EasyHttpConnectorBuilder::with_default_transport_connector` dials over
+both TCP and QUIC, and `with_default_http_connector` adds HTTP/3 on the QUIC leg once TLS is
+configured. `with_custom_quic_connector` swaps in your own QUIC endpoints, and a custom HTTP
+connector can add any `Http3Connector` with `HttpConnector::with_http3_connector`. HTTP/3
+connections share the multiplexed connection pool with HTTP/2. See
 [Alternative services and custom connectors](./http_clients.md#alternative-services-and-custom-connectors)
 for discovery, caching and the contracts for custom connectors.
 

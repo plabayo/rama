@@ -1,22 +1,26 @@
 //! A layer derives TLS settings after a pool miss; the native connector must
 //! retain caller compatibility without weakening producer or proxy restrictions.
 
-use rama_core::extensions::{Extension, Extensions};
+use rama_core::{
+    ServiceInput,
+    extensions::{Extension, Extensions, ExtensionsRef},
+    service::service_fn,
+};
 use rama_net::{
-    address::Host,
+    address::{Host, ProxyAddress},
     client::{
-        ConnectionPolicyScope,
+        ConnectRequest, ConnectionPolicyScope, ConnectorService as _, EstablishedClientConnection,
+        ProxyDialRequest, ProxyDialer, ProxyRoute,
         pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
     },
+    stream::DefaultExtensionsTransfer,
     tls::TlsAlpn,
 };
-use rama_tls::{
-    TlsTunnel,
-    client::{
-        ServerVerifyMode, TlsClientConfigProvider, TlsConnectionReuse, TlsPoolId, TlsServerName,
-        TlsServerVerify,
-    },
+use rama_tls::client::{
+    ServerVerifyMode, TlsClientConfigProvider, TlsConnectionReuse, TlsPoolId, TlsServerName,
+    TlsServerVerify,
 };
+use std::convert::Infallible;
 
 #[derive(Debug)]
 struct Provider<const ID: u8>;
@@ -126,7 +130,7 @@ fn nested_derivations_keep_the_original_caller_identity() {
 }
 
 #[test]
-fn opaque_policies_and_tunnels_cannot_gain_reuse_from_derivation() {
+fn opaque_policies_cannot_gain_reuse_from_derivation() {
     let input = caller();
     input.insert(Opaque);
     let original = TlsConnectionReuse::new(Provider::<1>, &input);
@@ -143,11 +147,6 @@ fn opaque_policies_and_tunnels_cannot_gain_reuse_from_derivation() {
     input.insert(Opaque);
     assert!(original.for_derived_settings(&input).is_none());
     assert!(!policy(&input).is_reusable());
-    assert!(
-        TlsConnectionReuse::tunnel(Provider::<1>, &caller())
-            .for_derived_settings(&caller())
-            .is_none()
-    );
 }
 
 #[derive(Clone, Debug, Extension)]
@@ -167,30 +166,46 @@ impl ConnectionReusePolicy for Producer {
     }
 }
 
-#[test]
-fn derived_origin_policy_retains_producer_and_proxy_restrictions() {
-    let input = caller();
+#[tokio::test]
+async fn derived_origin_policy_retains_producer_and_proxy_restrictions() {
+    let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+    let routed = || {
+        let input = caller();
+        input.insert(ProxyRoute::Proxy(proxy.clone()));
+        input
+    };
+    let input = routed();
     input.insert(Producer(3));
     derive(&input, TlsAlpn::http_2()).unwrap();
-    let connection = Extensions::new();
-    connection.insert(ConnectionReuse::restriction(Producer(3)));
-    TlsConnectionReuse::tunnel(Provider::<1>, &input).publish(&connection, None);
+    // The proxy half is published by the connector towards proxies, for the input
+    // that dials the proxy.
+    let legs = service_fn(|leg: ConnectRequest| async move {
+        let conn = ServiceInput::new(());
+        conn.extensions()
+            .insert(ConnectionReuse::restriction(Producer(3)));
+        TlsConnectionReuse::new(Provider::<1>, &leg.extensions).publish(conn.extensions(), None);
+        Ok::<_, Infallible>(EstablishedClientConnection { input: leg, conn })
+    });
+    let leg = ProxyDialer::new(legs.clone())
+        .connect(ProxyDialRequest {
+            proxy: proxy.clone(),
+            origin: input.clone(),
+        })
+        .await
+        .unwrap()
+        .conn;
+    let connection = leg.extensions().fork_connection(&DefaultExtensionsTransfer);
     TlsConnectionReuse::new(Provider::<1>, &input).publish(&connection, None);
     let policy = connection.get_ref::<ConnectionReuse>().unwrap();
     assert!(policy.matches(&input));
 
-    let next = caller();
+    let next = routed();
     next.insert(Producer(3));
     assert!(policy.matches(&next));
     next.insert(Producer(4));
     assert!(!policy.matches(&next));
     next.insert(Producer(3));
-    next.insert(TlsTunnel {
-        server_identity: Some(Host::from_static("other.proxy")),
-        application_protocol: None,
-        alpn: None,
-    });
-    assert!(!policy.matches(&next));
+    assert!(policy.matches(&next));
 }
 
 #[test]
@@ -209,10 +224,6 @@ fn policy_scope_follows_the_original_caller_and_rejects_stale_derivation() {
     assert_eq!(
         TlsConnectionReuse::new(Provider::<1>, &input).policy_scope(),
         ConnectionPolicyScope::Request
-    );
-    assert_eq!(
-        TlsConnectionReuse::tunnel(Provider::<1>, &input).policy_scope(),
-        ConnectionPolicyScope::Unknown
     );
     let input = caller();
     derive(&input, TlsAlpn::http_2()).unwrap();

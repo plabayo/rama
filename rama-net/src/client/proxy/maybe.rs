@@ -24,10 +24,6 @@ use crate::{
 };
 
 /// Decides which side of a [`MaybeProxiedConnector`] serves an input.
-///
-/// A proxy route says which proxy to use, not what is done with it: the same route is a
-/// tunnel for one connector and a forwarded request for another. Every router therefore
-/// names the selector it routes by.
 pub trait ProxySelector<Input> {
     /// Whether the proxy connector serves `input`, rather than the direct one.
     fn is_proxied(&self, input: &Input) -> bool;
@@ -49,8 +45,6 @@ impl<Input: ExtensionsRef> ProxySelector<Input> for ProxiedRoute {
 /// Route a client connection directly or through a proxy, making a proxy optional.
 ///
 /// The inputs `selector` picks are served by `proxy`, every other one by `direct`.
-/// Use the proxy connector on its own to require a proxy instead. Proxy connectors
-/// therefore carry no direct path of their own.
 ///
 /// `direct` reaches the peer of an input itself, without a proxy protocol: for a request
 /// its HTTP proxy forwards, that peer is the proxy. A requested [`ProxyRoute::Direct`]
@@ -96,11 +90,14 @@ where
         }
 
         tracing::trace!("maybe proxy: the direct connector serves this input");
-        let EstablishedClientConnection { input, conn } = self.direct.connect(input).await?;
-        if matches!(
+        let direct_requested = matches!(
             input.extensions().get_ref::<ProxyRoute>(),
             Some(ProxyRoute::Direct)
-        ) {
+        );
+        // Direct here can contain a nested proxy connector, so only insert the extension
+        // if we actually used a direct proxy route here.
+        let EstablishedClientConnection { input, conn } = self.direct.connect(input).await?;
+        if direct_requested {
             conn.extensions().insert(EstablishedProxyRoute::Direct);
         }
         Ok(EstablishedClientConnection {
@@ -236,10 +233,12 @@ impl<A: Socket, B: Socket> Socket for MaybeProxied<A, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{address::HostWithPort, client::ConnectRequest};
-    use rama_core::Layer;
+    use crate::{
+        address::{HostWithPort, ProxyAddress},
+        client::ConnectRequest,
+    };
     use rama_core::{
-        ServiceInput,
+        Layer, ServiceInput,
         error::{BoxError, BoxErrorExt as _},
         service::service_fn,
     };
@@ -275,7 +274,7 @@ mod tests {
         })
     }
 
-    fn socks_proxy() -> crate::address::ProxyAddress {
+    fn socks_proxy() -> ProxyAddress {
         "socks5://proxy.example:1080".parse().unwrap()
     }
 
@@ -289,10 +288,6 @@ mod tests {
         type Service = TunnelConnector<S>;
 
         fn layer(&self, inner: S) -> Self::Service {
-            TunnelConnector(inner)
-        }
-
-        fn into_layer(self, inner: S) -> Self::Service {
             TunnelConnector(inner)
         }
     }
@@ -352,6 +347,44 @@ mod tests {
                 .get_ref::<EstablishedProxyRoute>(),
             Some(&EstablishedProxyRoute::Direct),
         );
+    }
+
+    #[tokio::test]
+    async fn optional_direct_connection_records_only_the_original_route_selection() {
+        for route_configured in [false, true] {
+            for rewrite_input in [false, true] {
+                let direct = service_fn(move |mut input: ConnectRequest| async move {
+                    if rewrite_input {
+                        input.extensions = Extensions::new();
+                        if !route_configured {
+                            input.extensions.insert(ProxyRoute::Direct);
+                        }
+                    }
+                    let (io, _peer) = tokio::io::duplex(64);
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(io),
+                    })
+                });
+                let connector =
+                    MaybeProxiedConnector::new(direct, unreachable_connector(), ProxiedRoute);
+                let input = ConnectRequest::new(HostWithPort::example_domain_http());
+                if route_configured {
+                    input.extensions.insert(ProxyRoute::Direct);
+                }
+
+                let established = connector.connect(input).await.unwrap();
+                assert_eq!(
+                    established
+                        .conn
+                        .extensions()
+                        .get_ref::<EstablishedProxyRoute>(),
+                    route_configured.then_some(&EstablishedProxyRoute::Direct),
+                    "route configured: {route_configured}, input rewritten: {rewrite_input}",
+                );
+                assert!(!established.conn.extensions().contains::<ProxyRoute>());
+            }
+        }
     }
 
     #[tokio::test]

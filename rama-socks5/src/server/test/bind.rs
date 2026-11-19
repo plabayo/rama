@@ -3,12 +3,12 @@ use std::{io, sync::Arc};
 use rama_core::{
     ServiceInput,
     error::BoxError,
-    extensions::{Extension, Extensions, ExtensionsRef, NestedConnectionTransfer},
+    extensions::{Extension, Extensions, ExtensionsRef, ExtensionsTransfer},
     io::BridgeIo,
     service::service_fn,
 };
 use rama_net::address::{HostWithPort, SocketAddress};
-use rama_net::stream::{DefaultConnectionTransfer, NestedConnection};
+use rama_net::stream::{DefaultExtensionsTransfer, NestedConnection};
 use rama_net::user::credentials::basic;
 use rama_utils::str::non_empty_str;
 
@@ -318,7 +318,7 @@ impl Acceptor for OneShotAcceptor {
     }
 }
 
-async fn bind_tunnel_facts(transfer: impl NestedConnectionTransfer) -> (bool, bool) {
+async fn bind_tunnel_facts(transfer: impl ExtensionsTransfer) -> (bool, bool) {
     let stream = ServiceInput::new(
         tokio_test::io::Builder::new()
             .read(b"\x05\x01\x00")
@@ -347,7 +347,7 @@ async fn bind_tunnel_facts(transfer: impl NestedConnectionTransfer) -> (bool, bo
         }
     });
     let factory = service_fn(async |_addr: SocketAddress| Ok::<_, BoxError>(OneShotAcceptor));
-    let binder = Binder::new(factory, service).with_nested_connection_transfer(transfer);
+    let binder = Binder::new(factory, service).with_extensions_transfer(transfer);
     Socks5Acceptor::new(WeakScope::detached())
         .with_binder(binder)
         .accept(stream)
@@ -359,7 +359,7 @@ async fn bind_tunnel_facts(transfer: impl NestedConnectionTransfer) -> (bool, bo
 #[tokio::test]
 async fn bind_tunnel_keeps_flow_facts_and_drops_connection_facts() {
     assert_eq!(
-        bind_tunnel_facts(DefaultConnectionTransfer).await,
+        bind_tunnel_facts(DefaultExtensionsTransfer).await,
         (false, true)
     );
 }
@@ -372,7 +372,7 @@ async fn bind_tunnel_custom_transfer_carries_a_chosen_fact() {
         }
     };
     assert_eq!(
-        bind_tunnel_facts(DefaultConnectionTransfer.and(carry)).await,
+        bind_tunnel_facts(DefaultExtensionsTransfer.and(carry)).await,
         (true, true)
     );
 }

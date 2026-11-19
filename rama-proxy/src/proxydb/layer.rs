@@ -693,12 +693,10 @@ mod tests {
             socks5.then_some(ProxyProtocol::Socks5 {
                 remote_dns: false,
                 transport: Some(TransportProtocol::Tcp),
-                secure: false,
             }),
             socks5h.then_some(ProxyProtocol::Socks5 {
                 remote_dns: true,
                 transport: Some(TransportProtocol::Tcp),
-                secure: false,
             }),
         ]
         .into_iter()
@@ -818,14 +816,12 @@ mod tests {
                     ProxyProtocol::Socks5 {
                         remote_dns: true,
                         transport: Some(TransportProtocol::Tcp),
-                        secure: false,
                     },
                     h2c(),
                 ],
                 ProxyProtocol::Socks5 {
                     remote_dns: true,
                     transport: Some(TransportProtocol::Tcp),
-                    secure: false,
                 },
             ),
         ] {
@@ -843,7 +839,6 @@ mod tests {
         let socks5_udp = ProxyProtocol::Socks5 {
             remote_dns: false,
             transport: Some(TransportProtocol::Udp),
-            secure: false,
         };
         let proxy = speaking_proxy([socks5_udp, connect_udp(Version::HTTP_3)]);
         prepare_proxy(
@@ -861,7 +856,6 @@ mod tests {
         let socks5_udp = ProxyProtocol::Socks5 {
             remote_dns: false,
             transport: Some(TransportProtocol::Udp),
-            secure: false,
         };
         for (protocols, expected) in [
             (
@@ -882,7 +876,6 @@ mod tests {
                     ProxyProtocol::Socks5 {
                         remote_dns: false,
                         transport: Some(TransportProtocol::Tcp),
-                        secure: false,
                     },
                     connect_udp(Version::HTTP_11),
                 ],
@@ -904,14 +897,12 @@ mod tests {
         let socks5_udp = ProxyProtocol::Socks5 {
             remote_dns: false,
             transport: Some(TransportProtocol::Udp),
-            secure: false,
         };
         let proxy = speaking_proxy([
             warp.clone(),
             ProxyProtocol::Socks5 {
                 remote_dns: false,
                 transport: Some(TransportProtocol::Tcp),
-                secure: false,
             },
             socks5_udp.clone(),
         ]);
@@ -920,7 +911,6 @@ mod tests {
             ProxyProtocol::Socks5 {
                 remote_dns: false,
                 transport: Some(TransportProtocol::Tcp),
-                secure: false
             }
         );
         assert_eq!(selected_protocol(proxy, TransportProtocol::Udp), socks5_udp);
@@ -988,7 +978,6 @@ mod tests {
         second.protocols = ProxyProtocols::from([ProxyProtocol::Socks5 {
             remote_dns: false,
             transport: Some(TransportProtocol::Tcp),
-            secure: false,
         }]);
 
         let db = OrderedProxyDB(NonEmptyVec::from((first, vec![second.clone()])));
@@ -1422,12 +1411,10 @@ mod tests {
                     ProxyProtocol::Socks5 {
                         remote_dns: false,
                         transport: Some(TransportProtocol::Udp),
-                        secure: false,
                     },
                     ProxyProtocol::Socks5 {
                         remote_dns: true,
                         transport: Some(TransportProtocol::Udp),
-                        secure: false,
                     },
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,
@@ -1512,12 +1499,10 @@ mod tests {
                 ProxyProtocol::Socks5 {
                     remote_dns: false,
                     transport: Some(TransportProtocol::Udp),
-                    secure: false,
                 },
                 ProxyProtocol::Socks5 {
                     remote_dns: true,
                     transport: Some(TransportProtocol::Udp),
-                    secure: false,
                 },
                 ProxyProtocol::HTTP,
                 ProxyProtocol::HTTPS,
@@ -1576,12 +1561,10 @@ mod tests {
                 ProxyProtocol::Socks5 {
                     remote_dns: false,
                     transport: Some(TransportProtocol::Udp),
-                    secure: false,
                 },
                 ProxyProtocol::Socks5 {
                     remote_dns: true,
                     transport: Some(TransportProtocol::Udp),
-                    secure: false,
                 },
                 ProxyProtocol::HTTP,
                 ProxyProtocol::HTTPS,
@@ -1657,12 +1640,10 @@ mod tests {
                     ProxyProtocol::Socks5 {
                         remote_dns: false,
                         transport: Some(TransportProtocol::Udp),
-                        secure: false,
                     },
                     ProxyProtocol::Socks5 {
                         remote_dns: true,
                         transport: Some(TransportProtocol::Udp),
-                        secure: false,
                     },
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,

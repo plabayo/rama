@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use rama_core::{
     ServiceInput,
     bytes::Bytes,
-    extensions::{Extensions, NoConnectionTransfer},
+    extensions::{Extensions, NoExtensionsTransfer},
 };
 use rama_http_types::proto::capsule::CapsuleType;
 use std::{
@@ -189,7 +189,7 @@ async fn observed_over(stream: &Extensions, extensions: Extensions) -> usize {
 #[tokio::test]
 async fn a_nested_session_does_not_report_to_the_outer_streams_observer() {
     let stream = Extensions::new();
-    let nested = stream.fork_nested_connection(&NoConnectionTransfer);
+    let nested = stream.fork_connection(&NoExtensionsTransfer);
     assert_eq!(observed_over(&stream, nested).await, 0);
 }
 

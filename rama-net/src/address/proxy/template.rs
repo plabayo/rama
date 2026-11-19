@@ -28,6 +28,8 @@ pub struct ProxyPathTemplate {
     protocol: ProxyPathProtocolTemplate,
 }
 
+const CONNECT_IP_WELL_KNOWN_PREFIX: &str = "/.well-known/masque/ip/";
+
 /// The protocol a [`ProxyPathTemplate`] is for, with its variables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProxyPathProtocolTemplate {
@@ -38,7 +40,8 @@ pub enum ProxyPathProtocolTemplate {
         target_host: TemplateVariable,
         target_port: TemplateVariable,
     },
-    /// Neither of those, with the optional `target` and `ipproto` ([RFC 9484 §3]).
+    /// `target` and/or `ipproto`, or neither if the path starts with the well-known
+    /// `/.well-known/masque/ip/` prefix ([RFC 9484 §3]).
     ///
     /// [RFC 9484 §3]: https://datatracker.ietf.org/doc/html/rfc9484#section-3
     ConnectIp {
@@ -57,7 +60,8 @@ pub enum ProxyPathTemplateError {
     NotAbsolutePath,
     /// A literal `#`: a request target carries no fragment.
     Fragment,
-    /// The template names `target_port` but not `target_host`.
+    /// The template names neither `target_host` nor a CONNECT-IP marker, or
+    /// `target_port` without `target_host`.
     MissingTargetHost,
     /// The template names `target_host` but not `target_port`.
     MissingTargetPort,
@@ -143,10 +147,17 @@ impl ProxyPathTemplate {
             },
             (Some(_), None) => return Err(ProxyPathTemplateError::MissingTargetPort),
             (None, Some(_)) => return Err(ProxyPathTemplateError::MissingTargetHost),
-            (None, None) => ProxyPathProtocolTemplate::ConnectIp {
-                target: template.variable("target"),
-                ip_proto: template.variable("ipproto"),
-            },
+            (None, None) => {
+                let target = template.variable("target");
+                let ip_proto = template.variable("ipproto");
+                if target.is_none()
+                    && ip_proto.is_none()
+                    && !template.as_str().starts_with(CONNECT_IP_WELL_KNOWN_PREFIX)
+                {
+                    return Err(ProxyPathTemplateError::MissingTargetHost);
+                }
+                ProxyPathProtocolTemplate::ConnectIp { target, ip_proto }
+            }
         };
         Ok(Self { template, protocol })
     }

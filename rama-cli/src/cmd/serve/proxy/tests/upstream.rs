@@ -54,7 +54,8 @@ async fn forward_client_isolates_upstream_proxy_407() {
         )
         .unwrap(),
         icap: None,
-    });
+    })
+    .unwrap();
 
     let response = client
         .serve(
@@ -118,7 +119,8 @@ async fn forward_client_can_disable_automatic_upstream_proxy_auth() {
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream,
         icap: None,
-    });
+    })
+    .unwrap();
 
     let response = client
         .serve(
@@ -169,7 +171,8 @@ async fn forward_client_authenticates_plaintext_upstream_proxy_by_default() {
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(Some(proxy), false, &[]).unwrap(),
         icap: None,
-    });
+    })
+    .unwrap();
 
     let response = client
         .serve(
@@ -228,7 +231,8 @@ async fn forward_client_can_tunnel_plaintext_without_leaking_proxy_auth() {
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream,
         icap: None,
-    });
+    })
+    .unwrap();
 
     let response = client
         .serve(
@@ -273,7 +277,8 @@ async fn forward_http_client_applies_connect_timeout_to_tls_handshake() {
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap: None,
-    });
+    })
+    .unwrap();
     let request_task = tokio::spawn(async move {
         client
             .serve(

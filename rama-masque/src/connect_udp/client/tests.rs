@@ -18,7 +18,6 @@ use rama_udp::test_utils::MemoryDatagramSocket;
 
 use super::*;
 
-/// A connector towards proxies that must never be asked for a connection.
 fn no_proxy() -> impl ConnectorService<ConnectRequest, Connection = RefusingConnection> {
     service_fn(async |input: ConnectRequest| {
         Err::<EstablishedClientConnection<RefusingConnection, _>, _>(
@@ -31,7 +30,6 @@ fn no_proxy() -> impl ConnectorService<ConnectRequest, Connection = RefusingConn
     })
 }
 
-/// A connection to a proxy which never answers; only the request reaching it is asserted.
 #[derive(Debug, Clone, ExtensionsRef)]
 struct RefusingConnection {
     extensions: Extensions,
@@ -46,7 +44,6 @@ impl Service<Request> for RefusingConnection {
     }
 }
 
-/// A datagram connector handing out a memory socket, counting its connections.
 fn counting_inner(
     connections: Arc<AtomicUsize>,
 ) -> impl ConnectorService<ConnectRequest, Connection = MemoryDatagramSocket> {
@@ -88,7 +85,7 @@ fn maybe_tunneled(
 }
 
 #[tokio::test]
-async fn requests_without_a_tunnel_go_to_the_direct_connector() {
+async fn requests_without_a_masque_tunnel_go_to_the_inner_connector() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector = maybe_tunneled(connections.clone());
     let EstablishedClientConnection { conn, .. } = connector
@@ -100,12 +97,14 @@ async fn requests_without_a_tunnel_go_to_the_direct_connector() {
 }
 
 #[tokio::test]
-async fn a_route_to_a_proxy_without_connect_udp_is_refused_never_bypassed() {
+async fn a_route_to_any_other_proxy_is_refused_never_bypassed() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector = maybe_tunneled(connections.clone());
     for proxy in [
         "socks5://127.0.0.1:1080",
         "h3://127.0.0.1:443/ip/{target}/{ipproto}",
+        "h3://127.0.0.1:443",
+        "https://127.0.0.1:443",
     ] {
         let error = connector
             .connect(request("192.0.2.1:443", Some(proxy)))
@@ -113,6 +112,14 @@ async fn a_route_to_a_proxy_without_connect_udp_is_refused_never_bypassed() {
             .unwrap_err();
         assert!(
             format!("{error:?}").contains("connect-udp proxies only"),
+            "{proxy}: {error:?}"
+        );
+        assert_eq!(
+            (error.domain(), error.kind()),
+            (
+                ConnectionErrorDomain::Local,
+                ConnectionErrorKind::InvalidInput
+            ),
             "{proxy}: {error:?}"
         );
     }
@@ -123,10 +130,74 @@ async fn a_route_to_a_proxy_without_connect_udp_is_refused_never_bypassed() {
 async fn a_tunnel_to_port_zero_is_refused_before_the_proxy_is_asked() {
     let connector = HttpConnectUdpProxyConnector::new(no_proxy(), WeakScope::detached());
     let error = connector
-        .serve(request("192.0.2.1:0", Some("h3://127.0.0.1:443")))
+        .serve(request("192.0.2.1:0", Some("h3+udp://127.0.0.1:443")))
         .await
         .unwrap_err();
     assert!(format!("{error:?}").contains("port is zero"), "{error:?}");
+}
+
+#[derive(Debug, Clone, ExtensionsRef)]
+struct AnsweringConnection {
+    extensions: Extensions,
+    status: StatusCode,
+}
+
+impl Service<Request> for AnsweringConnection {
+    type Output = Response;
+    type Error = BoxError;
+
+    async fn serve(&self, _: Request) -> Result<Self::Output, Self::Error> {
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = self.status;
+        Ok(response)
+    }
+}
+
+#[tokio::test]
+async fn a_refusing_proxy_keeps_the_kind_of_its_refusal() {
+    for (status, domain, kind) in [
+        (
+            StatusCode::PROXY_AUTHENTICATION_REQUIRED,
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Authentication,
+        ),
+        (
+            StatusCode::FORBIDDEN,
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Rejected,
+        ),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Unavailable,
+        ),
+        (
+            StatusCode::BAD_GATEWAY,
+            ConnectionErrorDomain::Application,
+            ConnectionErrorKind::Unavailable,
+        ),
+    ] {
+        let proxy = service_fn(move |input: ConnectRequest| async move {
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                input,
+                conn: AnsweringConnection {
+                    extensions: Extensions::new(),
+                    status,
+                },
+            })
+        });
+        let connector = HttpConnectUdpProxyConnector::new(proxy, WeakScope::detached());
+
+        let error = connector
+            .serve(request(
+                "example.com:443",
+                Some("http+udp://proxy.example:8080"),
+            ))
+            .await
+            .unwrap_err();
+
+        assert_eq!((error.domain(), error.kind()), (domain, kind), "{status}");
+    }
 }
 
 #[tokio::test]
@@ -152,7 +223,7 @@ async fn a_tunnel_asks_the_proxy_connector_for_the_proxy_in_its_own_version() {
 
         let input = request("example.com:443", None);
         input.extensions.insert(ProxyRoute::Proxy(
-            ProxyAddress::try_from("h3://proxy.example:443")
+            ProxyAddress::try_from("h3+udp://proxy.example:443")
                 .unwrap()
                 .with_http_version(version),
         ));

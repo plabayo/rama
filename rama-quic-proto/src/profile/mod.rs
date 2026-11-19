@@ -873,6 +873,7 @@ impl TransportLimits {
 /// remember, and none to forget.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "std", derive(Extension))]
+#[cfg_attr(feature = "std", extension(scope(connection)))]
 pub struct QuicProfile {
     versions: ClientVersionPolicy,
     transport_parameters: TransportParameterProfile,

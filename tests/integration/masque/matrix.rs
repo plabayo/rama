@@ -29,9 +29,9 @@ impl ProxyConfig {
     /// Scheme and the client template after the authority.
     fn client(self) -> (&'static str, &'static str) {
         match self {
-            Self::MasqueDefault => ("masque", ""),
-            Self::MasquePath => ("masque", "/proxy/{target_host}/{target_port}/"),
-            Self::MasqueQuery => ("masque", "/masque?h={target_host}&p={target_port}"),
+            Self::MasqueDefault => ("h3+udp", ""),
+            Self::MasquePath => ("h3", "/proxy/{target_host}/{target_port}/"),
+            Self::MasqueQuery => ("h3", "/masque?h={target_host}&p={target_port}"),
             Self::HttpsWellKnown => (
                 "https",
                 "/.well-known/masque/udp/{target_host}/{target_port}/",
@@ -158,6 +158,7 @@ async fn run_case(case: Case) {
         case.quic,
     )
     .await;
+    let version = case.carrier.version();
     let (scheme, client_template) = case.config.client();
     let proxy = ProxyAddress::try_from(
         format!(
@@ -166,7 +167,8 @@ async fn run_case(case: Case) {
         )
         .as_str(),
     )
-    .unwrap();
+    .unwrap()
+    .with_http_version(version);
     let target = match case.target {
         Target::Ipv4 | Target::Ipv6 => HostWithPort::from(origin),
         Target::Name => {
@@ -174,7 +176,6 @@ async fn run_case(case: Case) {
         }
     };
     let stats = proxy_tasks.proxy.clone().unwrap();
-    let version = case.carrier.version();
 
     // The egress fixtures stay up across runs; every run is a fresh client.
     let egress = match case.perspective {
@@ -184,7 +185,7 @@ async fn run_case(case: Case) {
                 proxy.clone(),
                 target.clone(),
                 version,
-                http_client_on(WeakScope::detached(), case.quic),
+                masque_tunnels_on(WeakScope::detached(), case.quic),
             )
             .await,
         ),
@@ -203,8 +204,7 @@ async fn run_case(case: Case) {
             None => (
                 tunneling_client_with(
                     scope.clone(),
-                    version,
-                    http_client_on(scope, case.quic),
+                    masque_proxies(scope, masque_quic_transport(), case.quic),
                     case.quic,
                 ),
                 target.to_string(),

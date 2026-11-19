@@ -9,8 +9,17 @@ mod bypass;
 pub use bypass::{BypassRules, ProxyBypassLayer, ProxyBypassService};
 
 mod connect;
+use connect::DialedProxyConnection;
 #[doc(inline)]
-pub use connect::{connect_to_proxy, proxy_http_version, proxy_request};
+pub use connect::{
+    ProxyConnectionExtensions, ProxyConnectionExtensionsTransfer, ProxyConnectionPerCredential,
+    ProxyConnectionPerCredentialLayer, ProxyConnectionPerCredentialService, ProxyDialRequest,
+    ProxyDialer, ProxyDialerLayer, proxy_request,
+};
+
+mod reuse;
+#[doc(inline)]
+pub use reuse::proxy_connection_reuse;
 
 mod direct;
 #[doc(inline)]
@@ -25,6 +34,10 @@ mod env;
 pub use env::{NoProxyEnvLayer, NoProxyEnvService, ProxyEnvLayer, ProxyEnvService};
 
 mod load;
+
+mod secure;
+#[doc(inline)]
+pub use secure::{PlaintextProxyOnly, PlaintextProxyOnlyLayer};
 
 mod route;
 #[doc(inline)]

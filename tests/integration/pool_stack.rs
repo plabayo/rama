@@ -8,9 +8,20 @@ use rama::{
         Body, Request, Response, Version, body::util::BodyExt as _, client::EasyHttpWebClient,
         server::HttpServer,
     },
-    net::client::{ConnectRequest, ConnectionError, EstablishedClientConnection},
+    net::{
+        client::{ConnectRequest, ConnectionError, EstablishedClientConnection},
+        tls::ApplicationProtocol,
+    },
+    quic::{
+        ServerConfig, TransportConfig,
+        test_utils::MockQuicConnectorService,
+        tls::{BoringTlsProvider, TlsOptions},
+    },
     service::service_fn,
-    tls::client::TlsClientConfig,
+    tls::{
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+    },
 };
 use std::{
     convert::Infallible,
@@ -40,6 +51,16 @@ fn unpooled_http1() {
 #[test]
 fn unpooled_http2() {
     check("pool_stack::unpooled_http2", Version::HTTP_2, false);
+}
+
+#[test]
+fn pooled_http3() {
+    check("pool_stack::pooled_http3", Version::HTTP_3, true);
+}
+
+#[test]
+fn unpooled_http3() {
+    check("pool_stack::unpooled_http3", Version::HTTP_3, false);
 }
 
 fn check(name: &str, version: Version, pooled: bool) {
@@ -105,41 +126,50 @@ async fn exercise(version: Version, pooled: bool) {
         }
     });
     let transport = transport.boxed();
-    let control = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(transport.clone())
+    let control = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(transport.clone())
         .without_dns_connector()
-        .with_tls_proxy_support_using_rustls_config(TlsClientConfig::default_http())
-        .with_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_rustls(TlsClientConfig::default_http())
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client()
         .boxed();
+    let quic = MockQuicConnectorService::new(quic_server_config(), |_: &ConnectRequest| {
+        HttpServer::new_http3(WeakScope::detached()).service(service_fn(|_: Request| async {
+            Ok::<_, Infallible>(Response::new(Body::from("ok")))
+        }))
+    });
+    let quic = service_fn({
+        let control = control.clone();
+        let connections = connections.clone();
+        move |input: ConnectRequest| {
+            connections.fetch_add(1, Ordering::Relaxed);
+            let control = control.clone();
+            let quic = quic.clone();
+            async move {
+                control_request(&control).await;
+                quic.serve(input).await
+            }
+        }
+    });
     let transport = service_fn(move |input: ConnectRequest| {
         let control = control.clone();
         let transport = transport.clone();
         async move {
-            // Establishing a tunnel can itself require an HTTP control request.
-            let response = control
-                .serve(
-                    Request::builder()
-                        .uri("http://control.test/connect")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            response.into_body().collect().await.unwrap();
+            control_request(&control).await;
             transport.serve(input).await
         }
     });
-    let builder = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(transport)
+    let builder = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(transport)
+        .with_custom_quic_connector(quic)
         .without_dns_connector()
-        .without_tls_proxy_support()
-        .without_proxy_support()
-        .with_tls_support_using_rustls(TlsClientConfig::default_http())
-        .with_default_http_connector(WeakScope::detached());
+        .with_default_proxy_support()
+        .with_tls_support_using_rustls(
+            TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
+        )
+        .with_default_http_connector();
     let client = if pooled {
         builder
             .with_default_connection_pool()
@@ -149,8 +179,13 @@ async fn exercise(version: Version, pooled: bool) {
         builder.without_connection_pool().build_client().boxed()
     };
     for _ in 0..2 {
+        let scheme = if version == Version::HTTP_3 {
+            "https"
+        } else {
+            "http"
+        };
         let request = Request::builder()
-            .uri("http://example.test/")
+            .uri(format!("{scheme}://example.test/"))
             .version(version)
             .body(Body::empty())
             .unwrap();
@@ -165,4 +200,39 @@ async fn exercise(version: Version, pooled: bool) {
         connections.load(Ordering::Relaxed),
         if pooled { 2 } else { 3 }
     );
+}
+
+// Establishing a tunnel can itself require an HTTP control request.
+async fn control_request(
+    control: &impl Service<Request, Output = Response, Error: std::fmt::Debug>,
+) {
+    let response = control
+        .serve(
+            Request::builder()
+                .uri("http://control.test/connect")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    response.into_body().collect().await.unwrap();
+}
+
+fn quic_server_config() -> ServerConfig {
+    let mut transport = TransportConfig::default();
+    HttpServer::new_http3(WeakScope::detached())
+        .http3()
+        .configure_transport(&mut transport)
+        .unwrap();
+    let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+    let mut config = ServerConfig::try_from_rama_tls_with_provider(
+        &TlsServerConfig::new()
+            .with_server_auth(auth)
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect()),
+        TlsOptions::default(),
+        &BoringTlsProvider,
+    )
+    .unwrap();
+    config.set_transport_config(Arc::new(transport));
+    config
 }

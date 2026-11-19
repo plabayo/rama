@@ -1,4 +1,3 @@
-use super::verify_proxy_tls;
 use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _},
@@ -12,9 +11,9 @@ use rama_net::{
     ProtocolInputExt,
     address::ProxyAddress,
     client::{
-        ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
-        EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, connect_to_proxy,
-        proxy_http_version,
+        ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
+        EstablishedClientConnection, EstablishedProxyRoute, ProxyDialRequest, ProxyDialer,
+        ProxyRoute, proxy_connection_reuse,
     },
     http::{TargetHttpVersion, Version},
     user::ProxyCredential,
@@ -51,14 +50,15 @@ where
 /// A forwarded route is required: any other input fails. Pair it with a
 /// [`MaybeProxiedConnector`] over [`HttpForwardRoute`] to reach an origin of its own instead.
 ///
-/// The inner service is the connector towards HTTP proxies, the same one
-/// [`HttpConnectProxyConnector`] tunnels over: it receives its own [`ConnectRequest`]
-/// addressed at the proxy and answers with an HTTP connection to it, which this connector
-/// hands out as the connection of the request. Several origins forwarded through one proxy
+/// The inner service dials the HTTP connection to the proxy, the same one
+/// [`HttpConnectProxyConnector`] tunnels over, such as a [`ProxyDialer`] over the
+/// connector towards HTTP proxies. This connector hands that connection out as the
+/// connection of the request. Several origins forwarded through one proxy
 /// share that connection when it can carry them.
 ///
 /// [`MaybeProxiedConnector`]: rama_net::client::MaybeProxiedConnector
 /// [`HttpForwardRoute`]: super::HttpForwardRoute
+/// [`ProxyDialer`]: rama_net::client::ProxyDialer
 /// [`HttpConnectProxyConnector`]: super::layer::HttpConnectProxyConnector
 #[derive(Debug, Clone)]
 pub struct HttpForwardProxyConnector<S> {
@@ -67,11 +67,19 @@ pub struct HttpForwardProxyConnector<S> {
     isolate_auth_error: bool,
 }
 
-impl<S> HttpForwardProxyConnector<S> {
+impl<S> HttpForwardProxyConnector<ProxyDialer<S>> {
     /// Create an [`HttpForwardProxyConnector`] over the connector towards HTTP proxies.
     pub const fn new(inner: S) -> Self {
+        Self::from_dialer(ProxyDialer::new(inner))
+    }
+}
+
+impl<S> HttpForwardProxyConnector<S> {
+    /// Create an [`HttpForwardProxyConnector`] over the HTTP connections to the proxy that
+    /// `dialer` dials, see [`ProxyDialer`].
+    pub const fn from_dialer(dialer: S) -> Self {
         Self {
-            inner,
+            inner: dialer,
             proxy_auth: true,
             isolate_auth_error: false,
         }
@@ -99,8 +107,6 @@ impl<S> HttpForwardProxyConnector<S> {
     define_inner_service_accessors!();
 }
 
-/// The request travels on the connection to the proxy, so an explicit origin version that
-/// the proxy does not speak has no second hop to be met on.
 fn check_forwarded_version(
     demanded: Option<Version>,
     proxy_version: Version,
@@ -118,7 +124,7 @@ fn check_forwarded_version(
 
 impl<S, Input> Service<Input> for HttpForwardProxyConnector<S>
 where
-    S: ConnectorService<ConnectRequest, Connection: ExtensionsRef>,
+    S: ConnectorService<ProxyDialRequest>,
     Input: ProtocolInputExt + ExtensionsRef + Send + 'static,
 {
     type Output = EstablishedClientConnection<HttpForwardProxyConnection<S::Connection>, Input>;
@@ -141,9 +147,19 @@ where
             check_forwarded_version(demanded, version)?;
         }
 
-        let conn = connect_to_proxy(&self.inner, &proxy, input.extensions()).await?;
-        verify_proxy_tls(&proxy, conn.extensions())?;
-        let version = proxy_http_version(&proxy, &conn);
+        let conn = self
+            .inner
+            .connect(ProxyDialRequest {
+                proxy: proxy.clone(),
+                origin: input.extensions().clone(),
+            })
+            .await?
+            .conn;
+        let version = conn
+            .extensions()
+            .get_ref::<TargetHttpVersion>()
+            .map(|version| version.0)
+            .unwrap_or(Version::HTTP_11);
         check_forwarded_version(demanded, version)?;
 
         tracing::trace!(
@@ -152,11 +168,7 @@ where
             "http forward proxy connector: forwarding over the connection to the proxy",
         );
 
-        // An HTTP/1 request-target is encoded from the route of the connection it travels
-        // on. The connection shares the extensions of the stream below it, which a transport
-        // connector claims as direct, so this route must shadow that claim. Credentials stay
-        // off it, as every user of the proxy shares the connection; they are the request's,
-        // from its own route.
+        // Must shadow the Direct route the transport connector claimed on the shared extensions.
         conn.extensions()
             .insert(EstablishedProxyRoute::Forward(ProxyAddress {
                 credential: None,
@@ -165,6 +177,9 @@ where
         input.extensions().insert(TargetHttpVersion(version));
 
         let extensions = conn.extensions().fork();
+        if let Some(rules) = proxy_connection_reuse(conn.extensions()) {
+            extensions.insert(rules);
+        }
 
         Ok(EstablishedClientConnection {
             input,
@@ -204,12 +219,22 @@ where
 
     async fn serve(&self, mut request: Request<Body>) -> Result<Self::Output, Self::Error> {
         if self.proxy_auth {
-            // The connection is shared by every origin forwarded through this proxy, so the
-            // credentials are the request's own, from the route it asked for.
+            // A request names its proxy only as intent: its credential is for the proxy this
+            // connection actually reaches, or for none.
+            let reached = self
+                .extensions
+                .get_ref::<EstablishedProxyRoute>()
+                .and_then(EstablishedProxyRoute::proxy_address);
             let credential = request
                 .extensions()
                 .get_ref::<ProxyRoute>()
                 .and_then(ProxyRoute::proxy_address)
+                .filter(|requested| {
+                    reached.is_some_and(|reached| {
+                        requested.protocol == reached.protocol
+                            && requested.address == reached.address
+                    })
+                })
                 .and_then(|proxy| proxy.credential.clone());
             authorize(request.headers_mut(), credential);
         }
@@ -227,8 +252,6 @@ fn authorize(headers: &mut HeaderMap, credential: Option<ProxyCredential>) {
     match credential {
         Some(ProxyCredential::Basic(basic)) => headers.typed_insert(ProxyAuthorization(basic)),
         Some(ProxyCredential::Bearer(bearer)) => headers.typed_insert(ProxyAuthorization(bearer)),
-        // An explicitly supplied header stays, for manual and challenge-driven
-        // authentication of a route without a credential of its own.
         None => {}
     }
 }
@@ -244,13 +267,21 @@ mod tests {
         Body, HeaderValue, Version, header::PROXY_AUTHORIZATION, proto::h1::head,
     };
     use rama_net::{
+        ConnectorTransportProtocolInputExt as _, Protocol,
         address::HostWithPort,
-        client::{ConnectRequest, ProxyRoute},
+        client::{ConnectRequest, ConnectorService, ProxyDialer, ProxyRoute},
+        http::HttpRequestVersion,
+        transport::TransportProtocol,
+        user::Bearer,
     };
+    #[cfg(feature = "tls")]
+    use {
+        rama_net::tls::{ApplicationProtocol, TlsAlpn},
+        rama_tls::client::NegotiatedTlsParameters,
+    };
+
     use std::{convert::Infallible, sync::Arc};
 
-    /// A connection to a proxy which answers `status` and reports back how the request
-    /// looked on the wire: its HTTP/1 request-target and its `Proxy-Authorization`.
     #[derive(Debug, Clone, ExtensionsRef)]
     struct ProxyConnection {
         extensions: Extensions,
@@ -288,7 +319,7 @@ mod tests {
         status: StatusCode,
         dialed: Arc<parking_lot::Mutex<Vec<ConnectRequest>>>,
     ) -> HttpForwardProxyConnector<
-        impl ConnectorService<ConnectRequest, Connection = ProxyConnection>,
+        ProxyDialer<impl ConnectorService<ConnectRequest, Connection = ProxyConnection>>,
     > {
         HttpForwardProxyConnector::new(service_fn(move |input: ConnectRequest| {
             let dialed = dialed.clone();
@@ -305,7 +336,7 @@ mod tests {
 
     fn forwarded(proxy: &str) -> ConnectRequest {
         let input = ConnectRequest::new(HostWithPort::try_from("origin.example:80").unwrap())
-            .with_application_protocol(rama_net::Protocol::HTTP);
+            .with_application_protocol(Protocol::HTTP);
         input
             .extensions
             .insert(ProxyRoute::Proxy(proxy.parse().unwrap()));
@@ -342,6 +373,46 @@ mod tests {
             dialed.lock()[0].authority,
             HostWithPort::try_from("proxy.example:8080").unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn credentials_of_another_proxy_never_reach_this_one() {
+        let connector = proxy_connector(StatusCode::OK, Arc::default());
+        let established = connector
+            .serve(forwarded("http://proxy.example:8080"))
+            .await
+            .unwrap();
+
+        for other in [
+            "http://bob:other-secret@elsewhere.example:8080",
+            "http://bob:other-secret@proxy.example:8081",
+            "https://bob:other-secret@proxy.example:8080",
+        ] {
+            let request = request();
+            request
+                .extensions()
+                .insert(ProxyRoute::Proxy(other.parse().unwrap()));
+            let response = established.conn.serve(request).await.unwrap();
+            assert!(!response.headers().contains_key("x-auth"), "{other}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_route_credential_replaces_a_downstream_header() {
+        let connector = proxy_connector(StatusCode::OK, Arc::default());
+        let input = forwarded("http://alice:secret@proxy.example:8080");
+        let route = input.extensions.get_ref::<ProxyRoute>().unwrap().clone();
+        let established = connector.serve(input).await.unwrap();
+
+        let mut request = request();
+        request.headers_mut().insert(
+            PROXY_AUTHORIZATION,
+            HeaderValue::from_static("Basic downstream-secret"),
+        );
+        request.extensions().insert(route);
+        let response = established.conn.serve(request).await.unwrap();
+
+        assert_eq!(response.headers()["x-auth"], "Basic YWxpY2U6c2VjcmV0");
     }
 
     #[tokio::test]
@@ -522,5 +593,142 @@ mod tests {
         let response = established.conn.serve(request).await.unwrap();
 
         assert_eq!(response.headers()["x-auth"], "Basic bWFudWFs");
+    }
+
+    #[tokio::test]
+    async fn explicit_plaintext_forward_proxy_version_overrides_request() {
+        let dialed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let connector = proxy_connector(StatusCode::OK, dialed.clone());
+        let input = forwarded("http://proxy.example:8080");
+        input.extensions.insert(HttpRequestVersion(Version::HTTP_3));
+
+        let established = connector.serve(input).await.unwrap();
+        assert_eq!(
+            dialed.lock()[0].connector_transport_protocol(),
+            Some(TransportProtocol::Tcp),
+        );
+        assert_eq!(
+            established
+                .input
+                .extensions
+                .get_ref::<TargetHttpVersion>()
+                .map(|target| target.0),
+            Some(Version::HTTP_11),
+        );
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn forward_proxy_version_follows_proxy_tls_negotiation() {
+        for (negotiated, expected) in [
+            (None, Version::HTTP_11),
+            (Some(ApplicationProtocol::HTTP_2), Version::HTTP_2),
+        ] {
+            let dialed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+            let connector = HttpForwardProxyConnector::new(service_fn({
+                let negotiated = negotiated.clone();
+                let dialed = dialed.clone();
+                move |input: ConnectRequest| {
+                    let negotiated = negotiated.clone();
+                    let dialed = dialed.clone();
+                    async move {
+                        let extensions = Extensions::new();
+                        extensions.insert(NegotiatedTlsParameters {
+                            protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
+                            application_layer_protocol: negotiated.clone(),
+                            peer_certificate_chain: None,
+                            server_name: None,
+                            resumed: None,
+                            algorithms: Default::default(),
+                            server_hello: None,
+                        });
+                        if negotiated == Some(ApplicationProtocol::HTTP_2) {
+                            extensions.insert(TargetHttpVersion(Version::HTTP_2));
+                        }
+                        dialed.lock().push(input.clone());
+                        Ok::<_, ConnectionError>(EstablishedClientConnection {
+                            input,
+                            conn: ProxyConnection {
+                                extensions,
+                                status: StatusCode::OK,
+                            },
+                        })
+                    }
+                }
+            }));
+            let input = forwarded("https://proxy.example:8443");
+            input
+                .extensions
+                .insert(HttpRequestVersion(if expected == Version::HTTP_11 {
+                    Version::HTTP_2
+                } else {
+                    Version::HTTP_11
+                }));
+
+            let established = connector.serve(input).await.unwrap();
+            assert!(
+                !dialed.lock()[0].extensions.contains::<TargetHttpVersion>(),
+                "the secure proxy connection negotiates its own version",
+            );
+            assert!(!dialed.lock()[0].extensions.contains::<TlsAlpn>());
+            assert_eq!(
+                established
+                    .input
+                    .extensions
+                    .get_ref::<TargetHttpVersion>()
+                    .map(|target| target.0),
+                Some(expected),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bearer_credentials_are_applied_and_manual_auth_is_preserved_without_route_credentials()
+    {
+        for (credential, expected) in [
+            (
+                Some(ProxyCredential::Bearer(
+                    Bearer::try_from("upstream-token").unwrap(),
+                )),
+                "Bearer upstream-token",
+            ),
+            (None, "Basic downstream-secret"),
+        ] {
+            let mut proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+            proxy.credential = credential;
+            let input = ConnectRequest::new(HostWithPort::try_from("origin.example:80").unwrap())
+                .with_application_protocol(Protocol::HTTP);
+            input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+            let established = proxy_connector(StatusCode::OK, Arc::default())
+                .serve(input)
+                .await
+                .unwrap();
+
+            let request = Request::builder()
+                .uri("http://origin.example/resource")
+                .header(PROXY_AUTHORIZATION, "Basic downstream-secret")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions().insert(ProxyRoute::Proxy(proxy));
+            let response = established.conn.serve(request).await.unwrap();
+
+            assert_eq!(response.headers()["x-auth"], expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn non_proxy_auth_responses_are_preserved_when_isolation_is_enabled() {
+        for status in [StatusCode::OK, StatusCode::UNAUTHORIZED] {
+            let response = proxy_connector(status, Arc::default())
+                .with_isolate_auth_error(true)
+                .serve(forwarded("http://proxy.example:8080"))
+                .await
+                .unwrap()
+                .conn
+                .serve(request())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+        }
     }
 }

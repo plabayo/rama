@@ -477,7 +477,7 @@ mod tests {
         response: &'static [u8],
     ) -> Client<impl ConnectorService<ConnectRequest, Connection = MockSocket>> {
         Client::new(
-            MockConnectorService::new(move || {
+            MockConnectorService::new(move |_| {
                 service_fn(move |mut server: MockSocket| async move {
                     let head = read_head(&mut server).await;
                     assert!(head.starts_with(b"OPTIONS icap://icap.test/service ICAP/1.0\r\n"));

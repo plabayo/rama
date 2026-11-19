@@ -34,7 +34,8 @@ async fn peer_max_connections_clamps_concurrent_icap_transactions() {
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap,
-    });
+    })
+    .unwrap();
     let request = || {
         Request::builder()
             .uri(format!("http://{origin}/limited"))
@@ -113,13 +114,12 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
     assert!(inspector_address.is_some(), "inspector listener bound");
 
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     for scheme in ["http", "socks5h"] {

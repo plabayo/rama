@@ -48,7 +48,7 @@ use rama::{
     layer::MapInputLayer,
     net::{address::SocketAddress, client::pool::SaturationPolicy, tls::ApplicationProtocol},
     service::service_fn,
-    tcp::{client::service::TcpConnector, server::TcpListener},
+    tcp::server::TcpListener,
     tls::{
         client::{ServerVerifyMode, TlsClientConfig},
         rustls,
@@ -319,13 +319,12 @@ fn client(
     let tls = TlsClientConfig::new()
         .with_alpn(smallvec![ApplicationProtocol::HTTP_11])
         .with_server_verify(ServerVerifyMode::Disable);
-    EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(TcpConnector::new())
+    EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_tcp_connector()
         .without_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_rustls(tls)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .with_connection_pool(pool_config(pool, drain))
         .build_client()
 }

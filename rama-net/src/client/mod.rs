@@ -2,7 +2,7 @@
 
 mod attempt;
 #[doc(inline)]
-pub use attempt::{ConnectionAttempt, ConnectionPolicyScope};
+pub use attempt::{ConnectionAttempt, ConnectionAttemptTransfer, ConnectionPolicyScope};
 
 mod conn;
 #[doc(inline)]
@@ -46,15 +46,19 @@ mod proxy;
 pub use proxy::{
     BypassRules, DEFAULT_SYSTEM_PROXY_CONFIG_TTL, DirectOnlyConnector, DirectOnlyConnectorLayer,
     EstablishedProxyRoute, LazyProxyAddressLayer, LazyProxyAddressService, MaybeProxied,
-    MaybeProxiedConnector, NoProxyEnvLayer, NoProxyEnvService, ProxiedRoute, ProxyAddressLayer,
-    ProxyAddressService, ProxyBypassLayer, ProxyBypassService, ProxyEnvLayer, ProxyEnvService,
-    ProxyRoute, ProxyRouteConnectError, ProxyRouteContext, ProxyRouteFailureCache,
+    MaybeProxiedConnector, NoProxyEnvLayer, NoProxyEnvService, PlaintextProxyOnly,
+    PlaintextProxyOnlyLayer, ProxiedRoute, ProxyAddressLayer, ProxyAddressService,
+    ProxyBypassLayer, ProxyBypassService, ProxyConnectionExtensions,
+    ProxyConnectionExtensionsTransfer, ProxyConnectionPerCredential,
+    ProxyConnectionPerCredentialLayer, ProxyConnectionPerCredentialService, ProxyDialRequest,
+    ProxyDialer, ProxyDialerLayer, ProxyEnvLayer, ProxyEnvService, ProxyRoute,
+    ProxyRouteConnectError, ProxyRouteContext, ProxyRouteFailureCache,
     ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheLayer,
     ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError, ProxyRouteIndex, ProxyRoutes,
     ProxyRoutesConnector, ProxyRoutesConnectorLayer, ProxyRoutesLayer, ProxyRoutesService,
     ProxySelector, SystemProxyConfig, SystemProxyConnectLayer, SystemProxyConnectService,
     SystemProxyInvalidBypassRulePolicy, SystemProxyLayer, SystemProxyPacDisabled,
     SystemProxyPacDisabledResolver, SystemProxyPacRequest, SystemProxyPacResolver,
-    SystemProxyPacService, SystemProxyService, connect_to_proxy, proxy_http_version, proxy_request,
+    SystemProxyPacService, SystemProxyService, proxy_connection_reuse, proxy_request,
     proxy_request_uri,
 };

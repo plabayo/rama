@@ -13,6 +13,14 @@ use rama_utils::macros::match_ignore_ascii_case_str;
 /// A parser which parses [`ProxyFilter`]s from username labels
 /// and adds it to the input [`Extensions`].
 ///
+/// The labels `id`, `pool`, `continent`, `country`, `state`, `city`, `carrier` and `asn`
+/// take the label after them as their value, and repeat to allow any of those values.
+/// A label naming a [`ProxyType`] selects that type and `!type` excludes it; any other
+/// label is ignored.
+///
+/// Naming several types selects a proxy of any of them. On older versions
+/// `datacenter-residential` required both at once, which is now the `isp` type.
+///
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct ProxyFilterUsernameParser {
     key: Option<ProxyFilterKey>,
@@ -175,10 +183,16 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
             );
         }
         if !self.excluded_kinds.is_empty() {
-            self.proxy_filter
+            let kinds = self
+                .proxy_filter
                 .kind
-                .get_or_insert_with(|| ProxyType::ALL.to_vec())
-                .retain(|kind| !self.excluded_kinds.contains(kind));
+                .get_or_insert_with(|| ProxyType::ALL.to_vec());
+            kinds.retain(|kind| !self.excluded_kinds.contains(kind));
+            if kinds.is_empty() {
+                return Err(BoxError::from_static_str(
+                    "proxy filter username excludes every proxy type",
+                ));
+            }
         }
         if self.proxy_filter != ProxyFilter::default() {
             ext.insert(self.proxy_filter);
@@ -528,6 +542,8 @@ mod tests {
             "john-!country-us",
             "john-!city-ny",
             "john-!carrier-c",
+            "john-!datacenter-!residential-!mobile-!isp",
+            "john-mobile-!mobile",
         ] {
             let ext = Extensions::default();
 

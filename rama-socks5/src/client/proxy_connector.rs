@@ -3,7 +3,7 @@ use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
     error::BoxError,
-    extensions::{ExtensionsRef, NestedConnectionTransfer, SharedNestedConnectionTransfer},
+    extensions::{ExtensionsRef, ExtensionsTransfer, SharedExtensionsTransfer},
     io::Io,
     telemetry::tracing,
 };
@@ -13,13 +13,13 @@ use rama_dns::client::{
     resolver::{BoxDnsAddressResolver, DnsAddressResolver},
 };
 use rama_net::{
-    ConnectorTargetInputExt,
+    ConnectorTargetInputExt, ConnectorTransportProtocolInputExt,
     address::{HostWithPort, ProxyAddress},
     client::{
-        ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
-        EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, connect_to_proxy,
+        ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+        EstablishedProxyRoute, ProxyDialRequest, ProxyDialer, ProxyRoute,
     },
-    stream::{DefaultConnectionTransfer, NestedConnection},
+    stream::{DefaultExtensionsTransfer, NestedConnection},
     transport::TransportProtocol,
     user::ProxyCredential,
 };
@@ -34,13 +34,14 @@ use rama_utils::macros::generate_set_and_with;
 use std::net::IpAddr;
 
 #[derive(Debug, Clone)]
-/// A [`Layer`] which wraps the given connector towards the proxy with a
-/// [`Socks5ConnectProxyConnector`], so a proxied [`ProxyRoute`] is required.
+/// A [`Layer`] which wraps the given connector towards the proxy, dialed through a
+/// [`ProxyDialer`], with a [`Socks5ConnectProxyConnector`].
 ///
-/// Wrap this layer in a [`MaybeProxiedConnectorLayer`](rama_net::client::MaybeProxiedConnectorLayer) to
-/// connect directly instead when no proxy is requested.
+/// See [`Socks5ConnectProxyConnector`] for more information.
+///
+/// [`ProxyDialer`]: rama_net::client::ProxyDialer
 pub struct Socks5ConnectProxyConnectorLayer {
-    nested_connection_transfer: SharedNestedConnectionTransfer,
+    extensions_transfer: SharedExtensionsTransfer,
     #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsAddressResolver>,
 }
@@ -56,7 +57,7 @@ impl Socks5ConnectProxyConnectorLayer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
             #[cfg(feature = "dns")]
             dns_resolver: None,
         }
@@ -66,11 +67,11 @@ impl Socks5ConnectProxyConnectorLayer {
         /// Set what a SOCKS5 tunnel keeps from the proxy connection it is
         /// nested on.
         ///
-        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
-        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// Defaults to [`DefaultExtensionsTransfer`]. Chain transfers with
+        /// [`ExtensionsTransfer::and`] to also carry your own connection-scoped
         /// extension types across the tunnel.
-        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
-            self.nested_connection_transfer = transfer.into_shared();
+        pub fn extensions_transfer(mut self, transfer: impl ExtensionsTransfer) -> Self {
+            self.extensions_transfer = transfer.into_shared();
             self
         }
     }
@@ -81,9 +82,8 @@ impl Socks5ConnectProxyConnectorLayer {
     generate_set_and_with! {
         /// Attach the default [`DnsAddressResolver`] to this [`Socks5ConnectProxyConnectorLayer`].
         ///
-        /// It will try to be used (best-effort) to resolve the target's domain address
-        /// as an IP address if the `socks5` protocol is used, but not for the `socks5h`
-        /// protocol, which leaves resolving to the proxy.
+        /// It will try to be used (best-effort) to resolve domain addresses
+        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
         ///
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
@@ -95,7 +95,11 @@ impl Socks5ConnectProxyConnectorLayer {
 
     /// Attach a [`DnsAddressResolver`] to this [`Socks5ConnectProxyConnectorLayer`].
     ///
-    /// See [`Self::with_default_dns_resolver`] for when it is used.
+    /// It will try to be used (best-effort) to resolve domain addresses
+    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+    ///
+    /// In case of an error with resolving the domain address the connector
+    /// will anyway use the domain instead of the ip.
     #[must_use]
     pub fn with_dns_address_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
         self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
@@ -104,7 +108,11 @@ impl Socks5ConnectProxyConnectorLayer {
 
     /// Attach a [`DnsAddressResolver`] to this [`Socks5ConnectProxyConnectorLayer`].
     ///
-    /// See [`Self::with_default_dns_resolver`] for when it is used.
+    /// It will try to be used (best-effort) to resolve domain addresses
+    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+    ///
+    /// In case of an error with resolving the domain address the connector
+    /// will anyway use the domain instead of the ip.
     pub fn set_dns_address_resolver(&mut self, resolver: impl DnsAddressResolver) -> &mut Self {
         self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
         self
@@ -112,12 +120,12 @@ impl Socks5ConnectProxyConnectorLayer {
 }
 
 impl<S> Layer<S> for Socks5ConnectProxyConnectorLayer {
-    type Service = Socks5ConnectProxyConnector<S>;
+    type Service = Socks5ConnectProxyConnector<ProxyDialer<S>>;
 
     fn layer(&self, inner: S) -> Self::Service {
         Socks5ConnectProxyConnector {
-            inner,
-            nested_connection_transfer: self.nested_connection_transfer.clone(),
+            inner: ProxyDialer::new(inner),
+            extensions_transfer: self.extensions_transfer.clone(),
             #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver.clone(),
         }
@@ -125,8 +133,8 @@ impl<S> Layer<S> for Socks5ConnectProxyConnectorLayer {
 
     fn into_layer(self, inner: S) -> Self::Service {
         Socks5ConnectProxyConnector {
-            inner,
-            nested_connection_transfer: self.nested_connection_transfer,
+            inner: ProxyDialer::new(inner),
+            extensions_transfer: self.extensions_transfer,
             #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
         }
@@ -138,25 +146,34 @@ impl<S> Layer<S> for Socks5ConnectProxyConnectorLayer {
 /// A proxy is required: a request without a proxied [`ProxyRoute`] fails. Pair it with
 /// [`MaybeProxiedConnector`] to connect directly instead when no proxy is requested.
 ///
-/// The inner service is the connector towards the proxy: it receives its own
-/// [`ConnectRequest`] addressed at the proxy, and the SOCKS5 handshake for the
-/// requested target is spoken over the connection it returns.
+/// The inner service dials the connection to the proxy, such as a [`ProxyDialer`]
+/// over the connector towards proxies. The SOCKS5 handshake for the requested
+/// target is spoken over the connection it returns.
 ///
 /// [`MaybeProxiedConnector`]: rama_net::client::MaybeProxiedConnector
+/// [`ProxyDialer`]: rama_net::client::ProxyDialer
 #[derive(Debug, Clone, ExtensionsRef)]
 pub struct Socks5ConnectProxyConnector<S> {
     inner: S,
-    nested_connection_transfer: SharedNestedConnectionTransfer,
+    extensions_transfer: SharedExtensionsTransfer,
     #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsAddressResolver>,
 }
 
-impl<S> Socks5ConnectProxyConnector<S> {
+impl<S> Socks5ConnectProxyConnector<ProxyDialer<S>> {
     /// Creates a new [`Socks5ConnectProxyConnector`] over the given connector towards the proxy.
     pub fn new(inner: S) -> Self {
+        Self::from_dialer(ProxyDialer::new(inner))
+    }
+}
+
+impl<S> Socks5ConnectProxyConnector<S> {
+    /// Creates a new [`Socks5ConnectProxyConnector`] over the connections to the proxy that
+    /// `dialer` dials, see [`ProxyDialer`].
+    pub fn from_dialer(dialer: S) -> Self {
         Self {
-            inner,
-            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+            inner: dialer,
+            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
             #[cfg(feature = "dns")]
             dns_resolver: None,
         }
@@ -166,11 +183,11 @@ impl<S> Socks5ConnectProxyConnector<S> {
         /// Set what a SOCKS5 tunnel keeps from the proxy connection it is
         /// nested on.
         ///
-        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
-        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// Defaults to [`DefaultExtensionsTransfer`]. Chain transfers with
+        /// [`ExtensionsTransfer::and`] to also carry your own connection-scoped
         /// extension types across the tunnel.
-        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
-            self.nested_connection_transfer = transfer.into_shared();
+        pub fn extensions_transfer(mut self, transfer: impl ExtensionsTransfer) -> Self {
+            self.extensions_transfer = transfer.into_shared();
             self
         }
     }
@@ -183,9 +200,8 @@ impl<S> Socks5ConnectProxyConnector<S> {
     generate_set_and_with! {
         /// Attach the default [`DnsAddressResolver`] to this [`Socks5ConnectProxyConnector`].
         ///
-        /// It will try to be used (best-effort) to resolve the target's domain address
-        /// as an IP address if the `socks5` protocol is used, but not for the `socks5h`
-        /// protocol, which leaves resolving to the proxy.
+        /// It will try to be used (best-effort) to resolve domain addresses
+        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
         ///
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
@@ -198,7 +214,11 @@ impl<S> Socks5ConnectProxyConnector<S> {
     generate_set_and_with! {
         /// Attach a [`DnsAddressResolver`] to this [`Socks5ConnectProxyConnector`].
         ///
-        /// See [`Self::with_default_dns_resolver`] for when it is used.
+        /// It will try to be used (best-effort) to resolve domain addresses
+        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+        ///
+        /// In case of an error with resolving the domain address the connector
+        /// will anyway use the domain instead of the ip.
         pub fn dns_resolver(mut self, resolver: Option<BoxDnsAddressResolver>) -> Self {
             self.dns_resolver = resolver;
             self
@@ -207,7 +227,11 @@ impl<S> Socks5ConnectProxyConnector<S> {
 
     /// Attach a [`DnsAddressResolver`] to this [`Socks5ConnectProxyConnector`].
     ///
-    /// See [`Self::with_default_dns_resolver`] for when it is used.
+    /// It will try to be used (best-effort) to resolve domain addresses
+    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+    ///
+    /// In case of an error with resolving the domain address the connector
+    /// will anyway use the domain instead of the ip.
     #[must_use]
     pub fn with_dns_address_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
         self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
@@ -216,7 +240,11 @@ impl<S> Socks5ConnectProxyConnector<S> {
 
     /// Attach a [`DnsAddressResolver`] to this [`Socks5ConnectProxyConnector`].
     ///
-    /// See [`Self::with_default_dns_resolver`] for when it is used.
+    /// It will try to be used (best-effort) to resolve domain addresses
+    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+    ///
+    /// In case of an error with resolving the domain address the connector
+    /// will anyway use the domain instead of the ip.
     pub fn set_dns_address_resolver(&mut self, resolver: impl DnsAddressResolver) -> &mut Self {
         self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
         self
@@ -253,7 +281,7 @@ impl<S> Socks5ConnectProxyConnector<S> {
                 match dns_resolver.lookup_ipv4_rand(domain.clone()).await {
                     Some(Ok(addr)) => Host::Address(IpAddr::V4(addr)),
                     Some(Err(err)) => {
-                        tracing::debug!("failed to lookup ipv4 addresses for domain: {err:?}");
+                        tracing::debug!(?err, "failed to lookup ipv4 addresses for domain");
                         Host::Name(domain)
                     }
                     None => {
@@ -268,7 +296,7 @@ impl<S> Socks5ConnectProxyConnector<S> {
                 match dns_resolver.lookup_ipv6_rand(domain.clone()).await {
                     Some(Ok(addr)) => Host::Address(IpAddr::V6(addr)),
                     Some(Err(err)) => {
-                        tracing::debug!("failed to lookup ipv6 addresses for domain: {err:?}");
+                        tracing::debug!(?err, "failed to lookup ipv6 addresses for domain");
                         Host::Name(domain)
                     }
                     None => {
@@ -302,8 +330,8 @@ impl<S> Socks5ConnectProxyConnector<S> {
 
 impl<S, Input> Service<Input> for Socks5ConnectProxyConnector<S>
 where
-    S: ConnectorService<ConnectRequest, Connection: Io + Unpin>,
-    Input: ConnectorTargetInputExt + Send + 'static,
+    S: ConnectorService<ProxyDialRequest, Connection: Io + Unpin>,
+    Input: ConnectorTargetInputExt + ConnectorTransportProtocolInputExt + Send + 'static,
 {
     type Output = EstablishedClientConnection<NestedConnection<S::Connection>, Input>;
     type Error = ConnectionError;
@@ -322,16 +350,22 @@ where
         };
 
         if !proxy.protocol.is_socks5() || !proxy.protocol.carries(TransportProtocol::Tcp) {
-            return Err(ConnectionError::transport(
+            return Err(ConnectionError::local(
                 BoxError::from_static_str("socks5 proxy connector serves socks5 CONNECT only"),
-                ConnectionErrorKind::Protocol,
+                ConnectionErrorKind::InvalidInput,
             )
             .context_debug_field("protocol", proxy.protocol.clone()));
         }
-        if proxy.protocol.is_secure() {
+        if input.connector_transport_protocol() == Some(TransportProtocol::Udp) {
             return Err(ConnectionError::local(
-                BoxError::from_static_str("socks5 over TLS is not supported (right now)"),
-                ConnectionErrorKind::Unavailable,
+                BoxError::from_static_str("socks5 proxy connector cannot tunnel a udp flow"),
+                ConnectionErrorKind::InvalidInput,
+            ));
+        }
+        if let Some(ProxyCredential::Bearer(_)) = proxy.credential {
+            return Err(ConnectionError::local(
+                BoxError::from_static_str("socks5 proxy does not support bearer credentials"),
+                ConnectionErrorKind::InvalidInput,
             ));
         }
 
@@ -354,13 +388,20 @@ where
         #[cfg(not(feature = "dns"))]
         let target = self.resolve_handshake_target(&proxy, target).await;
 
-        let mut conn = connect_to_proxy(&self.inner, &proxy, input.extensions()).await?;
+        let mut conn = self
+            .inner
+            .connect(ProxyDialRequest {
+                proxy: proxy.clone(),
+                origin: input.extensions().clone(),
+            })
+            .await?
+            .conn;
 
         tracing::trace!(
             network.peer.address = %proxy.address.host,
-            network.peer.port = %proxy.address.port,
+            network.peer.port = proxy.address.port,
             server.address = %target.host,
-            server.port = %target.port,
+            server.port = target.port,
             "socks5 proxy connector: connected to proxy",
         );
 
@@ -370,27 +411,19 @@ where
             Some(ProxyCredential::Basic(basic)) => {
                 tracing::trace!(
                     network.peer.address = %proxy.address.host,
-                    network.peer.port = %proxy.address.port,
+                    network.peer.port = proxy.address.port,
                     server.address = %target.host,
-                    server.port = %target.port,
+                    server.port = target.port,
                     "socks5 proxy connector: continue handshake with authorisation",
                 );
                 client.set_auth(basic.clone());
             }
-            Some(ProxyCredential::Bearer(_)) => {
-                return Err(ConnectionError::local(
-                    BoxError::from_static_str(
-                        "socks5proxy does not support auth with bearer credential",
-                    ),
-                    ConnectionErrorKind::InvalidInput,
-                ));
-            }
-            None => {
+            Some(ProxyCredential::Bearer(_)) | None => {
                 tracing::trace!(
                     network.peer.address = %proxy.address.host,
-                    network.peer.port = %proxy.address.port,
+                    network.peer.port = proxy.address.port,
                     server.address = %target.host,
-                    server.port = %target.port,
+                    server.port = target.port,
                     "socks5 proxy connector: continue handshake without authorisation",
                 );
             }
@@ -400,9 +433,9 @@ where
             Ok(bind_addr) => {
                 tracing::trace!(
                     network.peer.address = %proxy.address.host,
-                    network.peer.port = %proxy.address.port,
+                    network.peer.port = proxy.address.port,
                     server.address = %target.host,
-                    server.port = %target.port,
+                    server.port = target.port,
                     %bind_addr,
                     "socks5 proxy connector: handshake complete",
                 )
@@ -414,7 +447,7 @@ where
 
         // The established byte stream now addresses the destination rather than
         // the proxy whose transport supplied the inherited policy.
-        let conn = NestedConnection::new(conn, &self.nested_connection_transfer);
+        let conn = NestedConnection::new(conn, &self.extensions_transfer);
         conn.extensions()
             .insert(EstablishedProxyRoute::Tunnel(proxy));
         Ok(EstablishedClientConnection { input, conn })
@@ -429,10 +462,11 @@ mod tests {
         TransportProtocolInputExt,
         address::HostWithPort,
         client::{
-            ConnectRequest, ConnectorTarget, ProxyRoute,
+            ConnectRequest, ConnectionErrorDomain, ConnectorService, ConnectorTarget, ProxyRoute,
             pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
         },
         transport::TransportProtocol,
+        user::credentials::bearer,
     };
     use std::{
         convert::Infallible,
@@ -549,7 +583,7 @@ mod tests {
             }
         });
         let connector = Socks5ConnectProxyConnector::new(inner)
-            .with_nested_connection_transfer(DefaultConnectionTransfer.and(carry_fact));
+            .with_extensions_transfer(DefaultExtensionsTransfer.and(carry_fact));
         let input = ConnectRequest::new(HostWithPort::example_domain_http())
             .with_application_protocol(Protocol::HTTP);
         input.extensions.insert(ProxyRoute::Proxy(selected));
@@ -849,7 +883,7 @@ mod tests {
         let connector = Socks5ConnectProxyConnector::new(inner);
         let input = ConnectRequest::new(HostWithPort::example_domain_https())
             .with_application_protocol(Protocol::HTTPS)
-            .with_transport_protocol(TransportProtocol::Udp);
+            .with_transport_protocol(TransportProtocol::Tcp);
         input.extensions.insert(ProxyRoute::Proxy(
             "socks5://127.0.0.1:1080".parse().unwrap(),
         ));
@@ -860,17 +894,50 @@ mod tests {
         assert_eq!(input.extensions.get_ref(), Some(&OriginMarker(1)));
     }
 
-    #[tokio::test]
-    async fn a_non_socks_proxy_protocol_is_rejected() {
-        let input = ConnectRequest::new(HostWithPort::example_domain_http());
-        input.extensions.insert(ProxyRoute::Proxy(
-            "http://proxy.example:8080".parse().unwrap(),
-        ));
-
+    async fn assert_refused_locally(input: ConnectRequest) {
         let error = Socks5ConnectProxyConnector::new(unreachable_proxy_connector())
             .connect(input)
             .await
             .unwrap_err();
-        assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+        assert_eq!(
+            (error.domain(), error.kind()),
+            (
+                ConnectionErrorDomain::Local,
+                ConnectionErrorKind::InvalidInput
+            ),
+            "{error:?}"
+        );
+    }
+
+    fn proxied(proxy: ProxyAddress) -> ConnectRequest {
+        let input = ConnectRequest::new(HostWithPort::example_domain_http());
+        input.extensions.insert(ProxyRoute::Proxy(proxy));
+        input
+    }
+
+    #[tokio::test]
+    async fn a_non_socks_proxy_protocol_is_rejected() {
+        assert_refused_locally(proxied("http://proxy.example:8080".parse().unwrap())).await;
+    }
+
+    #[tokio::test]
+    async fn a_udp_only_socks_proxy_is_rejected() {
+        assert_refused_locally(proxied("socks5+udp://proxy.example:1080".parse().unwrap())).await;
+    }
+
+    #[tokio::test]
+    async fn bearer_credentials_are_rejected() {
+        let mut proxy: ProxyAddress = "socks5://proxy.example:1080".parse().unwrap();
+        proxy.credential = Some(ProxyCredential::Bearer(bearer!("token")));
+        assert_refused_locally(proxied(proxy)).await;
+    }
+
+    #[tokio::test]
+    async fn a_udp_flow_is_never_turned_into_a_connect() {
+        assert_refused_locally(
+            proxied("socks5://proxy.example:1080".parse().unwrap())
+                .with_transport_protocol(TransportProtocol::Udp),
+        )
+        .await;
     }
 }

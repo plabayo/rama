@@ -174,8 +174,7 @@ impl ConnectUdpRequestMatcher {
         let template = if let Some(template) = template {
             template
         } else {
-            default = ProxyPathTemplate::try_new(ProxyPathTemplate::CONNECT_UDP_DEFAULT)
-                .map_err(|_error| UriTemplateError::NotMatchable("invalid default template"))?;
+            default = ProxyPathTemplate::connect_udp_default();
             &default
         };
         let ProxyPathProtocolTemplate::ConnectUdp {

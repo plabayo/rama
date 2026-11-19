@@ -200,7 +200,6 @@ mod serde_tests {
             ProxyProtocol::Socks5 {
                 remote_dns: true,
                 transport: Some(TransportProtocol::Udp),
-                secure: false,
             },
             ProxyProtocol::Custom(SmolStr::new_static("warp")),
             protocol_token::parse("h3/m?h={target_host}&p={target_port}").unwrap(),
@@ -278,7 +277,6 @@ mod serde_tests {
                 Some(ProxyProtocol::Socks5 {
                     remote_dns: false,
                     transport: Some(TransportProtocol::Udp),
-                    secure: false,
                 }),
             ),
             (

@@ -473,7 +473,6 @@ pub struct HttpConnector<S, Body> {
     _phantom: PhantomData<fn() -> Body>,
 }
 
-// Hand-written: the body type is only carried, so it needs no `Clone` of its own.
 impl<S: Clone, Body> Clone for HttpConnector<S, Body> {
     fn clone(&self) -> Self {
         Self {
@@ -538,6 +537,24 @@ impl<S, Body> HttpConnector<S, Body> {
     }
 
     define_inner_service_accessors!();
+}
+
+#[cfg(feature = "quic")]
+#[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
+impl<S, Q, Body> HttpConnector<HttpTransportConnector<S, Q>, Body> {
+    /// Wrap the QUIC transport connector of this connector, such as to adjust what it
+    /// dials with; the stream transport is left alone.
+    pub fn map_http3_connector<Q2>(
+        self,
+        map: impl FnOnce(Q) -> Q2,
+    ) -> HttpConnector<HttpTransportConnector<S, Q2>, Body> {
+        HttpConnector {
+            inner: self.inner.map_quic(map),
+            scope: self.scope,
+            response_limits: self.response_limits,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -619,7 +636,7 @@ where
         .target_protocol()
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
     // A secure (or unknown) origin needs rules from its own TLS connector;
-    // proxy-leg rules alone cannot establish whether origin TLS can be reused.
+    // proxy connection rules alone cannot establish whether origin TLS can be reused.
     let endpoint_policy_required = transport.is_quic() || !plaintext_origin;
     let reuse = transport.extensions().get_ref::<ConnectionReuse>();
     let classified = if endpoint_policy_required {
@@ -985,11 +1002,46 @@ where
 }
 
 #[derive(Clone, Debug)]
-/// A [`Layer`] that produces an [`HttpConnector`].
-pub struct HttpConnectorLayer<Body> {
+/// A [`Layer`] that produces an [`HttpConnector`], over the stream connector it layers and
+/// the QUIC leg `Q` next to it, if any.
+pub struct HttpConnectorLayer<Body, Q = ()> {
     scope: WeakScope,
     response_limits: ResponseLimits,
+    quic: Q,
     _phantom: PhantomData<Body>,
+}
+
+/// The QUIC leg of an [`HttpConnectorLayer`], as
+/// [`HttpConnectorLayer::with_http3_connector`] adds it.
+#[cfg(feature = "quic")]
+#[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
+#[derive(Clone, Debug)]
+pub struct Http3Leg<Q>(Q);
+
+/// The transport an [`HttpConnectorLayer`] builds its [`HttpConnector`] on: the stream
+/// connector alone, or that stream next to an [`Http3Leg`].
+pub trait HttpConnectorTransport<S>: Clone {
+    /// The transport connector of the [`HttpConnector`].
+    type Transport;
+
+    fn into_transport(self, stream: S) -> Self::Transport;
+}
+
+impl<S> HttpConnectorTransport<S> for () {
+    type Transport = S;
+
+    fn into_transport(self, stream: S) -> Self::Transport {
+        stream
+    }
+}
+
+#[cfg(feature = "quic")]
+impl<S, Q: Clone> HttpConnectorTransport<S> for Http3Leg<Q> {
+    type Transport = HttpTransportConnector<S, Q>;
+
+    fn into_transport(self, stream: S) -> Self::Transport {
+        HttpTransportConnector::new(stream, self.0)
+    }
 }
 
 impl<Body> HttpConnectorLayer<Body> {
@@ -999,10 +1051,13 @@ impl<Body> HttpConnectorLayer<Body> {
         Self {
             scope,
             response_limits: ResponseLimits::UNSET,
+            quic: (),
             _phantom: PhantomData,
         }
     }
+}
 
+impl<Body, Q> HttpConnectorLayer<Body, Q> {
     generate_set_and_with! {
         /// See [`HttpConnector::with_max_informational_responses`].
         pub fn max_informational_responses(mut self, max: Option<usize>) -> Self {
@@ -1018,6 +1073,19 @@ impl<Body> HttpConnectorLayer<Body> {
             self
         }
     }
+
+    #[cfg(feature = "quic")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
+    /// See [`HttpConnector::with_http3_connector`]: the connectors this layer produces run
+    /// HTTP/3 over `quic`.
+    pub fn with_http3_connector<Q2>(self, quic: Q2) -> HttpConnectorLayer<Body, Http3Leg<Q2>> {
+        HttpConnectorLayer {
+            scope: self.scope,
+            response_limits: self.response_limits,
+            quic: Http3Leg(quic),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<Body> Default for HttpConnectorLayer<Body> {
@@ -1026,12 +1094,12 @@ impl<Body> Default for HttpConnectorLayer<Body> {
     }
 }
 
-impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
-    type Service = HttpConnector<S, Body>;
+impl<S, Body, Q: HttpConnectorTransport<S>> Layer<S> for HttpConnectorLayer<Body, Q> {
+    type Service = HttpConnector<Q::Transport, Body>;
 
     fn layer(&self, inner: S) -> Self::Service {
         HttpConnector {
-            inner,
+            inner: self.quic.clone().into_transport(inner),
             scope: self.scope.clone(),
             response_limits: self.response_limits,
             _phantom: PhantomData,
@@ -1040,7 +1108,7 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
 
     fn into_layer(self, inner: S) -> Self::Service {
         HttpConnector {
-            inner,
+            inner: self.quic.into_transport(inner),
             scope: self.scope,
             response_limits: self.response_limits,
             _phantom: PhantomData,
@@ -1089,6 +1157,32 @@ mod http3_dispatch_tests {
         let error = connector.connect(input).await.err().unwrap();
         assert_eq!(error.domain(), ConnectionErrorDomain::Local);
         assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn the_connector_layer_dials_its_quic_leg_for_http3() {
+        let connector = HttpConnectorLayer::<Body>::new(WeakScope::detached())
+            .with_http3_connector(service_fn(
+                async |_: ConnectRequest| -> Result<
+                    EstablishedClientConnection<Http3Transport, ConnectRequest>,
+                    ConnectionError,
+                > {
+                    Err(ConnectionError::transport(
+                        BoxError::from_static_str("reached QUIC connector"),
+                        ConnectionErrorKind::Unavailable,
+                    ))
+                },
+            ))
+            .with_max_informational_responses(3)
+            .into_layer(stream_connector_must_not_connect());
+
+        let input = ConnectRequest::new("origin.example:443".parse().unwrap());
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        let error = connector.connect(input).await.err().unwrap();
+
+        assert!(error.to_string().contains("reached QUIC connector"));
     }
 
     #[tokio::test]

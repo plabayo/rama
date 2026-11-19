@@ -43,52 +43,54 @@ pub struct ProxyAddress {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// How to reach a proxy and what to ask it.
 pub enum ProxyProtocol {
-    /// An HTTP proxy: CONNECT for TCP, MASQUE for UDP and IP.
+    /// An HTTP proxy: CONNECT for TCP, and MASQUE for UDP or IP when it has a template.
     Http {
         /// The HTTP version spoken to it; `None` over TLS negotiates one with ALPN, and
-        /// means HTTP/1.1 in plaintext.
+        /// means HTTP/1.1 in plaintext. A plaintext proxy with `None` is dialed the same
+        /// as [`ProxyProtocol::HTTP`] (`Some(HTTP_11)`), but does not compare equal to it.
         version: Option<Version>,
         /// TLS to the proxy itself (`https://`).
         secure: bool,
-        /// Where its MASQUE tunnels live; `None` is the default template of each.
+        /// Where its MASQUE tunnels live; `None` offers CONNECT only.
         path_template: Option<ProxyPathTemplate>,
     },
+    /// A SOCKS5 proxy: CONNECT for TCP, UDP ASSOCIATE for UDP.
     Socks5 {
         /// The proxy resolves target names (`socks5h://`).
         remote_dns: bool,
         /// Only CONNECT (`+tcp`) or only UDP ASSOCIATE (`+udp`); `None` is whichever
         /// the traffic needs.
         transport: Option<TransportProtocol>,
-        /// TLS to the proxy itself (`+tls`).
-        secure: bool,
     },
     /// A scheme rama does not interpret.
     Custom(SmolStr),
 }
 
 impl ProxyProtocol {
+    /// A plaintext HTTP/1.1 proxy (`http://`).
     pub const HTTP: Self = Self::Http {
         version: Some(Version::HTTP_11),
         secure: false,
         path_template: None,
     };
 
+    /// An HTTP proxy over TLS, version negotiated with ALPN (`https://`).
     pub const HTTPS: Self = Self::Http {
         version: None,
         secure: true,
         path_template: None,
     };
 
+    /// A SOCKS5 proxy which resolves target names locally (`socks5://`).
     pub const SOCKS5: Self = Self::Socks5 {
         remote_dns: false,
         transport: None,
-        secure: false,
     };
 
+    /// A SOCKS5 proxy which resolves target names itself (`socks5h://`).
     pub const SOCKS5H: Self = Self::Socks5 {
         remote_dns: true,
         transport: None,
-        secure: false,
     };
 
     #[must_use]
@@ -104,10 +106,7 @@ impl ProxyProtocol {
     /// Whether the connection to the proxy itself is TLS.
     #[must_use]
     pub fn is_secure(&self) -> bool {
-        matches!(
-            self,
-            Self::Http { secure: true, .. } | Self::Socks5 { secure: true, .. }
-        )
+        matches!(self, Self::Http { secure: true, .. })
     }
 
     #[must_use]
@@ -119,34 +118,17 @@ impl ProxyProtocol {
     }
 
     /// The template to open CONNECT-UDP tunnels on, if this proxy offers them.
+    ///
+    /// An HTTP proxy offers them only where its address says so, with `+udp` or a
+    /// CONNECT-UDP path template.
     #[must_use]
     pub fn connect_udp_template(&self) -> Option<ProxyPathTemplate> {
         match self {
             Self::Http {
-                path_template: None,
-                ..
-            } => Some(ProxyPathTemplate::connect_udp_default()),
-            Self::Http {
                 path_template: Some(template),
                 ..
             } => template.is_connect_udp().then(|| template.clone()),
-            Self::Socks5 { .. } | Self::Custom(_) => None,
-        }
-    }
-
-    /// The template to open CONNECT-IP tunnels on, if this proxy offers them.
-    #[must_use]
-    pub fn connect_ip_template(&self) -> Option<ProxyPathTemplate> {
-        match self {
-            Self::Http {
-                path_template: None,
-                ..
-            } => Some(ProxyPathTemplate::connect_ip_default()),
-            Self::Http {
-                path_template: Some(template),
-                ..
-            } => template.is_connect_ip().then(|| template.clone()),
-            Self::Socks5 { .. } | Self::Custom(_) => None,
+            Self::Http { .. } | Self::Socks5 { .. } | Self::Custom(_) => None,
         }
     }
 
@@ -160,7 +142,7 @@ impl ProxyProtocol {
                 TransportProtocol::Tcp => true,
                 TransportProtocol::Udp => path_template
                     .as_ref()
-                    .is_none_or(ProxyPathTemplate::is_connect_udp),
+                    .is_some_and(ProxyPathTemplate::is_connect_udp),
             },
             Self::Socks5 {
                 transport: only, ..
@@ -276,7 +258,7 @@ impl TryFrom<&str> for ProxyAddress {
         let port = maybe_port
             .as_u16()
             .or_else(|| {
-                scheme.is_some().then(|| protocol.as_protocol())??.proxy_default_port()
+                scheme.and(protocol.as_protocol())?.proxy_default_port()
             })
             .context(
                 "proxy address contains no port or scheme with a known proxy port; port is required for proxy connections",
@@ -572,8 +554,8 @@ mod tests {
     }
 
     #[test]
-    fn an_http_proxy_offers_every_tunnel_on_the_default_templates() {
-        let addr: ProxyAddress = "h3://proxy.example".parse().unwrap();
+    fn masque_proxy_addresses() {
+        let addr: ProxyAddress = "h3+udp://proxy.example".parse().unwrap();
         assert_eq!(addr.address.port, 443);
         assert_eq!(addr.protocol.http_version(), Some(Version::HTTP_3));
         assert!(addr.protocol.carries(TransportProtocol::Tcp));
@@ -584,17 +566,45 @@ mod tests {
                 .unwrap()
                 .is_connect_udp_default()
         );
-        assert!(
+        assert_eq!(addr.to_string(), "h3+udp://proxy.example:443");
+
+        let addr: ProxyAddress =
+            "h3://user:pass@proxy.example:8443/masque?h={target_host}&p={target_port}"
+                .parse()
+                .unwrap();
+        assert!(addr.protocol.carries(TransportProtocol::Udp));
+        assert_eq!(
             addr.protocol
-                .connect_ip_template()
-                .unwrap()
-                .is_connect_ip_default()
+                .connect_udp_template()
+                .as_ref()
+                .map(ProxyPathTemplate::as_str),
+            Some("/masque?h={target_host}&p={target_port}")
         );
-        assert_eq!(addr.to_string(), "h3://proxy.example:443");
+        assert!(matches!(addr.credential, Some(ProxyCredential::Basic(_))));
+
+        // `+udp` is the default template, so a template next to it is refused as ambiguous.
+        for ambiguous in [
+            "h3+udp://proxy.example/masque?h={target_host}&p={target_port}",
+            "https+udp://proxy.example:443/.well-known/masque/udp/{target_host}/{target_port}/",
+        ] {
+            assert!(ambiguous.parse::<ProxyAddress>().is_err(), "{ambiguous}");
+        }
+
+        // An HTTP proxy carries UDP only where its address says the tunnels are.
+        let plain: ProxyAddress = "h3://proxy.example".parse().unwrap();
+        assert!(plain.protocol.carries(TransportProtocol::Tcp));
+        assert!(!plain.protocol.carries(TransportProtocol::Udp));
+        assert!(plain.protocol.connect_udp_template().is_none());
+
+        let error = "masque://proxy.example:443"
+            .parse::<ProxyAddress>()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("h3+udp"), "{error}");
     }
 
     #[test]
-    fn a_path_is_the_template_of_one_masque_tunnel() {
+    fn https_proxy_with_a_template_is_masque() {
         let addr: ProxyAddress =
             "https://user:pass@proxy.example:8443/masque?h={target_host}&p={target_port}"
                 .parse()
@@ -607,16 +617,24 @@ mod tests {
                 .map(ProxyPathTemplate::as_str),
             Some("/masque?h={target_host}&p={target_port}")
         );
-        assert_eq!(addr.protocol.connect_ip_template(), None);
         assert!(matches!(addr.credential, Some(ProxyCredential::Basic(_))));
 
+        // The RFC default template is what `+udp` is short for, so both spellings are equal.
+        let explicit: ProxyAddress =
+            "https://proxy.example:443/.well-known/masque/udp/{target_host}/{target_port}/"
+                .parse()
+                .unwrap();
+        let implicit: ProxyAddress = "https+udp://proxy.example".parse().unwrap();
+        assert_eq!(explicit, implicit);
+
         let ip: ProxyAddress = "h3://proxy.example/ip/{target}/{ipproto}".parse().unwrap();
-        assert!(ip.protocol.connect_ip_template().is_some());
+        assert!(ip.protocol.path_template().unwrap().is_connect_ip());
         assert!(!ip.protocol.carries(TransportProtocol::Udp));
 
         for plain in ["https://proxy.example:443", "https://proxy.example:443/"] {
             let addr: ProxyAddress = plain.parse().unwrap();
             assert_eq!(addr.protocol, ProxyProtocol::HTTPS, "{plain}");
+            assert_eq!(addr.protocol.path_template(), None, "{plain}");
         }
     }
 
@@ -642,22 +660,29 @@ mod tests {
     }
 
     #[test]
-    fn the_scheme_names_the_http_version() {
-        for (s, version) in [
-            ("http://proxy.example:8080", Some(Version::HTTP_11)),
-            ("h2c://proxy.example:8080", Some(Version::HTTP_2)),
-            ("https://proxy.example:8443", None),
-            ("h1://proxy.example:8443", Some(Version::HTTP_11)),
-            ("h2://proxy.example:8443", Some(Version::HTTP_2)),
-            ("h3://proxy.example:8443", Some(Version::HTTP_3)),
+    fn a_version_only_changes_on_the_address_when_it_speaks_http() {
+        let socks: ProxyAddress = "socks5://proxy.example:1080".parse().unwrap();
+        let unchanged = socks.clone().with_http_version(Version::HTTP_2);
+        assert_eq!(unchanged, socks);
+    }
+
+    #[test]
+    fn invalid_proxy_path_templates_are_rejected() {
+        for s in [
+            "https://proxy.example/{target_host}",
+            "h3://proxy.example/{target_host}/{+target_port}",
+            "h3://proxy.example/{target_host}/{target_port}#x",
+            "socks5://proxy.example/{target_host}/{target_port}/",
+            "h3://proxy.example/{target_host/{target_port}",
+            "https://proxy.example/foo",
+            "h3://proxy.example/masque?h={host}&p={port}",
         ] {
-            let addr: ProxyAddress = s.parse().unwrap();
-            assert_eq!(addr.protocol.http_version(), version, "{s}");
+            assert!(s.parse::<ProxyAddress>().is_err(), "{s}");
         }
     }
 
     #[test]
-    fn proxy_addresses_round_trip() {
+    fn masque_proxy_addresses_round_trip() {
         for s in [
             "http://proxy.example:8080",
             "h2c://proxy.example:8080",
@@ -674,7 +699,7 @@ mod tests {
             "socks5+udp://proxy.example:1080",
             "socks5+tcp://proxy.example:1080",
             "socks5h://proxy.example:1080",
-            "socks5h+udp+tls://u:p@proxy.example:1080",
+            "socks5h+udp://u:p@proxy.example:1080",
         ] {
             let addr: ProxyAddress = s.parse().unwrap();
             assert_eq!(addr.to_string(), s, "{s}");
@@ -688,33 +713,7 @@ mod tests {
 
     #[test]
     fn invalid_proxy_schemes_are_rejected() {
-        for s in [
-            " http://proxy.example:8080",
-            "https+h2://proxy.example:8443",
-            "h3+tcp://proxy.example:443",
-            "socks5+h2://proxy.example:1080",
-            "socks5h+tcp+udp://proxy.example:1080",
-        ] {
-            assert!(s.parse::<ProxyAddress>().is_err(), "{s}");
-        }
-    }
-
-    #[test]
-    fn a_version_only_changes_on_the_address_when_it_speaks_http() {
-        let socks: ProxyAddress = "socks5://proxy.example:1080".parse().unwrap();
-        let unchanged = socks.clone().with_http_version(Version::HTTP_2);
-        assert_eq!(unchanged, socks);
-    }
-
-    #[test]
-    fn invalid_proxy_path_templates_are_rejected() {
-        for s in [
-            "https://proxy.example/{target_host}",
-            "h3://proxy.example/{target_host}/{+target_port}",
-            "h3://proxy.example/{target_host}/{target_port}#x",
-            "socks5://proxy.example/{target_host}/{target_port}/",
-            "h3://proxy.example/{target_host/{target_port}",
-        ] {
+        for s in [" http://proxy.example:8080", "://proxy.example:8080"] {
             assert!(s.parse::<ProxyAddress>().is_err(), "{s}");
         }
     }
@@ -765,6 +764,31 @@ mod tests {
             ProxyPathTemplate::try_new("/{target_port}").unwrap_err(),
             ProxyPathTemplateError::MissingTargetHost
         );
+        for template in [
+            "/foo",
+            "/masque?h={host}&p={port}",
+            "/.well-known/masque/udp/",
+        ] {
+            assert_eq!(
+                ProxyPathTemplate::try_new(template).unwrap_err(),
+                ProxyPathTemplateError::MissingTargetHost,
+                "{template}"
+            );
+        }
+        for template in [
+            "/ip/{target}",
+            "/ip{?ipproto}",
+            "/.well-known/masque/ip/",
+            "/.well-known/masque/ip/any/any/",
+            ProxyPathTemplate::CONNECT_IP_DEFAULT,
+        ] {
+            assert!(
+                ProxyPathTemplate::try_new(template)
+                    .unwrap()
+                    .is_connect_ip(),
+                "{template}"
+            );
+        }
         for (template, operator) in [
             ("/{+target_host}/{target_port}", TemplateOperator::Reserved),
             ("/{target_host}{#target_port}", TemplateOperator::Fragment),

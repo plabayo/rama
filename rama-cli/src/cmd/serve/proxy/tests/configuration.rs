@@ -514,13 +514,12 @@ async fn mitm_certificate_portal_is_hijacked_over_http_and_https() {
     let tls_config = TlsClientConfig::new()
         .try_with_server_trust_anchors([trust_anchor])
         .unwrap();
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     let proxy_route = || ProxyRoute::Proxy(format!("http://{proxy_address}").parse().unwrap());

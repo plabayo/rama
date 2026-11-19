@@ -4,24 +4,23 @@
 //! [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 
 use clap::ValueEnum;
+use rama::net::client::MaybeProxied;
 use rama::{
     Service,
     dns::client::GlobalDnsResolver,
     error::BoxError,
     extensions::ExtensionsRef,
     graceful::WeakScope,
-    http::client::DefaultHttpWebClient,
+    http::{Body, client::ProxyConnector},
     net::address::Host,
     net::{
         address::ProxyPathTemplate,
         client::{ConnectRequest, ConnectorService},
     },
-    proxy::masque::connect_udp::{
-        ConnectUdpConnector, ConnectUdpService, DestinationScopePolicy, MaybeTunneledSocket,
-    },
+    proxy::masque::connect_udp::{ConnectUdpService, ConnectUdpSocket, DestinationScopePolicy},
     quic::proxy::InputWithQuicClientHello,
     tls::client::TlsClientConfig,
-    udp::{UdpPacketSocket, proxy::UdpConnector},
+    udp::UdpPacketSocket,
 };
 
 use super::{InspectionState, MitmPolicy, upstream::UpstreamProxyConfig};
@@ -52,8 +51,10 @@ pub(super) fn connect_udp_service(
     ConnectUdpService<
         DestinationScopePolicy,
         GlobalDnsResolver,
-        impl ConnectorService<ConnectRequest, Connection = MaybeTunneledSocket<UdpPacketSocket>>
-        + Clone
+        impl ConnectorService<
+            ConnectRequest,
+            Connection = MaybeProxied<UdpPacketSocket, ConnectUdpSocket>,
+        > + Clone
         + use<>,
     >,
     BoxError,
@@ -66,14 +67,19 @@ pub(super) fn connect_udp_service(
     // The client sending CONNECT-UDP requests to a MASQUE upstream proxy.
     let proxy_tls = upstream
         .proxy_tls_config()
-        .map_or_else(TlsClientConfig::default_http, |tls| {
-            tls.with_alpn_http_auto()
-        });
-    let upstream_client = DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(
-        scope.clone(),
-        proxy_tls,
-    )?;
-    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), upstream_client, scope.clone());
+        .unwrap_or_else(TlsClientConfig::default_http);
+    // Only CONNECT-UDP is used. Building `HttpConnectUdpProxyConnector` directly over an
+    // `EasyHttpWebClient` connector (with a `UdpConnector` for direct routes) works too;
+    // the builder just sets up TLS and the pool towards the proxy for us.
+    let upstream_proxies = ProxyConnector::builder(scope.clone())
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_tls_support_using_boringssl(proxy_tls)
+        .with_default_http_connector::<Body>()
+        .with_default_connection_pool()
+        .with_http_connect_udp()
+        .build();
+    let tunnels = upstream_proxies.into_parts().connect_udp;
     Ok(ConnectUdpService::try_new(scope, template)?
         .with_policy(policy)
         .with_connector(upstream.connector_service(tunnels)))

@@ -254,7 +254,8 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap: None,
-    });
+    })
+    .unwrap();
     let request = Request::builder()
         .uri(format!("http://{origin}/socket-summary"))
         .extension(ConnectionId(connection_id))
@@ -296,7 +297,8 @@ async fn live_har_controller_records_proxy_traffic_end_to_end() {
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream,
         icap: None,
-    });
+    })
+    .unwrap();
     let response = client
         .serve(
             Request::builder()
@@ -360,13 +362,12 @@ async fn https_connect_is_mitm_relayed_end_to_end() {
     assert!(inspector_address.is_some(), "inspector listener bound");
 
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     let request = Request::builder()

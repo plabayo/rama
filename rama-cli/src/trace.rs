@@ -88,13 +88,12 @@ fn init_structured(
     default_directive: Directive,
     overrides: &[Directive],
 ) -> Result<TracingGuard, BoxError> {
-    let svc = EasyHttpWebClient::connector_builder()
+    let svc = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(TlsClientConfig::default_http())
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
     let exportor = OtelExporter::from_env_http(svc).context("build OTLP HTTP span exporter")?;

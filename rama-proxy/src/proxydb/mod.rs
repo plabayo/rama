@@ -94,6 +94,9 @@ impl From<NonEmptyStr> for ProxyID {
 ///   to add it manually to the input [`Extensions`].
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
+// An ignored key would widen the selection instead of narrowing it, so an unknown
+// one has to fail loudly.
+#[serde(deny_unknown_fields)]
 pub struct ProxyFilter {
     /// The ID of the proxy to select.
     pub id: Option<NonEmptyStr>,
@@ -115,6 +118,8 @@ pub struct ProxyFilter {
     pub city: Option<Vec<StringFilter>>,
 
     /// The types of proxy to select from.
+    ///
+    /// A proxy has one type, so naming several selects a proxy of any of them.
     #[serde(rename = "type")]
     pub kind: Option<Vec<ProxyType>>,
 
@@ -709,7 +714,7 @@ mod memdb {
                 query.kind(kind);
             }
 
-            // Which proxy kinds carry the transport is known per proxy: see `supports_transport`.
+            // Which proxy protocols carry the transport is known per proxy: see `supports_transport`.
             query.and(Filter::Is(match ctx.protocol {
                 TransportProtocol::Tcp => &self.inner.tcp,
                 TransportProtocol::Udp => &self.inner.udp,
@@ -1370,7 +1375,7 @@ mod memdb {
         }
 
         #[tokio::test]
-        async fn test_memorydb_get_h3_capable_mobile_residential_be_asterix_proxies() {
+        async fn test_memorydb_get_h3_capable_mobile_be_asterix_proxies() {
             let db = memproxydb().await;
             let ctx = h3_proxy_context();
             let filter = ProxyFilter {
@@ -1492,12 +1497,10 @@ mod memdb {
                     ProxyProtocol::Socks5 {
                         remote_dns: false,
                         transport: Some(TransportProtocol::Udp),
-                        secure: false,
                     },
                     ProxyProtocol::Socks5 {
                         remote_dns: true,
                         transport: Some(TransportProtocol::Udp),
-                        secure: false,
                     },
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,
@@ -1575,12 +1578,10 @@ mod memdb {
                     ProxyProtocol::Socks5 {
                         remote_dns: false,
                         transport: Some(TransportProtocol::Udp),
-                        secure: false,
                     },
                     ProxyProtocol::Socks5 {
                         remote_dns: true,
                         transport: Some(TransportProtocol::Udp),
-                        secure: false,
                     },
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,
@@ -1663,12 +1664,10 @@ mod memdb {
                         ProxyProtocol::Socks5 {
                             remote_dns: false,
                             transport: Some(TransportProtocol::Udp),
-                            secure: false,
                         },
                         ProxyProtocol::Socks5 {
                             remote_dns: true,
                             transport: Some(TransportProtocol::Udp),
-                            secure: false,
                         },
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
@@ -1690,12 +1689,10 @@ mod memdb {
                         ProxyProtocol::Socks5 {
                             remote_dns: false,
                             transport: Some(TransportProtocol::Udp),
-                            secure: false,
                         },
                         ProxyProtocol::Socks5 {
                             remote_dns: true,
                             transport: Some(TransportProtocol::Udp),
-                            secure: false,
                         },
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
@@ -1717,12 +1714,10 @@ mod memdb {
                         ProxyProtocol::Socks5 {
                             remote_dns: false,
                             transport: Some(TransportProtocol::Udp),
-                            secure: false,
                         },
                         ProxyProtocol::Socks5 {
                             remote_dns: true,
                             transport: Some(TransportProtocol::Udp),
-                            secure: false,
                         },
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
@@ -1744,12 +1739,10 @@ mod memdb {
                         ProxyProtocol::Socks5 {
                             remote_dns: false,
                             transport: Some(TransportProtocol::Udp),
-                            secure: false,
                         },
                         ProxyProtocol::Socks5 {
                             remote_dns: true,
                             transport: Some(TransportProtocol::Udp),
-                            secure: false,
                         },
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
@@ -1853,6 +1846,21 @@ mod memdb {
             ] {
                 let filter: ProxyFilter = serde_html_form::from_str(input).unwrap();
                 assert_eq!(filter, expected_output);
+            }
+        }
+
+        #[test]
+        fn the_removed_proxy_type_keys_are_refused() {
+            for input in [
+                r#"{"datacenter":true}"#,
+                r#"{"residential":true}"#,
+                r#"{"mobile":true}"#,
+                r#"{"country":["be"],"mobile":true}"#,
+            ] {
+                serde_json::from_str::<ProxyFilter>(input).unwrap_err();
+            }
+            for input in ["datacenter=true", "country=be&mobile=true"] {
+                serde_html_form::from_str::<ProxyFilter>(input).unwrap_err();
             }
         }
     }

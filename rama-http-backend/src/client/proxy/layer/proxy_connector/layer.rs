@@ -1,19 +1,22 @@
 use super::HttpConnectProxyConnector;
 use rama_core::Layer;
-use rama_core::extensions::{NestedConnectionTransfer, SharedNestedConnectionTransfer};
-use rama_net::stream::DefaultConnectionTransfer;
+use rama_core::extensions::{ExtensionsTransfer, SharedExtensionsTransfer};
+use rama_net::{client::ProxyDialer, stream::DefaultExtensionsTransfer};
 use rama_utils::macros::generate_set_and_with;
 
 #[derive(Debug, Clone)]
-/// A [`Layer`] which wraps the given connector towards the proxy with an
-/// [`HttpConnectProxyConnector`], so a proxied [`ProxyRoute`] is required.
+/// A [`Layer`] which wraps the given connector towards the proxy, dialed through a
+/// [`ProxyDialer`], with an [`HttpConnectProxyConnector`], so a proxied [`ProxyRoute`] is
+/// required.
 ///
-/// Wrap this layer in a [`MaybeProxiedConnectorLayer`](rama_net::client::MaybeProxiedConnectorLayer) to
-/// connect directly instead when no proxy is requested.
+/// Pair the connector it builds with a direct one in a
+/// [`MaybeProxiedConnector`](rama_net::client::MaybeProxiedConnector) to connect directly instead
+/// when no proxy is requested.
 ///
 /// [`ProxyRoute`]: rama_net::client::ProxyRoute
+/// [`ProxyDialer`]: rama_net::client::ProxyDialer
 pub struct HttpConnectProxyConnectorLayer {
-    nested_connection_transfer: SharedNestedConnectionTransfer,
+    extensions_transfer: SharedExtensionsTransfer,
 }
 
 impl Default for HttpConnectProxyConnectorLayer {
@@ -27,7 +30,7 @@ impl HttpConnectProxyConnectorLayer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
         }
     }
 
@@ -35,26 +38,25 @@ impl HttpConnectProxyConnectorLayer {
         /// Set what a CONNECT tunnel keeps from the proxy connection it is
         /// nested on.
         ///
-        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
-        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// Defaults to [`DefaultExtensionsTransfer`]. Chain transfers with
+        /// [`ExtensionsTransfer::and`] to also carry your own connection-scoped
         /// extension types across the tunnel.
-        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
-            self.nested_connection_transfer = transfer.into_shared();
+        pub fn extensions_transfer(mut self, transfer: impl ExtensionsTransfer) -> Self {
+            self.extensions_transfer = transfer.into_shared();
             self
         }
     }
 }
 
 impl<S> Layer<S> for HttpConnectProxyConnectorLayer {
-    type Service = HttpConnectProxyConnector<S>;
+    type Service = HttpConnectProxyConnector<ProxyDialer<S>>;
 
     fn layer(&self, inner: S) -> Self::Service {
         HttpConnectProxyConnector::new(inner)
-            .with_nested_connection_transfer(self.nested_connection_transfer.clone())
+            .with_extensions_transfer(self.extensions_transfer.clone())
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        HttpConnectProxyConnector::new(inner)
-            .with_nested_connection_transfer(self.nested_connection_transfer)
+        HttpConnectProxyConnector::new(inner).with_extensions_transfer(self.extensions_transfer)
     }
 }

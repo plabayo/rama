@@ -239,13 +239,15 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
     );
 
     let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl_config(insecure.clone())
-        .with_proxy_support()
+        .with_proxy_support(ProxyConnector::default_using_tls(
+            WeakScope::detached(),
+            insecure.clone(),
+        ))
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     let extensions = Extensions::new();
@@ -383,13 +385,15 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
     let ui_address = inspector_address.expect("inspector listener bound");
 
     let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl_config(insecure.clone())
-        .with_proxy_support()
+        .with_proxy_support(ProxyConnector::default_using_tls(
+            WeakScope::detached(),
+            insecure.clone(),
+        ))
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     let extensions = Extensions::new();

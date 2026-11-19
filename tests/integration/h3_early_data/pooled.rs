@@ -7,10 +7,10 @@ use rama::{
     http::{
         StatusCode, Version as HttpVersion,
         body::util::CollectOptions,
-        client::{EasyHttpConnectorBuilder, Http3Connector, HttpPooledConnectorConfig},
+        client::{EasyHttpConnectorBuilder, HttpPooledConnectorConfig},
         conn::TargetHttpVersion,
         header,
-        layer::retry::{RetryBody, early_data::prepare_bodyless},
+        layer::retry::early_data::prepare_bodyless,
         layer::validate_request::early_data::forward_to,
         proto::ext::early_data::{EarlyDataAttempt, EarlyDataReceived},
         server::HttpServer,
@@ -197,29 +197,23 @@ async fn pooled_recovery(provider: Provider, scenario: Scenario) {
         }
     });
 
-    let h3 = Http3Connector::builder(WeakScope::detached())
-        .with_endpoints(SharedQuicEndpoint::supplied(
-            fixture.client.clone(),
-            WeakScope::detached(),
-        ))
-        .with_tls_provider(client_provider(provider))
-        .with_tls_config(fixture.client_tls.clone())
-        .with_config(Config {
-            max_requests: 1,
-            ..early_config()
-        })
-        .build_lazy()
-        .unwrap();
     let rule_calls = Arc::new(AtomicUsize::new(0));
     let application_calls = rule_calls.clone();
     let client = Arc::new(
-        EasyHttpConnectorBuilder::new()
-            .with_custom_transport_connector(h3)
+        EasyHttpConnectorBuilder::new(WeakScope::detached())
+            .with_custom_quic_connector(SharedQuicEndpoint::supplied(
+                fixture.client.clone(),
+                WeakScope::detached(),
+            ))
             .without_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
-            .without_tls_support()
-            .with_default_http_connector::<RetryBody>(WeakScope::detached())
+            .with_default_tls_support(fixture.client_tls.clone())
+            .with_quic_tls_provider(client_provider(provider))
+            .with_http3_config(Config {
+                max_requests: 1,
+                ..early_config()
+            })
+            .with_default_http_connector()
             .with_connection_pool(HttpPooledConnectorConfig {
                 max_connections_per_id: Some(NonZeroUsize::MIN),
                 ..HttpPooledConnectorConfig::default()
@@ -483,13 +477,12 @@ async fn real_ingress_request(provider: Provider, version: HttpVersion) -> Reque
         let address = listener.local_addr().unwrap();
         let service = HttpServer::auto(WeakScope::detached()).service(capture);
         let _serving = Task::spawn(listener.serve(service));
-        let client = EasyHttpConnectorBuilder::new()
+        let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
             .with_default_transport_connector()
             .without_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .with_default_connection_pool()
             .build_client();
         let request = Request::builder()

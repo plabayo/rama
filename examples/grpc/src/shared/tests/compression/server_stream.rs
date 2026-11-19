@@ -44,7 +44,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(move |_| server.clone()),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(encoding);
@@ -99,7 +99,7 @@ async fn client_disabled_server_enabled(encoding: CompressionEncoding) {
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(move |_| server.clone()),
         Uri::from_static("http://[::1]:50051"),
     );
 
@@ -141,7 +141,7 @@ async fn client_enabled_server_disabled(encoding: CompressionEncoding) {
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(move |_| server.clone()),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(encoding);

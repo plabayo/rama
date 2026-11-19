@@ -46,10 +46,9 @@ mod store;
 mod wrappers;
 
 pub use extension::{
-    DnsExtension, Extension, ExtensionScope, GrpcExtension, HttpExtension,
-    NestedConnectionTransfer, NestedConnectionTransferAnd, NetExtension, NoConnectionTransfer,
-    ProxyExtension, SharedNestedConnectionTransfer, TlsExtension, TypeErasedExtension, UaExtension,
-    WsExtension,
+    DnsExtension, Extension, ExtensionScope, ExtensionsTransfer, ExtensionsTransferAnd,
+    GrpcExtension, HttpExtension, NetExtension, NoExtensionsTransfer, ProxyExtension,
+    SharedExtensionsTransfer, TlsExtension, TypeErasedExtension, UaExtension, WsExtension,
 };
 pub use get_many::{FromExtensionsGroup, GetManyArc, GetManyRef, Target, TargetPlan, Targets};
 pub use refs::{ExtensionsMut, ExtensionsRef};
@@ -71,7 +70,7 @@ use store::{Node, Store, type_bit};
 /// best described as "I'm layered on top of that, but I'm not exactly the same":
 /// - Retry attempts fork from the original request (don't leak failed extensions)
 /// - Responses fork the request (response != request)
-/// - H2 streams fork from underlying H2 connection (nested connection with isolated properties)
+/// - H2 streams fork from underlying H2 connection (a child connection with isolated properties)
 ///
 /// Connection's who logically map one-to-one we don't fork and we just pass the [`Extensions`]
 /// up, examples are:
@@ -79,10 +78,10 @@ use store::{Node, Store, type_bit};
 /// - HTTP layered on top of TLS
 /// - ...
 ///
-/// A level created by [`Extensions::fork_nested_connection`] is the bottom of a
-/// new connection nested on top of the chain below it. Lookups of
+/// A level created by [`Extensions::fork_connection`] starts a child connection
+/// of the chain it was forked from, its parent connection. Lookups of
 /// [`ExtensionScope::Connection`] types stop there instead of resolving a fact
-/// about the connection underneath, see [`Extension::scope`].
+/// about the parent connection, see [`Extension::scope`].
 pub struct Extensions {
     node: Arc<Node>,
 }
@@ -102,7 +101,7 @@ impl Extensions {
     }
 
     #[inline(always)]
-    fn with_parent(parent: Option<Self>, nested_connection: bool) -> Self {
+    fn with_parent(parent: Option<Self>, connection_boundary: bool) -> Self {
         // Built in place: the inline entries are most of a node and stay
         // uninitialized, so there is nothing to move into the allocation.
         let node = Arc::into_raw(Arc::<Node>::new_uninit())
@@ -123,9 +122,9 @@ impl Extensions {
         // SAFETY: as for `view_of.write`: P.
         unsafe { parent_slot.write(parent) };
         // SAFETY: as for `view_of`: P.
-        let nested_slot = unsafe { &raw mut (*node).nested_connection };
+        let boundary_slot = unsafe { &raw mut (*node).connection_boundary };
         // SAFETY: as for `view_of.write`: P.
-        unsafe { nested_slot.write(nested_connection) };
+        unsafe { boundary_slot.write(connection_boundary) };
         // SAFETY: as for `view_of`: P.
         let entries = unsafe { &raw mut (*node).entries.entries };
         // SAFETY: `init_in_place` needs `entries` valid for writes and aligned: a
@@ -166,40 +165,41 @@ impl Extensions {
         Self::with_parent(Some(self.clone()), false)
     }
 
-    /// Create a fresh child [`Extensions`] that starts a new connection nested
-    /// on top of the connection this chain describes.
+    /// Create a fresh child [`Extensions`] that starts a child connection of the
+    /// connection this chain describes.
     ///
     /// Same as [`Self::fork`] for [`ExtensionScope::Flow`] types: config,
     /// routing and other intent keeps resolving through. Lookups of
     /// [`ExtensionScope::Connection`] types stop at this level instead, so a
-    /// fact about the connection underneath (its negotiated ALPN, its TLS
+    /// fact about the parent connection (its negotiated ALPN, its TLS
     /// parameters, whether it may be reused, ...) does not answer for the
-    /// nested one. Use it where a new endpoint is established over an existing
-    /// connection: a `CONNECT` tunnel, a SOCKS5 stream, a CONNECT-UDP flow.
+    /// child. Use it where another connection starts from this one: one
+    /// established over it (a `CONNECT` tunnel, a SOCKS5 stream, a CONNECT-UDP
+    /// flow), or one dialed on behalf of its request (the connection to a proxy).
     ///
-    /// `transfer` decides what the nested connection keeps of the facts the
-    /// boundary would otherwise stop, see [`NestedConnectionTransfer`]. Pass
-    /// [`NoConnectionTransfer`] for a plain boundary that keeps none of them.
+    /// `transfer` decides what the child keeps of the facts the boundary would
+    /// otherwise stop, see [`ExtensionsTransfer`]. Pass [`NoExtensionsTransfer`]
+    /// for a plain boundary that keeps none of them.
     ///
     /// [`Self::iter_ref`] and [`Self::iter_arc`] still walk past the boundary.
     #[must_use]
-    pub fn fork_nested_connection(&self, transfer: &dyn NestedConnectionTransfer) -> Self {
-        let nested = Self::with_parent(Some(self.clone()), true);
-        transfer.transfer(self, &nested);
-        nested
+    pub fn fork_connection(&self, transfer: &dyn ExtensionsTransfer) -> Self {
+        let child = Self::with_parent(Some(self.clone()), true);
+        transfer.transfer(self, &child);
+        child
     }
 
-    /// Whether this level was created by [`Self::fork_nested_connection`].
+    /// Whether this level was created by [`Self::fork_connection`].
     #[inline(always)]
-    fn is_nested_connection(&self) -> bool {
-        self.node.nested_connection
+    fn is_connection_boundary(&self) -> bool {
+        self.node.connection_boundary
     }
 
     /// Whether a lookup of `T` stops at this level instead of continuing into
     /// the parent chain.
     #[inline(always)]
     fn ends_scope_of<T: Extension>(&self) -> bool {
-        T::scope().is_connection() && self.is_nested_connection()
+        T::scope().is_connection() && self.is_connection_boundary()
     }
 
     /// The parent [`Extensions`] this blob was forked from, if any.
@@ -209,43 +209,83 @@ impl Extensions {
         self.node.parent.as_ref()
     }
 
-    /// The extensions of the connection this one is nested on: the parent of
-    /// the nearest [`Self::fork_nested_connection`] level, if any.
+    /// The extensions of the parent connection: the parent of the nearest
+    /// [`Self::fork_connection`] level, if any.
     ///
     /// Lookups on the result stop at its own boundaries, so each answer is
     /// about that one connection.
     #[must_use]
-    pub fn outer_connection(&self) -> Option<&Self> {
+    pub fn parent_connection(&self) -> Option<&Self> {
         let mut level = self;
         loop {
-            if level.is_nested_connection() {
+            if level.is_connection_boundary() {
                 return level.parent();
             }
             level = level.parent()?;
         }
     }
 
+    /// Each parent connection, nearest first: [`Self::parent_connection`] repeated.
+    pub fn parent_connections(&self) -> impl Iterator<Item = &Self> {
+        std::iter::successors(self.parent_connection(), |connection| {
+            connection.parent_connection()
+        })
+    }
+
     /// Return a view of this [`Extensions`] chain layered on top of `base`.
     ///
     /// The toplevel extensions are still the same and are editable.
     /// Lookups resolve through this chain first falling back to `base`
-    /// only when nothing matches. `base` is all the way at the bottom.
+    /// only when nothing matches.
+    ///
+    /// `base` answers as defaults of this connection: its connection-scoped
+    /// entries, as a lookup on `base` sees them, start this chain's connection,
+    /// right below its own levels and above the boundary to a parent connection.
+    /// Everything else of `base` is at the bottom, below the parent connections.
     ///
     /// Use this when you have an Extensions (chain) to which you want to apply
     /// defaults, e.g. `request_extensions().with_base(&base_extension_config)`
     #[must_use]
     pub fn with_base(&self, base: &Self) -> Self {
+        self.view_over(base, true)
+    }
+
+    fn view_over(&self, base: &Self, connection_defaults_pending: bool) -> Self {
+        let boundary = self.node.connection_boundary;
+        let splice = connection_defaults_pending && boundary;
         let parent = match self.parent() {
-            Some(parent) => parent.with_base(base),
+            Some(parent) => parent.view_over(base, connection_defaults_pending && !boundary),
             None => base.clone(),
+        };
+        let parent = if splice {
+            let defaults = Self::with_parent(Some(parent), true);
+            defaults.extend_connection_defaults(base);
+            defaults
+        } else {
+            parent
         };
         Self {
             node: Arc::new(Node {
                 view_of: Some(self.owner().clone()),
                 parent: Some(parent),
-                nested_connection: self.node.nested_connection,
+                connection_boundary: boundary && !splice,
                 entries: Store::default(),
             }),
+        }
+    }
+
+    // The connection-scoped entries of `base` a connection lookup on it reaches,
+    // oldest first: its levels down to and including its first boundary.
+    fn extend_connection_defaults(&self, base: &Self) {
+        if !base.is_connection_boundary()
+            && let Some(parent) = base.parent()
+        {
+            self.extend_connection_defaults(parent);
+        }
+        for entry in base.store().entries.iter() {
+            if entry.scope().is_connection() {
+                self.store().push(entry.clone());
+            }
         }
     }
 
@@ -302,6 +342,20 @@ impl Extensions {
         }
     }
 
+    /// Extend this [`Extensions`] store with the other [`Extensions`] and every
+    /// level it was forked from, oldest first, so the newest entry of a type in
+    /// `other` is also the newest one here.
+    ///
+    /// This flattens the chain onto this one level, across connection boundaries
+    /// too. Use it for a bag of settings, not for the extensions of a request or a
+    /// connection.
+    pub fn extend_chain(&self, other: &Self) {
+        if let Some(parent) = other.parent() {
+            self.extend_chain(parent);
+        }
+        self.extend(other);
+    }
+
     /// Returns true if the [`Extensions`] store contains the given type.
     ///
     /// This function is recursive and will traverse multiple nested [`Extensions`]
@@ -342,7 +396,7 @@ impl Extensions {
     ///    - otherwise skip.
     /// 2. If still not found, recurse into the parent (same rule applied),
     ///    unless `T` is [`ExtensionScope::Connection`] scoped and this level
-    ///    was created by [`Self::fork_nested_connection`]: then the search
+    ///    was created by [`Self::fork_connection`]: then the search
     ///    stops here, a fact about the connection underneath does not answer
     ///    for the nested one.
     ///
@@ -579,10 +633,10 @@ impl Extensions {
     /// For a flat top-level-only iteration use [`Self::self_iter_ref`].
     ///
     /// Unlike [`Self::get_ref`] this walks past every
-    /// [`Self::fork_nested_connection`] boundary whatever the
+    /// [`Self::fork_connection`] boundary whatever the
     /// [`ExtensionScope`] of `T`, so it yields the facts of the connections
     /// underneath too, without telling which connection each belongs to. For
-    /// the facts of one connection underneath use [`Self::outer_connection`].
+    /// the facts of one connection underneath use [`Self::parent_connection`].
     ///
     /// The iterator type is left opaque (`impl Iterator`) so the internal
     /// representation can change without breaking callers.
@@ -719,7 +773,7 @@ impl Extensions {
 impl fmt::Debug for Extensions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = f.debug_struct("Extensions");
-        s.field("nested_connection", &self.node.nested_connection);
+        s.field("connection_boundary", &self.node.connection_boundary);
         if let Some(parent) = self.parent() {
             s.field("parent", parent);
         }
@@ -1062,6 +1116,22 @@ mod tests {
     }
 
     #[test]
+    fn extend_chain_copies_every_level_with_the_newest_winning() {
+        let base = Extensions::new();
+        base.insert(NegotiatedAlpn(1));
+        base.insert(RetryBudget(3));
+        let bag = base.fork();
+        bag.insert(NegotiatedAlpn(2));
+
+        let target = Extensions::new();
+        target.extend_chain(&bag);
+
+        assert!(target.parent().is_none());
+        assert_eq!(target.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(2)));
+        assert_eq!(target.get_ref::<RetryBudget>(), Some(&RetryBudget(3)));
+    }
+
+    #[test]
     fn with_base_and_chain() {
         let base = Extensions::new();
         base.insert(RequestId(1));
@@ -1095,7 +1165,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(RetryBudget(3));
 
-        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer);
         assert_eq!(origin.get_ref::<RetryBudget>(), Some(&RetryBudget(3)));
         assert_eq!(
             origin.fork().get_ref::<RetryBudget>(),
@@ -1109,7 +1179,7 @@ mod tests {
         proxy.insert(NegotiatedAlpn(2));
         assert_eq!(proxy.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(2)));
 
-        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer);
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), None);
         assert_eq!(origin.fork().get_ref::<NegotiatedAlpn>(), None);
     }
@@ -1119,7 +1189,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(NegotiatedAlpn(2));
 
-        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer);
         origin.insert(NegotiatedAlpn(1));
 
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(1)));
@@ -1135,10 +1205,10 @@ mod tests {
         tcp.insert(NegotiatedAlpn(2));
         tcp.insert(RetryBudget(3));
 
-        let first_tunnel = tcp.fork_nested_connection(&NoConnectionTransfer);
+        let first_tunnel = tcp.fork_connection(&NoExtensionsTransfer);
         first_tunnel.insert(NegotiatedAlpn(1));
 
-        let second_tunnel = first_tunnel.fork_nested_connection(&NoConnectionTransfer);
+        let second_tunnel = first_tunnel.fork_connection(&NoExtensionsTransfer);
         assert_eq!(second_tunnel.get_ref::<NegotiatedAlpn>(), None);
         assert_eq!(
             second_tunnel.get_ref::<RetryBudget>(),
@@ -1147,32 +1217,52 @@ mod tests {
     }
 
     #[test]
-    fn outer_connection_reads_each_connection_underneath() {
+    fn parent_connection_reads_each_connection_underneath() {
         let tcp = Extensions::new();
         tcp.insert(NegotiatedAlpn(3));
 
-        let first_tunnel = tcp.fork_nested_connection(&NoConnectionTransfer);
+        let first_tunnel = tcp.fork_connection(&NoExtensionsTransfer);
         first_tunnel.insert(NegotiatedAlpn(2));
 
-        let second_tunnel = first_tunnel.fork_nested_connection(&NoConnectionTransfer);
+        let second_tunnel = first_tunnel.fork_connection(&NoExtensionsTransfer);
         let origin = second_tunnel.fork();
         origin.insert(NegotiatedAlpn(1));
 
-        let outer = origin.outer_connection().unwrap();
+        let outer = origin.parent_connection().unwrap();
         assert_eq!(outer.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(2)));
-        let outermost = outer.outer_connection().unwrap();
+        let outermost = outer.parent_connection().unwrap();
         assert_eq!(
             outermost.get_ref::<NegotiatedAlpn>(),
             Some(&NegotiatedAlpn(3))
         );
-        assert!(outermost.outer_connection().is_none());
+        assert!(outermost.parent_connection().is_none());
     }
 
     #[test]
-    fn outer_connection_is_none_without_a_boundary() {
+    fn parent_connections_yields_each_connection_nearest_first() {
+        let tcp = Extensions::new();
+        tcp.insert(NegotiatedAlpn(3));
+
+        let first_tunnel = tcp.fork_connection(&NoExtensionsTransfer);
+        first_tunnel.insert(NegotiatedAlpn(2));
+
+        let second_tunnel = first_tunnel.fork_connection(&NoExtensionsTransfer);
+        let origin = second_tunnel.fork();
+        origin.insert(NegotiatedAlpn(1));
+
+        let alpns: Vec<_> = origin
+            .parent_connections()
+            .map(|connection| connection.get_ref::<NegotiatedAlpn>())
+            .collect();
+        assert_eq!(alpns, [Some(&NegotiatedAlpn(2)), Some(&NegotiatedAlpn(3))]);
+        assert_eq!(tcp.parent_connections().count(), 0);
+    }
+
+    #[test]
+    fn parent_connection_is_none_without_a_boundary() {
         let tcp = Extensions::new();
         let stream = tcp.fork();
-        assert!(stream.outer_connection().is_none());
+        assert!(stream.parent_connection().is_none());
     }
 
     #[test]
@@ -1180,7 +1270,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(NegotiatedAlpn(2));
 
-        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer);
         origin.insert(NegotiatedAlpn(1));
 
         assert_eq!(
@@ -1213,7 +1303,7 @@ mod tests {
         proxy.insert(NegotiatedAlpn(2));
         proxy.insert(Reuse(true));
 
-        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer);
 
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), None);
         assert!(origin.get_arc::<NegotiatedAlpn>().is_none());
@@ -1241,7 +1331,7 @@ mod tests {
         assert_eq!(view.reuse.as_deref(), Some(&Reuse(false)));
 
         let target = Extensions::new();
-        let fresh = proxy.fork_nested_connection(&NoConnectionTransfer);
+        let fresh = proxy.fork_connection(&NoExtensionsTransfer);
         assert!(fresh.clone_to::<NegotiatedAlpn>(&target).is_none());
         assert!(
             fresh
@@ -1263,7 +1353,7 @@ mod tests {
         below.insert(NegotiatedAlpn(2));
         below.insert(RetryBudget(3));
 
-        let origin = below.fork_nested_connection(&NoConnectionTransfer);
+        let origin = below.fork_connection(&NoExtensionsTransfer);
         origin.insert(Egress(peer));
 
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(7)));
@@ -1277,7 +1367,7 @@ mod tests {
         let tcp = Extensions::new();
         tcp.insert(NegotiatedAlpn(2));
         tcp.insert(RetryBudget(3));
-        let tunnel = tcp.fork_nested_connection(&NoConnectionTransfer);
+        let tunnel = tcp.fork_connection(&NoExtensionsTransfer);
 
         let req = Extensions::new();
         req.insert(Egress(tunnel));
@@ -1294,7 +1384,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(NegotiatedAlpn(2));
 
-        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer);
         assert_eq!(origin.self_get_ref::<NegotiatedAlpn>(), None);
         assert_eq!(
             origin.self_get_ref_or_insert(|| NegotiatedAlpn(1)),
@@ -1307,16 +1397,44 @@ mod tests {
     }
 
     #[test]
-    fn with_base_keeps_the_nested_connection_boundary() {
+    fn with_base_answers_for_the_connection_behind_its_boundary() {
         let base = Extensions::new();
         base.insert(NegotiatedAlpn(2));
         base.insert(RetryBudget(3));
 
-        let origin = Extensions::new().fork_nested_connection(&NoConnectionTransfer);
+        let parent = Extensions::new();
+        parent.insert(NegotiatedAlpn(1));
+        let origin = parent.fork_connection(&NoExtensionsTransfer);
+        let view = origin.with_base(&base);
+
+        assert_eq!(view.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(2)));
+        assert_eq!(view.get_ref::<RetryBudget>(), Some(&RetryBudget(3)));
+
+        origin.insert(NegotiatedAlpn(4));
+        assert_eq!(
+            view.get_ref::<NegotiatedAlpn>(),
+            Some(&NegotiatedAlpn(4)),
+            "the connection's own facts win over its defaults"
+        );
+
+        let child = view.fork_connection(&NoExtensionsTransfer);
+        assert_eq!(
+            child.get_ref::<NegotiatedAlpn>(),
+            None,
+            "a child connection does not inherit the defaults of its parent"
+        );
+    }
+
+    #[test]
+    fn with_base_takes_only_what_its_base_answers_for_its_own_connection() {
+        let base_parent = Extensions::new();
+        base_parent.insert(NegotiatedAlpn(7));
+        let base = base_parent.fork_connection(&NoExtensionsTransfer);
+
+        let origin = Extensions::new().fork_connection(&NoExtensionsTransfer);
         let view = origin.with_base(&base);
 
         assert_eq!(view.get_ref::<NegotiatedAlpn>(), None);
-        assert_eq!(view.get_ref::<RetryBudget>(), Some(&RetryBudget(3)));
     }
 
     /// 72 distinct types: more than the bits of the `Store` filter.
@@ -1390,7 +1508,7 @@ mod tests {
             }
         }
         if let Some(parent) = ext.parent() {
-            reference_walk(parent, past_boundary || ext.is_nested_connection(), out);
+            reference_walk(parent, past_boundary || ext.is_connection_boundary(), out);
         }
     }
 
@@ -1440,7 +1558,7 @@ mod tests {
                     ext.insert(Ingress(random_chain(rng, depth - 1)));
                 }
                 2 if depth > 0 => ext = ext.fork(),
-                3 if depth > 0 => ext = ext.fork_nested_connection(&NoConnectionTransfer),
+                3 if depth > 0 => ext = ext.fork_connection(&NoExtensionsTransfer),
                 _ => insert_filler(&ext, rng.next(), rng.next() as u32),
             }
         }
@@ -1758,7 +1876,7 @@ mod tests {
     struct ModelExtensions {
         level: std::rc::Rc<std::cell::RefCell<Vec<ModelEntry>>>,
         parent: Option<Box<Self>>,
-        nested_connection: bool,
+        connection_boundary: bool,
     }
 
     impl ModelExtensions {
@@ -1766,7 +1884,7 @@ mod tests {
             Self {
                 level: Default::default(),
                 parent: None,
-                nested_connection: false,
+                connection_boundary: false,
             }
         }
 
@@ -1774,27 +1892,62 @@ mod tests {
             Self {
                 level: Default::default(),
                 parent: Some(Box::new(self.clone())),
-                nested_connection: false,
+                connection_boundary: false,
             }
         }
 
-        fn fork_nested_connection(&self) -> Self {
+        fn fork_connection(&self) -> Self {
             Self {
                 level: Default::default(),
                 parent: Some(Box::new(self.clone())),
-                nested_connection: true,
+                connection_boundary: true,
             }
         }
 
         fn with_base(&self, base: &Self) -> Self {
+            self.view_over(base, true)
+        }
+
+        fn view_over(&self, base: &Self, connection_defaults_pending: bool) -> Self {
+            let splice = connection_defaults_pending && self.connection_boundary;
+            let parent = match &self.parent {
+                Some(parent) => parent.view_over(
+                    base,
+                    connection_defaults_pending && !self.connection_boundary,
+                ),
+                None => base.clone(),
+            };
+            let parent = if splice {
+                Self {
+                    level: std::rc::Rc::new(std::cell::RefCell::new(base.connection_defaults())),
+                    parent: Some(Box::new(parent)),
+                    connection_boundary: true,
+                }
+            } else {
+                parent
+            };
             Self {
                 level: self.level.clone(),
-                parent: Some(Box::new(match &self.parent {
-                    Some(parent) => parent.with_base(base),
-                    None => base.clone(),
-                })),
-                nested_connection: self.nested_connection,
+                parent: Some(Box::new(parent)),
+                connection_boundary: self.connection_boundary && !splice,
             }
+        }
+
+        fn connection_defaults(&self) -> Vec<ModelEntry> {
+            let mut entries = match &self.parent {
+                Some(parent) if !self.connection_boundary => parent.connection_defaults(),
+                _ => Vec::new(),
+            };
+            entries.extend(
+                self.level
+                    .borrow()
+                    .iter()
+                    .filter(|entry| {
+                        matches!(entry, ModelEntry::Value(kind, _) if filler_scope(*kind).is_connection())
+                    })
+                    .cloned(),
+            );
+            entries
         }
 
         fn get(&self, kind: usize) -> Option<u32> {
@@ -1809,7 +1962,7 @@ mod tests {
                     ModelEntry::Value(..) => {}
                 }
             }
-            if self.nested_connection && filler_scope(kind).is_connection() {
+            if self.connection_boundary && filler_scope(kind).is_connection() {
                 return None;
             }
             self.parent.as_ref().and_then(|parent| parent.get(kind))
@@ -1950,8 +2103,8 @@ mod tests {
                 9 => {
                     let (ext, model) = &conns[a % conns.len()];
                     let forked = (
-                        ext.fork_nested_connection(&NoConnectionTransfer),
-                        model.fork_nested_connection(),
+                        ext.fork_connection(&NoExtensionsTransfer),
+                        model.fork_connection(),
                     );
                     conns.push(forked);
                     conns.last()
@@ -1959,8 +2112,8 @@ mod tests {
                 10 => {
                     let (ext, model) = &reqs[a % reqs.len()];
                     let forked = (
-                        ext.fork_nested_connection(&NoConnectionTransfer),
-                        model.fork_nested_connection(),
+                        ext.fork_connection(&NoExtensionsTransfer),
+                        model.fork_connection(),
                     );
                     reqs.push(forked);
                     reqs.last()

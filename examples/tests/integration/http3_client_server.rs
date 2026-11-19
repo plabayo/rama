@@ -10,14 +10,17 @@ use rama::{
     http::{
         Body, HeaderMap, Method, Request, Response, Version,
         body::{Frame, util::BodyExt as _},
-        client::{EasyHttpConnectorBuilder, Http3Connector},
+        client::EasyHttpConnectorBuilder,
         core::h3::{client as h3_client, connection::Config as H3Config},
         server::HttpServer,
         service::client::HttpClientExt as _,
     },
     layer::MapInputLayer,
     net::{address::SocketAddress, tls::ApplicationProtocol},
-    quic::{ClientConfig, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
+    quic::{
+        ClientConfig, Endpoint, ServerConfig, TransportConfig, client::SharedQuicEndpoint,
+        tls::TlsOptions,
+    },
     service::service_fn,
     tls::{
         client::{NegotiatedTlsParameters, TlsClientConfig},
@@ -36,10 +39,20 @@ use std::{
 };
 use tokio::{fs, process::Command, spawn, time::timeout};
 
-#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+#[cfg(all(
+    feature = "rustls",
+    feature = "boring",
+    any(feature = "ring", feature = "aws-lc")
+))]
 use {
-    rama::{error::BoxErrorExt as _, tls::rustls::client::RustlsClientConfigExt as _},
-    tokio::net::TcpListener,
+    parking_lot::Mutex,
+    rama::{
+        Layer as _,
+        net::extensions::StreamTransformed,
+        quic::tls::BoringTlsProvider,
+        tcp::server::TcpListener,
+        tls::rustls::{client::RustlsClientConfigExt as _, server::TlsAcceptorLayer},
+    },
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -242,26 +255,16 @@ async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<()
             let client_endpoint = Endpoint::build(WeakScope::detached())
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await?;
-            let client_builder = EasyHttpConnectorBuilder::new()
-                .with_default_transport_connector()
+            let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
+                .with_default_tcp_connector()
+                .with_custom_quic_connector(SharedQuicEndpoint::supplied(
+                    client_endpoint.clone(),
+                    WeakScope::detached(),
+                ))
                 .with_default_dns_connector()
-                .without_tls_proxy_support()
-                .with_proxy_support();
-            #[cfg(feature = "rustls")]
-            let client_builder = client_builder.with_tls_support_using_rustls(tls.clone());
-            #[cfg(all(not(feature = "rustls"), feature = "boring"))]
-            let client_builder = client_builder.with_tls_support_using_boringssl(tls.clone());
-            #[cfg(not(any(feature = "rustls", feature = "boring")))]
-            let client_builder = client_builder.without_tls_support();
-            let client = client_builder
-                .with_default_http_connector(WeakScope::detached())
-                .with_http3_support(
-                    Http3Connector::builder(WeakScope::detached())
-                        .with_endpoint(client_endpoint.clone())
-                        .with_tls_config(tls.clone())
-                        .build()
-                        .await?,
-                )
+                .with_default_proxy_support()
+                .with_default_tls_support(tls.clone())
+                .with_default_http_connector()
                 .with_default_connection_pool()
                 .build_client()
                 .with_jit_layer(MapInputLayer::new(move |request: Request| {
@@ -343,50 +346,125 @@ async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<()
     Ok(())
 }
 
-#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+#[cfg(all(
+    feature = "rustls",
+    feature = "boring",
+    any(feature = "ring", feature = "aws-lc")
+))]
 #[tokio::test]
-#[ignore = "spawns example processes"]
+#[ignore = "opens real sockets"]
 async fn http_client_preserves_explicit_tls_provider() -> Result<(), BoxError> {
-    // A native policy hook must remain active on TCP even in a dual-provider build.
-    // Fail during configuration so this test needs no certificate or remote peer.
-    let called = Arc::new(AtomicUsize::new(0));
-    let tls = TlsClientConfig::default_http().with_modify_rustls_config({
-        let called = called.clone();
-        move |_| {
-            called.fetch_add(1, Ordering::Relaxed);
-            Err(BoxError::from_static_str(
-                "intentional native TLS policy failure",
+    // In a dual-backend build each leg keeps the backend it was given: TCP rustls, QUIC
+    // boringssl. Only rustls runs the counting hook, so HTTP/3 must leave the count alone.
+    let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default())?;
+    let trust_anchors = auth.cert_chain.clone();
+    let tcp_auth = ServerAuthData::new(auth.cert_chain.clone(), auth.private_key.clone_key());
+    let scope = WeakScope::detached();
+
+    let tcp_tls = TlsServerConfig::new()
+        .with_server_auth(tcp_auth)
+        .with_alpn([ApplicationProtocol::HTTP_2].into_iter().collect());
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), scope.clone()).await?;
+    let tcp_port = listener.local_addr()?.port();
+    let tcp_task = spawn(async move {
+        listener
+            .serve(TlsAcceptorLayer::new(tcp_tls).into_layer(
+                HttpServer::auto(WeakScope::detached()).service(service_fn(
+                    async |request: Request| {
+                        Ok::<_, Infallible>(Response::new(Body::from(format!(
+                            "{:?}",
+                            request.version()
+                        ))))
+                    },
+                )),
             ))
-        }
+            .await;
     });
-    let listener = TcpListener::bind(SocketAddress::local_ipv4(0).into_std()).await?;
-    let address = listener.local_addr()?;
-    let connector = Http3Connector::builder(WeakScope::detached())
-        .with_tls_provider(rama::quic::tls::default_tls_provider().unwrap())
-        .with_tls_config(tls.clone())
-        .build()
+
+    let h3_server = HttpServer::new_http3(scope.clone());
+    let mut transport = TransportConfig::default();
+    h3_server.http3().configure_transport(&mut transport)?;
+    let h3_tls = TlsServerConfig::new()
+        .with_server_auth(auth)
+        .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+    let mut h3_config = ServerConfig::try_from_rama_tls(&h3_tls, TlsOptions::default())?;
+    h3_config.set_transport_config(Arc::new(transport));
+    let endpoint = Endpoint::build(scope.clone())
+        .with_server_config(h3_config)
+        .bind_address(SocketAddress::local_ipv4(0))
         .await?;
-    let client_builder = EasyHttpConnectorBuilder::new()
+    let h3_port = endpoint.local_addr()?.port();
+    let h3_task = spawn(endpoint.clone().serve(
+        scope,
+        h3_server.service(service_fn(async |request: Request| {
+            Ok::<_, Infallible>(Response::new(Body::from(format!(
+                "{:?}",
+                request.version()
+            ))))
+        })),
+    ));
+
+    let called = Arc::new(AtomicUsize::new(0));
+    let tls = TlsClientConfig::default_http()
+        .try_with_server_trust_anchors(trust_anchors)?
+        .with_modify_rustls_config({
+            let called = called.clone();
+            move |config| {
+                called.fetch_add(1, Ordering::Relaxed);
+                Ok(config)
+            }
+        });
+    let transformed = Arc::new(Mutex::new(Vec::new()));
+    let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support();
-    #[cfg(feature = "rustls")]
-    let client_builder = client_builder.with_tls_support_using_rustls(tls.clone());
-    #[cfg(all(not(feature = "rustls"), feature = "boring"))]
-    let client_builder = client_builder.with_tls_support_using_boringssl(tls.clone());
-    #[cfg(not(any(feature = "rustls", feature = "boring")))]
-    let client_builder = client_builder.without_tls_support();
-    let client = client_builder
-        .with_default_http_connector(WeakScope::detached())
-        .with_http3_support(connector)
+        .with_default_proxy_support()
+        .with_tls_support_using_rustls(tls)
+        .with_quic_tls_provider(Arc::new(BoringTlsProvider))
+        .with_default_http_connector::<Body>()
         .with_default_connection_pool()
-        .build_client();
-    client
-        .get(format!("https://{address}/"))
+        .build_client()
+        .with_jit_layer(MapInputLayer::new({
+            let transformed = transformed.clone();
+            move |request: Request| {
+                if let Some(egress) = request.extensions().get_ref::<Egress<Extensions>>() {
+                    *transformed.lock() = egress
+                        .0
+                        .iter_ref::<StreamTransformed>()
+                        .map(|marker| marker.by)
+                        .collect();
+                }
+                request
+            }
+        }));
+
+    let response = client
+        .get(format!("https://localhost:{tcp_port}/"))
+        .version(Version::HTTP_2)
         .send_with_timeout(REQUEST_TIMEOUT)
-        .await
-        .unwrap_err();
+        .await?;
+    assert_eq!(response.version(), Version::HTTP_2);
+    assert_eq!(response.into_body().collect().await?.to_bytes(), "HTTP/2.0");
     assert_eq!(called.load(Ordering::Relaxed), 1);
+    let tcp_transformed = transformed.lock().clone();
+    assert!(
+        tcp_transformed.contains(&"rama-tls-rustls::TlsConnector"),
+        "{tcp_transformed:?}"
+    );
+
+    let response = client
+        .get(format!("https://localhost:{h3_port}/"))
+        .version(Version::HTTP_3)
+        .send_with_timeout(REQUEST_TIMEOUT)
+        .await?;
+    assert_eq!(response.version(), Version::HTTP_3);
+    assert_eq!(response.into_body().collect().await?.to_bytes(), "HTTP/3.0");
+    assert_eq!(called.load(Ordering::Relaxed), 1);
+
+    drop(client);
+    endpoint.close(0u32, b"done");
+    tcp_task.abort();
+    h3_task.abort();
+    endpoint.shutdown().await;
     Ok(())
 }
