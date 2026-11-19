@@ -541,9 +541,9 @@ unsafe fn c_char_ptr_to_str_lossy<'a>(ptr: *const c_char) -> std::borrow::Cow<'a
 ///
 /// - `context` is null or points to a live, aligned `QueryState<T, P>` that no
 ///   `&mut` reference aliases (the callback only shares it);
-/// - `fullname` is null or points to a readable, unmodified NUL-terminated
-///   string;
-/// - `rdata` is null or valid for reads of `rdlen` unmodified bytes.
+/// - when `error_code` is zero, `fullname` is null or points to a readable,
+///   unmodified NUL-terminated string, and `rdata` is null or valid for reads
+///   of `rdlen` unmodified bytes. On error these callback arguments are ignored.
 unsafe extern "C" fn query_record_callback<T, P>(
     _sd_ref: ffi::DNSServiceRef,
     flags: ffi::DNSServiceFlags,
@@ -551,7 +551,7 @@ unsafe extern "C" fn query_record_callback<T, P>(
     error_code: ffi::DNSServiceErrorType,
     fullname: *const c_char,
     rrtype: u16,
-    _rrclass: u16,
+    rrclass: u16,
     rdlen: u16,
     rdata: *const c_void,
     _ttl: u32,
@@ -573,17 +573,8 @@ unsafe extern "C" fn query_record_callback<T, P>(
         return;
     }
 
-    let more_coming = (flags & ffi::K_DNS_SERVICE_FLAGS_MORE_COMING) != 0;
-    let answer = error_code == ffi::K_DNS_SERVICE_ERR_NO_ERROR || is_empty_result_error(error_code);
-    if answer && rrtype != state.rrtype {
-        // a CNAME followed on the way, or its absence
-        state.more_coming.store(more_coming, Ordering::SeqCst);
-        if !more_coming && !state.queue.lock().is_empty() {
-            state.done.store(true, Ordering::SeqCst);
-        }
-        return;
-    }
-
+    // dns_sd.h leaves every other callback argument undefined on error.
+    // Classify the error before inspecting flags, type, class, or RDATA.
     if error_code != ffi::K_DNS_SERVICE_ERR_NO_ERROR {
         if is_empty_result_error(error_code) {
             finish_empty(state, "query callback", error_code);
@@ -593,6 +584,23 @@ unsafe extern "C" fn query_record_callback<T, P>(
             state,
             AppleDnsResolverError::dns_service("query callback", error_code),
         );
+        return;
+    }
+
+    let more_coming = (flags & ffi::K_DNS_SERVICE_FLAGS_MORE_COMING) != 0;
+    if rrclass != ffi::K_DNS_SERVICE_CLASS_IN {
+        queue_error(
+            state,
+            AppleDnsResolverError::message("query callback received unexpected record class"),
+        );
+        return;
+    }
+    if rrtype != state.rrtype {
+        // a CNAME followed on the way, or its absence
+        state.more_coming.store(more_coming, Ordering::SeqCst);
+        if !more_coming && !state.queue.lock().is_empty() {
+            state.done.store(true, Ordering::SeqCst);
+        }
         return;
     }
 
@@ -1457,6 +1465,71 @@ mod tests {
     }
 
     #[test]
+    fn callback_errors_ignore_undefined_record_fields() {
+        for error in [
+            ffi::K_DNS_SERVICE_ERR_NO_SUCH_NAME,
+            ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD,
+            -1,
+        ] {
+            let mut state = a_query();
+            // On error dns_sd.h defines only `error_code` and `context`.
+            // Other fields deliberately disagree with the requested record.
+            // SAFETY: `context` points to the live local state. Null fullname
+            // and rdata meet the callback contract for an error result.
+            unsafe {
+                query_record_callback::<Ipv4Addr, AParser>(
+                    ptr::null_mut(),
+                    ffi::K_DNS_SERVICE_FLAGS_MORE_COMING,
+                    0,
+                    error,
+                    ptr::null(),
+                    0,
+                    0,
+                    0,
+                    ptr::null(),
+                    0,
+                    ptr::from_mut(&mut state).cast(),
+                );
+            }
+            assert!(state.done.load(Ordering::SeqCst));
+            assert!(!state.more_coming.load(Ordering::SeqCst));
+            let results = drain_completed_batch(&state);
+            if is_empty_result_error(error) {
+                assert!(results.is_empty());
+            } else {
+                assert_eq!(results.len(), 1);
+                assert!(results[0].is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn callback_rejects_unexpected_record_class() {
+        let mut state = a_query();
+        let rdata = [127, 0, 0, 1];
+        // SAFETY: all pointers refer to live values for the callback call.
+        unsafe {
+            query_record_callback::<Ipv4Addr, AParser>(
+                ptr::null_mut(),
+                0,
+                0,
+                ffi::K_DNS_SERVICE_ERR_NO_ERROR,
+                c"example.com.".as_ptr(),
+                ffi::K_DNS_SERVICE_TYPE_A,
+                3,
+                rdata.len() as u16,
+                rdata.as_ptr().cast(),
+                60,
+                ptr::from_mut(&mut state).cast(),
+            );
+        }
+        assert!(state.done.load(Ordering::SeqCst));
+        let results = drain_completed_batch(&state);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_err());
+    }
+
+    #[test]
     fn cnames_followed_on_the_way_are_skipped() {
         const CNAME: u16 = 5;
         let (a, ok, more) = (
@@ -1485,7 +1558,8 @@ mod tests {
         assert!(state.done.load(Ordering::SeqCst));
         assert_eq!(drain_completed_batch(&state).len(), 1);
 
-        // no CNAME does not mean no address
+        // Error callbacks have no defined record type. Even a callback whose
+        // rrtype field says CNAME terminates the query as empty.
         let mut state = a_query();
         callback(
             &mut state,
@@ -1494,8 +1568,6 @@ mod tests {
             CNAME,
             &[],
         );
-        assert!(!state.done.load(Ordering::SeqCst));
-        callback(&mut state, 0, ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD, a, &[]);
         assert!(state.done.load(Ordering::SeqCst));
         assert!(drain_completed_batch(&state).is_empty());
     }

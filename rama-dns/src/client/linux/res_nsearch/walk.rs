@@ -661,10 +661,13 @@ impl TcpQuery {
         };
         let answers_this = header.id() == self.id
             && header.is_response()
+            && header.question_count() == 1
             && Name::from_message(&response, DNS_HEADER_SIZE).is_ok_and(|(name, len)| {
                 let end = DNS_HEADER_SIZE + len;
                 name == self.question
                     && response.get(end..end + 2) == Some(self.rrtype.to_be_bytes().as_slice())
+                    && response.get(end + 2..end + 4)
+                        == Some(u16::from(RecordClass::IN).to_be_bytes().as_slice())
             });
         if !answers_this {
             return Asked::Failed(
@@ -1241,6 +1244,17 @@ mod tests {
         response[2] |= 0x80;
         assert_matches!(query.outcome(response.clone()), Asked::NoData(_));
         response[0] ^= 0xff;
+        assert_matches!(query.outcome(response), Asked::Failed(_));
+
+        let mut response = message.to_vec();
+        response[2] |= 0x80;
+        // A reply for another class or a different question section must not
+        // be accepted even when its ID, name and type match.
+        let class = response.len() - 2;
+        response[class..].copy_from_slice(&3_u16.to_be_bytes());
+        assert_matches!(query.outcome(response.clone()), Asked::Failed(_));
+        response[class..].copy_from_slice(&u16::from(RecordClass::IN).to_be_bytes());
+        response[4..6].copy_from_slice(&2_u16.to_be_bytes());
         assert_matches!(query.outcome(response), Asked::Failed(_));
     }
 }

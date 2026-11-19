@@ -675,6 +675,35 @@ async fn request_with_connection_headers() {
     join(srv, client).await;
 }
 
+#[tokio::test]
+async fn request_with_invalid_h2_field_value_is_rejected_before_send() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        srv.read_preface().await.unwrap();
+        srv.recv_frame(frames::settings()).await;
+        srv.recv_frame(frames::go_away(0)).await;
+    };
+
+    let client = async move {
+        let (mut client, conn) = client::handshake(io).await.expect("handshake");
+        for value in [" leading", "trailing ", "\tleading", "trailing\t"] {
+            let request = Request::builder()
+                .uri("https://example.com/")
+                .header("x-test", value)
+                .body(())
+                .unwrap();
+            let err = client.send_request(request, true).expect_err(value);
+            assert_eq!(err.to_string(), "user error: malformed headers");
+        }
+        drop(client);
+        conn.await.unwrap();
+    };
+
+    join(srv, client).await;
+}
+
 /// RFC 9113 §8.2.2: every `TE` line must be `trailers`, not just the first one.
 #[tokio::test]
 async fn request_te_must_be_trailers_on_every_line() {
