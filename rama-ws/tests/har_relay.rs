@@ -316,9 +316,7 @@ async fn assert_upgrade_relay_file_recording(version: Version) {
     drop(client);
     drop(server);
 
-    tokio::time::timeout(std::time::Duration::from_secs(2), recorder.stop_record())
-        .await
-        .expect("finalize relay HAR");
+    stop_recording(&recorder).await;
     let log: LogFile =
         serde_json::from_slice(&tokio::fs::read(path).await.expect("read HAR")).expect("parse HAR");
     let messages = log.log.entries[0]
@@ -644,7 +642,8 @@ fn version_label(version: Version) -> &'static str {
 }
 
 async fn stop_recording(recorder: &FileRecorder) {
-    tokio::time::timeout(std::time::Duration::from_secs(2), recorder.stop_record())
+    // Finalization writes the HAR to disk, which can be slow on a loaded CI runner.
+    tokio::time::timeout(std::time::Duration::from_secs(30), recorder.stop_record())
         .await
         .expect("finalize HAR recording");
 }

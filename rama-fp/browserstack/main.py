@@ -36,7 +36,7 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-from selenium.common.exceptions import WebDriverException
+from selenium.common.exceptions import InvalidSessionIdException, TimeoutException, WebDriverException
 
 # Allow `python rama-fp/browserstack/main.py` from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -194,12 +194,22 @@ def check_echo(device, output, *, secrets):
     """
     receipt = {"cell": "echo", "origin": ECHO_ORIGIN, "protocols": None}
     try:
-        with device_session(*device) as driver:
-            driver.set_page_load_timeout(30)
-            driver.set_script_timeout(30)
-            driver.get(ECHO_ORIGIN)
-            # A same-origin fetch reuses the navigation's connection and reads raw JSON.
-            report = driver.execute_async_script(FETCH_JSON, ECHO_ORIGIN)
+        for attempt in (1, 2):
+            receipt["attempts"] = attempt
+            try:
+                with device_session(*device) as driver:
+                    driver.set_page_load_timeout(30)
+                    driver.set_script_timeout(30)
+                    driver.get(ECHO_ORIGIN)
+                    # A same-origin fetch reuses the navigation's connection and reads raw JSON.
+                    report = driver.execute_async_script(FETCH_JSON, ECHO_ORIGIN)
+                break
+            except (InvalidSessionIdException, TimeoutException) as error:
+                if attempt == 2:
+                    raise
+                receipt["first_failure_reason"] = failure_reason(
+                    error, secrets=secrets, driver_message=True
+                )
         if not isinstance(report, dict):
             raise ValueError("echo returned no JSON report")
         receipt["http_version"] = (report.get("http") or {}).get("version")
