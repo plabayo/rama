@@ -90,8 +90,7 @@ impl Connection {
         // overhead must agree for every packet, including variable PN widths.
         let mut header_bytes = Vec::new();
         for packet in flight.packets() {
-            let number = PacketNumber::new_at_least(packet.number(), 0, packet.number_len())
-                .filter(|number| number.len() == usize::from(packet.number_len()))
+            let number = PacketNumber::initial(packet.number(), packet.number_len())
                 .ok_or_else(|| TransportError::INTERNAL_ERROR("recorded Initial number width"))?;
             header_bytes.clear();
             Header::Initial(InitialHeader {

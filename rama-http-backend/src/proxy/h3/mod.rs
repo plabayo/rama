@@ -9,7 +9,10 @@ use rama_core::{
     futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered},
     graceful::WeakScope,
     io::BridgeIo,
-    layer::{ArcLayer, ConsumeErrLayer},
+    layer::{
+        ArcLayer, ConsumeErrLayer,
+        consume_err::{StaticOutput, Trace},
+    },
     matcher::Matcher,
     service::service_fn,
     telemetry::tracing,
@@ -42,11 +45,17 @@ use rama_quic_proto::{Side, VarInt};
 use rama_utils::{guard::DropGuard, time::deadline_after};
 use tokio::time::Instant;
 
-use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse, DefaultMiddleware};
+use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse};
 use crate::{
     client::{ResponseLimits, SendAttempts},
     h3::{clean_close, completed, drain, drained_within},
 };
+
+/// Default middleware used by [`Http3MitmRelay`].
+pub type DefaultMiddleware = (
+    ConsumeErrLayer<Trace, StaticOutput<DefaultErrorResponse>>,
+    ArcLayer,
+);
 
 mod egress;
 pub use egress::Http3EgressService;

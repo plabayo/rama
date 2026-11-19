@@ -35,6 +35,11 @@ impl HeaderValueString {
             .map(|value| Self { value })
     }
 
+    /// Validate a static header string without copying its bytes.
+    pub fn try_from_static(src: &'static str) -> Result<Self, InvalidHeaderValue> {
+        HeaderValue::try_from_static(src).map(|value| Self { value })
+    }
+
     #[must_use]
     pub const fn from_static(src: &'static str) -> Self {
         // Keeps the `value` invariant: the bytes come unchanged from a `str`.
@@ -71,6 +76,18 @@ impl super::TryFromValues for HeaderValueString {
             .just_one()
             .map(Self::from_val)
             .unwrap_or_else(|| Err(Error::invalid()))
+    }
+}
+
+impl AsRef<HeaderValue> for HeaderValueString {
+    fn as_ref(&self) -> &HeaderValue {
+        &self.value
+    }
+}
+
+impl From<HeaderValueString> for HeaderValue {
+    fn from(src: HeaderValueString) -> Self {
+        src.value
     }
 }
 

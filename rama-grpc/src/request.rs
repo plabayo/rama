@@ -4,7 +4,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::Stream,
 };
-use rama_http::header::{self, RAMA_ID_HEADER_VALUE, USER_AGENT};
+use rama_http::header::{self, USER_AGENT, identity_header};
 use rama_utils::str::smol_str::{SmolStr, format_smolstr};
 use std::time::Duration;
 
@@ -185,7 +185,7 @@ impl<T> Request<T> {
         request.extensions().extend(&self.extensions);
 
         if let header::Entry::Vacant(header) = request.headers_mut().entry(USER_AGENT) {
-            header.insert(RAMA_ID_HEADER_VALUE.clone());
+            header.insert(identity_header().clone());
         }
 
         request

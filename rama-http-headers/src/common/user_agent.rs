@@ -46,6 +46,13 @@ derive_header! {
     name: USER_AGENT
 }
 
+/// Uses the application's [default identity](crate::identity()).
+impl Default for UserAgent {
+    fn default() -> Self {
+        Self(crate::identity_header_str().clone())
+    }
+}
+
 impl UserAgent {
     /// Create a `UserAgent` from a static string.
     ///
@@ -55,16 +62,6 @@ impl UserAgent {
     #[must_use]
     pub const fn from_static(src: &'static str) -> Self {
         Self(HeaderValueString::from_static(src))
-    }
-
-    /// Create the default rama 'UserAgent'.
-    #[must_use]
-    pub const fn rama() -> Self {
-        Self(HeaderValueString::from_static(const_format::formatcp!(
-            "{}/{}",
-            rama_utils::info::NAME,
-            rama_utils::info::VERSION,
-        )))
     }
 
     /// View this `UserAgent` as a `&str`.

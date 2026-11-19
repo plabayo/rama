@@ -46,6 +46,11 @@ pub use header::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 #[macro_use]
 pub mod util;
 
+mod identity;
+pub use identity::{
+    SetIdentityError, identity, identity_header, identity_header_str, set_identity,
+};
+
 mod common;
 mod map_ext;
 mod req_builder_ext;

@@ -59,7 +59,7 @@ fn flight(pair: &Pair) -> FirstFlight {
 }
 
 fn recorded_profile(version: Version, trailing_bytes: [u16; 2]) -> QuicProfile {
-    recorded_profile_numbered(version, trailing_bytes, [1, 2])
+    recorded_profile_numbered(version, trailing_bytes, [1, 2], [1, 2])
 }
 
 /// `numbers` are the packet numbers in wire order; `[2, 1]` sends the later packet first.
@@ -67,6 +67,7 @@ fn recorded_profile_numbered(
     version: Version,
     trailing_bytes: [u16; 2],
     numbers: [u64; 2],
+    widths: [u8; 2],
 ) -> QuicProfile {
     // Learn the actual provider's fresh ClientHello extent. The target handshake
     // has different random/key-share bytes but the same configured wire shape.
@@ -101,13 +102,13 @@ fn recorded_profile_numbered(
             let number = numbers[index];
             let tail = trailing_bytes[index];
             let packet_size = 1252 - usize::from(tail);
-            let width = index as u8 + 1;
+            let width = widths[index];
             let mut header = Vec::new();
             Header::Initial(InitialHeader {
                 dst_cid: cid,
                 src_cid: scid,
                 token: Bytes::new(),
-                number: PacketNumber::new_at_least(number, 0, width).unwrap(),
+                number: PacketNumber::initial(number, width).unwrap(),
                 version: version.to_wire().unwrap(),
             })
             .encode_with_max_packet_len(&mut header, packet_size);
@@ -162,9 +163,25 @@ fn recorded_initial_emits_exact_frames_and_widths_then_completes() {
 }
 
 #[test]
+fn recorded_initial_preserves_high_one_byte_numbers_before_the_first_ack() {
+    let profile = recorded_profile_numbered(Version::V1, [260, 263], [196, 197], [1, 1]);
+    let (mut pair, client) = pair(&profile);
+    let client = pair.begin_connect(client);
+    pair.drive_client();
+    let observed = flight(&pair);
+    assert_eq!(observed.packet_numbers, [196, 197]);
+    assert_eq!(observed.packet_number_lengths, [1, 1]);
+    assert_eq!(observed.trailing_bytes, [260, 263]);
+    pair.drive();
+    let server = pair.server.assert_accept();
+    assert!(!pair.client_conn_mut(client).is_handshaking());
+    assert!(!pair.server_conn_mut(server).is_handshaking());
+}
+
+#[test]
 fn recorded_initial_sends_a_reordered_burst_in_its_wire_order_then_completes() {
     for version in [Version::V1, Version::V2] {
-        let profile = recorded_profile_numbered(version, [0, 0], [2, 1]);
+        let profile = recorded_profile_numbered(version, [0, 0], [2, 1], [1, 2]);
         let InitialFlightLayout::Recorded(expected) = profile.packetization().layout() else {
             panic!("the test constructs a recorded layout")
         };
