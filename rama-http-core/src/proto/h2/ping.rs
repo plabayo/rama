@@ -293,7 +293,7 @@ impl Ponger {
                 }
 
                 if let Some(bdp) = &mut self.bdp {
-                    let bytes = locked.bytes.take().unwrap_or_else(|| {
+                    let bytes = locked.bytes.replace(0).unwrap_or_else(|| {
                         warn!("h2 Ponger: bdp enabled implies bytes: but locked bytes is None: fall back to 0 bytes");
                         0
                     });
@@ -523,5 +523,117 @@ impl fmt::Display for KeepAliveTimedOut {
 impl std::error::Error for KeepAliveTimedOut {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&crate::error::TimedOut)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::ServiceInput;
+    use std::future::poll_fn;
+
+    #[tokio::test(start_paused = true)]
+    async fn bdp_continues_recording_and_growing_window_across_multiple_pongs() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let server_hs = tokio::spawn(
+            crate::h2::server::Builder::default()
+                .handshake::<_, rama_core::bytes::Bytes>(ServiceInput::new(server_io)),
+        );
+        let (_client_tx, mut client_conn) = crate::h2::client::Builder::default()
+            .handshake::<_, rama_core::bytes::Bytes>(ServiceInput::new(client_io))
+            .await
+            .expect("client handshake");
+        let mut server_conn = server_hs.await.expect("join").expect("server handshake");
+        let ping_pong = server_conn.ping_pong().expect("server ping_pong");
+
+        let config = Config {
+            bdp_initial_window: Some(65_535),
+            keep_alive_interval: Some(Duration::from_secs(30)),
+            keep_alive_timeout: Duration::from_secs(15),
+            keep_alive_while_idle: true,
+        };
+        let (recorder, mut ponger) = channel(ping_pong, &config);
+
+        let drive_roundtrip = async |ponger: &mut Ponger,
+                                     server_conn: &mut crate::h2::server::Connection<
+            ServiceInput<tokio::io::DuplexStream>,
+            rama_core::bytes::Bytes,
+        >,
+                                     client_conn: &mut crate::h2::client::Connection<
+            ServiceInput<tokio::io::DuplexStream>,
+            rama_core::bytes::Bytes,
+        >,
+                                     rtt: Duration| {
+            // Flush server outbound PING to client and let client queue PONG.
+            poll_fn(|cx| {
+                _ = ponger.poll(cx);
+                _ = Pin::new(&mut *server_conn).poll_closed(cx);
+                _ = Pin::new(&mut *client_conn).poll(cx);
+                Poll::Ready(())
+            })
+            .await;
+
+            tokio::time::advance(rtt).await;
+
+            // Flush client PONG back to server and poll Ponger for the result.
+            poll_fn(|cx| {
+                _ = Pin::new(&mut *client_conn).poll(cx);
+                _ = Pin::new(&mut *server_conn).poll_closed(cx);
+                Poll::Ready(ponger.poll(cx))
+            })
+            .await
+        };
+
+        // 1. First round-trip: small initial frame (< 2/3 of 65,535) triggers a BDP ping
+        //    that does not yet resize the window. Previously this `take()`d `locked.bytes`
+        //    to `None`, permanently disabling BDP on the connection.
+        recorder.record_data(16 * 1024);
+        assert!(matches!(
+            drive_roundtrip(
+                &mut ponger,
+                &mut server_conn,
+                &mut client_conn,
+                Duration::from_millis(20)
+            )
+            .await,
+            Poll::Pending
+        ));
+
+        // 2. Advance past `ping_delay` and record >= 2/3 of 65,535 bytes: BDP must still be
+        //    active and grow the window to 131,072 bytes.
+        tokio::time::advance(Duration::from_millis(200)).await;
+        recorder.record_data(64 * 1024);
+        match drive_roundtrip(
+            &mut ponger,
+            &mut server_conn,
+            &mut client_conn,
+            Duration::from_millis(20),
+        )
+        .await
+        {
+            Poll::Ready(Ponged::SizeUpdate(wnd)) => assert_eq!(wnd, 128 * 1024),
+            other => panic!(
+                "expected SizeUpdate(131072), got {}",
+                matches!(other, Poll::Pending)
+            ),
+        }
+
+        // 3. Another sample with higher bandwidth must grow the window again to 262,144 bytes.
+        tokio::time::advance(Duration::from_millis(200)).await;
+        recorder.record_data(128 * 1024);
+        match drive_roundtrip(
+            &mut ponger,
+            &mut server_conn,
+            &mut client_conn,
+            Duration::from_millis(20),
+        )
+        .await
+        {
+            Poll::Ready(Ponged::SizeUpdate(wnd)) => assert_eq!(wnd, 256 * 1024),
+            other => panic!(
+                "expected SizeUpdate(262144), got {}",
+                matches!(other, Poll::Pending)
+            ),
+        }
     }
 }
