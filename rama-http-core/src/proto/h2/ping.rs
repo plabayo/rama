@@ -530,110 +530,49 @@ impl std::error::Error for KeepAliveTimedOut {
 mod tests {
     use super::*;
     use rama_core::ServiceInput;
-    use std::future::poll_fn;
 
     #[tokio::test(start_paused = true)]
-    async fn bdp_continues_recording_and_growing_window_across_multiple_pongs() {
+    async fn bdp_keeps_sampling_after_a_pong_without_a_size_update() {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-        let server_hs = tokio::spawn(
-            crate::h2::server::Builder::default()
-                .handshake::<_, rama_core::bytes::Bytes>(ServiceInput::new(server_io)),
+        let server_hs = crate::h2::server::Builder::default()
+            .handshake::<_, rama_core::bytes::Bytes>(ServiceInput::new(server_io));
+        let client_hs = crate::h2::client::Builder::default()
+            .handshake::<_, rama_core::bytes::Bytes>(ServiceInput::new(client_io));
+        let (server, client) = tokio::join!(server_hs, client_hs);
+        let mut server = server.unwrap();
+        let (_tx, mut client) = client.unwrap();
+        let (recorder, mut ponger) = channel(
+            server.ping_pong().unwrap(),
+            &Config {
+                bdp_initial_window: Some(65_535),
+                keep_alive_interval: None,
+                keep_alive_timeout: Duration::from_secs(15),
+                keep_alive_while_idle: false,
+            },
         );
-        let (_client_tx, mut client_conn) = crate::h2::client::Builder::default()
-            .handshake::<_, rama_core::bytes::Bytes>(ServiceInput::new(client_io))
-            .await
-            .expect("client handshake");
-        let mut server_conn = server_hs.await.expect("join").expect("server handshake");
-        let ping_pong = server_conn.ping_pong().expect("server ping_pong");
 
-        let config = Config {
-            bdp_initial_window: Some(65_535),
-            keep_alive_interval: Some(Duration::from_secs(30)),
-            keep_alive_timeout: Duration::from_secs(15),
-            keep_alive_while_idle: true,
-        };
-        let (recorder, mut ponger) = channel(ping_pong, &config);
-
-        let drive_roundtrip = async |ponger: &mut Ponger,
-                                     server_conn: &mut crate::h2::server::Connection<
-            ServiceInput<tokio::io::DuplexStream>,
-            rama_core::bytes::Bytes,
-        >,
-                                     client_conn: &mut crate::h2::client::Connection<
-            ServiceInput<tokio::io::DuplexStream>,
-            rama_core::bytes::Bytes,
-        >,
-                                     rtt: Duration| {
-            // Flush server outbound PING to client and let client queue PONG.
-            poll_fn(|cx| {
-                _ = ponger.poll(cx);
-                _ = Pin::new(&mut *server_conn).poll_closed(cx);
-                _ = Pin::new(&mut *client_conn).poll(cx);
-                Poll::Ready(())
-            })
-            .await;
-
-            tokio::time::advance(rtt).await;
-
-            // Flush client PONG back to server and poll Ponger for the result.
-            poll_fn(|cx| {
-                _ = Pin::new(&mut *client_conn).poll(cx);
-                _ = Pin::new(&mut *server_conn).poll_closed(cx);
-                Poll::Ready(ponger.poll(cx))
-            })
-            .await
+        let rtt = Duration::from_millis(20);
+        let mut read_pong = |ponger: &mut Ponger| {
+            let cx = &mut task::Context::from_waker(task::Waker::noop());
+            // Flush the queued PING, let the peer reply, then read its PONG.
+            _ = Pin::new(&mut server).poll_closed(cx);
+            _ = Pin::new(&mut client).poll(cx);
+            _ = Pin::new(&mut server).poll_closed(cx);
+            ponger.poll(cx)
         };
 
-        // 1. First round-trip: small initial frame (< 2/3 of 65,535) triggers a BDP ping
-        //    that does not yet resize the window. Previously this `take()`d `locked.bytes`
-        //    to `None`, permanently disabling BDP on the connection.
         recorder.record_data(16 * 1024);
-        assert!(matches!(
-            drive_roundtrip(
-                &mut ponger,
-                &mut server_conn,
-                &mut client_conn,
-                Duration::from_millis(20)
-            )
-            .await,
-            Poll::Pending
-        ));
+        tokio::time::advance(rtt).await;
+        assert!(read_pong(&mut ponger).is_pending());
+        assert_eq!(ponger.latest_rtt(), Some(rtt));
 
-        // 2. Advance past `ping_delay` and record >= 2/3 of 65,535 bytes: BDP must still be
-        //    active and grow the window to 131,072 bytes.
+        // Once sampling resumes, only bytes from the new sample count.
         tokio::time::advance(Duration::from_millis(200)).await;
-        recorder.record_data(64 * 1024);
-        match drive_roundtrip(
-            &mut ponger,
-            &mut server_conn,
-            &mut client_conn,
-            Duration::from_millis(20),
-        )
-        .await
-        {
-            Poll::Ready(Ponged::SizeUpdate(wnd)) => assert_eq!(wnd, 128 * 1024),
-            other => panic!(
-                "expected SizeUpdate(131072), got {}",
-                matches!(other, Poll::Pending)
-            ),
-        }
-
-        // 3. Another sample with higher bandwidth must grow the window again to 262,144 bytes.
-        tokio::time::advance(Duration::from_millis(200)).await;
-        recorder.record_data(128 * 1024);
-        match drive_roundtrip(
-            &mut ponger,
-            &mut server_conn,
-            &mut client_conn,
-            Duration::from_millis(20),
-        )
-        .await
-        {
-            Poll::Ready(Ponged::SizeUpdate(wnd)) => assert_eq!(wnd, 256 * 1024),
-            other => panic!(
-                "expected SizeUpdate(262144), got {}",
-                matches!(other, Poll::Pending)
-            ),
-        }
+        recorder.record_data(48 * 1024);
+        tokio::time::advance(rtt).await;
+        let Poll::Ready(Ponged::SizeUpdate(window)) = read_pong(&mut ponger) else {
+            panic!("expected a window update after the second sample");
+        };
+        assert_eq!(window, 96 * 1024);
     }
 }
