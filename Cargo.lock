@@ -5216,7 +5216,6 @@ name = "rama-http-types"
 version = "0.5.0"
 dependencies = [
  "bytes",
- "const_format",
  "fnv",
  "futures-core",
  "httparse",

@@ -7,7 +7,7 @@ use std::convert::Infallible;
 
 #[tokio::test]
 async fn grpc_request_uses_the_application_identity() {
-    for expected in [header::RAMA_ID_HEADER_VALUE.to_str().unwrap(), "App/1"] {
+    for expected in [concat!("rama/", env!("CARGO_PKG_VERSION")), "App/1"] {
         if expected == "App/1" {
             header::set_identity(expected).unwrap();
         }

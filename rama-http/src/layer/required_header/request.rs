@@ -259,7 +259,7 @@ mod test {
                 assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1");
                 assert_eq!(
                     req.headers().get(USER_AGENT).unwrap(),
-                    header::RAMA_ID_HEADER_VALUE.to_str().unwrap()
+                    header::identity_header()
                 );
                 Ok::<_, Infallible>(rama_http_types::Response::new(Body::empty()))
             }));

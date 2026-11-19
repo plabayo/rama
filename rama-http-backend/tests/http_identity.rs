@@ -26,7 +26,7 @@ async fn application_identity_and_explicit_overrides() {
     });
     let client = layers.into_layer(echo.clone());
     for expected in [
-        header::RAMA_ID_HEADER_VALUE.to_str().unwrap(),
+        concat!("rama/", env!("CARGO_PKG_VERSION")),
         "Example Proxy/2",
     ] {
         if expected == "Example Proxy/2" {

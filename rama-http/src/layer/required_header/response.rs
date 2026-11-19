@@ -190,7 +190,10 @@ mod tests {
         let req = Request::new(Body::empty());
         let resp = svc.serve(req).await.unwrap();
 
-        assert_eq!(resp.headers().typed_get::<Server>(), Some(Server::rama()));
+        assert_eq!(
+            resp.headers().typed_get::<Server>(),
+            Some(Server::default())
+        );
         assert!(resp.headers().typed_get::<Date>().is_some());
     }
 
@@ -233,7 +236,10 @@ mod tests {
         let req = Request::new(Body::empty());
         let resp = svc.serve(req).await.unwrap();
 
-        assert_eq!(resp.headers().typed_get::<Server>(), Some(Server::rama()));
+        assert_eq!(
+            resp.headers().typed_get::<Server>(),
+            Some(Server::default())
+        );
         assert!(resp.headers().typed_get::<Date>().is_some());
     }
 

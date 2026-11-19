@@ -1,6 +1,10 @@
 use crate::util::HeaderValueString;
-use rama_http_types::header::{HeaderValue, RAMA_ID};
+use rama_http_types::header::HeaderValue;
 use std::sync::OnceLock;
+
+/// Rama's built-in HTTP product identifier.
+const RAMA_ID: &str =
+    const_format::formatcp!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION);
 
 static IDENTITY: OnceLock<HeaderValueString> = OnceLock::new();
 static RAMA: HeaderValueString = HeaderValueString::from_static(RAMA_ID);
