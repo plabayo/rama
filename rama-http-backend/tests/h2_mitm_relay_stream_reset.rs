@@ -169,6 +169,8 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
                 StatusCode::BAD_GATEWAY,
                 "the RST_STREAM'd stream must surface as a per-stream 502"
             );
+            use rama_http::headers::{Date, HeaderMapExt as _};
+            assert!(response.headers().typed_get::<Date>().is_some());
             // The 502 is the relay's synthesized DefaultErrorResponse, not a
             // transport failure leaking through.
             assert!(

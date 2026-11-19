@@ -18,6 +18,7 @@ use rama_http::{
     Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
     conn::{H2ClientContextParams, H2ServerContextParams, H2SettingsLimits, TargetHttpVersion},
     header::{self, trailer::ForbiddenTrailers},
+    headers::{DateNow, HeaderMapExt as _},
     io::upgrade::OnUpgrade,
     layer::{
         remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -80,7 +81,7 @@ impl DefaultErrorResponse {
 
     #[inline(always)]
     fn response() -> Response {
-        (
+        let mut response = (
             [
                 (
                     HeaderName::from_static("x-proxy-framework-name"),
@@ -93,7 +94,9 @@ impl DefaultErrorResponse {
             ],
             StatusCode::BAD_GATEWAY,
         )
-            .into_response()
+            .into_response();
+        response.headers_mut().typed_insert(DateNow::new());
+        response
     }
 
     /// `retry_safe` only for requests the egress provably never
