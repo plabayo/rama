@@ -141,23 +141,18 @@ impl PacketBuilder {
 
         let span = trace_span!("send", space = ?space_id, pn = exact_number).entered();
 
-        let Some(number) = PacketNumber::new_at_least(
-            exact_number,
-            space.largest_acked_packet.unwrap_or(0),
-            recorded_width
-                .unwrap_or_else(|| conn.config.wire.packetization.min_packet_number_len()),
-        ) else {
-            // Even the margin above is used up: nothing more can be numbered on this connection.
+        let number = match recorded_width {
+            Some(width) => PacketNumber::initial(exact_number, width),
+            None => PacketNumber::new_at_least(
+                exact_number,
+                space.largest_acked_packet.unwrap_or(0),
+                conn.config.wire.packetization.min_packet_number_len(),
+            ),
+        };
+        let Some(number) = number else {
             conn.kill(now, packet_numbers_outran_acknowledgements().into());
             return None;
         };
-        if recorded_width.is_some_and(|width| usize::from(width) != number.len()) {
-            conn.kill(
-                now,
-                TransportError::INTERNAL_ERROR("recorded Initial number width changed").into(),
-            );
-            return None;
-        }
         let header = match space_id {
             SpaceId::Data if space.crypto.is_some() => Header::Short {
                 dst_cid,

@@ -998,6 +998,18 @@ pub const MAX_PACKET_NUMBER: u64 = (1 << 62) - 1;
 pub const MAX_PACKET_NUMBER_DISTANCE: u64 = (1 << 31) - 1;
 
 impl PacketNumber {
+    /// Encode the full packet number at its recorded width before an acknowledgement
+    /// has been received (RFC 9000 section 17.1).
+    pub fn initial(n: u64, width: u8) -> Option<Self> {
+        match width {
+            1 => u8::try_from(n).ok().map(Self::U8),
+            2 => u16::try_from(n).ok().map(Self::U16),
+            3 if n < 1 << 24 => Some(Self::U24(n as u32)),
+            4 => u32::try_from(n).ok().map(Self::U32),
+            _ => None,
+        }
+    }
+
     /// The shortest encoding of `n`, or `None` when it is more than
     /// [`MAX_PACKET_NUMBER_DISTANCE`] past `largest_acked`.
     pub fn new(n: u64, largest_acked: u64) -> Option<Self> {
