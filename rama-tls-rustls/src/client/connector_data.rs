@@ -9,7 +9,9 @@ use crate::key_log::RamaKeyLog;
 use crate::verify::{NoServerCertVerifier, PinnedServerCertVerifier};
 use crate::verify_chain::{ChainSource, ChainVerifier};
 use rama_core::conversion::{RamaTryFrom, RamaTryInto};
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+use rama_core::error::ErrorContext as _;
+use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
