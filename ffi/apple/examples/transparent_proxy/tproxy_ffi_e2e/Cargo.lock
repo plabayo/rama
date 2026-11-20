@@ -1964,6 +1964,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "time",
+ "tokio",
  "webpki-root-certs",
  "windows-sys 0.61.2",
  "x509-parser",
