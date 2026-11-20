@@ -26,6 +26,24 @@ async fn handshake() {
 }
 
 #[tokio::test]
+async fn idle_remote_goaway_survives_a_transport_reset() {
+    let mut goaway = vec![0, 0, 15, 7, 0, 0, 0, 0, 0];
+    goaway.extend_from_slice(&0_u32.to_be_bytes());
+    goaway.extend_from_slice(&0x40_u32.to_be_bytes());
+    goaway.extend_from_slice(b"backoff");
+    let io = mock_io::Builder::new()
+        .handshake()
+        .read(&goaway)
+        .read_error(io::ErrorKind::ConnectionReset.into())
+        .build();
+    let (_client, connection) = client::handshake(ServiceInput::new(io)).await.unwrap();
+    let err = connection.await.unwrap_err();
+    assert!(err.is_remote());
+    assert_eq!(err.reason(), Some(Reason::from(0x40)));
+    assert!(err.to_string().contains("backoff"));
+}
+
+#[tokio::test]
 async fn client_other_thread() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();

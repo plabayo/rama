@@ -813,6 +813,10 @@ impl Recv {
                             .recv_flow
                             .dec_recv_window(dec)
                             .map_err(proto::Error::library_go_away)?;
+                        // Released capacity can cross the update threshold when the window shrinks.
+                        if stream.recv_flow.unclaimed_capacity().is_some() {
+                            self.pending_window_updates.push(&mut stream);
+                        }
                         Ok::<_, proto::Error>(())
                     })?;
                 }
