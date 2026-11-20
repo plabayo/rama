@@ -23,6 +23,10 @@ pub(super) use connector_data::TlsConnectorData;
 #[doc(inline)]
 pub use connector_data::{client_root_certs, self_signed_client_auth};
 
+mod verification;
+#[doc(inline)]
+pub use verification::RustlsServerTrustCache;
+
 mod tls_stream;
 #[doc(inline)]
 pub use tls_stream::TlsStream;

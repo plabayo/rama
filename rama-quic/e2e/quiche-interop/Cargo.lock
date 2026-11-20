@@ -1974,16 +1974,13 @@ dependencies = [
  "flume",
  "jiff",
  "md5",
- "moka",
  "nom 8.0.0",
  "parking_lot 0.13.0",
  "pin-project-lite",
- "rama-boring",
  "rama-core",
  "rama-crypto",
  "rama-net",
  "rama-utils",
- "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -2017,6 +2014,7 @@ dependencies = [
 name = "rama-tls-rustls"
 version = "0.5.0"
 dependencies = [
+ "moka",
  "pin-project-lite",
  "rama-core",
  "rama-crypto",

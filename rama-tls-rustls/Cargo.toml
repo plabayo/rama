@@ -39,11 +39,12 @@ dial9 = ["dep:dial9", "dep:dial9-trace-format", "rama-net/dial9", "rama-tls/dial
 [dependencies]
 dial9 = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
+moka = { workspace = true, features = ["sync"] }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-crypto = { workspace = true, features = ["native-certs"] }
 rama-net = { workspace = true, features = ["std"] }
-rama-tls = { workspace = true, features = ["rustls-native-verification"] }
+rama-tls = { workspace = true, features = ["native-certs"] }
 rama-utils = { workspace = true, features = ["std"] }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }

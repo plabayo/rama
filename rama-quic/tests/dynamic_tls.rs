@@ -1086,6 +1086,72 @@ mod rustls {
         }
     }
 
+    #[tokio::test]
+    async fn static_anchor_policies_retain_quic_sessions_after_store_eviction() {
+        use rama_core::extensions::ExtensionsRef as _;
+        use rama_crypto::native_certs::bundled_root_certs;
+        use rama_quic::{NegotiatedTlsParameters, tls::ClientConfigCache};
+        use rama_tls::client::{TlsServerTrust, TlsServerTrustAnchors};
+
+        let provider = Arc::new(RustlsTlsProvider::new(crypto()));
+        let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+        let tls = TlsServerConfig::new()
+            .with_alpn(alpn())
+            .with_server_auth(issue(&ca, "a.test"));
+        let server = server(&tls, provider.as_ref()).await;
+        let addr = server.local_addr().unwrap();
+        let served = serve_echo(&server);
+        let client = client().await;
+        let cache = ClientConfigCache::new(provider, TlsOptions::default());
+        let root = &ca.certificate_chain()[0];
+
+        // All policies fit in the QUIC override cache; the converted-store cache holds eight.
+        let check_resumption = async |config: ClientConfig, expected| {
+            let connection = timeout(DEADLINE, exchange(&client, config, addr, "a.test"))
+                .await
+                .unwrap();
+            assert_eq!(
+                connection
+                    .extensions()
+                    .get_ref::<NegotiatedTlsParameters>()
+                    .unwrap()
+                    .resumed,
+                Some(expected)
+            );
+            connection.close(VarInt::from(0u32), b"done");
+        };
+        let mut ticketed_policies = Vec::new();
+        for (index, other) in bundled_root_certs().iter().take(64).enumerate() {
+            let trust = if index % 2 == 0 {
+                TlsServerTrust::custom(
+                    TlsServerTrustAnchors::try_new([root.clone(), other.clone()]).unwrap(),
+                )
+            } else {
+                TlsServerTrust::custom(TlsServerTrustAnchors::try_new([root.clone()]).unwrap())
+                    .try_with_additional_anchors([other.clone()])
+                    .unwrap()
+            };
+            let policy = TlsClientConfig::new()
+                .with_alpn(alpn())
+                .with_server_trust(trust);
+            let config = cache
+                .client_config(&policy, policy.as_extensions())
+                .unwrap();
+            if index < 12 {
+                check_resumption(config, false).await;
+                ticketed_policies.push(policy);
+            }
+        }
+        for policy in ticketed_policies {
+            let config = cache
+                .client_config(&policy, policy.as_extensions())
+                .unwrap();
+            check_resumption(config, true).await;
+        }
+        server.close(VarInt::from(0u32), b"done");
+        timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
     /// Builds a rustls configuration with a leaf for whatever name is asked.
     struct PerName {
         ca: Arc<CertificateAuthorityData>,

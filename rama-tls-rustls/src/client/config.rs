@@ -20,8 +20,7 @@ use rama_tls::client::{
     ClientHandshake, DynTlsServerCertChainPolicy, ServerTrustSource, TlsClientAuth,
     TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity, TlsPoolComponent, TlsPoolId,
     TlsServerCertPinCheck, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
-    TlsSessionProfileScope, TlsStoreServerCertChain, rustls_server_verification,
-    rustls_server_verification_async,
+    TlsSessionProfileScope, TlsStoreServerCertChain,
 };
 use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
@@ -49,38 +48,6 @@ pub struct RustlsTlsConnectorConfig<'a> {
 }
 
 impl RustlsTlsConnectorConfig<'_> {
-    /// Acquire the native server verifier for an explicit common trust policy.
-    ///
-    /// Returns `None` when the backend's default or a custom verifier applies.
-    /// A synchronous acquisition may block while reading the trust store.
-    pub fn server_verification(
-        extensions: &Extensions,
-    ) -> Result<Option<super::RustlsServerVerification>, BoxError> {
-        Self::common_server_trust(extensions)
-            .map(rustls_server_verification)
-            .transpose()
-    }
-
-    /// Acquire native server verification without blocking a Tokio worker
-    /// during reloadable trust reads or derived store construction.
-    pub async fn server_verification_async(
-        extensions: &Extensions,
-    ) -> Result<Option<super::RustlsServerVerification>, BoxError> {
-        let Some(trust) = Self::common_server_trust(extensions) else {
-            return Ok(None);
-        };
-        rustls_server_verification_async(trust).await.map(Some)
-    }
-
-    fn common_server_trust(extensions: &Extensions) -> Option<&TlsServerTrust> {
-        let trust = extensions.get_ref::<TlsServerTrust>()?;
-        (!extensions.contains::<RustlsServerCertVerifier>()
-            && extensions
-                .get_ref::<TlsServerVerify>()
-                .is_none_or(|verify| verify.0 != rama_tls::client::ServerVerifyMode::Disable))
-        .then_some(trust)
-    }
-
     /// Compact identity of request-level overrides, or `None` for the baseline.
     ///
     /// Explicit defaults remain distinct from absence. Equivalent settings compare

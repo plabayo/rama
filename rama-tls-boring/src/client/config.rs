@@ -17,11 +17,10 @@ use rama_net::{
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
     ClientHandshake, ClientHello, ClientHelloExtension, DynTlsServerCertChainPolicy,
-    ECHClientHello, NativeTrustPolicy, PlatformTrustPolicy, ServerTrustSource, ServerVerifyMode,
-    TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
-    TlsEncryptedClientHello, TlsPoolComponent, TlsPoolId, TlsServerCertPinCheck, TlsServerCertPins,
-    TlsServerName, TlsServerTrust, TlsServerVerify, TlsSessionProfileScope,
-    TlsStoreServerCertChain, TlsStoreServerHello,
+    ECHClientHello, ServerTrustSource, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
+    TlsClientConfigProvider, TlsComponentIdentity, TlsEncryptedClientHello, TlsPoolComponent,
+    TlsPoolId, TlsServerCertPinCheck, TlsServerCertPins, TlsServerName, TlsServerTrust,
+    TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain, TlsStoreServerHello,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
@@ -124,42 +123,23 @@ impl BoringTlsConnectorConfig<'_> {
             return Ok(Some(verification.clone()));
         }
         self.server_trust
-            .map(rama_tls::client::boring_server_verification)
+            .map(super::verification::acquire)
             .transpose()
     }
 
-    /// Acquire native server verification for the explicit common trust policy.
-    ///
-    /// Returns `None` when the backend's default or a custom verifier applies.
-    /// Synchronous acquisition may block while reading the trust store.
-    pub fn server_verification(
-        extensions: &Extensions,
-    ) -> Result<Option<super::BoringServerVerification>, BoxError> {
-        Self::common_server_trust(extensions)
-            .map(rama_tls::client::boring_server_verification)
-            .transpose()
+    pub(super) fn common_server_trust(extensions: &Extensions) -> Option<&TlsServerTrust> {
+        if Self::uses_common_server_trust_in(extensions) {
+            extensions.get_ref::<TlsServerTrust>()
+        } else {
+            None
+        }
     }
 
-    /// Acquire native server verification without blocking a Tokio worker
-    /// during reloadable trust reads or derived store construction.
-    pub async fn server_verification_async(
-        extensions: &Extensions,
-    ) -> Result<Option<super::BoringServerVerification>, BoxError> {
-        let Some(trust) = Self::common_server_trust(extensions) else {
-            return Ok(None);
-        };
-        rama_tls::client::boring_server_verification_async(trust)
-            .await
-            .map(Some)
-    }
-
-    fn common_server_trust(extensions: &Extensions) -> Option<&TlsServerTrust> {
-        let trust = extensions.get_ref::<TlsServerTrust>()?;
+    pub(super) fn uses_common_server_trust_in(extensions: &Extensions) -> bool {
         Self::uses_common_server_trust(
             extensions.get_ref::<TlsServerVerify>(),
             extensions.contains::<BoringServerVerifyCertStore>(),
         )
-        .then_some(trust)
     }
 
     fn uses_common_server_trust(verify: Option<&TlsServerVerify>, custom_store: bool) -> bool {
@@ -307,11 +287,9 @@ impl BoringTlsConnectorConfig<'_> {
             builder.set_alps(&alps.protocols, alps.new_codepoint);
         }
         if let Some(verification) = verification
-            && server_trust.is_some_and(|trust| match trust.source() {
-                ServerTrustSource::Native(policy) => *policy != NativeTrustPolicy::new(),
-                ServerTrustSource::Platform(policy) => *policy != PlatformTrustPolicy::new(),
-                _ => false,
-            })
+            && server_trust
+                .and_then(super::verification::reload_source)
+                .is_some()
         {
             builder.set_component(&VerificationScope::new(verification));
         }
@@ -1481,7 +1459,10 @@ mod pool_tests {
     use rama_boring::x509::store::X509StoreBuilder;
     use rama_core::extensions::Extensions;
     use rama_tls::ProtocolVersion;
-    use rama_tls::client::{ClientAuth, ServerVerifyMode, TlsServerCertPin, TlsServerTrustAnchors};
+    use rama_tls::client::{
+        ClientAuth, NativeTrustPolicy, PlatformTrustPolicy, ServerVerifyMode, TlsServerCertPin,
+        TlsServerTrustAnchors,
+    };
     use rama_tls::keylog::NoopKeyLogSink;
 
     #[test]

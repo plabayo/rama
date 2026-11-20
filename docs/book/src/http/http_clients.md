@@ -211,8 +211,9 @@ settings have the same semantics with rustls and BoringSSL. Normal chain,
 validity, usage, and server-name checks remain enabled, and certificate pins can
 be required in addition.
 
-By default Rama reads the native roots once per process. Long-running clients
-can opt into reloads when an operator rotates a private CA or the system
+By default all connectors share the native roots and environment-supplied extra
+roots loaded once per process. Long-running clients can share a reload policy
+across connectors and opt into reloads when an operator rotates a private CA or the system
 trust store changes. New handshakes pick up the
 updated roots while established connections keep serving traffic. See the
 [TLS trust overview](../tls.md#trust-and-verification), the

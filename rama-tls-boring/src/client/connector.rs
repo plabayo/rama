@@ -29,15 +29,16 @@ use rama_tls::{
     resolve_tls_tunnel,
 };
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
-use std::{fmt, sync::Arc};
+use std::{fmt, num::NonZeroUsize, sync::Arc};
 
 #[cfg(feature = "http")]
 use super::set_alpn_with_coupled_alps;
 use super::{
-    AutoTlsStream, BoringTlsClientConfigProvider, BoringTlsConnectorConfig, ServerAnswerRecorder,
-    TlsClientSessionStore, TlsConnectorData,
+    AutoTlsStream, BoringServerTrustCache, BoringTlsClientConfigProvider, BoringTlsConnectorConfig,
+    ServerAnswerRecorder, TlsClientSessionStore, TlsConnectorData,
     session::{ConnectorSessions, SessionStore},
     set_alpn_list_with_coupled_alps,
+    verification::DEFAULT_CACHE_CAPACITY,
 };
 
 use crate::{TlsStream, type_conversion::peer_certificate_chain, types::TlsTunnel};
@@ -58,6 +59,7 @@ use rama_tls::{
 pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
     base: Option<TlsClientConfig>,
     session_store: Option<SessionStore>,
+    server_trust_cache_capacity: NonZeroUsize,
     kind: K,
 }
 
@@ -87,6 +89,14 @@ impl<K> TlsConnectorLayer<K> {
             self
         }
     );
+
+    generate_set_and_with!(
+        /// Set the derived server trust cache capacity of each new connector.
+        pub fn server_trust_cache_capacity(mut self, capacity: NonZeroUsize) -> Self {
+            self.server_trust_cache_capacity = capacity;
+            self
+        }
+    );
 }
 
 impl TlsConnectorLayer<ConnectorKindAuto> {
@@ -99,6 +109,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
         Self {
             base: None,
             session_store: None,
+            server_trust_cache_capacity: DEFAULT_CACHE_CAPACITY,
             kind: ConnectorKindAuto,
         }
     }
@@ -112,6 +123,7 @@ impl TlsConnectorLayer<ConnectorKindSecure> {
         Self {
             base: None,
             session_store: None,
+            server_trust_cache_capacity: DEFAULT_CACHE_CAPACITY,
             kind: ConnectorKindSecure,
         }
     }
@@ -125,6 +137,7 @@ impl TlsConnectorLayer<ConnectorKindTunnel> {
         Self {
             base: None,
             session_store: None,
+            server_trust_cache_capacity: DEFAULT_CACHE_CAPACITY,
             kind: ConnectorKindTunnel { host },
         }
     }
@@ -138,6 +151,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
             inner,
             base_config: self.base.clone(),
             sessions: connector_sessions(self.session_store.clone()),
+            server_trust: BoringServerTrustCache::new(self.server_trust_cache_capacity),
             kind: self.kind.clone(),
         }
     }
@@ -147,6 +161,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
             inner,
             base_config: self.base,
             sessions: connector_sessions(self.session_store),
+            server_trust: BoringServerTrustCache::new(self.server_trust_cache_capacity),
             kind: self.kind,
         }
     }
@@ -170,6 +185,7 @@ pub struct TlsConnector<S, K = ConnectorKindAuto> {
     inner: S,
     base_config: Option<TlsClientConfig>,
     sessions: Option<Arc<ConnectorSessions>>,
+    server_trust: BoringServerTrustCache,
     kind: K,
 }
 
@@ -186,6 +202,7 @@ impl<S, K> TlsConnector<S, K> {
             inner,
             base_config: None,
             sessions: None,
+            server_trust: BoringServerTrustCache::new(DEFAULT_CACHE_CAPACITY),
             kind,
         }
     }
@@ -213,6 +230,15 @@ impl<S, K> TlsConnector<S, K> {
         /// of this connector share its session domain.
         pub fn session_store(mut self, store: Option<Arc<dyn TlsClientSessionStore>>) -> Self {
             self.sessions = connector_sessions(store.map(SessionStore));
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Replace this connector's derived server trust cache with one of the given capacity.
+        /// Cloning the connector shares the cache. The default holds eight derived stores.
+        pub fn server_trust_cache_capacity(mut self, capacity: NonZeroUsize) -> Self {
+            self.server_trust = BoringServerTrustCache::new(capacity);
             self
         }
     );
@@ -591,12 +617,15 @@ impl<S, K> TlsConnector<S, K> {
         &self,
         extensions: &Extensions,
     ) -> Result<TlsConnectorData, BoxError> {
-        let verification = BoringTlsConnectorConfig::server_verification_async(extensions).await?;
+        let verification = self
+            .server_trust
+            .server_verification_async(extensions)
+            .await?;
         let config = BoringTlsConnectorConfig::from_extensions(extensions);
         let prepared = verification.as_ref();
         match &self.sessions {
             Some(sessions) => sessions.connector_data(config, prepared),
-            None => TlsConnectorData::from_config(&config, prepared),
+            None => TlsConnectorData::from_config(&config, prepared, Some(&self.server_trust)),
         }
     }
 
@@ -1092,6 +1121,47 @@ pub struct ConnectorKindTunnel {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn derived_server_verification_is_shared_only_by_connector_clones() -> Result<(), BoxError>
+    {
+        use rama_core::combinators::Either;
+
+        let config = TlsClientConfig::new().try_with_server_trust_anchors(
+            rama_crypto::native_certs::bundled_root_certs()[..1]
+                .iter()
+                .cloned(),
+        )?;
+        let policy = config.as_extensions();
+        let layer = TlsConnectorLayer::secure().with_server_trust_cache_capacity(NonZeroUsize::MIN);
+        let original_owner = layer.layer(());
+        let clone = original_owner.clone();
+        let other = layer.layer(());
+
+        let acquired = |connector: &TlsConnector<(), ConnectorKindSecure>| {
+            let result = connector.server_trust.server_verification(policy)?;
+            match result {
+                Some(Either::A(store)) => Ok(store),
+                _ => Err(BoxError::from_static_str("expected BoringSSL root store")),
+            }
+        };
+
+        let original = acquired(&original_owner)?;
+        assert!(Arc::ptr_eq(&original, &acquired(&clone)?));
+        assert!(!Arc::ptr_eq(&original, &acquired(&other)?));
+        let first = original_owner.build_connector_data(policy).await?;
+        let repeated = clone.build_connector_data(policy).await?;
+        let separate = other.build_connector_data(policy).await?;
+        assert!(std::ptr::eq(
+            first.config.ssl_context(),
+            repeated.config.ssl_context()
+        ));
+        assert!(!std::ptr::eq(
+            first.config.ssl_context(),
+            separate.config.ssl_context()
+        ));
+        Ok(())
+    }
+
     use super::*;
     #[cfg(feature = "http")]
     use rama_tls::ProtocolVersion;

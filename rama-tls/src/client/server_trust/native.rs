@@ -1,38 +1,28 @@
-#![cfg_attr(
-    not(any(
-        feature = "boring-native-verification",
-        feature = "rustls-native-verification"
-    )),
-    expect(
-        dead_code,
-        reason = "material is only consumed when a TLS backend is enabled"
-    )
-)]
-
-use std::time::Duration;
+use std::{
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use rama_core::error::BoxError;
-use rama_crypto::{pki_types::CertificateDer, platform_verifier::PlatformVerifier};
+use rama_crypto::{native_certs, pki_types::CertificateDer, platform_verifier::PlatformVerifier};
 use rama_utils::macros::generate_set_and_with;
 
 use super::{NativeTrustPolicy, PlatformTrustPolicy, ServerTrustSource};
 use crate::client::{
     IntoNativeTrustReloadTrigger,
-    native_trust::{NativeTrustReload, NativeTrustScope, NativeTrustSnapshot},
+    native_trust::{NativeTrustReload, NativeTrustScope},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct NativeTrustState {
     reload: Option<NativeTrustReload>,
     max_age: Option<Duration>,
-    snapshot: Option<NativeTrustSnapshot>,
 }
 
 impl NativeTrustState {
     pub(super) const STATIC: Self = Self {
         reload: None,
         max_age: None,
-        snapshot: None,
     };
 
     fn set_trigger<T>(
@@ -44,7 +34,6 @@ impl NativeTrustState {
             scope,
             Some(Box::pin(trigger.into_reload_stream())),
         ));
-        self.snapshot = None;
     }
 
     fn set_max_age(&mut self, scope: NativeTrustScope, max_age: Option<Duration>) {
@@ -58,31 +47,6 @@ impl NativeTrustState {
                 .is_some_and(|reload| !reload.has_trigger())
         {
             self.reload = None;
-        }
-        self.snapshot = None;
-    }
-
-    fn pin(&self) -> Result<Option<Self>, BoxError> {
-        let Some(reload) = &self.reload else {
-            return Ok(None);
-        };
-        let snapshot = reload.pin(self.max_age)?;
-        Ok(Some(self.with_native_snapshot(snapshot)))
-    }
-
-    async fn pin_async(&self) -> Result<Option<Self>, BoxError> {
-        let Some(reload) = &self.reload else {
-            return Ok(None);
-        };
-        let snapshot = reload.pin_async(self.max_age).await?;
-        Ok(Some(self.with_native_snapshot(snapshot)))
-    }
-
-    fn with_native_snapshot(&self, snapshot: NativeTrustSnapshot) -> Self {
-        Self {
-            snapshot: Some(snapshot),
-            max_age: self.max_age,
-            reload: None,
         }
     }
 }
@@ -151,48 +115,72 @@ impl PlatformTrustPolicy {
     };
 }
 
-impl ServerTrustSource {
-    pub(in crate::client) fn snapshot(&self) -> Result<Option<Self>, BoxError> {
-        let Some(state) = self.native_state() else {
-            return Ok(None);
-        };
-        Ok(state.pin()?.map(|state| self.with_pinned_state(state)))
+/// Read the configured source's server trust anchors.
+///
+/// An active operating system verifier supplies its own system roots. For a
+/// Platform source on those targets this returns only the environment extra
+/// roots. On other targets Platform returns the full native root collection.
+/// Additional application anchors on [`super::TlsServerTrust`] are separate.
+/// A successful empty collection represents an empty source. This operation
+/// can block while reading the configured trust store.
+pub fn server_trust_anchors(
+    source: &ServerTrustSource,
+) -> Result<Arc<[CertificateDer<'static>]>, BoxError> {
+    if let Some(state) = native_state(source)
+        && let Some(reload) = &state.reload
+    {
+        return reload.pin(state.max_age);
     }
+    Ok(static_trust_anchors(source))
+}
 
-    pub(in crate::client) async fn snapshot_async(&self) -> Result<Option<Self>, BoxError> {
-        let Some(state) = self.native_state() else {
-            return Ok(None);
-        };
-        Ok(state
-            .pin_async()
-            .await?
-            .map(|state| self.with_pinned_state(state)))
+/// Read the configured source's server trust anchors on a Tokio runtime.
+///
+/// See [`server_trust_anchors`] for which certificates the source supplies.
+/// Reads from disk or a system store run on a blocking worker.
+pub async fn server_trust_anchors_async(
+    source: &ServerTrustSource,
+) -> Result<Arc<[CertificateDer<'static>]>, BoxError> {
+    if let Some(state) = native_state(source)
+        && let Some(reload) = &state.reload
+    {
+        return reload.pin_async(state.max_age).await;
     }
-
-    pub(in crate::client) fn prepared_native_roots(&self) -> Option<&[CertificateDer<'static>]> {
-        self.native_state()?.snapshot.as_ref()?.native_roots()
-    }
-
-    pub(in crate::client) fn prepared_platform_roots(&self) -> Option<&[CertificateDer<'static>]> {
-        self.native_state()?
-            .snapshot
-            .as_ref()?
-            .platform_extra_roots()
-    }
-
-    fn native_state(&self) -> Option<&NativeTrustState> {
-        match self {
-            Self::Native(policy) => Some(&policy.state),
-            Self::Platform(policy) => Some(&policy.state),
-            _ => None,
+    match source {
+        ServerTrustSource::Platform(_) if PlatformVerifier::IS_AVAILABLE => {
+            native_certs::shared_extra_trust_anchors_async().await
+        }
+        ServerTrustSource::Native(_) | ServerTrustSource::Platform(_) => {
+            native_certs::shared_native_trust_anchors_async().await
+        }
+        ServerTrustSource::WebPki | ServerTrustSource::Custom(_) => {
+            Ok(static_trust_anchors(source))
         }
     }
+}
 
-    fn with_pinned_state(&self, state: NativeTrustState) -> Self {
-        match self {
-            Self::Platform(_) => Self::Platform(PlatformTrustPolicy { state }),
-            _ => Self::Native(NativeTrustPolicy { state }),
+fn native_state(source: &ServerTrustSource) -> Option<&NativeTrustState> {
+    match source {
+        ServerTrustSource::Native(policy) => Some(&policy.state),
+        ServerTrustSource::Platform(policy) => Some(&policy.state),
+        _ => None,
+    }
+}
+
+fn static_trust_anchors(source: &ServerTrustSource) -> Arc<[CertificateDer<'static>]> {
+    match source {
+        ServerTrustSource::Platform(_) if PlatformVerifier::IS_AVAILABLE => {
+            native_certs::shared_extra_trust_anchors()
         }
+        ServerTrustSource::Native(_) | ServerTrustSource::Platform(_) => {
+            native_certs::shared_native_trust_anchors()
+        }
+        ServerTrustSource::WebPki => {
+            static ROOTS: LazyLock<Arc<[CertificateDer<'static>]>> =
+                LazyLock::new(|| Arc::from(native_certs::bundled_root_certs()));
+            ROOTS.clone()
+        }
+        ServerTrustSource::Custom(anchors) => anchors.certificates.clone(),
     }
 }
 
@@ -216,7 +204,7 @@ mod tests {
 
         for source in [ServerTrustSource::WebPki, ServerTrustSource::Custom(custom)] {
             let switched = native.clone().with_source(source);
-            assert!(switched.source().snapshot().unwrap().is_none());
+            assert!(super::native_state(switched.source()).is_none());
             assert_eq!(
                 switched.with_source(ServerTrustSource::native_roots()),
                 TlsServerTrust::native_roots()

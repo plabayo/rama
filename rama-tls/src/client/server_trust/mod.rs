@@ -11,6 +11,8 @@ use std::{
 
 #[cfg(feature = "native-certs")]
 mod native;
+#[cfg(feature = "native-certs")]
+pub use native::{server_trust_anchors, server_trust_anchors_async};
 
 /// Settings for the native root store used by [`ServerTrustSource::Native`].
 ///

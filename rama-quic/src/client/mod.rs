@@ -20,6 +20,7 @@ use std::{
     fmt,
     io::{Error as IoError, ErrorKind as IoErrorKind},
     net::SocketAddr,
+    num::NonZeroUsize,
     pin::Pin,
     ptr,
     sync::Arc,
@@ -137,12 +138,18 @@ impl<E> QuicConnector<E> {
     }
 
     generate_set_and_with! {
+        /// Limit the number of derived native server trust stores retained by this connector.
+        /// The built-in providers default to eight and connector clones share the cache.
+        pub fn server_trust_cache_capacity(mut self, capacity: NonZeroUsize) -> Self {
+            self.tls_configs.set_server_trust_cache_capacity(capacity);
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// The TLS defaults; client configurations built from the previous ones are dropped.
         pub fn tls_config(mut self, tls: TlsClientConfig) -> Self {
-            self.tls_configs = ClientConfigCache::new(
-                self.tls_configs.provider().clone(),
-                TlsOptions::default().with_early_data(self.early_data),
-            );
+            self.tls_configs = self.tls_configs.with_options(TlsOptions::default().with_early_data(self.early_data));
             self.tls = tls;
             self
         }
@@ -158,10 +165,7 @@ impl<E> QuicConnector<E> {
         /// by default; leave off when an exact ClientHello is required.
         pub fn early_data(mut self, enabled: bool) -> Self {
             self.early_data = enabled;
-            self.tls_configs = ClientConfigCache::new(
-                self.tls_configs.provider().clone(),
-                TlsOptions::default().with_early_data(enabled),
-            );
+            self.tls_configs = self.tls_configs.with_options(TlsOptions::default().with_early_data(enabled));
             self
         }
     }

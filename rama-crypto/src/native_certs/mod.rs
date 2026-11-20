@@ -35,7 +35,10 @@ use std::{env, fmt, fs, io};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt as _;
 
-use rama_core::telemetry::tracing::{debug, warn};
+use rama_core::{
+    error::BoxError,
+    telemetry::tracing::{debug, warn},
+};
 
 use crate::pki_types::CertificateDer;
 use crate::pki_types::pem::{self, PemObject};
@@ -65,6 +68,8 @@ pub use changes::NativeCertsChanges;
 #[doc(inline)]
 pub use load::{load_validated_extra_certs, load_validated_native_certs};
 
+type SharedTrustAnchors = Arc<[CertificateDer<'static>]>;
+
 /// Returns the cached, process-wide default trust anchors used by rama tls
 /// clients (both the `rustls` and `boring` backends consume these).
 ///
@@ -79,35 +84,44 @@ pub use load::{load_validated_extra_certs, load_validated_native_certs};
 /// The result is cached for the lifetime of the process: the (potentially
 /// expensive) native read happens at most once.
 pub fn shared_native_trust_anchors() -> Arc<[CertificateDer<'static>]> {
-    static ANCHORS: LazyLock<Arc<[CertificateDer<'static>]>> = LazyLock::new(|| {
-        let paths = CertPaths::from_env();
-        let result = load_native_certs_with_paths(&paths);
-        for err in &result.errors {
-            debug!(%err, "rama native-certs: error while loading native root certificate");
-        }
-
-        let base: &[CertificateDer<'static>] = if result.certs.is_empty() && !paths.has_overrides()
-        {
-            warn!(
-                native_cert_errors = result.errors.len(),
-                "rama native-certs: no native system root certificates found; \
-                 falling back to the bundled webpki (Mozilla CCADB) root certificates"
-            );
-            bundled_root_certs()
-        } else {
-            debug!(
-                native_cert_count = result.certs.len(),
-                "rama native-certs: loaded native system root certificates"
-            );
-            &result.certs
-        };
-        base.iter()
-            .chain(shared_extra_trust_anchors().iter())
-            .cloned()
-            .collect()
-    });
-    ANCHORS.clone()
+    NATIVE_TRUST_ANCHORS.clone()
 }
+
+/// Acquire the process-wide anchors from [`shared_native_trust_anchors`].
+///
+/// When the cache is cold, initialization runs on a Tokio blocking worker.
+/// Once the anchors are cached, they are returned directly.
+pub async fn shared_native_trust_anchors_async() -> Result<Arc<[CertificateDer<'static>]>, BoxError>
+{
+    acquire_trust_anchors(&NATIVE_TRUST_ANCHORS).await
+}
+
+static NATIVE_TRUST_ANCHORS: LazyLock<SharedTrustAnchors> = LazyLock::new(|| {
+    let paths = CertPaths::from_env();
+    let result = load_native_certs_with_paths(&paths);
+    for err in &result.errors {
+        debug!(%err, "rama native-certs: error while loading native root certificate");
+    }
+
+    let base: &[CertificateDer<'static>] = if result.certs.is_empty() && !paths.has_overrides() {
+        warn!(
+            native_cert_errors = result.errors.len(),
+            "rama native-certs: no native system root certificates found; \
+             falling back to the bundled webpki (Mozilla CCADB) root certificates"
+        );
+        bundled_root_certs()
+    } else {
+        debug!(
+            native_cert_count = result.certs.len(),
+            "rama native-certs: loaded native system root certificates"
+        );
+        &result.certs
+    };
+    base.iter()
+        .chain(shared_extra_trust_anchors().iter())
+        .cloned()
+        .collect()
+});
 
 /// Returns the cached, process-wide extra trust anchors, loaded from
 /// `SSL_CERT_EXTRA_FILE` (a PEM file) and `SSL_CERT_EXTRA_DIR` (directories,
@@ -117,22 +131,41 @@ pub fn shared_native_trust_anchors() -> Arc<[CertificateDer<'static>]> {
 /// these are trusted in addition to it, and also by the platform verifier.
 /// Empty when neither variable is set.
 pub fn shared_extra_trust_anchors() -> Arc<[CertificateDer<'static>]> {
-    static ANCHORS: LazyLock<Arc<[CertificateDer<'static>]>> = LazyLock::new(|| {
-        let paths = CertPaths::from_env_vars(ENV_EXTRA_CERT_FILE, ENV_EXTRA_CERT_DIR);
-        if !paths.has_overrides() {
-            return Arc::default();
-        }
-        let result = paths.load();
-        for err in &result.errors {
-            warn!(%err, "rama native-certs: error while loading extra root certificate");
-        }
-        debug!(
-            extra_cert_count = result.certs.len(),
-            "rama native-certs: loaded extra root certificates"
-        );
-        result.certs.into()
-    });
-    ANCHORS.clone()
+    EXTRA_TRUST_ANCHORS.clone()
+}
+
+/// Acquire the process-wide anchors from [`shared_extra_trust_anchors`].
+///
+/// When the cache is cold, initialization runs on a Tokio blocking worker.
+/// Once the anchors are cached, they are returned directly.
+pub async fn shared_extra_trust_anchors_async() -> Result<Arc<[CertificateDer<'static>]>, BoxError>
+{
+    acquire_trust_anchors(&EXTRA_TRUST_ANCHORS).await
+}
+
+static EXTRA_TRUST_ANCHORS: LazyLock<SharedTrustAnchors> = LazyLock::new(|| {
+    let paths = CertPaths::from_env_vars(ENV_EXTRA_CERT_FILE, ENV_EXTRA_CERT_DIR);
+    if !paths.has_overrides() {
+        return Arc::default();
+    }
+    let result = paths.load();
+    for err in &result.errors {
+        warn!(%err, "rama native-certs: error while loading extra root certificate");
+    }
+    debug!(
+        extra_cert_count = result.certs.len(),
+        "rama native-certs: loaded extra root certificates"
+    );
+    result.certs.into()
+});
+
+async fn acquire_trust_anchors(
+    anchors: &'static LazyLock<SharedTrustAnchors>,
+) -> Result<SharedTrustAnchors, BoxError> {
+    if let Some(anchors) = LazyLock::get(anchors) {
+        return Ok(anchors.clone());
+    }
+    Ok(tokio::task::spawn_blocking(move || LazyLock::force(anchors).clone()).await?)
 }
 
 /// The bundled Mozilla (CCADB) root certificates, used as the fallback by
@@ -495,6 +528,39 @@ const ENV_EXTRA_CERT_DIR: &str = "SSL_CERT_EXTRA_DIR";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cold_async_anchor_reads_share_one_load_and_warm_reads_need_no_runtime() {
+        use std::{
+            sync::{
+                OnceLock,
+                atomic::{AtomicUsize, Ordering},
+            },
+            thread,
+        };
+
+        static LOADS: AtomicUsize = AtomicUsize::new(0);
+        static LOADER_THREAD: OnceLock<thread::ThreadId> = OnceLock::new();
+        static ANCHORS: LazyLock<SharedTrustAnchors> = LazyLock::new(|| {
+            LOADS.fetch_add(1, Ordering::Relaxed);
+            LOADER_THREAD.set(thread::current().id()).unwrap();
+            Arc::from([CertificateDer::from(vec![1])])
+        });
+        assert!(LazyLock::get(&ANCHORS).is_none());
+        let (first, concurrent) = tokio_test::block_on(rama_core::futures::future::join(
+            acquire_trust_anchors(&ANCHORS),
+            acquire_trust_anchors(&ANCHORS),
+        ));
+        let first = first.unwrap();
+        assert_ne!(*LOADER_THREAD.get().unwrap(), thread::current().id());
+        assert!(Arc::ptr_eq(&first, &concurrent.unwrap()));
+        assert!(Arc::ptr_eq(&first, LazyLock::force(&ANCHORS)));
+
+        let mut warm = tokio_test::task::spawn(acquire_trust_anchors(&ANCHORS));
+        let warm = tokio_test::assert_ready!(warm.poll()).unwrap();
+        assert!(Arc::ptr_eq(&first, &warm));
+        assert_eq!(LOADS.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn bundled_root_certs_non_empty() {

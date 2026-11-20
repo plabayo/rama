@@ -16,7 +16,7 @@ use rama_core::{
 use rama_crypto::pki_types::CertificateDer;
 
 use super::StoreRoots;
-use crate::client::TlsServerTrustAnchors;
+use rama_tls::client::TlsServerTrustAnchors;
 
 static NATIVE: LazyLock<Result<Arc<X509Store>, BoxError>> =
     LazyLock::new(build_os_default_verify_store);
@@ -26,7 +26,7 @@ static WEBPKI: LazyLock<Result<Arc<X509Store>, BoxError>> =
 const NATIVE_CONTEXT: &str = "shared default verify store";
 const WEBPKI_CONTEXT: &str = "shared WebPKI verify store";
 
-pub(super) fn native() -> Result<Arc<X509Store>, BoxError> {
+pub(in crate::client) fn native() -> Result<Arc<X509Store>, BoxError> {
     shared_store(&NATIVE, NATIVE_CONTEXT)
 }
 

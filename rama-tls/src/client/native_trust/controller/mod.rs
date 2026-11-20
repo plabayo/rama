@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::snapshot::NativeTrustSnapshot;
+type TrustAnchors = Arc<[CertificateDer<'static>]>;
 
 /// The controller's trust material and refresh scope never change.
 #[derive(Debug, Clone, Copy)]
@@ -68,7 +68,7 @@ struct RefreshFailure {
 }
 
 impl PublishedTrust {
-    fn ready(&self, max_age: Option<Duration>) -> Option<Result<NativeTrustSnapshot, BoxError>> {
+    fn ready(&self, max_age: Option<Duration>) -> Option<Result<TrustAnchors, BoxError>> {
         match &self.failure {
             Some(failure) if Instant::now() < failure.retry_at => Some(cached_after_failure(
                 self.current.as_ref(),
@@ -87,7 +87,7 @@ impl PublishedTrust {
 
 #[derive(Clone)]
 struct CheckedSnapshot {
-    snapshot: NativeTrustSnapshot,
+    snapshot: TrustAnchors,
     checked_at: Instant,
 }
 
@@ -106,7 +106,7 @@ struct ReloadState {
 }
 
 type LoadNativeTrust = Result<(Vec<CertificateDer<'static>>, bool), BoxError>;
-type RefreshResult = Result<NativeTrustSnapshot, Arc<dyn Error + Send + Sync>>;
+type RefreshResult = Result<TrustAnchors, Arc<dyn Error + Send + Sync>>;
 
 struct RefreshFlight {
     completion: flume::Receiver<Infallible>,
@@ -118,7 +118,7 @@ impl RefreshFlight {
         &self,
         current: Option<&CheckedSnapshot>,
         max_age: Option<Duration>,
-    ) -> Option<Result<NativeTrustSnapshot, BoxError>> {
+    ) -> Option<Result<TrustAnchors, BoxError>> {
         Some(match self.result.get()? {
             // This read completed after the caller reserved or joined the flight.
             Ok(snapshot) => Ok(snapshot.clone()),
@@ -131,7 +131,7 @@ fn cached_after_failure(
     current: Option<&CheckedSnapshot>,
     max_age: Option<Duration>,
     error: &Arc<dyn Error + Send + Sync>,
-) -> Result<NativeTrustSnapshot, BoxError> {
+) -> Result<TrustAnchors, BoxError> {
     match current {
         Some(current) if current.is_fresh(max_age) => Ok(current.snapshot.clone()),
         _ => Err(Box::new(NativeTrustRefreshError(error.clone()))),
@@ -139,7 +139,7 @@ fn cached_after_failure(
 }
 
 enum PinAction {
-    Ready(Result<NativeTrustSnapshot, BoxError>),
+    Ready(Result<TrustAnchors, BoxError>),
     Wait(Arc<RefreshFlight>, Option<CheckedSnapshot>),
     Refresh(RefreshJob),
 }
@@ -159,15 +159,15 @@ impl RefreshJob {
         self,
         max_age: Option<Duration>,
         load: impl FnOnce(bool) -> LoadNativeTrust,
-    ) -> Result<NativeTrustSnapshot, BoxError> {
+    ) -> Result<TrustAnchors, BoxError> {
         // Read the store and compare anchors before taking the controller lock.
         let loaded = load(self.allow_bundled_fallback)
             .map(|(anchors, used_bundled_fallback)| {
                 let snapshot = match &self.current {
-                    Some(current) if current.snapshot.matches_anchors(&anchors) => {
+                    Some(current) if current.snapshot.as_ref() == anchors.as_slice() => {
                         current.snapshot.clone()
                     }
-                    _ => NativeTrustSnapshot::new(self.reload.0.scope, anchors),
+                    _ => TrustAnchors::from(anchors),
                 };
                 (snapshot, used_bundled_fallback)
             })
@@ -177,9 +177,9 @@ impl RefreshJob {
 
     fn publish(
         &self,
-        loaded: Result<(NativeTrustSnapshot, bool), BoxError>,
+        loaded: Result<(TrustAnchors, bool), BoxError>,
         max_age: Option<Duration>,
-    ) -> Result<NativeTrustSnapshot, BoxError> {
+    ) -> Result<TrustAnchors, BoxError> {
         let mut state = self.reload.0.reload.lock();
         let result = match loaded {
             Ok((snapshot, used_bundled_fallback)) => {
@@ -258,7 +258,7 @@ impl NativeTrustReload {
     pub(in crate::client) fn pin(
         &self,
         max_age: Option<Duration>,
-    ) -> Result<NativeTrustSnapshot, BoxError> {
+    ) -> Result<TrustAnchors, BoxError> {
         self.pin_with(max_age, self.loader())
     }
 
@@ -266,7 +266,7 @@ impl NativeTrustReload {
         &self,
         max_age: Option<Duration>,
         load: impl FnOnce(bool) -> LoadNativeTrust,
-    ) -> Result<NativeTrustSnapshot, BoxError> {
+    ) -> Result<TrustAnchors, BoxError> {
         loop {
             match self.prepare_pin(max_age) {
                 PinAction::Ready(result) => return result,
@@ -284,7 +284,7 @@ impl NativeTrustReload {
     pub(in crate::client) async fn pin_async(
         &self,
         max_age: Option<Duration>,
-    ) -> Result<NativeTrustSnapshot, BoxError> {
+    ) -> Result<TrustAnchors, BoxError> {
         self.pin_async_with(max_age, self.loader()).await
     }
 
@@ -292,7 +292,7 @@ impl NativeTrustReload {
         &self,
         max_age: Option<Duration>,
         load: impl FnOnce(bool) -> LoadNativeTrust + Send + 'static,
-    ) -> Result<NativeTrustSnapshot, BoxError> {
+    ) -> Result<TrustAnchors, BoxError> {
         loop {
             match self.prepare_pin(max_age) {
                 PinAction::Ready(result) => return result,

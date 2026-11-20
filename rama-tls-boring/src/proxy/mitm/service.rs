@@ -1,6 +1,6 @@
 use crate::{
     TlsStream,
-    client::{BoringTlsConnectorConfig, TlsConnectorData},
+    client::TlsConnectorData,
     proxy::{TlsMitmRelay, TlsMitmRelayError},
 };
 use rama_core::{
@@ -164,14 +164,17 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
                 .maybe_with_connector_target(connector_target.clone())
                 .maybe_with_sni(effective_sni.clone())
         };
-        let verification =
-            BoringTlsConnectorConfig::server_verification_async(config.as_extensions())
-                .await
-                .map_err(config_error)?;
+        let verification = self
+            .relay
+            .egress_server_trust
+            .server_verification_async(config.as_extensions())
+            .await
+            .map_err(config_error)?;
 
         let connector_data = match TlsConnectorData::from_client_config(
             &config,
             verification.as_ref(),
+            &self.relay.egress_server_trust,
         ) {
             Ok(data) => Ok(data),
             Err(error) if client_hello.is_some() => {
@@ -191,7 +194,11 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
                 }
                 #[cfg(feature = "http")]
                 apply_target_http_version(client_hello, flow_extensions, &fallback);
-                TlsConnectorData::from_client_config(&fallback, verification.as_ref())
+                TlsConnectorData::from_client_config(
+                    &fallback,
+                    verification.as_ref(),
+                    &self.relay.egress_server_trust,
+                )
             }
             Err(error) => Err(error),
         }

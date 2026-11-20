@@ -31,8 +31,6 @@ inspect = ["dep:rama-inspect"]
 http = []
 native-certs = ["dep:arc-swap", "rama-crypto/native-certs", "tokio/rt", "tokio/signal"]
 dial9 = ["dep:dial9-trace-format", "rama-core/dial9"]
-boring-native-verification = ["native-certs", "dep:moka", "dep:rama-boring"]
-rustls-native-verification = ["native-certs", "dep:moka", "dep:rustls"]
 
 [dependencies]
 ahash = { workspace = true }
@@ -43,18 +41,15 @@ dial9-trace-format = { workspace = true, optional = true }
 flume = { workspace = true, features = ["async"] }
 jiff = { workspace = true }
 md5 = { workspace = true }
-moka = { workspace = true, optional = true, features = ["sync"] }
 nom = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-boring = { workspace = true, optional = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-crypto = { workspace = true }
 rama-dns = { workspace = true, optional = true }
 rama-inspect = { workspace = true, optional = true }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
-rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

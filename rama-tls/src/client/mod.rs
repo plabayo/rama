@@ -62,15 +62,8 @@ pub use native_trust::{
     ChannelReloadClosed, ChannelReloadSender, ChannelReloadTrigger, IntoNativeTrustReloadTrigger,
     NativeTrustRefreshError, NativeTrustStoreChanges,
 };
-#[cfg(feature = "boring-native-verification")]
-pub use native_trust::{
-    boring_native_root_store, boring_server_verification, boring_server_verification_async,
-};
-#[cfg(feature = "rustls-native-verification")]
-pub use native_trust::{
-    rustls_native_root_store, rustls_server_verification, rustls_server_verification_async,
-    rustls_webpki_root_store,
-};
+#[cfg(feature = "native-certs")]
+pub use server_trust::{server_trust_anchors, server_trust_anchors_async};
 
 mod config;
 #[cfg(feature = "http")]

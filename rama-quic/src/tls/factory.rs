@@ -1,23 +1,20 @@
+#[cfg(all(feature = "boring", feature = "ua"))]
+use crate::profile::replay::has_captured_tls;
 use rama_crypto::pki_types::CertificateDer;
 use rama_net::address::Host;
 
-use rama_core::extensions::Extensions;
+use rama_core::{extensions::Extensions, futures::future::BoxFuture};
 use std::{fmt, sync::Arc};
 
 use crate::{
     ClientConfig, ServerConfig,
-    tls::{ClientHandshake, TlsConfigError, TlsOptions},
+    tls::{ClientConfigRequest, ClientHandshake, TlsConfigError, TlsOptions},
 };
 #[cfg(any(
     feature = "boring",
     all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
 ))]
 use rama_net::client::pool::ReuseKey;
-#[cfg(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-))]
-use rama_tls::client::TlsPoolId;
 use rama_tls::{
     client::{TlsClientConfig, TlsClientConfigProvider},
     server::TlsServerConfig,
@@ -27,7 +24,10 @@ use {
     crate::proto::crypto::boring as boring_crypto,
     rama_crypto::dep::boring::ssl::{GreaseValues, UnknownValues},
     rama_tls::client::ClientHello,
-    rama_tls_boring::client::{BoringClientConfigExt as _, BoringTlsConnectorConfig},
+    rama_tls_boring::client::{
+        BoringClientConfigExt as _, BoringExtensionOrder, BoringServerTrustCache,
+        BoringTlsConnectorConfig,
+    },
 };
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use {
@@ -37,7 +37,22 @@ use {
         capture::{CaptureError, InitialKeys, KeyProvider},
         crypto::{HeaderKey, PacketKey},
     },
-    rama_tls_rustls::{client::RustlsTlsConnectorConfig, dep::rustls::crypto::CryptoProvider},
+    rama_tls_rustls::{
+        client::{RustlsServerTrustCache, RustlsTlsConnectorConfig},
+        dep::rustls::crypto::CryptoProvider,
+    },
+};
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+use {
+    rama_core::combinators::Either,
+    rama_crypto::platform_verifier::PlatformVerifier,
+    rama_tls::client::{
+        NativeTrustPolicy, PlatformTrustPolicy, ServerTrustSource, TlsComponentIdentity, TlsPoolId,
+        TlsServerTrust,
+    },
 };
 
 /// Build QUIC TLS configurations from Rama settings using a fixed provider.
@@ -89,6 +104,41 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
         options: TlsOptions,
     ) -> Result<ClientConfig, TlsConfigError>;
 
+    /// Acquire a configuration for one connection through this provider's cache.
+    ///
+    /// The connector supplies a lookup bound to this provider and its cache.
+    /// The default uses [`TlsClientConfigProvider::pool_id`] to classify effective settings and calls
+    /// [`Self::client_config`] on a cache miss or [`Self::prepare_client_config`] for peer-bound sessions.
+    /// Custom providers with mutable state can pass a supplemental key and
+    /// matching native builders to [`ClientConfigRequest::get_or_build`]. Return
+    /// `None` when the provider does not support the requested peer-bound handshake.
+    fn acquire_client_config(
+        &self,
+        request: ClientConfigRequest<'_>,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        request.get_or_build(
+            None,
+            |config, options| self.client_config(config, options),
+            |config, options, peer, handshake| {
+                self.prepare_client_config(config, options, peer, handshake)
+            },
+        )
+    }
+
+    /// Acquire a peer's configuration asynchronously when the provider needs I/O.
+    /// The default calls [`Self::acquire_client_config`] on the current task.
+    fn acquire_client_config_async<'a>(
+        &'a self,
+        request: ClientConfigRequest<'a>,
+    ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
+        Box::pin(async move { self.acquire_client_config(request) })
+    }
+
+    /// Whether backend-specific settings permit early data in this configuration.
+    fn allows_early_data(&self, _extensions: &Extensions) -> bool {
+        true
+    }
+
     /// Whether the peer `leaf` of a connection authenticated under the effective
     /// configuration in `extensions` is also valid for `name`, including any pins
     /// scoped to it. Providers that cannot tell return `false`; a pin scoped to `name`
@@ -99,6 +149,33 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
         leaf: &CertificateDer<'_>,
         name: &Host,
     ) -> bool;
+}
+
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+// Static policies are already part of the pool ID. Only a reloadable source
+// needs the particular verifier used by this handshake to distinguish rotations.
+fn reloadable_verification_identity<R: Send + Sync + 'static>(
+    request: ClientConfigRequest<'_>,
+    verification: Option<&Either<Arc<R>, Arc<PlatformVerifier>>>,
+) -> Option<ReuseKey> {
+    let verification = verification?;
+    match request
+        .config()
+        .as_extensions()
+        .get_ref::<TlsServerTrust>()?
+        .source()
+    {
+        ServerTrustSource::Native(policy) if policy != &NativeTrustPolicy::new() => {}
+        ServerTrustSource::Platform(policy) if policy != &PlatformTrustPolicy::new() => {}
+        _ => return None,
+    }
+    Some(match verification {
+        Either::A(store) => ReuseKey::new(TlsComponentIdentity::shared(store)),
+        Either::B(verifier) => ReuseKey::new(TlsComponentIdentity::shared(verifier)),
+    })
 }
 
 /// Build server configurations without requiring client-policy support.
@@ -155,6 +232,31 @@ impl RustlsTlsProvider {
     pub fn new(crypto: Arc<CryptoProvider>) -> Self {
         Self { crypto }
     }
+
+    fn cached_with_verification(
+        &self,
+        request: ClientConfigRequest<'_>,
+        verification: Option<&rustls_crypto::ServerVerification>,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        let identity = reloadable_verification_identity(request, verification);
+        let build = |config: &TlsClientConfig, options| {
+            rustls_crypto::QuicClientConfig::from_rama_with_verification(
+                config,
+                self.crypto.clone(),
+                options,
+                verification,
+            )
+        };
+        request.get_or_build(
+            identity,
+            |config, options| {
+                build(config, options).map(|native| ClientConfig::new(Arc::new(native)))
+            },
+            |config, options, peer, handshake| {
+                self.prepare_client_config(config, options, peer, handshake)
+            },
+        )
+    }
 }
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
@@ -174,6 +276,29 @@ impl TlsClientConfigProvider for RustlsTlsProvider {
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 impl QuicClientConfigProvider for RustlsTlsProvider {
+    fn acquire_client_config(
+        &self,
+        request: ClientConfigRequest<'_>,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        let verification = request
+            .native_cache(RustlsServerTrustCache::new)
+            .server_verification(request.config().as_extensions())?;
+        self.cached_with_verification(request, verification.as_ref())
+    }
+
+    fn acquire_client_config_async<'a>(
+        &'a self,
+        request: ClientConfigRequest<'a>,
+    ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
+        Box::pin(async move {
+            let verification = request
+                .native_cache(RustlsServerTrustCache::new)
+                .server_verification_async(request.config().as_extensions())
+                .await?;
+            self.cached_with_verification(request, verification.as_ref())
+        })
+    }
+
     fn client_config(
         &self,
         config: &TlsClientConfig,
@@ -269,6 +394,30 @@ impl BoringTlsProvider {
             .with_unknown_values(UnknownValues::Drop)
             .with_grease_values(GreaseValues::Pinned)
     }
+    fn cached_with_verification(
+        request: ClientConfigRequest<'_>,
+        verification: Option<&boring_crypto::ServerVerification>,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        let identity = reloadable_verification_identity(request, verification);
+        let build = |config: &TlsClientConfig, options| {
+            boring_crypto::QuicClientConfig::from_rama_with_verification(
+                config,
+                options,
+                verification,
+            )
+        };
+        request.get_or_build(
+            identity,
+            |config, options| {
+                build(config, options).map(|native| ClientConfig::new(Arc::new(native)))
+            },
+            |config, options, peer, handshake| {
+                build(config, options)?
+                    .with_handshake(peer, handshake)
+                    .map(|native| Some(ClientConfig::new(Arc::new(native))))
+            },
+        )
+    }
 }
 
 #[cfg(feature = "boring")]
@@ -288,6 +437,29 @@ impl TlsClientConfigProvider for BoringTlsProvider {
 
 #[cfg(feature = "boring")]
 impl QuicClientConfigProvider for BoringTlsProvider {
+    fn acquire_client_config(
+        &self,
+        request: ClientConfigRequest<'_>,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        let verification = request
+            .native_cache(BoringServerTrustCache::new)
+            .server_verification(request.config().as_extensions())?;
+        Self::cached_with_verification(request, verification.as_ref())
+    }
+
+    fn acquire_client_config_async<'a>(
+        &'a self,
+        request: ClientConfigRequest<'a>,
+    ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
+        Box::pin(async move {
+            let verification = request
+                .native_cache(BoringServerTrustCache::new)
+                .server_verification_async(request.config().as_extensions())
+                .await?;
+            Self::cached_with_verification(request, verification.as_ref())
+        })
+    }
+
     fn supports_ech(&self) -> bool {
         true
     }
@@ -301,6 +473,14 @@ impl QuicClientConfigProvider for BoringTlsProvider {
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         boring_crypto::QuicClientConfig::prepare_client(policy, options, peer, handshake)
             .map(|config| Some(ClientConfig::new(Arc::new(config))))
+    }
+
+    fn allows_early_data(&self, extensions: &Extensions) -> bool {
+        #[cfg(feature = "ua")]
+        if has_captured_tls(extensions) {
+            return false;
+        }
+        !extensions.contains::<BoringExtensionOrder>()
     }
 
     fn session_defaults(&self) -> Option<Extensions> {
@@ -398,10 +578,16 @@ mod tests {
     };
 
     use rama_core::error::{BoxError, BoxErrorExt as _};
+    use rama_core::futures::stream;
     use rama_net::tls::ApplicationProtocol;
-    use rama_tls::client::TlsServerTrust;
+    use rama_tls::client::{
+        ChannelReloadTrigger, NativeTrustPolicy, PlatformTrustPolicy, TlsServerTrust,
+    };
     use rama_tls_boring::client::BoringGrease;
+    use rama_tls_boring::core::x509::store::X509StoreBuilder;
     use rama_tls_rustls::client::ModifyRustlsClientConfig;
+    use rama_tls_rustls::{client::RustlsClientConfigExt as _, verify::NoServerCertVerifier};
+    use std::task::Poll;
 
     use super::*;
     use crate::tls::ClientConfigCache;
@@ -449,7 +635,6 @@ mod tests {
     #[test]
     fn native_reload_rotates_cached_quic_configs() {
         use rama_crypto::{native_certs::bundled_root_certs, pem::PemEncode as _};
-        use rama_tls::client::{ChannelReloadTrigger, NativeTrustPolicy, PlatformTrustPolicy};
         use std::{env, fs, path::PathBuf, process::Command};
 
         // Give the test its own SSL_CERT_FILE without mutating the test runner's environment.
@@ -533,10 +718,6 @@ mod tests {
 
     #[tokio::test]
     async fn native_verifier_overrides_skip_common_trust_reload() {
-        use rama_core::futures::stream;
-        use rama_tls_boring::core::x509::store::X509StoreBuilder;
-        use rama_tls_rustls::{client::RustlsClientConfigExt as _, verify::NoServerCertVerifier};
-
         let configs = [
             ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default()),
             ClientConfigCache::new(
@@ -544,10 +725,15 @@ mod tests {
                 TlsOptions::default(),
             ),
         ];
-        let policy =
-            rama_tls::client::NativeTrustPolicy::new().with_reload_trigger(stream::poll_fn(|_| {
-                panic!("native verifier overrides should bypass common trust")
-            }));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let trigger = stream::poll_fn({
+            let polls = polls.clone();
+            move |_| {
+                polls.fetch_add(1, Ordering::Relaxed);
+                Poll::Pending
+            }
+        });
+        let policy = NativeTrustPolicy::new().with_reload_trigger(trigger);
         let base = || {
             TlsClientConfig::new()
                 .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
@@ -568,6 +754,7 @@ mod tests {
                 .unwrap();
             assert!(Arc::ptr_eq(&first.crypto, &next.crypto));
         }
+        assert_eq!(polls.load(Ordering::Relaxed), 0);
     }
 
     #[test]

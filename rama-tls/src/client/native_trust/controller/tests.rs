@@ -28,7 +28,7 @@ fn a_user_stream_is_polled_only_after_its_waker_fires() {
         let PinAction::Ready(Ok(quiet)) = reload.prepare_pin(None) else {
             panic!("unexpected native trust refresh");
         };
-        assert_eq!(original, quiet);
+        assert!(Arc::ptr_eq(&original, &quiet));
     }
     assert_eq!(polls.load(Ordering::Relaxed), 1);
 
@@ -40,7 +40,14 @@ fn a_user_stream_is_polled_only_after_its_waker_fires() {
         .run(None, |_| Ok((anchors[1..2].to_vec(), false)))
         .unwrap();
     assert_ne!(original, updated);
-    assert_eq!(updated.native_roots().unwrap(), &anchors[1..2]);
+    assert_eq!(updated.as_ref(), &anchors[1..2]);
+
+    send.try_send(()).unwrap();
+    let restored = reload
+        .pin_with(None, |_| Ok((anchors[..1].to_vec(), false)))
+        .unwrap();
+    assert_eq!(original.as_ref(), restored.as_ref());
+    assert!(!Arc::ptr_eq(&original, &restored));
 }
 
 #[test]
@@ -57,7 +64,7 @@ fn refresh_retries_without_another_request_and_preserves_equal_generations() {
             Err(std::io::Error::from(std::io::ErrorKind::InvalidData).into())
         })
         .unwrap();
-    assert_eq!(original, failed);
+    assert!(Arc::ptr_eq(&original, &failed));
 
     let stale = reload
         .pin_with(Some(Duration::ZERO), |_| panic!("failure backoff active"))
@@ -66,7 +73,7 @@ fn refresh_retries_without_another_request_and_preserves_equal_generations() {
 
     set_retry_at(&reload, Instant::now());
     let retried = reload.pin_with(None, load).unwrap();
-    assert_eq!(original, retried);
+    assert!(Arc::ptr_eq(&original, &retried));
 }
 
 fn set_retry_at(reload: &NativeTrustReload, retry_at: Instant) {
@@ -185,10 +192,7 @@ fn async_refresh_waiters_share_one_blocking_worker_after_leader_cancellation() {
         resume.send(()).unwrap();
         let snapshots = waiters.await;
         for snapshot in snapshots {
-            assert_eq!(
-                snapshot.unwrap().native_roots().unwrap(),
-                &bundled_root_certs()[..1]
-            );
+            assert_eq!(snapshot.unwrap().as_ref(), &bundled_root_certs()[..1]);
         }
 
         let next = reload
@@ -197,7 +201,7 @@ fn async_refresh_waiters_share_one_blocking_worker_after_leader_cancellation() {
             })
             .await
             .unwrap();
-        assert_eq!(next.native_roots().unwrap(), &bundled_root_certs()[1..2]);
+        assert_eq!(next.as_ref(), &bundled_root_certs()[1..2]);
     });
 }
 
@@ -234,13 +238,13 @@ fn concurrent_handshakes_keep_a_fresh_pinned_snapshot_until_publication() {
             panic!("expected concurrent handshake to keep using fresh trust anchors");
         };
         assert!(matches!(strict, PinAction::Wait(..)));
-        assert_eq!(initial, concurrent);
-        assert_eq!(concurrent.native_roots().unwrap(), &anchors[..1]);
+        assert!(Arc::ptr_eq(&initial, &concurrent));
+        assert_eq!(concurrent.as_ref(), &anchors[..1]);
         assert_ne!(initial, updated);
-        assert_eq!(updated.native_roots().unwrap(), &anchors[1..2]);
+        assert_eq!(updated.as_ref(), &anchors[1..2]);
         let PinAction::Ready(Ok(next)) = reload.prepare_pin(None) else {
             panic!("expected newly published trust anchors");
         };
-        assert_eq!(updated, next);
+        assert!(Arc::ptr_eq(&updated, &next));
     });
 }

@@ -420,7 +420,7 @@ impl ConnectorSessions {
         let scope = config.context_scope_with_verification(prepared);
         if scope.as_ref().is_some_and(|id| !id.is_reusable()) {
             config.session_domain = None;
-            return TlsConnectorData::from_config(&config, prepared);
+            return TlsConnectorData::from_config(&config, prepared, None);
         }
         let context = if let Some(context) = self.contexts.get(&scope) {
             context

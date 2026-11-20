@@ -42,7 +42,7 @@ use rama_tls_boring::{
 };
 
 use super::{
-    packet,
+    ServerVerification, packet,
     session::{TlsSession, crypto_error},
 };
 use crate::tls::ClientHandshake;
@@ -226,6 +226,14 @@ impl QuicClientConfig {
         config: &TlsClientConfig,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
+        Self::from_rama_with_verification(config, options, None)
+    }
+
+    pub(crate) fn from_rama_with_verification(
+        config: &TlsClientConfig,
+        options: TlsOptions,
+        verification: Option<&ServerVerification>,
+    ) -> Result<Self, TlsConfigError> {
         let extensions = config.as_extensions();
         let (requirement, intent) = EchRequirement::effective(extensions)?;
         let target = extensions.get_ref::<ConnectorTarget>();
@@ -276,12 +284,11 @@ impl QuicClientConfig {
                 BoxError::from_static_str("resumed TLS conflicts with the fresh client policy"),
             ));
         }
-        let mut builder = match extensions.get_ref::<crate::tls::verification::ServerVerification>()
-        {
-            Some(crate::tls::verification::ServerVerification::Boring(verification)) => {
+        let mut builder = match verification {
+            Some(verification) => {
                 TlsConnectorContextBuilder::with_server_verification(config, verification)?
             }
-            _ => TlsConnectorContextBuilder::try_from(config)?,
+            None => TlsConnectorContextBuilder::try_from(config)?,
         };
         if builder
             .max_proto_version()
@@ -350,8 +357,15 @@ impl QuicClientConfig {
         peer: Host,
         handshake: ClientHandshake,
     ) -> Result<Self, TlsConfigError> {
-        let mut config = Self::from_rama(config, options)?;
-        match (&mut config.sessions, handshake) {
+        Self::from_rama(config, options)?.with_handshake(peer, handshake)
+    }
+
+    pub(crate) fn with_handshake(
+        mut self,
+        peer: Host,
+        handshake: ClientHandshake,
+    ) -> Result<Self, TlsConfigError> {
+        match (&mut self.sessions, handshake) {
             (Some(sessions), offer) => sessions.offer = offer,
             (None, ClientHandshake::Auto | ClientHandshake::Full) => {}
             (None, ClientHandshake::Resumed) => {
@@ -360,7 +374,7 @@ impl QuicClientConfig {
                 ));
             }
         }
-        config.prepare_ssl(peer)
+        self.prepare_ssl(peer)
     }
 
     fn prepare_ssl(mut self, peer: Host) -> Result<Self, TlsConfigError> {

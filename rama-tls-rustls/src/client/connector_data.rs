@@ -16,10 +16,7 @@ use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::address::Host;
-use rama_tls::client::{
-    ClientAuth, ClientHandshake, ServerVerifyMode, TlsServerTrust, rustls_native_root_store,
-    rustls_server_verification,
-};
+use rama_tls::client::{ClientAuth, ClientHandshake, ServerVerifyMode, TlsServerTrust};
 use rama_tls::keylog::open_intent_sink;
 use std::sync::Arc;
 
@@ -124,22 +121,29 @@ pub(super) fn build_client_config(
         }
     }
 
-    let trust = match (server_verify_mode, value.server_trust) {
-        // Nothing checks a chain against roots here, so the system store is not even loaded.
-        (ServerVerifyMode::Disable, _) if value.server_cert_pins.is_none() => {
+    let trust = match (
+        server_verify_mode,
+        value.verifier.as_ref(),
+        value.server_trust,
+    ) {
+        (ServerVerifyMode::Disable, _, _) | (ServerVerifyMode::Auto, Some(_), None) => {
             ResolvedTrust::Roots(Arc::new(RootCertStore::empty()))
         }
-        (ServerVerifyMode::Auto, Some(trust)) => {
-            if value.verifier.is_some() {
-                tracing::debug!(
-                    "rustls connector: server trust policy ignored: custom certificate verifier takes precedence"
-                );
-                ResolvedTrust::Roots(client_root_certs())
+        (ServerVerifyMode::Auto, Some(_), Some(_)) => {
+            tracing::debug!(
+                "rustls connector: server trust policy ignored: custom certificate verifier takes precedence"
+            );
+            ResolvedTrust::Roots(Arc::new(RootCertStore::empty()))
+        }
+        (ServerVerifyMode::Auto, None, trust) => {
+            if let Some(verification) = prepared {
+                ResolvedTrust::from_verification(verification.clone())
+            } else if let Some(trust) = trust {
+                resolve_trust(trust)?
             } else {
-                resolve_trust(trust, prepared)?
+                ResolvedTrust::Roots(client_root_certs())
             }
         }
-        _ => ResolvedTrust::Roots(client_root_certs()),
     };
     let root_certs = match &trust {
         ResolvedTrust::Roots(roots) => roots.clone(),
@@ -185,9 +189,12 @@ pub(super) fn build_client_config(
         ServerVerifyMode::Disable => match (value.server_cert_pins, chain_policy) {
             (None, None) => Some(Arc::new(NoServerCertVerifier::default())),
             (Some(pins), None) => {
+                let roots = match prepared {
+                    Some(rama_core::combinators::Either::A(roots)) => roots.clone(),
+                    _ => client_root_certs(),
+                };
                 let signature_verifier =
-                    WebPkiServerVerifier::builder_with_provider(client_root_certs(), provider)
-                        .build()?;
+                    WebPkiServerVerifier::builder_with_provider(roots, provider).build()?;
                 Some(Arc::new(PinnedServerCertVerifier::pin_only(
                     pins.clone(),
                     signature_verifier,
@@ -281,18 +288,17 @@ enum ResolvedTrust {
     Platform(Arc<rama_crypto::platform_verifier::PlatformVerifier>),
 }
 
-fn resolve_trust(
-    trust: &TlsServerTrust,
-    prepared: Option<&super::RustlsServerVerification>,
-) -> Result<ResolvedTrust, BoxError> {
-    let verification = match prepared {
-        Some(verification) => verification.clone(),
-        None => rustls_server_verification(trust)?,
-    };
-    Ok(match verification {
-        rama_core::combinators::Either::A(store) => ResolvedTrust::Roots(store),
-        rama_core::combinators::Either::B(verifier) => ResolvedTrust::Platform(verifier),
-    })
+impl ResolvedTrust {
+    fn from_verification(verification: super::RustlsServerVerification) -> Self {
+        match verification {
+            rama_core::combinators::Either::A(store) => Self::Roots(store),
+            rama_core::combinators::Either::B(verifier) => Self::Platform(verifier),
+        }
+    }
+}
+
+fn resolve_trust(trust: &TlsServerTrust) -> Result<ResolvedTrust, BoxError> {
+    super::verification::acquire(trust).map(ResolvedTrust::from_verification)
 }
 
 /// Resolve a common [`ClientAuth`] into the native rustls cert chain + private
@@ -321,12 +327,12 @@ fn rustls_client_auth(
 /// no native roots are found, that loader warns and falls back to the bundled
 /// webpki (Mozilla CCADB) roots.
 pub fn client_root_certs() -> Arc<RootCertStore> {
-    rustls_native_root_store()
+    super::verification::native()
 }
 
 #[cfg(test)]
 fn webpki_root_certs() -> Arc<RootCertStore> {
-    rama_tls::client::rustls_webpki_root_store()
+    super::verification::webpki()
 }
 
 #[cfg(not(any(feature = "aws-lc", feature = "ring")))]
@@ -509,7 +515,7 @@ mod tests {
     }
 
     fn rustls_root_certs(trust: &TlsServerTrust) -> Result<Arc<RootCertStore>, BoxError> {
-        match resolve_trust(trust, None)? {
+        match resolve_trust(trust)? {
             ResolvedTrust::Roots(roots) => Ok(roots),
             ResolvedTrust::Platform(_) => {
                 Err(BoxError::from_static_str("expected a rustls root store"))
@@ -543,10 +549,6 @@ mod tests {
             rustls_root_certs(&default).unwrap().len(),
             client_root_certs().len() + 1
         );
-        assert!(Arc::ptr_eq(
-            &rustls_root_certs(&default).unwrap(),
-            &rustls_root_certs(&default).unwrap(),
-        ));
 
         let webpki = TlsServerTrust::webpki_roots()
             .try_with_additional_anchors([anchor])
@@ -555,10 +557,6 @@ mod tests {
             rustls_root_certs(&webpki).unwrap().len(),
             webpki_root_certs().len() + 1
         );
-        assert!(Arc::ptr_eq(
-            &rustls_root_certs(&webpki).unwrap(),
-            &rustls_root_certs(&webpki).unwrap(),
-        ));
     }
 
     #[test]

@@ -1,6 +1,8 @@
 use parking_lot::Mutex;
 use rama::{Service, ServiceInput, extensions::ExtensionsRef, io::PrefixedIo};
-use rama_crypto::{cert::generate_server_auth, pem::PemBlock, pki_types::CertificateDer};
+use rama_crypto::{
+    cert::generate_server_auth, native_certs, pem::PemBlock, pki_types::CertificateDer,
+};
 use rama_net::{
     Protocol,
     address::{Domain, Host, HostWithPort},
@@ -131,6 +133,9 @@ async fn run(dir: PathBuf, trust: impl FnOnce(ChannelReloadTrigger) -> TlsServer
     write_bundle(&bundle, &anchor_a);
     fs::write(&extra, b"").unwrap();
 
+    let static_native = native_certs::shared_native_trust_anchors();
+    let static_extras = native_certs::shared_extra_trust_anchors();
+
     let use_b = Arc::new(AtomicBool::new(false));
     let dial = Dial {
         a,
@@ -210,6 +215,14 @@ async fn run(dir: PathBuf, trust: impl FnOnce(ChannelReloadTrigger) -> TlsServer
 
     // Successfully reading an empty store distrusts the old certificate.
     fs::write(&bundle, b"").unwrap();
+    assert!(Arc::ptr_eq(
+        &static_native,
+        &native_certs::shared_native_trust_anchors()
+    ));
+    assert!(Arc::ptr_eq(
+        &static_extras,
+        &native_certs::shared_extra_trust_anchors()
+    ));
     reload.request_reload().unwrap();
     drop(rustls.serve(request()).await.unwrap_err());
     drop(boring.serve(request()).await.unwrap_err()); // A's tickets cannot bypass distrust
