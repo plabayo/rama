@@ -46,7 +46,12 @@ fn load_system_roots() -> Result<Vec<CertificateDer<'static>>, BoxError> {
     load_system_paths(&super::unix::system_paths())
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(target_os = "macos")]
+fn load_system_roots() -> Result<Vec<CertificateDer<'static>>, BoxError> {
+    checked_system_load(super::macos::load_reloadable_native_certs())
+}
+
+#[cfg(windows)]
 fn load_system_roots() -> Result<Vec<CertificateDer<'static>>, BoxError> {
     checked_system_load(super::platform::load_native_certs())
 }
