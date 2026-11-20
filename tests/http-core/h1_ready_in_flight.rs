@@ -58,7 +58,8 @@ fn poll_conn(conn: &mut SilentConnection, cx: &mut Context<'_>) -> Poll<()> {
 async fn h1_connection_is_not_ready_while_a_request_is_in_flight() {
     let (mut sender, mut conn) = http1::handshake(ServiceInput::new(SilentIo)).await.unwrap();
 
-    // Idle, the connection finds its queue empty and signals it is ready.
+    // The initial permit is available before the driver runs.
+    assert!(sender.is_ready());
     poll_fn(|cx| poll_conn(&mut conn, cx)).await;
     assert!(sender.is_ready());
 
@@ -66,9 +67,7 @@ async fn h1_connection_is_not_ready_while_a_request_is_in_flight() {
     let _response = sender.send_request(Request::new(Empty::new()));
     assert!(!sender.is_ready());
 
-    // Out of coop budget the queue reports Pending with the request in it, so
-    // the connection signals ready again, as does a connection task preempted
-    // between finding its queue empty and signaling.
+    // Pending with a queued request must not grant a second permit.
     poll_fn(|cx| {
         while let Poll::Ready(restore) = coop::poll_proceed(cx) {
             restore.made_progress();
@@ -76,6 +75,7 @@ async fn h1_connection_is_not_ready_while_a_request_is_in_flight() {
         poll_conn(&mut conn, cx)
     })
     .await;
+    assert!(!sender.is_ready());
     yield_now().await;
 
     // With a fresh budget it takes and writes the request, which then waits
