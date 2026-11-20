@@ -2,17 +2,13 @@ use rama::{
     Layer, Service,
     combinators::Either,
     crypto::pki_types::{CertificateDer, pem::PemObject as _},
-    dns::client::DnsConnectorLayer,
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError},
     error_sink::TracingErrorSink,
     extensions::{Extension, ExtensionsRef as _},
     graceful::WeakScope,
     http::{
         Body, Request, Response, StreamingBody,
-        client::{
-            DefaultHttpWebClient, EasyHttpWebClient, Http3Connector, MasqueQuicEndpoints,
-            ProxyConnectorLayer, proxy::layer::HttpProxyConnectorLayer,
-        },
+        client::{EasyHttpWebClient, ProxyConnector},
         header::AUTHORIZATION,
         layer::{
             follow_redirect::{
@@ -35,9 +31,7 @@ use rama::{
         uri::Uri,
         user::ProxyCredential,
     },
-    proxy::{masque::connect_udp::ConnectUdpConnector, socks5::Socks5ProxyConnectorLayer},
     quic::{
-        client::QuicEndpointConnector,
         profile::replay::ConnectionProfileCompiler as QuicProfileCompiler, tls::BoringTlsProvider,
     },
     tls::{
@@ -61,7 +55,6 @@ use rama::{
             selection::{DrawKey, ProfileSeed, database::UserAgentDatabase, variants::VariantPins},
         },
     },
-    udp::proxy::UdpConnector,
 };
 
 use std::{future::ready, sync::Arc, time::Duration};
@@ -345,61 +338,62 @@ async fn new_inner_client(
     } else {
         proxy_tls_config.set_platform_verifier();
     }
-    let masque_tls_config = proxy_tls_config.clone();
-
-    let mut http_proxy_connector = HttpProxyConnectorLayer::required();
-    for HttpHeader { name, value } in &cfg.proxy_header {
-        http_proxy_connector.set_custom_header(name.clone(), value.clone());
-    }
-
-    let proxy_connector =
-        ProxyConnectorLayer::optional(Socks5ProxyConnectorLayer::required(), http_proxy_connector);
-
-    let builder = EasyHttpWebClient::connector_builder()
+    let mut proxies = ProxyConnector::builder(scope.clone())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
-        .with_custom_proxy_connector(proxy_connector)
-        .with_tls_support_using_boringssl(tls_config.clone())
-        .map_connector(|connector| {
-            if cfg.emulate.is_some() {
-                Either::A(
-                    ProfileEmulateHttpConnectModifier::new(connector)
-                        .with_connection_compiler(TcpProfileCompiler::new(tls_config.clone())),
-                )
-            } else {
-                Either::B(connector)
-            }
-        })
-        .with_default_http_connector(scope.clone());
+        .with_tls_support_using_boringssl(proxy_tls_config.with_alpn_http_auto())
+        .with_default_http_connector()
+        .with_default_connection_pool()
+        .with_every_method();
+    for HttpHeader { name, value } in &cfg.proxy_header {
+        proxies = proxies.with_connect_custom_header(name.clone(), value.clone());
+    }
+    let proxies = proxies
+        .build()
+        .with_forward_proxy_auth(!cfg.no_proxy_forward_auth);
+
+    let tcp_emulation = |connector| {
+        if cfg.emulate.is_some() {
+            Either::A(
+                ProfileEmulateHttpConnectModifier::new(connector)
+                    .with_connection_compiler(TcpProfileCompiler::new(tls_config.clone())),
+            )
+        } else {
+            Either::B(connector)
+        }
+    };
 
     let uri = parse_user_uri(&cfg.req.uri)?;
     // Erase the deep transport futures before adding diagnostics and timeouts.
     // Otherwise constructing their combined future can exhaust a worker stack.
     // This boundary is only crossed for a new connection; pool hits bypass it.
     let builder = if uses_quic(cfg, &uri) {
-        let provider = Arc::new(BoringTlsProvider::new());
-        let compiler =
-            captured.then(|| QuicProfileCompiler::new(tls_config.clone(), provider.clone()));
-        let connector = Http3Connector::builder(scope.clone())
-            .with_tls_provider(provider)
-            .with_tls_config(tls_config.clone())
-            // HTTP/3 through a `masque://` proxy runs in a CONNECT-UDP tunnel; other proxies
-            // stay refused for HTTP/3.
-            .with_endpoints(masque_endpoints(scope, masque_tls_config)?);
-        let connector = connector.build_lazy()?;
-        let connector = match compiler {
-            Some(compiler) => Either::A(
-                ProfileEmulateHttpConnectModifier::new(connector)
-                    .with_connection_compiler(compiler),
-            ),
-            None => Either::B(connector),
-        };
-        builder
-            .with_http3_connector(DnsConnectorLayer::new().into_layer(connector))
+        let compiler = captured.then(|| {
+            QuicProfileCompiler::new(tls_config.clone(), Arc::new(BoringTlsProvider::new()))
+        });
+        EasyHttpWebClient::connector_builder(scope.clone())
+            .with_default_transport_connector()
+            .with_default_dns_connector()
+            .with_proxy_support(proxies)
+            .with_tls_support_using_boringssl(tls_config.clone())
+            .map_connector(tcp_emulation)
+            .with_default_http_connector::<Body>()
+            .map_http3_connector(|h3| match compiler {
+                Some(compiler) => Either::A(
+                    ProfileEmulateHttpConnectModifier::new(h3).with_connection_compiler(compiler),
+                ),
+                None => Either::B(h3),
+            })
             .map_connector(|connector| connector.boxed())
     } else {
-        builder.map_connector(|connector| connector.boxed())
+        EasyHttpWebClient::connector_builder(scope.clone())
+            .with_default_tcp_connector()
+            .with_default_dns_connector()
+            .with_proxy_support(proxies)
+            .with_tls_support_using_boringssl(tls_config.clone())
+            .map_connector(tcp_emulation)
+            .with_default_http_connector::<Body>()
+            .map_connector(|connector| connector.boxed())
     };
 
     let builder = builder
@@ -423,7 +417,6 @@ async fn new_inner_client(
 
     let client = builder
         .build_client()
-        .with_forward_proxy_auth(!cfg.no_proxy_forward_auth)
         .with_tunnel_plaintext_http(cfg.proxy_tunnel)
         .with_jit_layer((
             ProfileEmulateHttpRequestModifierLayer,
@@ -431,24 +424,6 @@ async fn new_inner_client(
         ));
 
     Ok(client)
-}
-
-/// The QUIC endpoints of HTTP/3: a UDP socket per connection, or a CONNECT-UDP tunnel through
-/// a MASQUE proxy, opened by a client of its own to the proxy that trusts it as
-/// `--proxy-insecure` says.
-fn masque_endpoints(
-    scope: WeakScope,
-    proxy_tls: TlsClientConfig,
-) -> Result<
-    MasqueQuicEndpoints<impl Service<Request, Output = Response, Error = OpaqueError> + Clone>,
-    BoxError,
-> {
-    let client = DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(
-        scope.clone(),
-        proxy_tls.with_alpn_http_auto(),
-    )?;
-    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), client, scope.clone());
-    Ok(QuicEndpointConnector::new(tunnels, scope))
 }
 
 fn captured_emulation_layer(

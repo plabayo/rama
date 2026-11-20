@@ -159,7 +159,7 @@ pub mod types {
     #[doc(inline)]
     pub use ::rama_tls::{
         CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId, ProtocolVersion,
-        SecureTransport, SignatureScheme, SupportedGroup, TlsTunnel, client,
+        SecureTransport, SignatureScheme, SupportedGroup, client,
     };
 }
 

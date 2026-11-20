@@ -41,8 +41,8 @@ use rama::{
     extensions::ExtensionsRef,
     graceful::WeakScope,
     http::{
-        BodyLimitLayer, Method, Request, Response, StatusCode,
-        client::{EasyHttpWebClient, masque_quic_transport},
+        BodyLimitLayer, Method, Request, Response, StatusCode, Version,
+        client::{DefaultProxyConnector, EasyHttpWebClient, ProxyConnector, masque_quic_transport},
         header::trailer::ForbiddenTrailers,
         inspect::{control, mitm_policy},
         layer::{
@@ -90,7 +90,8 @@ use rama::{
     inspect as inspection,
     io::{peek::PeekPolicy, timeout::TimeoutIo},
     layer::{
-        ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer, TimeoutLayer,
+        ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapInputLayer, MapOutputLayer,
+        TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
     matcher::match_fn,
@@ -1285,7 +1286,13 @@ pub struct CliCommandProxy {
     #[arg(long)]
     proxy_auth: Option<Basic>,
 
-    /// Route egress through this HTTP, HTTPS, SOCKS5, SOCKS5H or MASQUE proxy.
+    /// Route egress through this proxy: `[scheme://][user:pass@]host[:port][/template]`.
+    /// An HTTP proxy is `http` or `h2c` in plaintext, `https` over TLS with the version
+    /// negotiated, or `h1`, `h2` or `h3` over TLS with that version; it carries TCP with
+    /// CONNECT, and UDP with CONNECT-UDP only where its address says the tunnels are:
+    /// `+udp` for the default template, or a path as the template to use.
+    /// A SOCKS5 proxy is `socks5` or `socks5h`, with `+tcp` or `+udp` to use it for that
+    /// transport only.
     #[arg(long, conflicts_with = "system_proxy")]
     upstream_proxy: Option<ProxyAddress>,
 
@@ -1800,7 +1807,7 @@ async fn run_with_dashboard_token(
             mitm_policy: mitm_policy.clone(),
             upstream: upstream.clone(),
             icap: icap.clone(),
-        });
+        })?;
 
         let plain_handler = proxy_request_dispatcher(
             proxy_client.clone(),
@@ -1833,18 +1840,13 @@ async fn run_with_dashboard_token(
                 MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())),
             )),
         };
+        let egress_proxies = upstream_proxies(&upstream, scope.clone(), tcp_options.clone())?;
         let make_egress_connector = || {
-            let connector = EasyHttpWebClient::connector_builder()
-                .with_custom_transport_connector(
-                    TcpConnector::new().with_connector(tcp_options.clone()),
-                )
-                .with_default_dns_connector();
-            let connector = match upstream.proxy_tls_config() {
-                Some(config) => connector.with_tls_proxy_support_using_boringssl_config(config),
-                None => connector.with_tls_proxy_support_using_boringssl(),
-            }
-            .with_proxy_support()
-            .build_connector();
+            let connector = EasyHttpWebClient::connector_builder(scope.clone())
+                .with_custom_tcp_connector(TcpConnector::new().with_connector(tcp_options.clone()))
+                .with_default_dns_connector()
+                .with_proxy_support(egress_proxies.clone())
+                .build_connector();
             let connector = upstream.connector_service(connector);
             connect_timeout.map(TimeoutLayer::new).into_layer(connector)
         };
@@ -2049,8 +2051,8 @@ async fn run_with_dashboard_token(
     Ok((bound_addresses, inspector_address))
 }
 
-/// Bind a proxy listener and, for MASQUE, its HTTP/3 endpoint on the same port: a
-/// `masque://` address names one port for every carrier.
+/// Bind a proxy listener and, for MASQUE, its HTTP/3 endpoint on the same port: one
+/// proxy address names one port for every carrier.
 async fn bind_proxy_listener(
     scope: &WeakScope,
     address: SocketAddress,
@@ -2399,7 +2401,7 @@ struct ProxyClientConfig {
 
 fn new_proxy_client(
     config: ProxyClientConfig,
-) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
+) -> Result<impl Service<Request, Output = Response, Error = Infallible> + Clone, BoxError> {
     let ProxyClientConfig {
         scope,
         capture,
@@ -2418,22 +2420,26 @@ fn new_proxy_client(
         tracing::Level::DEBUG
     };
     let tls_config = TlsClientConfig::default_http();
-    let client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(TcpConnector::new().with_connector(tcp_options))
-        .with_default_dns_connector();
-    let client = match upstream.proxy_tls_config() {
-        Some(config) => client.with_tls_proxy_support_using_boringssl_config(config),
-        None => client.with_tls_proxy_support_using_boringssl(),
-    }
-    .with_proxy_support()
-    .with_tls_support_using_boringssl(tls_config)
-    .with_default_http_connector(scope.clone())
-    .with_custom_connector(connect_timeout.map_or_else(TimeoutLayer::never, TimeoutLayer::new))
-    .with_default_connection_pool()
-    .build_client()
-    .with_forward_proxy_auth(upstream.forward_proxy_auth())
-    .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http())
-    .with_isolate_forward_proxy_auth_error(true);
+    let proxies = upstream_proxies(&upstream, scope.clone(), tcp_options.clone())?;
+    let client = EasyHttpWebClient::connector_builder(scope.clone())
+        .with_custom_tcp_connector(TcpConnector::new().with_connector(tcp_options))
+        .with_default_dns_connector()
+        .with_proxy_support(proxies)
+        .with_tls_support_using_boringssl(tls_config)
+        .with_default_http_connector()
+        .with_custom_connector(connect_timeout.map_or_else(TimeoutLayer::never, TimeoutLayer::new))
+        .with_default_connection_pool()
+        .build_client()
+        .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http());
+    // HTTP/3 on a request is prior knowledge, but here it only describes the ingress
+    // connection: the egress starts at HTTP/1.1 and TLS negotiation can raise it.
+    let client = MapInputLayer::new(|mut request: Request| {
+        if request.version() == Version::HTTP_3 {
+            *request.version_mut() = Version::HTTP_11;
+        }
+        request
+    })
+    .into_layer(client);
     let client = upstream.http_service(client);
     let base = require_request_service(
         (
@@ -2511,9 +2517,34 @@ fn new_proxy_client(
         .with_compress_predicate(MirrorDecompressed::new())
         .with_enforce_not_acceptable(false)
         .into_layer(proxy);
-    ConsumeErrLayer::trace_as(error_level)
+    Ok(ConsumeErrLayer::trace_as(error_level)
         .with_response(DefaultErrorResponse::new())
-        .into_layer(MapResponseBodyLayer::new_boxed_streaming_body().into_layer(proxy))
+        .into_layer(MapResponseBodyLayer::new_boxed_streaming_body().into_layer(proxy)))
+}
+
+/// The connections towards the upstream proxies this proxy relays through, which are client
+/// connections of their own: the TCP options of this proxy, and its `--upstream-proxy`
+/// trust settings.
+fn upstream_proxies(
+    upstream: &UpstreamProxyConfig,
+    scope: WeakScope,
+    tcp_options: Arc<SocketOptions>,
+) -> Result<DefaultProxyConnector<TcpConnector<Arc<SocketOptions>>>, BoxError> {
+    Ok(ProxyConnector::builder(scope)
+        .with_custom_tcp_connector(TcpConnector::new().with_connector(tcp_options))
+        .with_default_quic_connector()
+        .with_default_dns_connector()
+        .with_tls_support_using_boringssl(
+            upstream
+                .proxy_tls_config()
+                .unwrap_or_else(TlsClientConfig::default_http),
+        )
+        .with_default_http_connector()
+        .with_default_connection_pool()
+        .with_every_method()
+        .build()
+        .with_forward_proxy_auth(upstream.forward_proxy_auth())
+        .with_isolate_forward_proxy_auth_error(true))
 }
 
 fn tcp_socket_options(cfg: &CliCommandProxy) -> Arc<SocketOptions> {

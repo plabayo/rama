@@ -67,6 +67,9 @@ you can if you want to still run your proxy as a [Man In The Middle Proxy](./mit
 and at that point you are no longer a transport proxy, but do see the http requests coming by,
 regardless if they were initially secured via tls.
 
+A rama client can also reach a socks5 proxy over TLS, see
+[TLS to a proxy](../http/http_clients.md#tls-to-a-proxy).
+
 ## Socks5 command: CONNECT
 
 ### Overview

@@ -141,6 +141,7 @@ pub struct Settings {
 /// values against its resource budgets and transport capabilities before dialing.
 /// Equal profiles may share a connection; different wire images do not.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Extension)]
+#[extension(scope(connection))]
 pub struct ClientSettingsProfile(pub Arc<Settings>);
 
 impl Settings {

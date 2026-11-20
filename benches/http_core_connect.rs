@@ -138,13 +138,12 @@ fn pooled_connector_future(bencher: divan::Bencher) {
         .build()
         .unwrap();
     let _guard = runtime.enter();
-    let connector = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
+    let connector = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_tcp_connector()
         .without_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector::<Body>(WeakScope::detached())
+        .with_default_http_connector::<Body>()
         .with_default_connection_pool()
         .build_connector();
 
@@ -165,13 +164,12 @@ fn pooled_tls_connector_future(bencher: divan::Bencher) {
         .build()
         .unwrap();
     let _guard = runtime.enter();
-    let connector = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
+    let connector = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_tcp_connector()
         .without_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_rustls(TlsClientConfig::new())
-        .with_default_http_connector::<Body>(WeakScope::detached())
+        .with_default_http_connector::<Body>()
         .with_default_connection_pool()
         .build_connector();
 
@@ -191,11 +189,8 @@ mod roundtrip {
         bytes::Bytes,
         graceful::WeakScope,
         http::{
-            Body, Request, Version,
-            body::util::BodyExt as _,
-            client::{EasyHttpWebClient, Http3Connector},
-            server::HttpServer,
-            service::web::response::IntoResponse as _,
+            Body, Request, Version, body::util::BodyExt as _, client::EasyHttpWebClient,
+            server::HttpServer, service::web::response::IntoResponse as _,
         },
         net::{address::SocketAddress, tls::ApplicationProtocol},
         quic::{Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
@@ -255,13 +250,12 @@ mod roundtrip {
         let tls = TlsClientConfig::new()
             .with_alpn([protocol].into_iter().collect())
             .with_server_verify(ServerVerifyMode::Disable);
-        let builder = EasyHttpWebClient::connector_builder()
-            .with_default_transport_connector()
+        let builder = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_default_tcp_connector()
             .without_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_rustls(tls)
-            .with_default_http_connector::<Body>(WeakScope::detached())
+            .with_default_http_connector()
             .with_default_connection_pool();
         let builder = if discovery {
             builder
@@ -343,21 +337,12 @@ mod roundtrip {
         let tls = TlsClientConfig::new()
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
             .with_server_verify(ServerVerifyMode::Disable);
-        let connector = client_runtime
-            .block_on(
-                Http3Connector::builder(WeakScope::detached())
-                    .with_tls_config(tls.clone())
-                    .build(),
-            )
-            .unwrap();
-        let client = EasyHttpWebClient::connector_builder()
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
             .with_default_transport_connector()
             .without_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_rustls(tls)
-            .with_default_http_connector::<Body>(WeakScope::detached())
-            .with_http3_support(connector)
+            .with_default_http_connector()
             .with_default_connection_pool()
             .build_client()
             .boxed();

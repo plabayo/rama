@@ -18,7 +18,10 @@ use rama_core::{
     service::{BoxService, service_fn},
 };
 use rama_http::io::upgrade;
-use rama_http_backend::{client::proxy::layer::HttpProxyConnectorLayer, server::HttpServer};
+use rama_http_backend::{
+    client::{HttpConnector, proxy::layer::HttpConnectProxyConnectorLayer},
+    server::HttpServer,
+};
 use rama_http_types::{
     Body, HeaderMap, Method as HttpMethod, Request, Response, Version,
     body::{Frame, util::BodyExt as _},
@@ -170,10 +173,13 @@ fn test_connection_id(_input: &ConnectRequest) -> Result<TestConnectionId, BoxEr
     Ok(TestConnectionId)
 }
 
-fn mock_icap_client<S>(
+fn mock_icap_client<S, Server>(
     create_server: S,
     max_buffer_size: usize,
-) -> crate::client::Client<MockConnectorService<S>> {
+) -> crate::client::Client<MockConnectorService<S>>
+where
+    S: Fn(&ConnectRequest) -> Server,
+{
     crate::client::Client::new(
         MockConnectorService::new(create_server).with_max_buffer_size(max_buffer_size),
     )
@@ -399,7 +405,7 @@ async fn serve_blocking_adaptation(request: IncomingRequest) -> Result<OutgoingR
 async fn detours_request_and_response_with_preview() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = MockConnectorService::new(|| {
+    let transport = MockConnectorService::new(|_| {
         Server::new(
             HttpService::new(service_fn(serve_adaptation_with_outer_trailers)),
             TEST_SERVICE_TAG,
@@ -478,7 +484,7 @@ async fn detours_request_and_response_with_preview() {
 #[tokio::test]
 async fn preserves_ordinary_header_order_and_casing_end_to_end() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             Server::new(
                 HttpService::new(service_fn(serve_header_preserving_adaptation)),
                 TEST_SERVICE_TAG,
@@ -541,7 +547,7 @@ async fn icaps_endpoint_uses_direct_tls_for_options_reqmod_and_respmod() {
     .unwrap();
     let icap_server = TlsIcapConnectionServer { inner: icap_server };
     let server = TlsAcceptorLayer::new(tls_config).into_layer(icap_server);
-    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let transport = MockConnectorService::new(move |_| server.clone()).with_max_buffer_size(4096);
     let transport = service_fn(move |input: ConnectRequest| {
         let transport = transport.clone();
         async move {
@@ -629,7 +635,7 @@ async fn boring_icaps_interoperates_for_options_reqmod_and_respmod() {
     .unwrap();
     let server = TlsAcceptorLayer::new(tls_config)
         .into_layer(TlsIcapConnectionServer { inner: icap_server });
-    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let transport = MockConnectorService::new(move |_| server.clone()).with_max_buffer_size(4096);
     let tls = BoringTlsConnector::auto(transport).with_base_config(
         TlsClientConfig::new()
             .with_server_verify(ServerVerifyMode::Auto)
@@ -678,7 +684,7 @@ async fn boring_icaps_rejects_wrong_certificate_identity() {
     .unwrap();
     let server = TlsAcceptorLayer::new(tls_config)
         .into_layer(TlsIcapConnectionServer { inner: icap_server });
-    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let transport = MockConnectorService::new(move |_| server.clone()).with_max_buffer_size(4096);
     let tls = BoringTlsConnector::auto(transport).with_base_config(
         TlsClientConfig::new()
             .with_server_verify(ServerVerifyMode::Auto)
@@ -695,7 +701,7 @@ async fn boring_icaps_rejects_wrong_certificate_identity() {
 
 #[tokio::test]
 async fn auto_tls_connector_keeps_icap_endpoint_plaintext() {
-    let transport = MockConnectorService::new(|| {
+    let transport = MockConnectorService::new(|_| {
         Server::new(
             HttpService::new(service_fn(serve_adaptation)),
             TEST_SERVICE_TAG,
@@ -753,8 +759,10 @@ async fn http_connect_tunnel_carries_and_reuses_plain_icap() {
         }
     }));
     let transport =
-        MockConnectorService::new(move || proxy_server.clone()).with_max_buffer_size(4096);
-    let transport = HttpProxyConnectorLayer::required().into_layer(transport);
+        MockConnectorService::new(move |_| proxy_server.clone()).with_max_buffer_size(4096);
+    let transport = HttpConnectProxyConnectorLayer::new().into_layer(
+        HttpConnector::<_, Body>::new(transport, WeakScope::detached()),
+    );
     let pool = LruDropPool::try_new(1, 2)
         .unwrap()
         .with_drop_connection_if_no_response(false);
@@ -845,8 +853,10 @@ async fn http_connect_tunnel_carries_and_reuses_icaps() {
         }
     }));
     let transport =
-        MockConnectorService::new(move || proxy_server.clone()).with_max_buffer_size(4096);
-    let transport = HttpProxyConnectorLayer::required().into_layer(transport);
+        MockConnectorService::new(move |_| proxy_server.clone()).with_max_buffer_size(4096);
+    let transport = HttpConnectProxyConnectorLayer::new().into_layer(
+        HttpConnector::<_, Body>::new(transport, WeakScope::detached()),
+    );
     let transport = TlsConnector::auto(transport).with_base_config(
         TlsClientConfig::new()
             .with_server_verify(ServerVerifyMode::Auto)
@@ -900,7 +910,7 @@ async fn http_connect_tunnel_carries_and_reuses_icaps() {
 #[tokio::test]
 async fn options_discovery_constrains_ephemeral_adaptation_policy() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             let adaptation = service_fn(async |request: IncomingRequest| {
                 assert_eq!(request.icap().preview(), Some(Preview::new(2)));
                 assert!(!request.icap().allows_204());
@@ -955,7 +965,7 @@ async fn changed_reqmod_and_respmod_istags_invalidate_cached_options() {
 
 async fn assert_istag_cache_discoveries(adaptation_tag: ServiceTag, expected_discoveries: usize) {
     let connector = mock_icap_client(
-        move || {
+        move |_| {
             let adaptation = service_fn(move |request: IncomingRequest| {
                 serve_adaptation_with_service_tag(request, adaptation_tag)
             });
@@ -1004,7 +1014,7 @@ async fn transfer_ignore_bypasses_reqmod_and_respmod() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
     let connector = mock_icap_client(
-        move || {
+        move |_| {
             connector_connections.fetch_add(1, Ordering::Relaxed);
             service_fn(|_io: MockSocket| async { Ok::<_, Infallible>(()) })
         },
@@ -1051,7 +1061,7 @@ async fn transfer_complete_disables_preview_in_both_directions() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
     let connector = mock_icap_client(
-        move || {
+        move |_| {
             connector_connections.fetch_add(1, Ordering::Relaxed);
             let adaptation = service_fn(async |request: IncomingRequest| {
                 assert_eq!(request.icap().preview(), None);
@@ -1094,7 +1104,7 @@ async fn transfer_complete_disables_preview_in_both_directions() {
 #[tokio::test]
 async fn preserves_trailer_only_response_declaration() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             Server::new(
                 HttpService::new(service_fn(serve_adaptation)),
                 TEST_SERVICE_TAG,
@@ -1137,7 +1147,7 @@ async fn preserves_trailer_only_response_declaration() {
 #[tokio::test]
 async fn reqmod_rejects_late_connection_nominated_trailer() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             Server::new(
                 HttpService::new(service_fn(serve_adaptation)),
                 TEST_SERVICE_TAG,
@@ -1214,7 +1224,7 @@ async fn respmod_204_replay_rejects_late_connection_nominated_trailer() {
     }
 
     let connector = mock_icap_client(
-        || {
+        |_| {
             Server::new(
                 service_fn(async |request: RawIncomingRequest| {
                     assert_eq!(request.request().preview(), Some(Preview::new(4)));
@@ -1283,7 +1293,7 @@ async fn respmod_204_replay_rejects_late_connection_nominated_trailer() {
 async fn reuses_healthy_exclusive_transport_connections() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = MockConnectorService::new(move || {
+    let transport = MockConnectorService::new(move |_| {
         connector_connections.fetch_add(1, Ordering::Relaxed);
         Server::new(
             HttpService::new(service_fn(serve_adaptation)),
@@ -1418,7 +1428,7 @@ async fn pool_discards_transports_with_preloaded_responses() {
 async fn evicts_transport_when_adapted_body_is_dropped() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = MockConnectorService::new(move || {
+    let transport = MockConnectorService::new(move |_| {
         connector_connections.fetch_add(1, Ordering::Relaxed);
         service_fn(|server_io: MockSocket| async move {
             let server = Server::new(
@@ -1478,7 +1488,7 @@ async fn evicts_transport_when_adapted_body_is_dropped() {
 async fn releases_preview_204_lease_before_original_replay() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = MockConnectorService::new(move || {
+    let transport = MockConnectorService::new(move |_| {
         connector_connections.fetch_add(1, Ordering::Relaxed);
         Server::new(
             service_fn(async |request: RawIncomingRequest| {
@@ -1559,7 +1569,7 @@ async fn releases_preview_204_lease_before_original_replay() {
 #[tokio::test]
 async fn omits_configured_preview_for_empty_body() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             Server::new(
                 service_fn(async |request: RawIncomingRequest| {
                     assert_eq!(request.request().preview(), None);
@@ -1608,7 +1618,7 @@ async fn omits_configured_preview_for_empty_body() {
 #[tokio::test]
 async fn reconstructs_reqmod_partial_content() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             service_fn(|server_io: MockSocket| async move {
                 let mut connection = crate::server::ServerConnection::new(server_io);
                 let mut transaction = connection.accept().await.unwrap().unwrap();
@@ -1662,7 +1672,7 @@ async fn reconstructs_reqmod_partial_content() {
 #[tokio::test]
 async fn reconstructs_preview_204_after_splitting_one_source_frame() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             service_fn(|server_io: MockSocket| async move {
                 let mut connection = crate::server::ServerConnection::new(server_io);
                 let mut transaction = connection.accept().await.unwrap().unwrap();
@@ -1717,7 +1727,7 @@ async fn reconstructs_preview_204_after_splitting_one_source_frame() {
 #[tokio::test]
 async fn oversized_known_body_degrades_to_adaptation_without_204() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             Server::new(
                 HttpService::new(service_fn(async |request: IncomingRequest| {
                     assert!(!request.icap().allows_204());
@@ -1760,7 +1770,7 @@ async fn oversized_known_body_degrades_to_adaptation_without_204() {
 #[tokio::test]
 async fn preview_split_preserves_one_source_frame_replay_budget() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             Server::new(
                 HttpService::new(service_fn(async |request: IncomingRequest| {
                     assert_eq!(request.icap().preview(), Some(Preview::new(1)));
@@ -1806,7 +1816,7 @@ async fn preview_split_preserves_one_source_frame_replay_budget() {
 #[tokio::test]
 async fn unknown_body_does_not_offer_replay_after_preview_continue() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             Server::new(
                 HttpService::new(service_fn(async |request: IncomingRequest| {
                     assert!(!request.icap().allows_204());
@@ -1848,7 +1858,7 @@ async fn unknown_body_does_not_offer_replay_after_preview_continue() {
 async fn reqmod_response_bypasses_origin_and_respmod() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = MockConnectorService::new(move || {
+    let transport = MockConnectorService::new(move |_| {
         connector_connections.fetch_add(1, Ordering::Relaxed);
         service_fn(|server_io: MockSocket| async move {
             let server = Server::new(
@@ -1922,7 +1932,7 @@ async fn reqmod_response_bypasses_origin_and_respmod() {
 #[tokio::test]
 async fn preserves_reqmod_proxy_authorization_and_canonical_host() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             Server::new(
                 HttpService::new(service_fn(async |request: IncomingRequest| {
                     let mut slots = [HeaderSlot::EMPTY; 8];
@@ -1989,7 +1999,7 @@ async fn preserves_reqmod_proxy_authorization_and_canonical_host() {
 async fn preserves_upgrade_request_fields_around_reqmod_sanitization() {
     for encapsulation in [UpgradeEncapsulation::Keep, UpgradeEncapsulation::Omit] {
         let connector = mock_icap_client(
-            move || {
+            move |_| {
                 Server::new(
                     HttpService::new(service_fn(move |request: IncomingRequest| async move {
                         let request = request.encapsulated().unwrap().request().unwrap();
@@ -2052,7 +2062,7 @@ async fn preserves_upgrade_request_fields_around_reqmod_sanitization() {
 #[tokio::test]
 async fn canonicalizes_authority_of_adapted_absolute_request() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             Server::new(
                 service_fn(async |request: RawIncomingRequest| {
                     let request_head = Bytes::from_static(
@@ -2105,7 +2115,7 @@ async fn canonicalizes_authority_of_adapted_absolute_request() {
 #[tokio::test]
 async fn preserves_respmod_proxy_authenticate_after_204() {
     let connector = mock_icap_client(
-        || {
+        |_| {
             Server::new(
                 HttpService::new(service_fn(async |request: IncomingRequest| {
                     let mut slots = [HeaderSlot::EMPTY; 8];
@@ -2167,7 +2177,7 @@ async fn preserves_respmod_proxy_authenticate_after_204() {
 async fn preserves_upgrade_response_fields_around_respmod_sanitization() {
     for encapsulation in [UpgradeEncapsulation::Keep, UpgradeEncapsulation::Omit] {
         let connector = mock_icap_client(
-            move || {
+            move |_| {
                 Server::new(
                     HttpService::new(service_fn(move |request: IncomingRequest| async move {
                         let response = request.encapsulated().unwrap().response().unwrap();
@@ -2227,7 +2237,7 @@ async fn preserves_upgrade_response_fields_around_respmod_sanitization() {
 #[tokio::test]
 async fn preserves_parser_policy_for_returned_proxy_headers() {
     let connector = crate::client::Client::new(
-        MockConnectorService::new(|| {
+        MockConnectorService::new(|_| {
             service_fn(|mut server_io: MockSocket| async move {
                 let mut request = Vec::new();
                 while request
@@ -2911,7 +2921,7 @@ macro_rules! extended_connect_reqmod {
             fn(&mut Request<()>) -> Body,
         ) = ($encapsulation, $host, $adapt);
         mock_icap_client(
-            move || {
+            move |_| {
                 Server::new(
                     HttpService::new(service_fn(move |request: IncomingRequest| async move {
                         let (parts, _body) = request.into_parts();
@@ -3020,7 +3030,7 @@ async fn reqmod_refuses_an_extended_connect_it_cannot_express() {
 async fn respmod_sees_an_extended_connect_acceptance_as_switching_protocols() {
     for encapsulation in [UpgradeEncapsulation::Keep, UpgradeEncapsulation::Omit] {
         let connector = mock_icap_client(
-            move || {
+            move |_| {
                 Server::new(
                     HttpService::new(service_fn(move |request: IncomingRequest| async move {
                         let (parts, _body) = request.into_parts();
@@ -3085,7 +3095,7 @@ macro_rules! connect_respmod {
         let status: u16 = $status;
         let adapt: fn(&mut Response<()>) -> Body = $adapt;
         mock_icap_client(
-            move || {
+            move |_| {
                 Server::new(
                     HttpService::new(service_fn(move |request: IncomingRequest| async move {
                         let (parts, _body) = request.into_parts();
@@ -3202,7 +3212,7 @@ async fn respmod_refusing_an_extended_connect_never_opens_the_tunnel() {
 #[tokio::test]
 async fn respmod_never_attaches_a_headless_body_to_a_tunnel() {
     let connector = mock_icap_client(
-        move || {
+        move |_| {
             Server::new(
                 service_fn(move |_request: RawIncomingRequest| async move {
                     let parts =
@@ -3262,7 +3272,7 @@ async fn reqmod_never_attaches_a_body_to_a_connect() {
         (|| classic_connect("origin.test:443"), false, Some(403)),
     ] {
         let connector = mock_icap_client(
-            move || {
+            move |_| {
                 Server::new(
                     service_fn(move |_request: RawIncomingRequest| async move {
                         let parts = if body_only {
@@ -3397,7 +3407,7 @@ async fn reqmod_preserves_inherited_early_data_when_adaptation_rebuilds_the_head
     for original in [false, true] {
         for adapted in [None, Some("1")] {
             let connector = mock_icap_client(
-                move || {
+                move |_| {
                     Server::new(
                         HttpService::new(service_fn(move |incoming: IncomingRequest| async move {
                             let (parts, body) = incoming.into_parts();

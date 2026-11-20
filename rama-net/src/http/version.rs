@@ -4,7 +4,7 @@
 //! standard `HTTP_09..HTTP_3` constants) so it is a drop-in replacement for
 //! `rama_http_types::Version`, which re-exports this type.
 
-use std::{error::Error, fmt};
+use core::{error::Error, fmt};
 
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
 use rama_macros::Extension;
@@ -87,7 +87,7 @@ impl fmt::Display for Version {
     }
 }
 
-impl std::str::FromStr for Version {
+impl core::str::FromStr for Version {
     type Err = InvalidVersion;
 
     /// Parse from the canonical `HTTP/x.y` text or any of its
@@ -187,7 +187,7 @@ impl TryFrom<&ApplicationProtocol> for Version {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::extensions::{Extensions, NoConnectionTransfer};
+    use rama_core::extensions::{Extensions, NoExtensionsTransfer};
 
     #[test]
     fn http_versions_and_application_protocols_round_trip() {
@@ -215,7 +215,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(TargetHttpVersion(Version::HTTP_2));
 
-        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer);
         assert_eq!(origin.get_ref::<TargetHttpVersion>(), None);
         assert_eq!(
             proxy.get_ref::<TargetHttpVersion>(),

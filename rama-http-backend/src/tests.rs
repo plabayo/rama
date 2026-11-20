@@ -61,13 +61,15 @@ use super::{
 #[tokio::test]
 async fn byte_stream_transport_rejects_http3_before_dialing() {
     let dials = Arc::new(AtomicUsize::new(0));
-    let connector = HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new({
-        let dials = dials.clone();
-        move || {
-            dials.fetch_add(1, Ordering::SeqCst);
-            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
-        }
-    }));
+    let connector = HttpConnectRequestAdapter::new(
+        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new({
+            let dials = dials.clone();
+            move |_| {
+                dials.fetch_add(1, Ordering::SeqCst);
+                HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
+            }
+        })),
+    );
 
     let error = connector
         .serve(create_test_request(Version::HTTP_3))
@@ -138,7 +140,7 @@ async fn negotiated_stream_version_must_match_the_required_version() {
 #[tokio::test]
 async fn http_connector_accepts_protocol_independent_input() {
     let connector =
-        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
+        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|_| {
             HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
         }));
 
@@ -162,7 +164,7 @@ async fn http_connector_accepts_protocol_independent_input() {
 #[tokio::test]
 async fn http_request_adapter_composes_with_http_connector() {
     let connector = HttpConnectRequestAdapter::new(
-        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
+        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|_| {
             HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
         })),
     );
@@ -183,9 +185,11 @@ async fn http_request_adapter_composes_with_http_connector() {
 
 #[tokio::test]
 async fn test_http11_pipelining() {
-    let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
-    }));
+    let connector = HttpConnectRequestAdapter::new(HttpConnectorLayer::default().into_layer(
+        MockConnectorService::new(|_| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
+        }),
+    ));
 
     let conn = connector
         .serve(create_test_request(Version::HTTP_11))
@@ -218,25 +222,27 @@ async fn test_http2_multiplex() {
     let inflight = Arc::new(AtomicUsize::new(0));
     let max_inflight = Arc::new(AtomicUsize::new(0));
 
-    let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new({
-        let inflight = inflight.clone();
-        let max_inflight = max_inflight.clone();
-        move || {
+    let connector = HttpConnectRequestAdapter::new(HttpConnectorLayer::default().into_layer(
+        MockConnectorService::new({
             let inflight = inflight.clone();
             let max_inflight = max_inflight.clone();
-            HttpServer::auto(WeakScope::detached()).service(service_fn(move |_req: Request| {
+            move |_| {
                 let inflight = inflight.clone();
                 let max_inflight = max_inflight.clone();
-                async move {
-                    let cur = inflight.fetch_add(1, Ordering::SeqCst) + 1;
-                    max_inflight.fetch_max(cur, Ordering::SeqCst);
-                    sleep(Duration::from_millis(200)).await;
-                    inflight.fetch_sub(1, Ordering::SeqCst);
-                    Ok::<_, Infallible>(Response::new(Body::from("a random response body")))
-                }
-            }))
-        }
-    }));
+                HttpServer::auto(WeakScope::detached()).service(service_fn(move |_req: Request| {
+                    let inflight = inflight.clone();
+                    let max_inflight = max_inflight.clone();
+                    async move {
+                        let cur = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_inflight.fetch_max(cur, Ordering::SeqCst);
+                        sleep(Duration::from_millis(200)).await;
+                        inflight.fetch_sub(1, Ordering::SeqCst);
+                        Ok::<_, Infallible>(Response::new(Body::from("a random response body")))
+                    }
+                }))
+            }
+        }),
+    ));
 
     let conn = connector
         .serve(create_test_request(Version::HTTP_2))
@@ -259,9 +265,11 @@ async fn test_http2_multiplex() {
 
 #[tokio::test]
 async fn test_http11_handles_4_concurrent_requests() {
-    let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
-    }));
+    let connector = HttpConnectRequestAdapter::new(HttpConnectorLayer::default().into_layer(
+        MockConnectorService::new(|_| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
+        }),
+    ));
 
     let conn = connector
         .serve(create_test_request(Version::HTTP_11))
@@ -283,9 +291,11 @@ async fn test_http11_handles_4_concurrent_requests() {
 
 #[tokio::test]
 async fn test_http2_handles_200_concurrent_requests() {
-    let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
-    }));
+    let connector = HttpConnectRequestAdapter::new(HttpConnectorLayer::default().into_layer(
+        MockConnectorService::new(|_| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
+        }),
+    ));
 
     let conn = connector
         .serve(create_test_request(Version::HTTP_2))

@@ -7,7 +7,7 @@ use rama_core::error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt};
 use rama_core::telemetry::tracing;
 use rama_net::{
     Protocol,
-    address::{HostWithOptPort, HostWithPort, ProxyAddress},
+    address::{HostWithOptPort, HostWithPort, ProxyAddress, ProxyProtocol},
     client::{ProxyRoute, ProxyRoutes},
 };
 
@@ -49,7 +49,7 @@ impl PacDirective {
     /// The [`ProxyAddress`] to route through, or `None` for
     /// [`PacDirective::Direct`].
     ///
-    /// A `SOCKS5` directive becomes [`Protocol::SOCKS5H`]: the proxy
+    /// A `SOCKS5` directive becomes [`ProxyProtocol::SOCKS5H`]: the proxy
     /// resolves the name, as browsers do. Whether a name is resolved
     /// locally instead is the socks5 connector's configuration, not
     /// something a PAC script expresses.
@@ -57,15 +57,14 @@ impl PacDirective {
     pub fn proxy_address(&self) -> Option<ProxyAddress> {
         let (protocol, address) = match self {
             Self::Direct => return None,
-            Self::Proxy(address) => (Protocol::HTTP, address),
-            Self::Https(address) => (Protocol::HTTPS, address),
-            Self::Socks5(address) => (Protocol::SOCKS5H, address),
+            Self::Proxy(address) => (ProxyProtocol::HTTP, address),
+            Self::Https(address) => (ProxyProtocol::HTTPS, address),
+            Self::Socks5(address) => (ProxyProtocol::SOCKS5H, address),
         };
         Some(ProxyAddress {
-            protocol: Some(protocol),
+            protocol,
             address: address.clone(),
             credential: None,
-            template: None,
         })
     }
 
@@ -501,8 +500,8 @@ mod tests {
         assert_eq!(routes.len(), 3);
         assert_matches!(routes[0], ProxyRoute::Proxy(_));
         assert_eq!(
-            routes[1].proxy_address().and_then(|a| a.protocol.clone()),
-            Some(Protocol::SOCKS5H),
+            routes[1].proxy_address().map(|a| a.protocol.clone()),
+            Some(ProxyProtocol::SOCKS5H),
         );
         // DIRECT keeps its place in the fallback order
         assert_eq!(routes[2], &ProxyRoute::Direct);
@@ -709,10 +708,10 @@ mod tests {
     #[test]
     fn proxy_address_protocol_matrix() {
         for (input, expected) in [
-            ("PROXY a:1", Some(Protocol::HTTP)),
-            ("HTTP a:1", Some(Protocol::HTTP)),
-            ("HTTPS a:1", Some(Protocol::HTTPS)),
-            ("SOCKS5 a:1", Some(Protocol::SOCKS5H)),
+            ("PROXY a:1", ProxyProtocol::HTTP),
+            ("HTTP a:1", ProxyProtocol::HTTP),
+            ("HTTPS a:1", ProxyProtocol::HTTPS),
+            ("SOCKS5 a:1", ProxyProtocol::SOCKS5H),
         ] {
             let directives: PacDirectives = input.parse().unwrap();
             let address = directives.first().unwrap().proxy_address().unwrap();

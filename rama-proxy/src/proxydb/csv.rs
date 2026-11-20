@@ -1,10 +1,7 @@
-use super::{Proxy, StringFilter};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as ENGINE;
+use super::{Proxy, ProxyProtocols, StringFilter, internal::protocol_token};
 use rama_net::{
     address::ProxyAddress,
     asn::{Asn, InvalidAsn},
-    user::ProxyCredential,
 };
 use std::path::Path;
 use tokio::{
@@ -14,8 +11,24 @@ use tokio::{
 
 #[derive(Debug)]
 /// A CSV Reader that can be used to create a [`Proxy`] database from a CSV file or raw data.
+///
+/// One proxy per line, in this column order:
+///
+/// ```text
+/// id,type,address,pool_id,continent,country,state,city,carrier,asn,credential,protocols
+/// ```
+///
+/// - `type`: a [`ProxyType`](crate::ProxyType) name, such as `residential`
+/// - `address`: `[user[:pass]@]host:port`, without a scheme
+/// - `credential`: replaces the credential of the address when set, written as a
+///   [`ProxyCredential`](rama_net::user::ProxyCredential)
+/// - `protocols`: every protocol the proxy speaks, `;`-separated, as
+///   [`Proxy::protocols`] documents, such as `socks5+tcp;socks5+udp;h2`
+///
+/// A `,` separates columns and a `;` protocols, so neither can appear in a template here.
 pub struct ProxyCsvRowReader {
     data: ProxyCsvRowReaderData,
+    line: usize,
 }
 
 impl ProxyCsvRowReader {
@@ -26,6 +39,7 @@ impl ProxyCsvRowReader {
         let lines = reader.lines();
         Ok(Self {
             data: ProxyCsvRowReaderData::File(lines),
+            line: 0,
         })
     }
 
@@ -34,37 +48,25 @@ impl ProxyCsvRowReader {
         let lines: Vec<_> = data.as_ref().lines().rev().map(str::to_owned).collect();
         Self {
             data: ProxyCsvRowReaderData::Raw(lines),
+            line: 0,
         }
     }
 
     /// Read the next row from the CSV file.
     pub async fn next(&mut self) -> Result<Option<Proxy>, ProxyCsvRowReaderError> {
-        match &mut self.data {
-            ProxyCsvRowReaderData::File(lines) => {
-                let line = lines.next_line().await?;
-                match line {
-                    Some(line) => Ok(Some(match parse_csv_row(&line) {
-                        Some(proxy) => proxy,
-                        None => {
-                            return Err(ProxyCsvRowReaderError {
-                                kind: ProxyCsvRowReaderErrorKind::InvalidRow(line),
-                            });
-                        }
-                    })),
-                    None => Ok(None),
-                }
-            }
-            ProxyCsvRowReaderData::Raw(lines) => match lines.pop() {
-                Some(line) => Ok(Some(match parse_csv_row(&line) {
-                    Some(proxy) => proxy,
-                    None => {
-                        return Err(ProxyCsvRowReaderError {
-                            kind: ProxyCsvRowReaderErrorKind::InvalidRow(line),
-                        });
-                    }
-                })),
-                None => Ok(None),
-            },
+        let line = match &mut self.data {
+            ProxyCsvRowReaderData::File(lines) => lines.next_line().await?,
+            ProxyCsvRowReaderData::Raw(lines) => lines.pop(),
+        };
+        let Some(line) = line else {
+            return Ok(None);
+        };
+        self.line += 1;
+        match parse_csv_row(&line) {
+            Some(proxy) => Ok(Some(proxy)),
+            None => Err(ProxyCsvRowReaderError {
+                kind: ProxyCsvRowReaderErrorKind::InvalidRow { line: self.line },
+            }),
         }
     }
 }
@@ -80,22 +82,14 @@ pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
 
     let id = iter.next().and_then(|s| s.try_into().ok())?;
 
-    let tcp = iter.next().and_then(parse_csv_bool)?;
-    let udp = iter.next().and_then(parse_csv_bool)?;
-    let http = iter.next().and_then(parse_csv_bool)?;
-    let https = iter.next().and_then(parse_csv_bool)?;
-    let socks5 = iter.next().and_then(parse_csv_bool)?;
-    let socks5h = iter.next().and_then(parse_csv_bool)?;
-    let datacenter = iter.next().and_then(parse_csv_bool)?;
-    let residential = iter.next().and_then(parse_csv_bool)?;
-    let mobile = iter.next().and_then(parse_csv_bool)?;
-    let mut address = iter.next().and_then(|s| {
-        if s.is_empty() {
-            None
-        } else {
-            ProxyAddress::try_from(s).ok()
-        }
-    })?;
+    let kind = iter.next()?.parse().ok()?;
+    let address = iter.next().filter(|s| !s.is_empty() && !s.contains('/'))?;
+    let ProxyAddress {
+        address,
+        mut credential,
+        ..
+    } = address.parse().ok()?;
+
     let pool_id = parse_csv_opt_string_filter(iter.next()?);
     let continent = parse_csv_opt_string_filter(iter.next()?);
     let country = parse_csv_opt_string_filter(iter.next()?);
@@ -104,27 +98,18 @@ pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
     let carrier = parse_csv_opt_string_filter(iter.next()?);
     let asn = parse_csv_opt_asn(iter.next()?).ok()?;
 
-    // support header format or cleartext format
-    if let Some(value) = iter.next()
-        && !value.is_empty()
-    {
-        address.credential = Some(match value.split_once(' ') {
-            Some((t, v)) => {
-                if t.eq_ignore_ascii_case("basic") {
-                    let bytes = ENGINE.decode(v).ok()?;
-                    let decoded = String::from_utf8(bytes).ok()?;
-                    ProxyCredential::Basic(decoded.parse().ok()?)
-                } else if t.eq_ignore_ascii_case("bearer") {
-                    ProxyCredential::Bearer(v.parse().ok()?)
-                } else {
-                    ProxyCredential::Basic(value.parse().ok()?)
-                }
-            }
-            None => ProxyCredential::Basic(value.parse().ok()?),
-        });
+    let value = iter.next()?;
+    if !value.is_empty() {
+        credential = Some(value.parse().ok()?);
     }
 
-    // Ensure there are no more values in the row
+    let protocols = iter
+        .next()?
+        .split(';')
+        .filter(|token| !token.is_empty())
+        .map(protocol_token::parse)
+        .collect::<Option<ProxyProtocols>>()?;
+
     if iter.next().is_some() {
         return None;
     }
@@ -132,15 +117,9 @@ pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
     Some(Proxy {
         id,
         address,
-        tcp,
-        udp,
-        http,
-        https,
-        socks5,
-        socks5h,
-        datacenter,
-        residential,
-        mobile,
+        credential,
+        protocols,
+        kind,
         pool_id,
         continent,
         country,
@@ -149,16 +128,6 @@ pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
         carrier,
         asn,
     })
-}
-
-fn parse_csv_bool(value: &str) -> Option<bool> {
-    rama_utils::macros::match_ignore_ascii_case_str! {
-        match(value) {
-            "true" | "1" => Some(true),
-            "" | "false" | "0" | "null" | "nil" => Some(false),
-            _ => None,
-        }
-    }
 }
 
 fn parse_csv_opt_string_filter(value: &str) -> Option<StringFilter> {
@@ -195,14 +164,21 @@ pub enum ProxyCsvRowReaderErrorKind {
     /// An I/O error occurred while reading the CSV row.
     IoError(std::io::Error),
     /// The CSV row is invalid, and could not be parsed.
-    InvalidRow(String),
+    ///
+    /// A row holds credentials, so it is named by its 1-based line number only.
+    InvalidRow {
+        /// The 1-based line number of the row.
+        line: usize,
+    },
 }
 
 impl std::fmt::Display for ProxyCsvRowReaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.kind {
             ProxyCsvRowReaderErrorKind::IoError(err) => write!(f, "I/O error: {err}"),
-            ProxyCsvRowReaderErrorKind::InvalidRow(row) => write!(f, "Invalid row: {row}"),
+            ProxyCsvRowReaderErrorKind::InvalidRow { line } => {
+                write!(f, "Invalid row at line {line}")
+            }
         }
     }
 }
@@ -211,7 +187,7 @@ impl std::error::Error for ProxyCsvRowReaderError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.kind {
             ProxyCsvRowReaderErrorKind::IoError(err) => Some(err),
-            ProxyCsvRowReaderErrorKind::InvalidRow(_) => None,
+            ProxyCsvRowReaderErrorKind::InvalidRow { .. } => None,
         }
     }
 }
@@ -227,32 +203,13 @@ impl From<std::io::Error> for ProxyCsvRowReaderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProxyType;
     use crate::{ProxyFilter, proxydb::ProxyContext};
+    use rama_net::address::{ProxyPathTemplate, ProxyProtocol};
+    use rama_net::http::Version;
     use rama_net::transport::TransportProtocol;
-    use rama_utils::str::non_empty_str;
-    use std::str::FromStr;
-
-    #[test]
-    fn test_parse_csv_bool() {
-        for (input, output) in &[
-            ("1", Some(true)),
-            ("true", Some(true)),
-            ("True", Some(true)),
-            ("TRUE", Some(true)),
-            ("0", Some(false)),
-            ("false", Some(false)),
-            ("False", Some(false)),
-            ("FALSE", Some(false)),
-            ("null", Some(false)),
-            ("nil", Some(false)),
-            ("NULL", Some(false)),
-            ("NIL", Some(false)),
-            ("", Some(false)),
-            ("invalid", None),
-        ] {
-            assert_eq!(parse_csv_bool(input), *output);
-        }
-    }
+    use rama_net::user::credentials::basic;
+    use rama_utils::str::{NonEmptyStr, non_empty_str, smol_str::SmolStr};
 
     #[test]
     fn test_parse_csv_opt_string_filter() {
@@ -279,144 +236,98 @@ mod tests {
         assert!(filter.is_any());
     }
 
+    fn proxy(id: NonEmptyStr, address: &str, kind: ProxyType) -> Proxy {
+        Proxy {
+            id,
+            address: address.parse().unwrap(),
+            credential: None,
+            protocols: ProxyProtocols::new(),
+            kind,
+            pool_id: None,
+            continent: None,
+            country: None,
+            state: None,
+            city: None,
+            carrier: None,
+            asn: None,
+        }
+    }
+
     #[test]
     fn test_parse_csv_row_happy_path() {
         for (input, output) in [
-            // most minimal
             (
-                "id,,,,,,,,,,authority:80,,,,,,,,",
-                Proxy {
-                    id: non_empty_str!("id"),
-                    address: ProxyAddress::from_str("authority:80").unwrap(),
-                    tcp: false,
-                    udp: false,
-                    http: false,
-                    https: false,
-                    socks5: false,
-                    socks5h: false,
-                    datacenter: false,
-                    residential: false,
-                    mobile: false,
-                    pool_id: None,
-                    continent: None,
-                    country: None,
-                    state: None,
-                    city: None,
-                    carrier: None,
-                    asn: None,
-                },
+                "id,datacenter,authority:80,,,,,,,,,",
+                proxy(non_empty_str!("id"), "authority:80", ProxyType::Datacenter),
             ),
-            // more happy row tests
             (
-                "id,true,false,true,,false,,true,false,true,authority:80,pool_id,,country,,city,carrier,,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+                "id,Mobile,authority:80,pool_id,,country,,city,carrier,,Basic dXNlcm5hbWU6cGFzc3dvcmQ=,http",
                 Proxy {
-                    id: non_empty_str!("id"),
-                    address: ProxyAddress::from_str("username:password@authority:80").unwrap(),
-                    tcp: true,
-                    udp: false,
-                    http: true,
-                    https: false,
-                    socks5: false,
-                    socks5h: false,
-                    datacenter: true,
-                    residential: false,
-                    mobile: true,
+                    credential: Some(basic!("username", "password").into()),
+                    protocols: ProxyProtocols::from([ProxyProtocol::HTTP]),
                     pool_id: Some("pool_id".into()),
-                    continent: None,
                     country: Some("country".into()),
-                    state: None,
                     city: Some("city".into()),
                     carrier: Some("carrier".into()),
-                    asn: None,
+                    ..proxy(non_empty_str!("id"), "authority:80", ProxyType::Mobile)
                 },
             ),
             (
-                "123,1,0,False,,True,,null,false,true,host:1234,,americas,*,*,*,carrier,13335,",
+                "123,residential,host:1234,,americas,*,*,*,carrier,13335,,socks5+tcp",
                 Proxy {
-                    id: non_empty_str!("123"),
-                    address: ProxyAddress::from_str("host:1234").unwrap(),
-                    tcp: true,
-                    udp: false,
-                    http: false,
-                    https: false,
-                    socks5: true,
-                    socks5h: false,
-                    datacenter: false,
-                    residential: false,
-                    mobile: true,
-                    pool_id: None,
+                    protocols: ProxyProtocols::from([ProxyProtocol::Socks5 {
+                        remote_dns: false,
+                        transport: Some(TransportProtocol::Tcp),
+                    }]),
                     continent: Some("americas".into()),
                     country: Some("*".into()),
                     state: Some("*".into()),
                     city: Some("*".into()),
                     carrier: Some("carrier".into()),
                     asn: Some(Asn::from_static(13335)),
+                    ..proxy(non_empty_str!("123"), "host:1234", ProxyType::Residential)
                 },
             ),
             (
-                "123,1,0,False,,True,,null,false,true,host:1234,,europe,*,,*,carrier,0",
+                "foo,isp,john:secret@bar:443,,europe,,,,,0,,https;socks5h+udp",
                 Proxy {
-                    id: non_empty_str!("123"),
-                    address: ProxyAddress::from_str("host:1234").unwrap(),
-                    tcp: true,
-                    udp: false,
-                    http: false,
-                    https: false,
-                    socks5: true,
-                    socks5h: false,
-                    datacenter: false,
-                    residential: false,
-                    mobile: true,
-                    pool_id: None,
+                    credential: Some(basic!("john", "secret").into()),
+                    protocols: ProxyProtocols::from([
+                        ProxyProtocol::HTTPS,
+                        ProxyProtocol::Socks5 {
+                            remote_dns: true,
+                            transport: Some(TransportProtocol::Udp),
+                        },
+                    ]),
                     continent: Some("europe".into()),
-                    country: Some("*".into()),
-                    state: None,
-                    city: Some("*".into()),
-                    carrier: Some("carrier".into()),
                     asn: Some(Asn::unspecified()),
+                    ..proxy(non_empty_str!("foo"), "bar:443", ProxyType::Isp)
                 },
             ),
             (
-                "foo,1,0,1,,0,,1,0,0,http://bar,baz,,US,,,,",
+                "foo,datacenter,john:secret@bar:443,,,,,,,,jane:other,h2",
                 Proxy {
-                    id: non_empty_str!("foo"),
-                    address: ProxyAddress::from_str("http://bar").unwrap(),
-                    tcp: true,
-                    udp: false,
-                    http: true,
-                    https: false,
-                    socks5: false,
-                    socks5h: false,
-                    datacenter: true,
-                    residential: false,
-                    mobile: false,
-                    pool_id: Some("baz".into()),
-                    continent: None,
-                    country: Some("us".into()),
-                    state: None,
-                    city: None,
-                    carrier: None,
-                    asn: None,
+                    credential: Some(basic!("jane", "other").into()),
+                    protocols: ProxyProtocols::from([
+                        ProxyProtocol::HTTPS.with_http_version(Version::HTTP_2)
+                    ]),
+                    ..proxy(non_empty_str!("foo"), "bar:443", ProxyType::Datacenter)
                 },
             ),
         ] {
             let proxy = parse_csv_row(input).unwrap();
-            assert_eq!(proxy.id, output.id);
-            assert_eq!(proxy.address, output.address);
-            assert_eq!(proxy.tcp, output.tcp);
-            assert_eq!(proxy.udp, output.udp);
-            assert_eq!(proxy.http, output.http);
-            assert_eq!(proxy.socks5, output.socks5);
-            assert_eq!(proxy.datacenter, output.datacenter);
-            assert_eq!(proxy.residential, output.residential);
-            assert_eq!(proxy.mobile, output.mobile);
-            assert_eq!(proxy.pool_id, output.pool_id);
-            assert_eq!(proxy.continent, output.continent);
-            assert_eq!(proxy.country, output.country);
-            assert_eq!(proxy.state, output.state);
-            assert_eq!(proxy.city, output.city);
-            assert_eq!(proxy.carrier, output.carrier);
-            assert_eq!(proxy.asn, output.asn);
+            assert_eq!(proxy.id, output.id, "{input}");
+            assert_eq!(proxy.address, output.address, "{input}");
+            assert_eq!(proxy.credential, output.credential, "{input}");
+            assert_eq!(proxy.protocols, output.protocols, "{input}");
+            assert_eq!(proxy.kind, output.kind, "{input}");
+            assert_eq!(proxy.pool_id, output.pool_id, "{input}");
+            assert_eq!(proxy.continent, output.continent, "{input}");
+            assert_eq!(proxy.country, output.country, "{input}");
+            assert_eq!(proxy.state, output.state, "{input}");
+            assert_eq!(proxy.city, output.city, "{input}");
+            assert_eq!(proxy.carrier, output.carrier, "{input}");
+            assert_eq!(proxy.asn, output.asn, "{input}");
         }
     }
 
@@ -427,49 +338,72 @@ mod tests {
             "",
             ",",
             ",,,,,,",
-            ",,,,,,,,,,,,,,,,,,,,",
-            ",,,,,,,,,,,,,,,,,,,,,,",
-            ",,,,,,,,,,,,,,,,,,,,,,,",
-            // too many rows
-            "id,true,false,true,false,true,false,true,authority:80,pool_id,continent,country,state,city,carrier,15169,Basic dXNlcm5hbWU6cGFzc3dvcmQ=,",
-            // missing authority
-            "id,,,,,,,,,,,,,,,,",
-            // missing proxy id
-            ",,,,,,,,authority:80,,,,,,,,",
-            // invalid bool values
-            "id,foo,,,,,,,,,authority:80,,,,,,,,",
-            "id,,foo,,,,,,,,authority:80,,,,,,,,",
-            "id,,,foo,,,,,,,authority:80,,,,,,,,",
-            "id,,,,,foo,,,,,authority:80,,,,,,,,",
-            "id,,,,,,foo,,,,authority:80,,,,,,,,",
-            "id,,,,,,,,foo,,authority:80,,,,,,,,",
-            "id,,,,,,,foo,authority:80,,,,,,,,",
-            // invalid credentials
-            "id,,,,,,,,authority:80,,,,,:foo",
+            ",,,,,,,,,,,,,",
+            ",,,,,,,,,,,,,,",
+            // too many columns
+            "id,datacenter,authority:80,,,,,,,,,http,",
+            // too few columns
+            "id,datacenter,authority:80,,,,,,,,",
+            // missing id, type or address
+            ",datacenter,authority:80,,,,,,,,,http",
+            "id,,authority:80,,,,,,,,,http",
+            "id,datacenter,,,,,,,,,,http",
+            // unknown type
+            "id,hosting,authority:80,,,,,,,,,http",
+            // an address with a scheme or path
+            "id,datacenter,http://authority:80,,,,,,,,,http",
+            "id,datacenter,authority:80/x,,,,,,,,,http",
+            // invalid asn, credential or protocol
+            "id,datacenter,authority:80,,,,,,,foo,,http",
+            "id,datacenter,authority:80,,,,,,,,:foo,http",
+            "id,datacenter,authority:80,,,,,,,,,socks5+h2",
         ] {
             assert!(parse_csv_row(input).is_none(), "input: {input}");
         }
     }
 
+    #[test]
+    fn the_protocols_column_names_every_protocol() {
+        let row = "id,mobile,authority:443,,,,,,,,,h2;h3+udp;socks5h+udp;warp;";
+        let proxy = parse_csv_row(row).unwrap();
+        assert_eq!(
+            proxy.protocols,
+            ProxyProtocols::from([
+                ProxyProtocol::HTTPS.with_http_version(Version::HTTP_2),
+                ProxyProtocol::try_from_scheme("h3+udp").unwrap(),
+                ProxyProtocol::try_from_scheme("socks5h+udp").unwrap(),
+                ProxyProtocol::Custom(SmolStr::new_static("warp")),
+            ]),
+        );
+    }
+
+    #[test]
+    fn a_protocol_carries_its_connect_udp_template() {
+        let row = "id,mobile,authority:443,,,,,,,,,h3/m?h={target_host}&p={target_port}";
+        let proxy = parse_csv_row(row).unwrap();
+        let [protocol] = Vec::from_iter(proxy.protocols).try_into().unwrap();
+        assert_eq!(protocol.http_version(), Some(Version::HTTP_3));
+        assert_eq!(
+            protocol.path_template().map(ProxyPathTemplate::as_str),
+            Some("/m?h={target_host}&p={target_port}"),
+        );
+    }
+
     #[tokio::test]
     async fn test_proxy_csv_row_reader_happy_one_row() {
         let mut reader = ProxyCsvRowReader::raw(
-            "id,true,false,true,,false,,true,false,true,authority:80,pool_id,continent,country,state,city,carrier,13335,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+            "id,datacenter,authority:80,pool_id,continent,country,state,city,carrier,13335,Basic dXNlcm5hbWU6cGFzc3dvcmQ=,http",
         );
         let proxy = reader.next().await.unwrap().unwrap();
 
         assert_eq!(proxy.id, "id");
+        assert_eq!(proxy.address, "authority:80".parse().unwrap());
         assert_eq!(
-            proxy.address,
-            ProxyAddress::from_str("username:password@authority:80").unwrap()
+            proxy.credential,
+            Some(basic!("username", "password").into())
         );
-        assert!(proxy.tcp);
-        assert!(!proxy.udp);
-        assert!(proxy.http);
-        assert!(!proxy.socks5);
-        assert!(proxy.datacenter);
-        assert!(!proxy.residential);
-        assert!(proxy.mobile);
+        assert_eq!(proxy.protocols, ProxyProtocols::from([ProxyProtocol::HTTP]));
+        assert_eq!(proxy.kind, ProxyType::Datacenter);
         assert_eq!(proxy.pool_id, Some("pool_id".into()));
         assert_eq!(proxy.continent, Some("continent".into()));
         assert_eq!(proxy.country, Some("country".into()));
@@ -485,24 +419,27 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_csv_row_reader_happy_multi_row() {
         let mut reader = ProxyCsvRowReader::raw(
-            "id,true,false,false,true,true,false,true,false,true,authority:80,pool_id,continent,country,state,city,carrier,42,Basic dXNlcm5hbWU6cGFzc3dvcmQ=\nid2,1,0,0,0,0,0,1,0,0,authority2:80,pool_id2,continent2,country2,state2,city2,carrier2,1",
+            "id,datacenter,authority:80,pool_id,continent,country,state,city,carrier,42,Basic dXNlcm5hbWU6cGFzc3dvcmQ=,https;socks5+tcp\nid2,residential,authority2:80,pool_id2,continent2,country2,state2,city2,carrier2,1,,http",
         );
 
         let proxy = reader.next().await.unwrap().unwrap();
         assert_eq!(proxy.id, "id");
+        assert_eq!(proxy.address, "authority:80".parse().unwrap());
         assert_eq!(
-            proxy.address,
-            ProxyAddress::from_str("username:password@authority:80").unwrap()
+            proxy.credential,
+            Some(basic!("username", "password").into())
         );
-        assert!(proxy.tcp);
-        assert!(!proxy.udp);
-        assert!(!proxy.http);
-        assert!(proxy.https);
-        assert!(proxy.socks5);
-        assert!(!proxy.socks5h);
-        assert!(proxy.datacenter);
-        assert!(!proxy.residential);
-        assert!(proxy.mobile);
+        assert_eq!(
+            proxy.protocols,
+            ProxyProtocols::from([
+                ProxyProtocol::HTTPS,
+                ProxyProtocol::Socks5 {
+                    remote_dns: false,
+                    transport: Some(TransportProtocol::Tcp),
+                }
+            ]),
+        );
+        assert_eq!(proxy.kind, ProxyType::Datacenter);
         assert_eq!(proxy.pool_id, Some("pool_id".into()));
         assert_eq!(proxy.continent, Some("continent".into()));
         assert_eq!(proxy.country, Some("country".into()));
@@ -512,30 +449,19 @@ mod tests {
         assert_eq!(proxy.asn, Some(Asn::from_static(42)));
 
         let proxy = reader.next().await.unwrap().unwrap();
-
         assert_eq!(proxy.id, "id2");
-        assert_eq!(
-            proxy.address,
-            ProxyAddress::from_str("authority2:80").unwrap()
-        );
-        assert!(proxy.tcp);
-        assert!(!proxy.udp);
-        assert!(!proxy.http);
-        assert!(!proxy.https);
-        assert!(!proxy.socks5);
-        assert!(!proxy.socks5h);
-        assert!(proxy.datacenter);
-        assert!(!proxy.residential);
-        assert!(!proxy.mobile);
+        assert_eq!(proxy.address, "authority2:80".parse().unwrap());
+        assert_eq!(proxy.credential, None);
+        assert_eq!(proxy.protocols, ProxyProtocols::from([ProxyProtocol::HTTP]));
+        assert_eq!(proxy.kind, ProxyType::Residential);
         assert_eq!(proxy.pool_id, Some("pool_id2".into()));
         assert_eq!(proxy.continent, Some("continent2".into()));
         assert_eq!(proxy.country, Some("country2".into()));
-        assert_eq!(proxy.city, Some("city2".into()));
         assert_eq!(proxy.state, Some("state2".into()));
+        assert_eq!(proxy.city, Some("city2".into()));
         assert_eq!(proxy.carrier, Some("carrier2".into()));
         assert_eq!(proxy.asn, Some(Asn::from_static(1)));
 
-        // no more rows to read
         assert!(reader.next().await.unwrap().is_none());
     }
 
@@ -551,9 +477,20 @@ mod tests {
         reader.next().await.unwrap_err();
     }
 
+    #[tokio::test]
+    async fn an_invalid_row_error_names_the_line_and_not_the_row() {
+        let mut reader = ProxyCsvRowReader::raw(
+            "id,true,false,true,,false,,true,false,true,authority:80,pool_id,continent,country,state,city,carrier,13335,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+        );
+        let error = reader.next().await.unwrap_err().to_string();
+        assert!(!error.contains("dXNlcm5hbWU6cGFzc3dvcmQ="), "{error}");
+        assert!(!error.contains("password"), "{error}");
+        assert!(error.contains("line 1"), "{error}");
+    }
+
     #[test]
     fn test_proxy_is_match_happy_path_proxy_with_any_filter_string_cases() {
-        let proxy = parse_csv_row("id,1,,1,,,,,,,authority:80,*,*,*,*,*,*,0").unwrap();
+        let proxy = parse_csv_row("id,datacenter,authority:80,*,*,*,*,*,*,0,,http").unwrap();
         let ctx = ProxyContext {
             protocol: TransportProtocol::Tcp,
         };
@@ -600,7 +537,7 @@ mod tests {
     #[test]
     fn direct_match_requires_a_wildcard_row_for_a_wildcard_filter() {
         let proxy = parse_csv_row(
-            "id,1,,1,,,,,,,authority:80,pool,continent,country,state,city,carrier,42",
+            "id,datacenter,authority:80,pool,continent,country,state,city,carrier,42,,http",
         )
         .unwrap();
         let ctx = ProxyContext {

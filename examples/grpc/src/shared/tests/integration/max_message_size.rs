@@ -128,7 +128,7 @@ async fn response_stream_limit() {
     let server = HttpServer::new_h2(WeakScope::detached()).service(svc);
 
     let client = test1_client::Test1Client::new(
-        super::mock_io_client(move || server.clone()),
+        super::mock_io_client(move |_| server.clone()),
         Uri::from_static("http://[::]:50051"),
     )
     .with_max_decoding_message_size(6877902 + 5);
@@ -258,7 +258,7 @@ async fn max_message_run(case: &TestCase) -> Result<(), Status> {
     let server = HttpServer::new_h2(WeakScope::detached()).service(svc);
 
     let mut client = test1_client::Test1Client::new(
-        super::mock_io_client(move || server.clone()),
+        super::mock_io_client(move |_| server.clone()),
         Uri::from_static("http://[::]:50051"),
     );
 

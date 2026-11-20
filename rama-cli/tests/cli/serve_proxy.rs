@@ -284,7 +284,7 @@ async fn test_masque_proxy_carries_every_workload_of_rama_send() {
     );
     let origin = format!("https://127.0.0.1:{}", origin_server.port());
     let h3_origin = format!("https://127.0.0.1:{}", origin_server.http3_port());
-    let proxy = format!("masque://127.0.0.1:{}", proxy_server.port());
+    let proxy = format!("h3+udp://127.0.0.1:{}", proxy_server.port());
 
     for (version_args, origin, expected) in [
         (&["--http3"][..], &h3_origin, "HTTP/3.0"),
@@ -354,7 +354,7 @@ async fn test_rama_send_closes_its_tunneled_connection_at_the_origin() {
         0,
         &["--protocol", "masque", "--masque-allow-private"],
     );
-    let proxy = format!("masque://127.0.0.1:{}", proxy_server.port());
+    let proxy = format!("h3+udp://127.0.0.1:{}", proxy_server.port());
     let url = format!("https://127.0.0.1:{origin_port}/");
     // The close races the proxy connection's: a few runs make a lost one show.
     for run in 0..5 {
@@ -507,7 +507,7 @@ async fn test_masque_proxy_survives_an_unreachable_masque_upstream() {
 
     let mut origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let upstream = format!("masque://127.0.0.1:{}", closed.local_addr().unwrap().port());
+    let upstream = format!("h3+udp://127.0.0.1:{}", closed.local_addr().unwrap().port());
     drop(closed);
     let mut proxy_server = utils::RamaService::serve_proxy_with_args(
         0,
@@ -522,7 +522,7 @@ async fn test_masque_proxy_survives_an_unreachable_masque_upstream() {
     );
     let origin = format!("https://127.0.0.1:{}", origin_server.port());
     let h3_origin = format!("https://127.0.0.1:{}", origin_server.http3_port());
-    let proxy = format!("masque://127.0.0.1:{}", proxy_server.port());
+    let proxy = format!("h3+udp://127.0.0.1:{}", proxy_server.port());
     for (version, origin) in [("--http3", &h3_origin), ("--http2", &origin)] {
         let (ok, stdout, stderr) = utils::RamaService::run_capture(&[
             "send",

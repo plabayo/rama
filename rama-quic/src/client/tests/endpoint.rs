@@ -261,7 +261,7 @@ fn memory_path(identity: &ServerAuthData) -> (MemoryDatagramSocket, SocketAddr, 
 #[tokio::test]
 async fn quic_endpoint_connector_adopts_the_socket_peer_and_extensions() {
     let (socket, peer, server) = memory_path(&identity());
-    let proxy: ProxyAddress = "masque://proxy.example:443".parse().unwrap();
+    let proxy: ProxyAddress = "h3+udp://proxy.example:443".parse().unwrap();
     socket
         .extensions()
         .insert(EstablishedProxyRoute::Tunnel(proxy.clone()));
@@ -357,7 +357,7 @@ async fn quic_endpoint_connector_serves_the_proxy_route_its_socket_establishes()
     tokio::time::timeout(Duration::from_secs(10), async {
         let identity = identity();
         let (socket, peer, server) = memory_path(&identity);
-        let proxy: ProxyAddress = "masque://proxy.example:443".parse().unwrap();
+        let proxy: ProxyAddress = "h3+udp://proxy.example:443".parse().unwrap();
         socket
             .extensions()
             .insert(EstablishedProxyRoute::Tunnel(proxy.clone()));

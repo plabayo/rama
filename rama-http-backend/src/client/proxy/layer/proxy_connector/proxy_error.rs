@@ -1,7 +1,7 @@
 use std::fmt;
 
 use rama_core::error::{BoxError, error_chain_with, error_source};
-use rama_http_types::{StatusCode, Version};
+use rama_http_types::StatusCode;
 use rama_net::client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};
 
 #[derive(Debug)]
@@ -19,8 +19,6 @@ pub enum HttpProxyError {
     ///
     /// (e.g. some kind of TCP error)
     Transport(BoxError),
-    /// The configured HTTP version cannot establish a CONNECT tunnel.
-    InvalidVersion(Version),
     /// The proxy rejected CONNECT with an unexpected response status.
     Rejected(StatusCode),
     /// The proxy reached the requested upstream but could not establish the
@@ -39,9 +37,6 @@ impl fmt::Display for HttpProxyError {
             }
             Self::Transport(error) => {
                 write!(f, "http proxy error: transport error: I/O [{error}]")
-            }
-            Self::InvalidVersion(version) => {
-                write!(f, "http proxy error: invalid CONNECT version: {version:?}")
             }
             Self::Rejected(status) => {
                 write!(f, "http proxy error: CONNECT rejected with status {status}")
@@ -81,10 +76,6 @@ impl From<HttpProxyError> for ConnectionError {
             HttpProxyError::UpstreamFailure(_) => (
                 ConnectionErrorDomain::Application,
                 ConnectionErrorKind::Unavailable,
-            ),
-            HttpProxyError::InvalidVersion(_) => (
-                ConnectionErrorDomain::Local,
-                ConnectionErrorKind::InvalidInput,
             ),
         };
 
@@ -342,9 +333,5 @@ mod tests {
             assert_eq!(error.domain(), ConnectionErrorDomain::Application);
             assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
         }
-
-        let error = ConnectionError::from(HttpProxyError::InvalidVersion(Version::HTTP_3));
-        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
-        assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
     }
 }

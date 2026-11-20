@@ -57,7 +57,7 @@ pub struct Targets<const N: usize> {
     /// The [`type_bit`] of every target, see [`Store::may_contain`].
     bits: usize,
     /// Per target: whether it is [`ExtensionScope::Connection`] scoped and so
-    /// stops at a [`Extensions::fork_nested_connection`] boundary.
+    /// stops at a [`Extensions::fork_connection`] boundary.
     connection_scoped: [bool; N],
     /// Whether any target is [`ExtensionScope::Connection`] scoped.
     any_connection_scoped: bool,
@@ -88,7 +88,7 @@ impl<const N: usize> Targets<N> {
     }
 
     /// Whether a target that is not connection scoped is still unfilled, so
-    /// walking past a nested-connection boundary can still fill something.
+    /// walking past a connection boundary can still fill something.
     fn any_flow_unfilled(&self, out: &[Option<(&TypeErasedExtension, usize)>; N]) -> bool {
         out.iter()
             .zip(&self.connection_scoped)
@@ -246,7 +246,7 @@ impl Extensions {
     /// in the order of [`Self::get_ref`]. `remaining` counts the slots of `out`
     /// that are still empty, and is kept up to date across the recursion.
     ///
-    /// `past_boundary` says that a [`Self::fork_nested_connection`] level was
+    /// `past_boundary` says that a [`Self::fork_connection`] level was
     /// walked past to get here, which retires the connection-scoped targets for
     /// this branch of the traversal only: a wrapper reached from a level above
     /// the boundary still fills them.
@@ -314,7 +314,7 @@ impl Extensions {
             }
         }
         if let Some(parent) = self.parent() {
-            let boundary = targets.any_connection_scoped && self.is_nested_connection();
+            let boundary = targets.any_connection_scoped && self.is_connection_boundary();
             if boundary && !targets.any_flow_unfilled(out) {
                 return;
             }

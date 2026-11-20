@@ -447,15 +447,15 @@ pub(crate) async fn spawn_combined_proxy() -> (u16, tokio::task::JoinHandle<()>)
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
-    let inner_client = rama::http::client::EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
-        .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .without_proxy_support()
-        .without_tls_support()
-        .with_default_http_connector(WeakScope::detached())
-        .without_connection_pool()
-        .build_client();
+    let inner_client =
+        rama::http::client::EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_default_transport_connector()
+            .with_default_dns_connector()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector()
+            .without_connection_pool()
+            .build_client();
 
     if is_http_req_websocket_handshake(&req) {
         let ws_client = (

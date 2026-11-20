@@ -74,7 +74,10 @@ async fn application_identity_and_explicit_overrides() {
 
 async fn check_connect_identity(expected: &'static str) -> Result<(), rama_core::error::BoxError> {
     use rama_core::{Service, graceful::WeakScope};
-    use rama_http_backend::{client::proxy::layer::HttpProxyConnectorLayer, server::HttpServer};
+    use rama_http_backend::{
+        client::{HttpConnectorLayer, proxy::layer::HttpConnectProxyConnector},
+        server::HttpServer,
+    };
     use rama_net::{
         Protocol,
         address::HostWithPort,
@@ -91,8 +94,10 @@ async fn check_connect_identity(expected: &'static str) -> Result<(), rama_core:
             Ok::<_, Infallible>(Response::new(Body::empty()))
         },
     ));
-    let connector = HttpProxyConnectorLayer::required()
-        .into_layer(MockConnectorService::new(move || server.clone()));
+    let connector =
+        HttpConnectProxyConnector::<_, Body>::new(HttpConnectorLayer::default().into_layer(
+            MockConnectorService::new(move |_: &ConnectRequest| server.clone()),
+        ));
     let input = ConnectRequest::new(HostWithPort::example_domain_https())
         .with_application_protocol(Protocol::HTTPS);
     input

@@ -8,7 +8,7 @@ use rama::{
     graceful::WeakScope,
     http::{
         Body, Request, Version,
-        client::{EasyHttpConnectorBuilder, Http3Connector},
+        client::EasyHttpConnectorBuilder,
         datagram::{
             DatagramTransport, HttpDatagramSession, SessionEvent, ViolationPolicy,
             handshake::{prepare_capsule_request, validate_capsule_response},
@@ -91,24 +91,13 @@ async fn test_http_datagram_echo() {
     let tls = TlsClientConfig::new()
         .try_with_server_trust_anchors(auth.cert_chain.clone())
         .unwrap();
-    let client_builder = EasyHttpConnectorBuilder::new()
+    let client_builder = EasyHttpConnectorBuilder::new(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support();
-    #[cfg(feature = "rustls")]
-    let client_builder = client_builder.with_tls_support_using_rustls(tls.clone());
-    #[cfg(all(not(feature = "rustls"), feature = "boring"))]
-    let client_builder = client_builder.with_tls_support_using_boringssl(tls.clone());
+        .with_default_proxy_support();
+    let client_builder = client_builder.with_default_tls_support(tls.clone());
     let client = client_builder
-        .with_default_http_connector(WeakScope::detached())
-        .with_http3_support(
-            Http3Connector::builder(WeakScope::detached())
-                .with_tls_config(tls)
-                .build()
-                .await
-                .unwrap(),
-        )
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
     for round in 0..2u8 {

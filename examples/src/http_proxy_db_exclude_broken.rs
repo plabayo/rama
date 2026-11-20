@@ -33,10 +33,10 @@ use rama::{
         service::{client::HttpClientExt, web::WebService},
     },
     layer::Layer,
-    net::transport::TransportProtocol,
+    net::{address::ProxyProtocol, transport::TransportProtocol},
     proxy::{
         MemoryProxyDB, Proxy, ProxyContext, ProxyDB, ProxyDBLayer, ProxyFilter, ProxyFilterMode,
-        ProxyID, ProxyRuntimeColumn, socks5::Socks5Acceptor,
+        ProxyID, ProxyProtocols, ProxyRuntimeColumn, ProxyType, socks5::Socks5Acceptor,
     },
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -68,17 +68,16 @@ async fn main() {
     let excluded = db.new_exclude_column();
     let db = Arc::new(db);
 
-    let client = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_tcp_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
+        .with_default_proxy_support()
         .map_connector(|inner| ExcludeOnFailure {
             inner,
             excluded: excluded.clone(),
         })
         .without_tls_support()
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     let client = ProxyDBLayer::new(db.clone())
@@ -148,18 +147,12 @@ where
 fn socks5_proxy(id: NonEmptyStr, address: &str) -> Proxy {
     Proxy {
         id,
-        address: format!("socks5://{address}")
-            .parse()
-            .expect("valid proxy address"),
-        tcp: true,
-        udp: false,
-        http: false,
-        https: false,
-        socks5: true,
-        socks5h: false,
-        datacenter: true,
-        residential: false,
-        mobile: false,
+        address: address.parse().expect("valid proxy address"),
+        credential: None,
+        protocols: ProxyProtocols::from([
+            ProxyProtocol::try_from_scheme("socks5+tcp").expect("valid proxy scheme")
+        ]),
+        kind: ProxyType::Datacenter,
         pool_id: None,
         continent: None,
         country: None,

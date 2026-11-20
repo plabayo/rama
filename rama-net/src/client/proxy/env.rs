@@ -12,7 +12,7 @@ use tokio::sync::OnceCell;
 
 use crate::{
     Protocol,
-    address::{Authority, HostWithOptPort, HostWithPort, ProxyAddress},
+    address::{Authority, HostWithOptPort, HostWithPort, ProxyAddress, ProxyProtocol},
     input_ext::{AuthorityInputExt, ProtocolInputExt, UriInputExt},
     user::ProxyCredential,
 };
@@ -58,10 +58,7 @@ fn parse_proxy_address_env_value(value: Option<&str>) -> Result<Option<ProxyAddr
 }
 
 fn parse_proxy_environment_address(value: &str) -> Result<ProxyAddress, BoxError> {
-    if let Ok(mut proxy) = value.parse::<ProxyAddress>() {
-        if proxy.protocol.is_none() {
-            proxy.protocol = Some(Protocol::HTTP);
-        }
+    if let Ok(proxy) = value.parse::<ProxyAddress>() {
         return Ok(proxy);
     }
 
@@ -71,12 +68,11 @@ fn parse_proxy_environment_address(value: &str) -> Result<ProxyAddress, BoxError
     } = Authority::try_from(value)?;
     let port = port.as_u16().unwrap_or(Protocol::HTTP_PROXY_DEFAULT_PORT);
     Ok(ProxyAddress {
-        protocol: Some(Protocol::HTTP),
+        protocol: ProxyProtocol::HTTP,
         address: HostWithPort::new(host, port),
         credential: user_info
             .and_then(|user_info| user_info.to_basic().ok())
             .map(ProxyCredential::Basic),
-        template: None,
     })
 }
 
@@ -828,14 +824,14 @@ mod tests {
             ),
         ] {
             let proxy = parse_proxy_address_env_value(Some(value)).unwrap().unwrap();
-            assert_eq!(proxy.protocol, Some(protocol), "{value}");
+            assert_eq!(proxy.protocol, ProxyProtocol::from(protocol), "{value}");
             assert_eq!(proxy.address.port, port, "{value}");
         }
 
         let proxy = parse_proxy_address_env_value(Some("user:pass@proxy.example:3128"))
             .unwrap()
             .unwrap();
-        assert_eq!(proxy.protocol, Some(Protocol::HTTP));
+        assert_eq!(proxy.protocol, ProxyProtocol::HTTP);
         assert_eq!(proxy.address.port, 3128);
         let Some(ProxyCredential::Basic(basic)) = proxy.credential else {
             panic!("expected Basic proxy credentials")

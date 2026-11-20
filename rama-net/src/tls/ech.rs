@@ -8,7 +8,7 @@ use rama_core::{bytes::Bytes, extensions::Extension};
 /// not a request to enable ECH or permission to weaken caller policy. Never apply
 /// it to a proxy handshake merely because it is present on the origin request.
 #[derive(Clone, Extension)]
-#[extension(tags(net, tls))]
+#[extension(tags(net, tls), scope(connection))]
 pub struct TargetEchConfig {
     target: HostWithPort,
     config_list: Bytes,
@@ -54,7 +54,7 @@ impl core::fmt::Debug for TargetEchConfig {
 /// request/profile settings have been installed. They also describe a bare
 /// fallback endpoint without a `TargetEchConfig`.
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
-#[extension(tags(net, tls))]
+#[extension(tags(net, tls), scope(connection))]
 pub struct TargetEchServiceBinding {
     /// Exact endpoint to which these facts apply; never apply origin facts to a proxy.
     pub target: HostWithPort,

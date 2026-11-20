@@ -4,6 +4,8 @@
 //! http support. In this module lives only the stuff
 //! directly connected to `rama-net` types.
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod server;
 
 mod version;

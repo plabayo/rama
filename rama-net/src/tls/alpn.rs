@@ -102,7 +102,7 @@ enum_builder! {
 
 /// How peers agree on their application protocol.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub enum AlpnPolicy {
     /// Require ALPN agreement when the application requires it (HTTP/2 and HTTP/3).
     /// HTTP/1 over TCP can still operate without ALPN.
@@ -132,7 +132,7 @@ impl AlpnPolicy {
 
 /// ALPN protocols to offer during a TLS handshake.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsAlpn(pub SmallVec<[ApplicationProtocol; 2]>);
 
 impl TlsAlpn {

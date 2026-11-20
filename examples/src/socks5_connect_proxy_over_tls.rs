@@ -35,12 +35,11 @@ use rama::{
     },
     layer::ArcLayer,
     net::{
-        Protocol,
-        address::{ProxyAddress, SocketAddress},
+        address::{ProxyAddress, ProxyProtocol, SocketAddress},
         client::{ConnectorService, EstablishedClientConnection, ProxyRoute},
         user::{ProxyCredential, credentials::basic},
     },
-    proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
+    proxy::socks5::{Socks5Acceptor, Socks5ConnectProxyConnector},
     tcp::{client::service::TcpConnector, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -78,7 +77,7 @@ async fn main() {
 
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
 
-    let client = HttpConnectorLayer::default().into_layer(Socks5ProxyConnector::required(
+    let client = HttpConnectorLayer::default().into_layer(Socks5ConnectProxyConnector::new(
         TlsConnector::secure(TcpConnector::new()).with_base_config(tls_config),
     ));
 
@@ -94,10 +93,9 @@ async fn main() {
         .expect("build simple GET request");
 
     request.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
-        protocol: Some(Protocol::SOCKS5),
+        protocol: ProxyProtocol::SOCKS5,
         address: proxy_socket_addr.into(),
         credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
-        template: None,
     }));
 
     let EstablishedClientConnection {

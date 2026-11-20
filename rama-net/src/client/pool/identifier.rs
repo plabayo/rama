@@ -39,6 +39,10 @@ impl PoolPartition {
         Self(ReuseKey::of::<T>())
     }
 
+    pub(crate) fn key(&self) -> &ReuseKey {
+        &self.0
+    }
+
     /// Preserve this partition and add another application requirement.
     /// Adding a requirement already present is idempotent.
     #[must_use]
@@ -137,12 +141,15 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use rama_core::{Service as _, ServiceInput, service::service_fn};
+    use rama_core::{Service as _, ServiceInput, extensions::Extensions, service::service_fn};
 
     use super::*;
     use crate::{
         address::HostWithPort,
-        client::{ConnectRequest, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute},
+        client::{
+            ConnectRequest, EstablishedClientConnection, EstablishedProxyRoute,
+            ProxyConnectionExtensions, ProxyRoute,
+        },
     };
 
     #[test]
@@ -320,5 +327,31 @@ mod tests {
         }
 
         assert_eq!(dials.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn a_hop_partition_says_nothing_about_a_direct_connection() {
+        let id = |bag: Option<PoolPartition>, route: Option<ProxyRoute>| {
+            let input = ConnectRequest::new(HostWithPort::example_domain_https());
+            if let Some(partition) = bag {
+                let settings = Extensions::new();
+                settings.insert(partition);
+                input.extensions.insert(ProxyConnectionExtensions(settings));
+            }
+            if let Some(route) = route {
+                input.extensions.insert(route);
+            }
+            BasicConnIdentifier::new().id(&input).unwrap()
+        };
+
+        assert_eq!(
+            id(Some(PoolPartition::of::<u8>()), None),
+            id(None, None),
+            "a hop partition is about the hop, and a direct route has none"
+        );
+        assert_eq!(
+            id(Some(PoolPartition::of::<u8>()), Some(ProxyRoute::Direct)),
+            id(None, Some(ProxyRoute::Direct)),
+        );
     }
 }

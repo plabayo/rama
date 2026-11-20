@@ -10,10 +10,7 @@ use rama::{
     http::{
         Body, HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
-        client::{
-            EasyHttpWebClient, Http3Connector, HttpClientService, http_connect,
-            proxy::layer::HttpProxyConnectorLayer,
-        },
+        client::{EasyHttpWebClient, HttpClientService, ProxyConnector, http_connect},
         conn::{H2ClientContextParams, TargetHttpVersion},
         header::{HOST, UPGRADE},
         headers::SecWebSocketProtocol,
@@ -52,7 +49,7 @@ use rama::{
     },
     net::{
         Protocol,
-        address::{Host, ProxyAddress, SocketAddress},
+        address::{Host, ProxyAddress, ProxyProtocol, SocketAddress},
         client::{ConnectorService as _, ConnectorTarget, ProxyRoute},
         socket::SocketOptions,
         stream::layer::TcpStreamOptionsLayer,
@@ -104,22 +101,17 @@ fn tcp_socket_options() -> SocketOptions {
 }
 
 fn client(scope: WeakScope, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxError> {
-    let h3 = Http3Connector::builder(scope.clone())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
-        .build_lazy()?;
-    let connector = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(
+    let connector = EasyHttpWebClient::connector_builder(scope.clone())
+        .with_default_transport_connector()
+        .with_custom_tcp_connector(
             TcpConnector::new()
                 .with_connector(Arc::new(tcp_socket_options()))
                 .boxed(),
         )
         .with_default_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_11)
-        .with_default_http_connector(scope.clone())
-        .with_http3_support(h3)
+        .with_default_http_connector()
         .with_default_connection_pool()
         // Version policy comes from the tunnel or label, not advertised alternatives.
         .without_alt_svc()
@@ -789,26 +781,24 @@ async fn exchange(
     response
 }
 
-fn websocket_client(outer: Version) -> BoxService<Request, Response, OpaqueError> {
+fn websocket_client() -> BoxService<Request, Response, OpaqueError> {
     let scope = WeakScope::detached();
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let h3 = Http3Connector::builder(scope.clone())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
-        .build_lazy()
-        .unwrap();
-    EasyHttpWebClient::connector_builder()
+    EasyHttpWebClient::connector_builder(scope.clone())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_custom_proxy_connector(
-            HttpProxyConnectorLayer::optional()
-                .with_version(outer)
-                .with_tls_proxy_support(false),
+        .with_proxy_support(
+            ProxyConnector::builder(scope)
+                .with_default_transport_connector()
+                .with_default_dns_connector()
+                .without_tls_support()
+                .with_default_http_connector::<Body>()
+                .with_default_connection_pool()
+                .with_http_connect()
+                .build(),
         )
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(scope)
-        .with_http3_support(h3)
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client()
         .boxed()
@@ -907,7 +897,7 @@ async fn websockets_relay_across_versions_and_connect_tunnels() {
     timeout(Duration::from_secs(60), async {
         let protocols = [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
         let origin = endpoint(None, &protocols).await;
-        let web = websocket_client(Version::HTTP_11);
+        let web = websocket_client();
         for egress in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
             let ingress = endpoint(
                 Some((format!("https://{}", origin.address), egress)),
@@ -954,14 +944,13 @@ async fn websockets_relay_across_versions_and_connect_tunnels() {
             Some(Version::HTTP_3),
         ] {
             let proxy = proxy(selected).await;
-            let route = ProxyRoute::Proxy(ProxyAddress {
-                protocol: Some(Protocol::HTTP),
-                address: proxy.address.parse().unwrap(),
-                credential: None,
-                template: None,
-            });
             for outer in [Version::HTTP_11, Version::HTTP_2] {
-                let web = websocket_client(outer);
+                let route = ProxyRoute::Proxy(ProxyAddress {
+                    protocol: ProxyProtocol::HTTP.with_http_version(outer),
+                    address: proxy.address.parse().unwrap(),
+                    credential: None,
+                });
+                let web = websocket_client();
                 for inner in [Version::HTTP_11, Version::HTTP_2] {
                     for compressed in [false, true] {
                         websocket_exchange(
@@ -988,7 +977,7 @@ async fn websocket_failures_do_not_become_successful_tunnels() {
         let protocols = [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
         let origin = endpoint_with_connect_support(None, &protocols, "127.0.0.1:0", false).await;
         let http1 = endpoint(Some((format!("https://{}", origin.address), Version::HTTP_11)), &protocols).await;
-        let web = websocket_client(Version::HTTP_11);
+        let web = websocket_client();
         for (egress, target, path) in [
             (Version::HTTP_2, &origin.address, "/ws"),
             (Version::HTTP_3, &origin.address, "/ws"),
@@ -996,14 +985,13 @@ async fn websocket_failures_do_not_become_successful_tunnels() {
         ] {
             let proxy = proxy(Some(egress)).await;
             for outer in [Version::HTTP_11, Version::HTTP_2] {
-                let web = websocket_client(outer);
+                let web = websocket_client();
                 for inner in [Version::HTTP_11, Version::HTTP_2] {
                     let url = format!("wss://{target}{path}");
                     let builder = if inner == Version::HTTP_11 { web.websocket(url) } else { web.websocket_h2(url) };
                     let extensions = Extensions::new();
                     extensions.insert(ProxyRoute::Proxy(ProxyAddress {
-                        protocol: Some(Protocol::HTTP), address: proxy.address.parse().unwrap(), credential: None,
-                        template: None,
+                        protocol: ProxyProtocol::HTTP.with_http_version(outer), address: proxy.address.parse().unwrap(), credential: None,
                     }));
                     let before = origin.requests.load(Ordering::SeqCst);
                     let error = builder.handshake(extensions).await.err().unwrap();
@@ -1993,10 +1981,9 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
                 if let Some(policy) = base_policy {
                     tls.set_alpn_policy(policy);
                 }
-                let builder = EasyHttpWebClient::connector_builder()
+                let builder = EasyHttpWebClient::connector_builder(scope.clone())
                     .with_default_transport_connector()
                     .with_default_dns_connector()
-                    .without_tls_proxy_support()
                     .without_proxy_support();
                 let web: Arc<BoxService<Request, Response, OpaqueError>> = {
                     #[cfg(feature = "rustls")]
@@ -2008,7 +1995,7 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
                                         tls,
                                         Version::HTTP_11,
                                     )
-                                    .with_default_http_connector(scope.clone())
+                                    .with_default_http_connector()
                                     .with_default_connection_pool()
                                     .without_alt_svc()
                                     .build_connector(),
@@ -2023,7 +2010,7 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
                                         tls,
                                         Version::HTTP_11,
                                     )
-                                    .with_default_http_connector(scope.clone())
+                                    .with_default_http_connector()
                                     .with_default_connection_pool()
                                     .without_alt_svc()
                                     .build_connector(),
@@ -2039,7 +2026,7 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
                                     tls,
                                     Version::HTTP_11,
                                 )
-                                .with_default_http_connector(scope.clone())
+                                .with_default_http_connector()
                                 .with_default_connection_pool()
                                 .without_alt_svc()
                                 .build_connector(),

@@ -93,7 +93,7 @@ impl RustlsServerConfigExt for rama_tls::server::TlsServerConfig {
 /// A [`DynamicConfigProvider`] piece: resolves a full rustls config per
 /// ClientHello
 #[derive(Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct RustlsDynamicConfig(pub(crate) Arc<dyn DynDynamicConfigProvider + Send + Sync>);
 
 impl RustlsDynamicConfig {

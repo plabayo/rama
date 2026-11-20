@@ -300,7 +300,7 @@ async fn a_lookup_during_outliving_work_restarts_the_idle_clock() {
 }
 
 /// A connection nested on another one, a tunnel through it say, is admitted by its own
-/// policy only, never the outer connection's.
+/// policy only, never the parent connection's.
 #[tokio::test]
 async fn admission_is_the_connections_own_not_an_ancestors() {
     let pool = MultiplexPool::evicting(32, 1);
@@ -308,9 +308,7 @@ async fn admission_is_the_connections_own_not_an_ancestors() {
     let (outer, state) = admission_connection(&pool, 0);
     let inner = Conn {
         serial: 2,
-        extensions: outer
-            .extensions
-            .fork_nested_connection(&NoConnectionTransfer),
+        extensions: outer.extensions.fork_connection(&NoExtensionsTransfer),
     };
     let input = Extensions::new();
     tokio::time::timeout(
@@ -318,7 +316,7 @@ async fn admission_is_the_connections_own_not_an_ancestors() {
         pool.create(TestId(0), inner, permit, &input),
     )
     .await
-    .expect("the outer connection's admission does not apply")
+    .expect("the parent connection's admission does not apply")
     .unwrap();
     assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
 }

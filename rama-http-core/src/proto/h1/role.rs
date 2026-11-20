@@ -451,8 +451,10 @@ impl Http1Transaction for Server {
             match msg.head.version {
                 Version::HTTP_10 => extend(dst, b"HTTP/1.0 "),
                 Version::HTTP_11 => extend(dst, b"HTTP/1.1 "),
-                Version::HTTP_2 => {
-                    debug!("response with HTTP2 version coerced to HTTP/1.1");
+                // A response of an origin or proxy reached over a multiplexed version keeps
+                // that version; an intermediary writes it on its own connection.
+                version @ (Version::HTTP_2 | Version::HTTP_3) => {
+                    debug!(?version, "response version coerced to HTTP/1.1");
                     extend(dst, b"HTTP/1.1 ");
                 }
                 other => panic!("unexpected response version: {other:?}"),
@@ -1723,8 +1725,7 @@ mod tests {
     #[test]
     fn encode_request_target_forms() {
         use rama_net::{
-            Protocol,
-            address::{HostWithPort, ProxyAddress},
+            address::{HostWithPort, ProxyAddress, ProxyProtocol},
             client::{EstablishedProxyRoute, ProxyRoute},
             uri::Uri,
         };
@@ -1744,8 +1745,7 @@ mod tests {
             ext.insert(EstablishedProxyRoute::Forward(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
-                protocol: Some(Protocol::HTTP),
-                template: None,
+                protocol: ProxyProtocol::HTTP,
             }));
             ext
         }
@@ -1755,8 +1755,7 @@ mod tests {
             ext.insert(ProxyRoute::Proxy(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
-                protocol: Some(Protocol::HTTP),
-                template: None,
+                protocol: ProxyProtocol::HTTP,
             }));
             ext
         }
@@ -1876,7 +1875,7 @@ mod tests {
     fn encode_request_target_uses_full_protocol_resolution() {
         use rama_net::{
             Protocol,
-            address::{HostWithPort, ProxyAddress},
+            address::{HostWithPort, ProxyAddress, ProxyProtocol},
             client::EstablishedProxyRoute,
             uri::Uri,
         };
@@ -1890,8 +1889,7 @@ mod tests {
         ext.insert(EstablishedProxyRoute::Forward(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
         ext.insert(Protocol::HTTPS);
 
@@ -1922,8 +1920,7 @@ mod tests {
     #[test]
     fn encode_request_target_honors_real_secure_transport() {
         use rama_net::{
-            Protocol,
-            address::{HostWithPort, ProxyAddress},
+            address::{HostWithPort, ProxyAddress, ProxyProtocol},
             client::EstablishedProxyRoute,
             uri::Uri,
         };
@@ -1933,8 +1930,7 @@ mod tests {
         ext.insert(EstablishedProxyRoute::Forward(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
         ext.insert(SecureTransport::default());
 

@@ -5,6 +5,7 @@
 
 use parking_lot::Mutex;
 use rama::futures::future::join_all;
+use rama::net::client::MaybeProxied;
 use rama::proxy::masque::budget::{DatagramRate, PrincipalBudget};
 use rama::proxy::masque::limits::TunnelLimits;
 use rama::{
@@ -17,7 +18,12 @@ use rama::{
     http::{
         Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
-        client::{DefaultHttpWebClient, EasyHttpWebClient, Http3Connector, masque_quic_transport},
+        client::{
+            DefaultHttpWebClient, EasyHttpWebClient, Http3Connector, HttpConnector,
+            HttpPooledConnector, HttpTransportConnector, ProxyConnectUdpMethod, ProxyConnector,
+            ProxySocksMethod, masque_quic_transport,
+            proxy::{HttpForwardProxyConnector, layer::HttpConnectProxyConnector},
+        },
         conn::TargetHttpVersion,
         headers::{HeaderMapExt as _, ProxyErrorType, ProxyStatus},
         layer::{
@@ -37,7 +43,7 @@ use rama::{
         address::{HostWithPort, ProxyAddress, ProxyPathTemplate, SocketAddress},
         client::{
             ConnectRequest, ConnectionError, ConnectorTarget, EstablishedClientConnection,
-            EstablishedProxyRoute, ProxyRoute,
+            EstablishedProxyRoute, ProxyDialer, ProxyRoute,
         },
         mode::DnsResolveIpMode,
         proxy::IoForwardService,
@@ -46,13 +52,12 @@ use rama::{
         user::{UserId, credentials::basic},
     },
     proxy::masque::connect_udp::{
-        ConnectUdpConnector, ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRelay,
-        ConnectUdpService, ConnectUdpSocket, ConnectUdpTarget, DestinationScopePolicy,
-        MAX_UDP_PAYLOAD, MaybeTunneledSocket, TunnelBudget, connect_udp_request,
+        ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRelay, ConnectUdpService,
+        ConnectUdpSocket, ConnectUdpTarget, DestinationScopePolicy, MAX_UDP_PAYLOAD, TunnelBudget,
+        connect_udp_request,
     },
     quic::{
         Endpoint, MIN_UDP_PAYLOAD, ServerConfig, SocketCapacityError, TransportConfig,
-        client::QuicEndpointConnector,
         proto::VarInt,
         proxy::{InputWithQuicClientHello, PeekQuicClientHelloService, QuicMitmRelay, QuicRelay},
         tls::{
@@ -65,6 +70,7 @@ use rama::{
     tls::{
         alpn::AlpnRouter,
         boring::{
+            client::TlsConnector,
             proxy::cert_issuer::{CachedBoringMitmCertIssuer, InMemoryBoringMitmCertIssuer},
             server::TlsAcceptorLayer,
         },
@@ -502,6 +508,52 @@ where
 
 type Client = BoxService<Request, Response, OpaqueError>;
 
+/// The connections towards MASQUE proxies of a client, its HTTP/3 on `quic`.
+fn masque_proxies(scope: WeakScope, transport: TransportConfig, quic: QuicTls) -> MasqueProxies {
+    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
+    ProxyConnector::builder(scope)
+        .with_default_transport_connector()
+        .with_quic_transport_config(transport)
+        .with_default_dns_connector()
+        .with_tls_support_using_boringssl(tls)
+        .with_quic_tls_provider(quic.client())
+        .with_default_http_connector::<Body>()
+        .with_default_connection_pool()
+        .with_every_method()
+        .build()
+}
+
+type ProxyStream = TlsConnector<DnsConnector<TcpConnector>>;
+type MasqueProxyHttpConnector = HttpPooledConnector<
+    HttpConnector<HttpTransportConnector<ProxyStream, DnsConnector<Http3Connector>>, Body>,
+>;
+type MasqueTunnels = ProxyConnectUdpMethod<MasqueProxyHttpConnector>;
+type MasqueProxies = ProxyConnector<
+    ProxySocksMethod<ProxyStream>,
+    HttpConnectProxyConnector<ProxyDialer<MasqueProxyHttpConnector>>,
+    MasqueTunnels,
+    HttpForwardProxyConnector<ProxyDialer<MasqueProxyHttpConnector>>,
+>;
+
+/// The CONNECT-UDP tunnels of a client to MASQUE proxies, on boringssl QUIC.
+fn masque_tunnels(scope: WeakScope) -> MasqueTunnels {
+    masque_tunnels_on(scope, QuicTls::Boring)
+}
+
+fn masque_tunnels_on(scope: WeakScope, quic: QuicTls) -> MasqueTunnels {
+    masque_tunnels_with_transport(scope, masque_quic_transport(), quic)
+}
+
+fn masque_tunnels_with_transport(
+    scope: WeakScope,
+    transport: TransportConfig,
+    quic: QuicTls,
+) -> MasqueTunnels {
+    masque_proxies(scope, transport, quic)
+        .into_parts()
+        .connect_udp
+}
+
 fn http_client(scope: WeakScope) -> Client {
     http_client_on(scope, QuicTls::Boring)
 }
@@ -517,20 +569,15 @@ fn http_client_with_transport(
     quic: QuicTls,
 ) -> Client {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let h3 = Http3Connector::builder(scope.clone())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(quic.client())
-        .with_transport(transport)
-        .build_lazy()
-        .unwrap();
-    EasyHttpWebClient::connector_builder()
+    let provider = quic.client();
+    EasyHttpWebClient::connector_builder(scope.clone())
         .with_default_transport_connector()
+        .with_quic_transport_config(transport.clone())
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
+        .with_proxy_support(masque_proxies(scope, transport, quic))
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(scope)
-        .with_http3_support(h3)
+        .with_quic_tls_provider(provider)
+        .with_default_http_connector()
         .with_default_connection_pool()
         .without_alt_svc()
         .build_client()
@@ -552,18 +599,17 @@ async fn open_tunnel(
     target: impl Into<HostWithPort>,
     version: Version,
 ) -> Result<ConnectUdpSocket, ConnectionError> {
-    let connector =
-        ConnectUdpConnector::new(UdpConnector::new(), http_client(scope.clone()), scope)
-            .with_version(version);
+    let connector = masque_tunnels(scope);
+    let proxy = proxy.clone().with_http_version(version);
     let request = ConnectRequest::new(target.into());
     request.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
     let EstablishedClientConnection { conn, .. } = connector.serve(request).await?;
-    let MaybeTunneledSocket::Tunneled(socket) = conn else {
+    let MaybeProxied::Proxied { conn: socket } = conn else {
         panic!("a MASQUE route must tunnel");
     };
     let route = socket.extensions().get_ref::<EstablishedProxyRoute>();
     assert!(
-        matches!(route, Some(EstablishedProxyRoute::Tunnel(established)) if established == proxy),
+        matches!(route, Some(EstablishedProxyRoute::Tunnel(established)) if *established == proxy),
         "{route:?}"
     );
     Ok(socket)
@@ -605,7 +651,7 @@ async fn tunnels_relay_udp_on_every_carrier_and_template() {
         let (target, _echo) = udp_echo().await;
         // Client-side proxy address (scheme, template) and the proxy's own template.
         let templates: [(&str, Option<&str>); 3] = [
-            ("masque://", None),
+            ("h3+udp://", None),
             (
                 "https:///masque/{target_host}/{target_port}/",
                 Some("/masque/{target_host}/{target_port}/"),
@@ -666,11 +712,9 @@ async fn tunnels_share_one_connection_except_on_http1() {
                 carrier != Carrier::Http3Capsule,
             )
             .await;
-            let proxy = proxy_address("masque://", proxy);
+            let proxy = proxy_address("h3+udp://", proxy).with_http_version(carrier.version());
             let scope = WeakScope::detached();
-            let connector =
-                ConnectUdpConnector::new(UdpConnector::new(), http_client(scope.clone()), scope)
-                    .with_version(carrier.version());
+            let connector = masque_tunnels(scope);
             let mut sockets = Vec::new();
             for _ in 0..TUNNELS {
                 let request = ConnectRequest::new(HostWithPort::from(target));
@@ -679,7 +723,7 @@ async fn tunnels_share_one_connection_except_on_http1() {
                     .serve(request)
                     .await
                     .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
-                let MaybeTunneledSocket::Tunneled(socket) = conn else {
+                let MaybeProxied::Proxied { conn: socket } = conn else {
                     panic!("{carrier:?}: a MASQUE route must tunnel");
                 };
                 assert_carrier(&socket, carrier);
@@ -737,7 +781,7 @@ async fn names_resolve_at_the_proxy() {
                 HostWithPort::try_from(format!("localhost:{}", target.port).as_str()).unwrap();
             let mut socket = open_tunnel(
                 WeakScope::detached(),
-                &proxy_address("masque://", proxy),
+                &proxy_address("h3+udp://", proxy),
                 target,
                 carrier.version(),
             )
@@ -757,7 +801,7 @@ async fn the_default_policy_refuses_loopback_with_proxy_status() {
         let (target, _echo) = udp_echo().await;
         let (proxy, _proxy) = masque_proxy(None, DestinationScopePolicy::default(), true).await;
         let client = http_client(WeakScope::detached());
-        let proxy = proxy_address("masque://", proxy);
+        let proxy = proxy_address("h3+udp://", proxy);
         for carrier in Carrier::ALL {
             let request = connect_udp_request(
                 &proxy,
@@ -805,14 +849,14 @@ async fn the_policy_sees_the_authenticated_user_on_every_carrier() {
             )
             .await;
             let john =
-                ProxyAddress::try_from(format!("masque://john:secret@{proxy}").as_str()).unwrap();
+                ProxyAddress::try_from(format!("h3+udp://john:secret@{proxy}").as_str()).unwrap();
             let mut socket = open_tunnel(WeakScope::detached(), &john, target, carrier.version())
                 .await
                 .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
             echo(&mut socket, b"john").await;
             assert_carrier(&socket, carrier);
 
-            let anonymous = proxy_address("masque://", proxy);
+            let anonymous = proxy_address("h3+udp://", proxy);
             let error = open_tunnel(WeakScope::detached(), &anonymous, target, carrier.version())
                 .await
                 .expect_err("anonymous users are refused");
@@ -842,7 +886,7 @@ async fn a_tunnel_holds_its_place_until_it_ends_on_every_carrier() {
                 Some(TunnelBudget::new()),
             )
             .await;
-            let proxy = proxy_address("masque://", proxy);
+            let proxy = proxy_address("h3+udp://", proxy);
             let mut first = open_tunnel(WeakScope::detached(), &proxy, target, carrier.version())
                 .await
                 .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
@@ -895,7 +939,7 @@ async fn a_silent_target_receives_only_the_first_reply_allowance_on_every_carrie
                 Some(TunnelBudget::new().with_unanswered(3, kib(64) as u64)),
             )
             .await;
-            let proxy = proxy_address("masque://", proxy);
+            let proxy = proxy_address("h3+udp://", proxy);
             let socket = open_tunnel(WeakScope::detached(), &proxy, target, carrier.version())
                 .await
                 .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
@@ -951,7 +995,7 @@ async fn a_principals_tunnels_share_its_budget_across_connections_on_every_carri
                 tunnel_budget,
             )
             .await;
-            let proxy = proxy_address("masque://", proxy);
+            let proxy = proxy_address("h3+udp://", proxy);
             let before = received.load(Ordering::SeqCst);
             // Both from 127.0.0.1, so one principal; each opens its own connection.
             let first = open_tunnel(WeakScope::detached(), &proxy, target, carrier.version())
@@ -996,7 +1040,7 @@ async fn unknown_paths_get_not_found() {
         for carrier in Carrier::ALL {
             let error = open_tunnel(
                 WeakScope::detached(),
-                &proxy_address("masque://", proxy),
+                &proxy_address("h3+udp://", proxy),
                 target,
                 carrier.version(),
             )
@@ -1028,7 +1072,7 @@ async fn an_unreachable_target_closes_the_tunnel() {
             .await;
             let mut socket = open_tunnel(
                 WeakScope::detached(),
-                &proxy_address("masque://", proxy),
+                &proxy_address("h3+udp://", proxy),
                 target,
                 carrier.version(),
             )
@@ -1118,34 +1162,25 @@ async fn handle_origin(request: Request) -> Result<Response, Infallible> {
     Ok(Response::new(Body::from(body)))
 }
 
-/// An HTTP/3 client whose QUIC connections tunnel through MASQUE proxies over `outer`.
-fn tunneling_client(scope: WeakScope, outer: Version) -> Client {
-    tunneling_client_with(scope.clone(), outer, http_client(scope), QuicTls::Boring)
+/// An HTTP/3 client whose QUIC connections tunnel through the MASQUE proxy a route names,
+/// over the HTTP version that route asks for.
+fn tunneling_client(scope: WeakScope) -> Client {
+    tunneling_client_with(
+        scope.clone(),
+        masque_proxies(scope, masque_quic_transport(), QuicTls::Boring),
+        QuicTls::Boring,
+    )
 }
 
-fn tunneling_client_with(
-    scope: WeakScope,
-    outer: Version,
-    outer_client: Client,
-    quic: QuicTls,
-) -> Client {
+fn tunneling_client_with(scope: WeakScope, proxies: MasqueProxies, quic: QuicTls) -> Client {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), outer_client, scope.clone())
-        .with_version(outer);
-    let h3 = Http3Connector::builder(scope.clone())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(quic.client())
-        .with_endpoints(QuicEndpointConnector::new(tunnels, scope.clone()))
-        .build_lazy()
-        .unwrap();
-    EasyHttpWebClient::connector_builder()
+    EasyHttpWebClient::connector_builder(scope)
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
+        .with_proxy_support(proxies)
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(scope)
-        .with_http3_support(h3)
+        .with_quic_tls_provider(quic.client())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .without_alt_svc()
         .build_client()
@@ -1189,8 +1224,8 @@ async fn http3_runs_through_a_masque_proxy_on_every_carrier() {
                 carrier != Carrier::Http3Capsule,
             )
             .await;
-            let proxy = proxy_address("masque://", proxy);
-            let client = tunneling_client(WeakScope::detached(), carrier.version());
+            let proxy = proxy_address("h3+udp://", proxy).with_http_version(carrier.version());
+            let client = tunneling_client(WeakScope::detached());
             for host in [origin.to_string(), format!("localhost:{}", origin.port)] {
                 assert_eq!(
                     get_through(&client, &host, &proxy).await,
@@ -1214,15 +1249,14 @@ async fn a_native_tunnel_too_small_for_quic_fails_typed() {
         let (origin, _origin) = h3_origin().await;
         let (proxy, _proxy) =
             masque_proxy(None, DestinationScopePolicy::allow_private(), true).await;
-        let proxy = proxy_address("masque://", proxy);
+        let proxy = proxy_address("h3+udp://", proxy);
         // An outer path held at QUIC's 1200 bytes leaves less per native datagram.
         let scope = WeakScope::detached();
         let mut outer = TransportConfig::default();
         outer.unset_mtu_discovery_config();
         let client = tunneling_client_with(
             scope.clone(),
-            Version::HTTP_3,
-            http_client_with_transport(scope, outer, QuicTls::Boring),
+            masque_proxies(scope, outer, QuicTls::Boring),
             QuicTls::Boring,
         );
         let request = Request::builder()
@@ -1252,12 +1286,9 @@ async fn the_masque_builder_step_tunnels_masque_routes_only() {
         let stats = proxy_tasks.proxy.clone().unwrap();
         let scope = WeakScope::detached();
         let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-        let client =
-            DefaultHttpWebClient::try_default_masque_using_boringssl(scope, tls.clone(), tls)
-                .unwrap()
-                .boxed();
+        let client = DefaultHttpWebClient::default_using_boringssl(scope, tls.clone(), tls).boxed();
 
-        let masque = proxy_address("masque://", proxy);
+        let masque = proxy_address("h3+udp://", proxy);
         let body = get_through(&client, &origin.to_string(), &masque).await;
         assert_eq!(body, "HTTP/3.0 origin");
         assert_eq!(stats.opened(), 1);
@@ -1276,22 +1307,23 @@ async fn the_masque_builder_step_tunnels_masque_routes_only() {
         assert_eq!(&body[..], b"HTTP/3.0 origin");
         assert_eq!(stats.opened(), 1);
 
-        // Any other kind of proxy is refused for HTTP/3, never bypassed.
+        // A plain HTTP proxy offers no CONNECT-UDP tunnel, so it is refused, never bypassed.
+        let refused = format!("http://{proxy}");
         let request = Request::builder()
             .version(Version::HTTP_3)
             .uri(format!("https://{origin}/refused"))
             .body(Body::empty())
             .unwrap();
         request.extensions().insert(ProxyRoute::Proxy(
-            ProxyAddress::try_from(format!("http://{proxy}").as_str()).unwrap(),
+            ProxyAddress::try_from(refused.as_str()).unwrap(),
         ));
         request
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
         let error = client.serve(request).await.unwrap_err();
         assert!(
-            format!("{error:?}").contains("masque proxies only"),
-            "{error:?}"
+            format!("{error:?}").contains("connect-udp proxies only"),
+            "{refused}: {error:?}"
         );
         assert_eq!(stats.opened(), 1);
         assert_eq!(proxy_tasks.requests.load(Ordering::SeqCst), 1);
@@ -1334,17 +1366,13 @@ async fn quic_relay(
         .await
         .unwrap();
     let address = socket.local_addr().unwrap();
-    let connector = ConnectUdpConnector::new(
-        UdpConnector::new(),
-        http_client_on(scope.clone(), quic),
-        scope.clone(),
-    )
-    .with_version(outer);
+    let connector = masque_tunnels_on(scope.clone(), quic);
     let forward =
         DatagramForwardService::new(NonZeroUsize::new(kib(64)).unwrap(), EcnPolicy::Discard)
             .with_packet_errors(PacketErrorPolicy::DropPacketLocal);
     let bridge = DatagramToProxyBridge::new(forward, target).with_connector(connector);
-    let service = AddInputExtensionLayer::new(ProxyRoute::Proxy(proxy)).into_layer(bridge);
+    let service = AddInputExtensionLayer::new(ProxyRoute::Proxy(proxy.with_http_version(outer)))
+        .into_layer(bridge);
     let demux = DatagramDemux::new(socket, demux_config());
     let task = tokio::spawn(async move {
         _ = demux.serve(scope, service).await;
@@ -1364,7 +1392,7 @@ async fn an_untouched_quic_relay_egresses_through_masque_on_every_carrier() {
             )
             .await;
             let (relay, _relay) = quic_relay(
-                proxy_address("masque://", proxy),
+                proxy_address("h3+udp://", proxy),
                 origin,
                 carrier.version(),
                 QuicTls::Boring,
@@ -1399,7 +1427,7 @@ async fn an_untouched_quic_relay_egresses_through_masque_on_every_carrier() {
 
 type MitmAssociation = BridgeIo<
     PrefixedDatagramSocket<DemuxedSocket<UdpPacketSender>>,
-    MaybeTunneledSocket<UdpPacketSocket>,
+    MaybeProxied<UdpPacketSocket, ConnectUdpSocket>,
 >;
 
 /// A conditional QUIC MITM proxy, as the QUIC MITM example builds it, whose every egress is
@@ -1410,14 +1438,20 @@ async fn quic_mitm(
     upstream: impl Into<HostWithPort>,
     outer: Version,
 ) -> (SocketAddress, Tasks) {
-    quic_mitm_with(proxy, upstream, outer, http_client(WeakScope::detached())).await
+    quic_mitm_with(
+        proxy,
+        upstream,
+        outer,
+        masque_tunnels(WeakScope::detached()),
+    )
+    .await
 }
 
 async fn quic_mitm_with(
     proxy: ProxyAddress,
     upstream: impl Into<HostWithPort>,
     outer: Version,
-    outer_client: Client,
+    tunnels: MasqueTunnels,
 ) -> (SocketAddress, Tasks) {
     const FAILURE: u32 = 0x0101;
     let scope = WeakScope::detached();
@@ -1458,10 +1492,9 @@ async fn quic_mitm_with(
             forward.serve(input).await.map_err(BoxError::from)
         }),
     );
-    let connector = ConnectUdpConnector::new(UdpConnector::new(), outer_client, scope.clone())
-        .with_version(outer);
-    let association = AddInputExtensionLayer::new(ProxyRoute::Proxy(proxy))
-        .into_layer(DatagramToProxyBridge::new(inspect, upstream).with_connector(connector));
+    let association =
+        AddInputExtensionLayer::new(ProxyRoute::Proxy(proxy.with_http_version(outer)))
+            .into_layer(DatagramToProxyBridge::new(inspect, upstream).with_connector(tunnels));
     let socket = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
@@ -1485,7 +1518,7 @@ async fn a_quic_mitm_egresses_through_masque_on_every_carrier() {
             )
             .await;
             let (mitm, _mitm) =
-                quic_mitm(proxy_address("masque://", proxy), origin, carrier.version()).await;
+                quic_mitm(proxy_address("h3+udp://", proxy), origin, carrier.version()).await;
             // A name the MITM terminates, and an IP literal (no server name) it forwards. Each
             // from its own client socket: the MITM's association is the address pair.
             for (host, intercepted) in [
@@ -1564,15 +1597,17 @@ async fn tcp_requests_on_a_masque_route_tunnel_with_connect() {
         )
         .await;
         let proxy =
-            ProxyAddress::try_from(format!("masque://john:secret@{proxy}").as_str()).unwrap();
+            ProxyAddress::try_from(format!("h3+udp://john:secret@{proxy}").as_str()).unwrap();
         let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-        let client = EasyHttpWebClient::connector_builder()
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
             .with_default_transport_connector()
             .with_default_dns_connector()
-            .with_tls_proxy_support_using_boringssl_config(tls.clone())
-            .with_proxy_support()
+            .with_proxy_support(ProxyConnector::default_using_tls::<Body>(
+                WeakScope::detached(),
+                tls.clone(),
+            ))
             .with_tls_support_using_boringssl(tls)
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .with_default_connection_pool()
             .without_alt_svc()
             .build_client();
@@ -1623,10 +1658,10 @@ async fn a_mitm_egress_tunnel_too_small_for_quic_refuses_before_any_handshake() 
         let mut outer = TransportConfig::default();
         outer.unset_mtu_discovery_config();
         let (mitm, _mitm) = quic_mitm_with(
-            proxy_address("masque://", proxy),
+            proxy_address("h3+udp://", proxy),
             origin,
             Version::HTTP_3,
-            http_client_with_transport(WeakScope::detached(), outer, QuicTls::Boring),
+            masque_tunnels_with_transport(WeakScope::detached(), outer, QuicTls::Boring),
         )
         .await;
         let client = http_client(WeakScope::detached());
@@ -1695,7 +1730,7 @@ async fn a_custom_relay_gets_the_tunnel_with_its_target() {
 
         let mut socket = open_tunnel(
             scope,
-            &proxy_address("masque://", address),
+            &proxy_address("h3+udp://", address),
             target,
             Version::HTTP_11,
         )

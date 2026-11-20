@@ -37,7 +37,7 @@ fn request(version: Version) -> Request {
 }
 
 fn request_to(host: Host, version: Version) -> Request {
-    let proxy = ProxyAddress::try_from("masque://proxy.example:443").unwrap();
+    let proxy = ProxyAddress::try_from("h3+udp://proxy.example:443").unwrap();
     let target = ConnectUdpTarget::new(host, NonZeroU16::MIN);
     connect_udp_request(&proxy, &target, version).unwrap()
 }
@@ -781,7 +781,7 @@ mod metrics {
         service: &impl Service<Request, Output = Response, Error = Infallible>,
         target: SocketAddress,
     ) -> Client {
-        let proxy = ProxyAddress::try_from("masque://proxy.example:443").unwrap();
+        let proxy = ProxyAddress::try_from("h3+udp://proxy.example:443").unwrap();
         let target = ConnectUdpTarget::new(
             Host::Address(target.ip_addr),
             NonZeroU16::new(target.port).unwrap(),

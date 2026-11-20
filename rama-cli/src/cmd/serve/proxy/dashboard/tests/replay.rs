@@ -878,7 +878,7 @@ async fn replay_sends_http3_through_a_masque_upstream_and_never_around_it() {
         }
         let (proxy, _) = start_proxy(&shutdown, TestCli::parse_from(argv).proxy).await;
         let upstream = UpstreamProxyConfig::new(
-            Some(format!("masque://{proxy}").parse().unwrap()),
+            Some(format!("h3+udp://{proxy}").parse().unwrap()),
             false,
             &[],
         )

@@ -9,10 +9,7 @@ use rama::{
     http::{
         Body, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
-        client::{
-            EasyHttpWebClient, Http3Connector,
-            proxy::layer::{HttpProxyConnectorLayer, HttpProxyError},
-        },
+        client::{EasyHttpWebClient, ProxyConnector, proxy::layer::HttpProxyError},
         conn::TargetHttpVersion,
         headers::SecWebSocketProtocol,
         layer::error_handling::ErrorHandlerLayer,
@@ -30,14 +27,12 @@ use rama::{
     },
     layer::MapInputLayer,
     net::{
-        Protocol,
-        address::{HostWithPort, ProxyAddress},
+        address::{HostWithPort, ProxyAddress, ProxyProtocol},
         client::ProxyRoute,
         process::ProcessSocket,
         transport::TransportProtocol,
         user::{Basic, Bearer},
     },
-    quic::tls::BoringTlsProvider,
     service::{BoxService, service_fn},
     tcp::server::TcpListener,
     tls::{
@@ -61,29 +56,27 @@ const LIMIT: Duration = Duration::from_secs(30);
 
 type Certificates = Arc<Mutex<Vec<Vec<u8>>>>;
 
-fn client(outer: Version) -> (BoxService<Request, Response, OpaqueError>, Certificates) {
+fn client() -> (BoxService<Request, Response, OpaqueError>, Certificates) {
     let tls = TlsClientConfig::default_http()
         .with_server_verify(ServerVerifyMode::Disable)
         .with_store_server_cert_chain(true);
-    let h3 = Http3Connector::builder(WeakScope::detached())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
-        .build_lazy()
-        .unwrap();
     let certificates = Certificates::default();
     let observed = certificates.clone();
-    let web = EasyHttpWebClient::connector_builder()
+    let web = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_custom_proxy_connector(
-            HttpProxyConnectorLayer::optional()
-                .with_version(outer)
-                .with_tls_proxy_support(false),
+        .with_proxy_support(
+            ProxyConnector::builder(WeakScope::detached())
+                .with_default_transport_connector()
+                .with_default_dns_connector()
+                .without_tls_support()
+                .with_default_http_connector::<Body>()
+                .with_default_connection_pool()
+                .with_http_connect()
+                .build(),
         )
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(WeakScope::detached())
-        .with_http3_support(h3)
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client()
         .with_jit_layer(MapInputLayer::new(move |req: Request| {
@@ -101,12 +94,19 @@ fn client(outer: Version) -> (BoxService<Request, Response, OpaqueError>, Certif
 }
 
 fn route(address: std::net::SocketAddr, username: Option<&str>) -> ProxyRoute {
+    route_with_version(address, username, Version::HTTP_11)
+}
+
+fn route_with_version(
+    address: std::net::SocketAddr,
+    username: Option<&str>,
+    version: Version,
+) -> ProxyRoute {
     ProxyRoute::Proxy(ProxyAddress {
-        protocol: Some(Protocol::HTTP),
+        protocol: ProxyProtocol::HTTP.with_http_version(version),
         address: address.into(),
         credential: username
             .map(|name| Basic::new(name.parse().unwrap(), "secret".parse().unwrap()).into()),
-        template: None,
     })
 }
 
@@ -367,14 +367,20 @@ async fn test_http_version_proxy() {
 
     timeout(LIMIT, async {
         // Unsupported upgrade protocols are rejected before reaching either origin.
-        for (outer, proxy_route, upgrade_target) in [
-            (Version::HTTP_11, ProxyRoute::Direct, &target),
-            (Version::HTTP_11, route(proxy, None), &tls_target),
-            (Version::HTTP_11, route(proxy, Some("john-h1")), &tls_target),
-            (Version::HTTP_2, route(proxy, None), &tls_target),
-            (Version::HTTP_2, route(proxy, Some("john-h1")), &tls_target),
+        for (proxy_route, upgrade_target) in [
+            (ProxyRoute::Direct, &target),
+            (route(proxy, None), &tls_target),
+            (route(proxy, Some("john-h1")), &tls_target),
+            (
+                route_with_version(proxy, None, Version::HTTP_2),
+                &tls_target,
+            ),
+            (
+                route_with_version(proxy, Some("john-h1"), Version::HTTP_2),
+                &tls_target,
+            ),
         ] {
-            let (web, _) = client(outer);
+            let (web, _) = client();
             let response = web
                 .get(format!("https://{upgrade_target}/upgrade"))
                 .version(Version::HTTP_11)
@@ -390,7 +396,7 @@ async fn test_http_version_proxy() {
             response.into_body().collect().await.unwrap();
         }
         for outer in [Version::HTTP_11, Version::HTTP_2] {
-            let (web, _) = client(outer);
+            let (web, _) = client();
             for (connect_target, proxy_route, versions) in [
                 (
                     &target,
@@ -399,7 +405,7 @@ async fn test_http_version_proxy() {
                 ),
                 (
                     &tls_target,
-                    route(proxy, None),
+                    route_with_version(proxy, None, outer),
                     &[Version::HTTP_11, Version::HTTP_2][..],
                 ),
             ] {
@@ -435,7 +441,7 @@ async fn test_http_version_proxy() {
         assert_eq!(tls_requests.load(Ordering::Relaxed), 0);
 
         // Exercise the executable's listeners and routing labels with real frames.
-        let (web, _) = client(Version::HTTP_11);
+        let (web, _) = client();
         for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
             for compressed in [false, true] {
                 websocket_exchange(
@@ -449,7 +455,7 @@ async fn test_http_version_proxy() {
             }
         }
         for outer in [Version::HTTP_11, Version::HTTP_2] {
-            let (web, _) = client(outer);
+            let (web, _) = client();
             for inner in [Version::HTTP_11, Version::HTTP_2] {
                 for username in [None, Some("john-h1"), Some("john-h2"), Some("john-h3")] {
                     for compressed in [false, true] {
@@ -457,7 +463,7 @@ async fn test_http_version_proxy() {
                             &web,
                             &target.to_string(),
                             inner,
-                            route(proxy, username),
+                            route_with_version(proxy, username, outer),
                             compressed,
                         )
                         .await;
@@ -467,7 +473,7 @@ async fn test_http_version_proxy() {
                             &web,
                             &tls_target.to_string(),
                             inner,
-                            route(proxy, username),
+                            route_with_version(proxy, username, outer),
                             false,
                         )
                         .await;
@@ -478,7 +484,7 @@ async fn test_http_version_proxy() {
 
         let mut previous_cert = None;
         for outer in [Version::HTTP_11, Version::HTTP_2] {
-            let (web, certificates) = client(outer);
+            let (web, certificates) = client();
             for inner in [Version::HTTP_11, Version::HTTP_2] {
                 for username in [
                     None,
@@ -504,7 +510,7 @@ async fn test_http_version_proxy() {
                             .request(method, format!("https://{target}/a%2Fb?x=%26&empty="))
                             .version(inner)
                             .extension(TargetHttpVersion(inner))
-                            .extension(route(proxy, username))
+                            .extension(route_with_version(proxy, username, outer))
                             .header("x-forwarded-host", "untrusted.example")
                             .header("x-forwarded-proto", "http")
                             .header("x-forwarded-for", "192.0.2.1")
@@ -537,17 +543,16 @@ async fn test_http_version_proxy() {
             for username in ["john-h1-h3", "john-h2-h2", "john-h4", "john-H0"] {
                 let error = web
                     .get(format!("https://{target}/"))
-                    .extension(route(proxy, Some(username)))
+                    .extension(route_with_version(proxy, Some(username), outer))
                     .send()
                     .await
                     .unwrap_err();
                 assert_proxy_status(&error, StatusCode::BAD_REQUEST);
             }
             let mut bearer_proxy = ProxyAddress {
-                protocol: Some(Protocol::HTTP),
+                protocol: ProxyProtocol::HTTP.with_http_version(outer),
                 address: proxy.into(),
                 credential: None,
-                template: None,
             };
             bearer_proxy.credential = Some(Bearer::try_from("token").unwrap().into());
             let error = web
@@ -560,7 +565,7 @@ async fn test_http_version_proxy() {
 
             let error = web
                 .get(format!("https://{origin}/"))
-                .extension(route(proxy, Some("john-h2")))
+                .extension(route_with_version(proxy, Some("john-h2"), outer))
                 .send()
                 .await
                 .unwrap_err();
@@ -568,7 +573,7 @@ async fn test_http_version_proxy() {
         }
 
         // Direct ingress exercises every listener without a proxy route.
-        let (web, _) = client(Version::HTTP_11);
+        let (web, _) = client();
         for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
             let response = web
                 .get(format!("https://{target}/direct?x=1"))
@@ -603,11 +608,11 @@ async fn test_http_version_proxy() {
 
     for outer in [Version::HTTP_11, Version::HTTP_2] {
         timeout(Duration::from_secs(20), async {
-            let (web, _) = client(outer);
+            let (web, _) = client();
             let before = tls_requests.load(Ordering::SeqCst);
             let error = web
                 .get(format!("https://{tls_target}/"))
-                .extension(route(proxy, Some("john-h3")))
+                .extension(route_with_version(proxy, Some("john-h3"), outer))
                 .send()
                 .await
                 .unwrap_err();
@@ -632,12 +637,12 @@ async fn test_http_version_proxy() {
         for outer in [Version::HTTP_11, Version::HTTP_2] {
             for (username, egress) in [("john-h1", Version::HTTP_11), ("john-h2", Version::HTTP_2)]
             {
-                let (web, _) = client(outer);
+                let (web, _) = client();
                 let response = web
                     .get(format!("https://{tls_target}/credentials"))
                     .version(Version::HTTP_2)
                     .extension(TargetHttpVersion(Version::HTTP_2))
-                    .extension(route(proxy, Some(username)))
+                    .extension(route_with_version(proxy, Some(username), outer))
                     .header("proxy-authorization", "Basic must-not-reach-origin")
                     .send()
                     .await
@@ -674,12 +679,12 @@ async fn test_http_version_proxy() {
     for outer in [Version::HTTP_11, Version::HTTP_2] {
         for username in [Some("john-h1"), None] {
             timeout(Duration::from_secs(20), async {
-                let (web, _) = client(outer);
+                let (web, _) = client();
                 let result = web
                     .get(format!("https://{stalled_target}/"))
                     .version(Version::HTTP_11)
                     .extension(TargetHttpVersion(Version::HTTP_11))
-                    .extension(route(proxy, username))
+                    .extension(route_with_version(proxy, username, outer))
                     .send()
                     .await;
                 if username.is_some() {

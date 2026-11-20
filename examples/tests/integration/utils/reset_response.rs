@@ -110,15 +110,14 @@ pub(crate) async fn through_mitm(proxy: &str) {
         },
     };
 
-    let client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(PostedRecvLayer::new().into_layer(TcpConnector::new()))
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(PostedRecvLayer::new().into_layer(TcpConnector::new()))
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_boringssl(
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     let proxy = ProxyAddress::try_from(proxy).unwrap();

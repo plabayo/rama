@@ -34,12 +34,12 @@ required-features = ["http-full", "boring"]
 [[bin]]
 name = "http_early_data"
 path = "src/http_early_data.rs"
-required-features = ["http-full"]
+required-features = ["http-full", "quic-tls"]
 
 [[bin]]
 name = "http3_client_server"
 path = "src/http3_client_server.rs"
-required-features = ["http-full"]
+required-features = ["http-full", "quic-tls"]
 
 [[bin]]
 name = "masque_connect_udp_proxy"
@@ -567,12 +567,12 @@ required-features = ["http-full", "boring"]
 [[bin]]
 name = "http_datagram_echo"
 path = "src/http_datagram_echo.rs"
-required-features = ["http-full"]
+required-features = ["http-full", "quic-tls"]
 
 [[bin]]
 name = "ws_over_h3"
 path = "src/ws_over_h3.rs"
-required-features = ["http-full"]
+required-features = ["http-full", "quic-tls"]
 
 [[bin]]
 name = "dial9_local"
@@ -598,8 +598,9 @@ ua = ["rama/ua"]
 ua-embed-profiles = ["ua", "rama/ua-embed-profiles"]
 icap = ["rama/icap"]
 tls = ["rama/tls"]
-boring = ["rama/boring"]
-rustls = ["rama/rustls"]
+quic-tls = []
+boring = ["rama/boring", "quic-tls"]
+rustls = ["rama/rustls", "quic-tls"]
 aws-lc = ["rama/aws-lc"]
 ring = ["rama/ring"]
 acme = ["rama/acme"]

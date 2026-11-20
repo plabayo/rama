@@ -13,11 +13,14 @@ pub use connect_request::{HttpConnectRequestAdapter, HttpConnectRequestAdapterLa
 
 mod conn;
 #[cfg(feature = "quic")]
+#[doc(inline)]
+pub use conn::Http3Leg;
+#[cfg(feature = "quic")]
 pub(crate) use conn::ResponseLimits;
 #[doc(inline)]
 pub use conn::{
-    HttpConnector, HttpConnectorLayer, MaxInformationalResponses, RefusedStreamBudget,
-    http_connect, http2_eager_handshake,
+    HttpConnector, HttpConnectorLayer, HttpConnectorTransport, MaxInformationalResponses,
+    RefusedStreamBudget, http_connect, http2_eager_handshake,
 };
 
 mod bind_body;

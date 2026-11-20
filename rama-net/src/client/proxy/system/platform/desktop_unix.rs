@@ -742,9 +742,9 @@ fn config_from_kde_entries(
     let mut config = SystemProxyConfig::default();
     match proxy_type {
         1 => {
-            config.http = kde_endpoint(value("httpProxy"), Protocol::HTTP)?;
-            config.https = kde_endpoint(value("httpsProxy"), Protocol::HTTP)?;
-            config.socks5 = kde_endpoint(value("socksProxy"), Protocol::SOCKS5)?;
+            config.http = kde_endpoint(value("httpProxy"), &Protocol::HTTP)?;
+            config.https = kde_endpoint(value("httpsProxy"), &Protocol::HTTP)?;
+            config.socks5 = kde_endpoint(value("socksProxy"), &Protocol::SOCKS5)?;
             if let Some(value) = value("NoProxyFor") {
                 config.try_set_bypass_with_dialect(
                     parse_delimited_string_list(value),
@@ -770,7 +770,7 @@ fn config_from_kde_entries(
 
 fn kde_endpoint(
     value: Option<&str>,
-    default_protocol: Protocol,
+    default_protocol: &Protocol,
 ) -> Result<Option<ProxyAddress>, BoxError> {
     let Some(value) = value.and_then(trim_ascii_quotes_non_empty) else {
         return Ok(None);

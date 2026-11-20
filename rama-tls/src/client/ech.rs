@@ -15,7 +15,7 @@ use rama_net::{
 /// ECH conflicts with `Required` and fails before network I/O. Backends without
 /// ECH support must reject `Required`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub enum EchRequirement {
     /// No caller-imposed requirement. Protocol-derived ECH requirements still apply.
     #[default]
@@ -159,7 +159,9 @@ pub(super) struct EchConnectionReuse {
 
 impl rama_net::client::pool::ConnectionReusePolicy for EchConnectionReuse {
     fn classifier(&self) -> rama_net::client::pool::ReuseKey {
-        rama_net::client::pool::ReuseKey::of::<Self>()
+        rama_net::client::pool::ReuseKey::from_bits::<Self>(
+            u128::from(self.accepted) | (u128::from(self.required) << 1),
+        )
     }
 
     fn connection_key(&self) -> Option<rama_net::client::pool::ReuseKey> {
@@ -231,6 +233,29 @@ impl std::error::Error for EchRetryConfig {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acceptance_and_requirement_classify_apart() {
+        use rama_net::client::pool::ConnectionReusePolicy as _;
+
+        let policy = |accepted, required| EchConnectionReuse { accepted, required };
+
+        assert_ne!(
+            policy(false, true).classifier(),
+            policy(true, true).classifier(),
+            "a connection that accepted ECH derives request keys differently"
+        );
+        assert_ne!(
+            policy(true, false).classifier(),
+            policy(true, true).classifier(),
+            "a required default derives request keys differently"
+        );
+        assert_eq!(
+            policy(true, true).classifier(),
+            policy(true, true).classifier()
+        );
+    }
+
     use rama_net::client::pool::ConnectionReuse;
     #[test]
     fn required_intent_and_endpoint_capability_matrix() {

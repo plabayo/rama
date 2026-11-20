@@ -94,6 +94,7 @@ fn drain(child: &mut Child) -> Arc<Mutex<Vec<String>>> {
 use rama::{
     Layer, Service,
     error::BoxError,
+    http::client::ProxyConnector,
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
     http::ws::handshake::client::{HttpClientWebSocketExt, WebSocketRequestBuilder, WithService},
     http::{
@@ -549,13 +550,15 @@ impl ExampleRunner {
                 let proxy_tls_config =
                     TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
 
-                EasyHttpWebClient::connector_builder()
+                EasyHttpWebClient::connector_builder(WeakScope::detached())
                     .with_default_transport_connector()
                     .with_default_dns_connector()
-                    .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
-                    .with_proxy_support()
+                    .with_proxy_support(ProxyConnector::default_using_tls(
+                        WeakScope::detached(),
+                        proxy_tls_config,
+                    ))
                     .with_tls_support_using_boringssl(tls_config)
-                    .with_default_http_connector(WeakScope::detached())
+                    .with_default_http_connector()
                     .without_connection_pool()
                     .build_client()
             };
@@ -574,13 +577,15 @@ impl ExampleRunner {
                     .with_server_verify(rama::tls::client::ServerVerifyMode::Disable)
                     .with_keylog(rama::tls::KeyLogIntent::Environment);
 
-                EasyHttpWebClient::connector_builder()
+                EasyHttpWebClient::connector_builder(WeakScope::detached())
                     .with_default_transport_connector()
                     .with_default_dns_connector()
-                    .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
-                    .with_proxy_support()
+                    .with_proxy_support(ProxyConnector::default_using_tls(
+                        WeakScope::detached(),
+                        proxy_tls_config,
+                    ))
                     .with_tls_support_using_rustls(tls_config)
-                    .with_default_http_connector(WeakScope::detached())
+                    .with_default_http_connector()
                     .without_connection_pool()
                     .build_client()
             };

@@ -55,7 +55,6 @@ std = [
     "dep:moka",
     "percent-encoding/std",
     "dep:mime",
-    "dep:base64",
 ]
 test-utils = ["std"]
 # IDNA (internationalized domain names) support.
@@ -77,7 +76,7 @@ dial9 = ["std", "dep:dial9", "dep:dial9-trace-format", "rama-core/dial9"]
 ahash = { workspace = true, optional = true }
 arc-swap = { workspace = true, optional = true }
 # Keep default features (std) off for no_std builds.
-base64 = { workspace = true, default-features = false, features = ["alloc"], optional = true }
+base64 = { workspace = true, default-features = false, features = ["alloc"] }
 bitflags = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true, optional = true }

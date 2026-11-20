@@ -220,7 +220,7 @@ where
 /// while checkouts go on to dial new connections.
 ///
 /// [`scope_context`]: rama_core::graceful::scope_context
-#[derive(ExtensionsRef)]
+#[derive(Clone, ExtensionsRef)]
 pub struct PooledConnector<S, P, R> {
     inner: S,
     pool: P,

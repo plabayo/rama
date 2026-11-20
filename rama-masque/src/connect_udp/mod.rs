@@ -9,8 +9,8 @@ pub use budget::{ConnectUdpStats, TunnelBudget};
 mod client;
 #[doc(inline)]
 pub use client::{
-    ConnectUdpConnector, ConnectUdpConnectorLayer, MaybeTunneledSender, MaybeTunneledSocket,
-    NAME_TARGET_PEER, OUTER_IDLE_TIMEOUT, OUTER_INITIAL_MTU,
+    HttpConnectUdpProxyConnector, HttpConnectUdpProxyConnectorLayer, NAME_TARGET_PEER,
+    OUTER_IDLE_TIMEOUT, OUTER_INITIAL_MTU,
 };
 
 mod context;

@@ -1947,8 +1947,7 @@ mod conn {
 
     #[test]
     fn uri_absolute_form() {
-        use rama_net::Protocol;
-        use rama_net::address::{HostWithPort, ProxyAddress};
+        use rama_net::address::{HostWithPort, ProxyAddress, ProxyProtocol};
         use rama_net::client::EstablishedProxyRoute;
 
         let (server, addr) = setup_std_test_server();
@@ -1996,8 +1995,7 @@ mod conn {
             .insert(EstablishedProxyRoute::Forward(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
-                protocol: Some(Protocol::HTTP),
-                template: None,
+                protocol: ProxyProtocol::HTTP,
             }));
 
         let res = client.send_request(req).and_then(move |res| {

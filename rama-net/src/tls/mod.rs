@@ -10,3 +10,6 @@ pub use early_data::{EarlyDataPermit, ForbidEarlyData};
 
 mod ech;
 pub use ech::{TargetEchConfig, TargetEchServiceBinding};
+
+mod required;
+pub use required::TlsRequired;

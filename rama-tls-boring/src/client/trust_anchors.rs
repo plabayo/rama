@@ -10,7 +10,7 @@ use rama_tls::client::trust_anchors_identifier_list;
 /// An empty identifier list still requests the extension, while
 /// [`Self::omitted`] leaves it out regardless of any inherited setting.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringRequestedTrustAnchors(Option<Box<[u8]>>);
 
 impl BoringRequestedTrustAnchors {

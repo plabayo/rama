@@ -52,7 +52,7 @@ use rama::{
         body::{Frame, util::BodyExt as _},
         client::{
             DefaultHttpWebClient, EasyHttpConnectorBuilder, Http3Connector, Http3Transport,
-            http_connect,
+            HttpConnectorLayer, ProxyConnector, http_connect,
         },
         conn::{HttpOrigin, TargetHttpVersion},
         core::h3::{
@@ -85,6 +85,7 @@ use rama::{
     },
     quic::{
         ClientConfig, Endpoint, ServerConfig, TransportConfig,
+        client::SharedQuicEndpoint,
         tls::{QuicClientConfigProvider, TlsConfigError, TlsOptions},
     },
     service::service_fn,
@@ -393,17 +394,27 @@ fn client_with_transport(
     attempt_timeout: Option<Duration>,
     transport: impl TcpStreamConnector<Error: Into<BoxError>> + Clone,
 ) -> impl Service<Request, Output = Response, Error: Debug> {
-    let builder = EasyHttpConnectorBuilder::new()
-        .with_custom_transport_connector(TcpConnector::new().with_connector(transport))
+    let builder = EasyHttpConnectorBuilder::new(WeakScope::detached())
+        .with_custom_tcp_connector(TcpConnector::new().with_connector(transport.clone()))
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_http_proxy_support();
+        .with_proxy_support(
+            ProxyConnector::builder(WeakScope::detached())
+                .with_custom_tcp_connector(TcpConnector::new().with_connector(transport))
+                .with_default_dns_connector()
+                .without_tls_support()
+                .with_default_http_connector()
+                .with_default_connection_pool()
+                .with_http_connect()
+                .with_http_forward()
+                .build(),
+        );
     #[cfg(feature = "boring")]
     let builder = builder.with_tls_support_using_boringssl(tls);
     #[cfg(not(feature = "boring"))]
     let builder = builder.with_tls_support_using_rustls(tls);
+    // A stream-only client: an `h3` alternative service is not one it can use.
     builder
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
         .configure_http_service(|selector| {
@@ -445,25 +456,22 @@ async fn client_with_http3_cache_and_timeout(
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let h3 = Http3Connector::builder(WeakScope::detached())
-        .with_endpoint(endpoint.clone())
-        .with_tls_config(tls.clone());
-    // Match the stream provider so native overrides exercise both transports.
-    #[cfg(feature = "boring")]
-    let h3 = h3.with_tls_provider(Arc::new(BoringTlsProvider::new()));
-    let h3 = h3.build().await.unwrap();
-    let builder = EasyHttpConnectorBuilder::new()
-        .with_default_transport_connector()
+    let builder = EasyHttpConnectorBuilder::new(WeakScope::detached())
+        .with_default_tcp_connector()
+        .with_custom_quic_connector(SharedQuicEndpoint::supplied(
+            endpoint.clone(),
+            WeakScope::detached(),
+        ))
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_http_proxy_support();
+        .with_default_proxy_support();
+    // The TLS stage gives QUIC the same provider as the stream, so native
+    // overrides exercise both transports.
     #[cfg(feature = "boring")]
     let builder = builder.with_tls_support_using_boringssl(tls);
     #[cfg(not(feature = "boring"))]
     let builder = builder.with_tls_support_using_rustls(tls);
     let client = builder
-        .with_default_http_connector(WeakScope::detached())
-        .with_http3_support(h3)
+        .with_default_http_connector()
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
         .configure_http_service(|selector| {
@@ -1522,13 +1530,12 @@ async fn fixed_custom_tls_connector_reuses_connections() {
         #[cfg(feature = "boring")]
         let tls = tls.with_grease(true);
         let tls = tls.with_store_server_cert_chain(true);
-        let client = EasyHttpConnectorBuilder::new()
+        let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
             .with_default_transport_connector()
             .with_default_dns_connector()
-            .without_tls_proxy_support()
-            .with_http_proxy_support()
+            .with_default_proxy_support()
             .with_custom_tls_connector(TlsConnectorLayer::auto().with_base_config(tls))
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .with_default_connection_pool()
             .build_client();
 
@@ -1585,14 +1592,15 @@ async fn custom_http3_connector_publishes_its_own_pool_policy() {
         .unwrap();
     // The generic custom path receives only the connector. Pooling learns TLS
     // compatibility from its returned connection, without duplicate setup.
-    let client = EasyHttpConnectorBuilder::new()
+    let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector(WeakScope::detached())
-        .with_http3_connector(DnsConnector::new(h3))
+        .with_custom_http_connector(
+            HttpConnectorLayer::<Body>::new(WeakScope::detached())
+                .with_http3_connector(DnsConnector::new(h3)),
+        )
         .with_default_connection_pool()
         .build_client();
     for _ in 0..2 {

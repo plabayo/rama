@@ -1,6 +1,10 @@
 use core::convert::Infallible;
 
-use crate::{address::SocketAddress, client::EstablishedClientConnection, stream::Socket};
+use crate::{
+    address::SocketAddress,
+    client::{ConnectRequest, EstablishedClientConnection},
+    stream::Socket,
+};
 
 use rama_core::{
     Service,
@@ -21,7 +25,10 @@ pub struct MockConnectorService<S> {
 }
 
 impl<S> MockConnectorService<S> {
-    pub fn new(create_server: S) -> Self {
+    pub fn new<Server>(create_server: S) -> Self
+    where
+        S: Fn(&ConnectRequest) -> Server,
+    {
         Self {
             create_server,
             max_buffer_size: 1024,
@@ -46,21 +53,20 @@ impl<S> MockConnectorService<S> {
     }
 }
 
-impl<S, Input, Server> Service<Input> for MockConnectorService<S>
+impl<S, Server> Service<ConnectRequest> for MockConnectorService<S>
 where
-    S: Fn() -> Server + Send + Sync + 'static,
+    S: Fn(&ConnectRequest) -> Server + Send + Sync + 'static,
     Server: Service<MockSocket, Error: Into<BoxError>>,
-    Input: Send + 'static,
 {
     type Error = Infallible;
-    type Output = EstablishedClientConnection<MockSocket, Input>;
+    type Output = EstablishedClientConnection<MockSocket, ConnectRequest>;
 
-    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
         let (client, server) = duplex(self.max_buffer_size);
         let client_socket = MockSocket::new(client);
         let server_socket = MockSocket::new(server);
 
-        let server = (self.create_server)();
+        let server = (self.create_server)(&input);
 
         let held = self.scope.clone().unwrap_or_default().try_hold();
         #[expect(

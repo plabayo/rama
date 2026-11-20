@@ -757,6 +757,7 @@ async fn h3_websockets_never_bypass_an_explicit_proxy() -> TestResult {
     let origin = WsServer::echo(fixture.auth.clone(), Version::HTTP_3, true).await?;
     let proxy =
         tokio::net::TcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0))).await?;
+    // A plain HTTP proxy offers no CONNECT-UDP tunnel, so it is refused.
     let proxy_url = format!("http://{}", proxy.local_addr()?);
     let output = fixture
         .send(
@@ -769,8 +770,8 @@ async fn h3_websockets_never_bypass_an_explicit_proxy() -> TestResult {
     assert!(output.stdout.is_empty(), "{}", report(&output));
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("connect-udp connector serves masque proxies only"),
-        "{}",
+            .contains("connect-udp connector serves connect-udp proxies only"),
+        "{proxy_url}: {}",
         report(&output)
     );
     timeout(Duration::from_millis(20), proxy.accept())

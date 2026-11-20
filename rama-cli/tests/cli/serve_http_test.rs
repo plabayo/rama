@@ -9,7 +9,7 @@ use rama::{
     http::{
         Body, BodyExtractExt, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt,
-        client::{EasyHttpWebClient, Http3Connector},
+        client::EasyHttpWebClient,
         header::{ACCEPT, ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_TYPE, VARY},
         headers::{ContentLength, HeaderMapExt, encoding::AcceptEncoding},
         layer::decompression::DecompressionLayer,
@@ -83,19 +83,12 @@ async fn test_http_tests_throttled() {
 
 async fn http_client() -> BoxService<Request, Response, OpaqueError> {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let http3 = Http3Connector::builder(WeakScope::detached())
-        .with_tls_config(tls.clone())
-        .build()
-        .await
-        .unwrap();
-    EasyHttpWebClient::connector_builder()
+    EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(WeakScope::detached())
-        .with_http3_support(http3)
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client()
         .boxed()

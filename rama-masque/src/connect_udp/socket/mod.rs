@@ -20,9 +20,7 @@ use std::{
 use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
-    extensions::{
-        Extensions, ExtensionsRef, NestedConnectionTransfer, SharedNestedConnectionTransfer,
-    },
+    extensions::{Extensions, ExtensionsRef, ExtensionsTransfer, SharedExtensionsTransfer},
     graceful::Scope,
     telemetry::tracing,
 };
@@ -37,7 +35,7 @@ use rama_http::{
 use rama_net::{
     address::{SocketAddress, ip::IntoCanonicalIpAddr as _},
     proxy::{IdleActivity, IdleGuard},
-    stream::{DefaultConnectionTransfer, Socket},
+    stream::{DefaultExtensionsTransfer, Socket},
 };
 use rama_udp::{
     DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
@@ -90,14 +88,14 @@ pub fn session_config() -> SessionConfig {
 
 /// Limits of a [`ConnectUdpSocket`].
 ///
-/// The socket's extensions are a nested-connection fork of the carrier's, so
+/// The socket's extensions are a child connection of the carrier's, so
 /// the carrier's flow-scoped extensions keep resolving through; only its
 /// connection-scoped facts stop at the boundary, except what
-/// [`Self::with_nested_connection_transfer`] carries over,
-/// [`DefaultConnectionTransfer`] by default.
+/// [`Self::with_extensions_transfer`] carries over,
+/// [`DefaultExtensionsTransfer`] by default.
 #[derive(Debug, Clone)]
 pub struct ConnectUdpSocketConfig {
-    nested_connection_transfer: SharedNestedConnectionTransfer,
+    extensions_transfer: SharedExtensionsTransfer,
     /// UDP payloads accepted for sending but not yet handed to the HTTP carrier.
     queue: NonZeroUsize,
     /// How long the tunnel may forward nothing in either direction before it closes.
@@ -116,7 +114,7 @@ impl Default for ConnectUdpSocketConfig {
             idle_timeout: Duration::from_mins(2),
             close_grace: CLOSE_GRACE,
             min_payload: None,
-            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
         }
     }
 }
@@ -125,10 +123,10 @@ impl ConnectUdpSocketConfig {
     generate_set_and_with! {
         /// Which of the carrier's connection-scoped facts the tunnel keeps.
         ///
-        /// [`DefaultConnectionTransfer`] by default. The carrier's flow-scoped
+        /// [`DefaultExtensionsTransfer`] by default. The carrier's flow-scoped
         /// extensions are inherited either way.
-        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
-            self.nested_connection_transfer = transfer.into_shared();
+        pub fn extensions_transfer(mut self, transfer: impl ExtensionsTransfer) -> Self {
+            self.extensions_transfer = transfer.into_shared();
             self
         }
     }
@@ -420,7 +418,7 @@ where
         let native = session.native().cloned();
         let extensions = session
             .extensions()
-            .fork_nested_connection(&config.nested_connection_transfer);
+            .fork_connection(&config.extensions_transfer);
         let (sender, receiver) = session.split();
         let shared = Arc::new(Shared {
             native,

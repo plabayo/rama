@@ -18,11 +18,7 @@ pub use routes::{
 
 use rama_core::extensions::{Extension, Extensions};
 
-use crate::{
-    Protocol,
-    address::{Host, HostWithPort, ProxyAddress},
-    std::vec::Vec,
-};
+use crate::{address::ProxyAddress, std::vec::Vec};
 
 /// Index of the selected route within the ordered route collection.
 ///
@@ -71,21 +67,6 @@ impl ProxyRoute {
         }
     }
 
-    /// Whether a request for `target` is addressed to this route's proxy itself rather than
-    /// through it: a MASQUE proxy's own requests, such as CONNECT-UDP, target the proxy.
-    ///
-    /// Connectors send such a request straight to the proxy, as to an HTTP forward proxy,
-    /// and publish [`EstablishedProxyRoute::Forward`], so the proxy's credentials go with it.
-    /// Every other request on the route goes through the proxy.
-    #[must_use]
-    pub fn addresses_proxy(&self, target: &HostWithPort) -> bool {
-        self.proxy_address().is_some_and(|proxy| {
-            proxy.protocol.as_ref().is_some_and(Protocol::is_masque)
-                && proxy.address.port == target.port
-                && same_host(&proxy.address.host, &target.host)
-        })
-    }
-
     /// Consume this route and return its proxy address when proxied.
     #[must_use]
     pub fn into_proxy_address(self) -> Option<ProxyAddress> {
@@ -93,18 +74,6 @@ impl ProxyRoute {
             Self::Direct => None,
             Self::Proxy(address) => Some(address),
         }
-    }
-}
-
-/// Whether two hosts name the same peer, an IPv4-mapped IPv6 address being its IPv4 one.
-fn same_host(a: &Host, b: &Host) -> bool {
-    match (a, b) {
-        (Host::Address(a), Host::Address(b)) => a.to_canonical() == b.to_canonical(),
-        (Host::Name(_), _) | (_, Host::Name(_)) => a == b,
-        _ => match (a.try_as_ip(), b.try_as_ip()) {
-            (Ok(a), Ok(b)) => a.to_canonical() == b.to_canonical(),
-            _ => a == b,
-        },
     }
 }
 
@@ -133,8 +102,7 @@ impl From<ProxyAddress> for ProxyRoute {
 pub enum EstablishedProxyRoute {
     /// A route was requested, but the connection was established without a proxy.
     Direct,
-    /// Application requests are sent directly to an HTTP(S) forward proxy, or to a MASQUE
-    /// proxy they are addressed to.
+    /// Application requests are sent directly to an HTTP(S) forward proxy.
     Forward(ProxyAddress),
     /// A successful HTTP or SOCKS CONNECT exchange established an opaque tunnel.
     /// The selected proxy address carries its configured protocol. A tunnel
@@ -152,11 +120,10 @@ impl EstablishedProxyRoute {
         }
     }
 
-    /// Whether application requests are addressed to an HTTP forward proxy: an HTTP(S)
-    /// proxy, or a MASQUE proxy receiving its own requests ([`ProxyRoute::addresses_proxy`]).
+    /// Whether application requests are addressed to an HTTP forward proxy.
     #[must_use]
     pub fn is_http_forward(&self) -> bool {
-        matches!(self, Self::Forward(proxy) if proxy.protocol.as_ref().is_none_or(|protocol| protocol.is_http() || protocol.is_masque()))
+        matches!(self, Self::Forward(proxy) if proxy.protocol.is_http())
     }
 }
 
@@ -301,7 +268,9 @@ impl<'a> IntoIterator for &'a ProxyRoutes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::extensions::NoConnectionTransfer;
+    use crate::address::ProxyProtocol;
+    use rama_core::extensions::NoExtensionsTransfer;
+    use rama_utils::str::smol_str::SmolStr;
 
     #[derive(Debug)]
     struct IntoProxyAddress(ProxyAddress);
@@ -320,32 +289,6 @@ mod tests {
     }
 
     #[test]
-    fn only_a_masque_proxy_is_addressed_by_requests_for_its_own_authority() {
-        let masque = ProxyRoute::Proxy("masque://proxy.example:443".parse().unwrap());
-        for (target, addressed) in [
-            ("proxy.example:443", true),
-            ("PROXY.example:443", true),
-            ("proxy.example:4433", false),
-            ("origin.example:443", false),
-        ] {
-            let target = HostWithPort::try_from(target).unwrap();
-            assert_eq!(masque.addresses_proxy(&target), addressed, "{target}");
-        }
-        let mapped = ProxyRoute::Proxy("masque://127.0.0.1:443".parse().unwrap());
-        let target = HostWithPort::try_from("[::ffff:127.0.0.1]:443").unwrap();
-        assert!(mapped.addresses_proxy(&target));
-        let mapped_proxy = ProxyRoute::Proxy("masque://[::ffff:127.0.0.1]:443".parse().unwrap());
-        assert!(mapped_proxy.addresses_proxy(&HostWithPort::try_from("127.0.0.1:443").unwrap()));
-        // A name is never its address: resolving is the connector's.
-        assert!(!mapped.addresses_proxy(&HostWithPort::try_from("localhost:443").unwrap()));
-        // An HTTP(S) proxy is never the target of the requests it carries.
-        let https = ProxyRoute::Proxy("https://proxy.example:443".parse().unwrap());
-        let target = HostWithPort::try_from("proxy.example:443").unwrap();
-        assert!(!https.addresses_proxy(&target));
-        assert!(!ProxyRoute::Direct.addresses_proxy(&target));
-    }
-
-    #[test]
     fn direct_is_the_default_route() {
         assert_eq!(ProxyRoute::default(), ProxyRoute::Direct);
     }
@@ -354,14 +297,16 @@ mod tests {
     fn established_forward_route_requires_an_http_proxy_protocol() {
         assert!(!EstablishedProxyRoute::Direct.is_http_forward());
         for (protocol, forwards) in [
-            (None, true),
-            (Some(crate::Protocol::HTTP), true),
-            (Some(crate::Protocol::HTTPS), true),
-            (Some(crate::Protocol::MASQUE), true),
-            (Some(crate::Protocol::SOCKS5), false),
-            (Some(crate::Protocol::SOCKS5H), false),
-            (Some(crate::Protocol::WS), false),
-            (Some(crate::Protocol::from_static("custom")), false),
+            (ProxyProtocol::HTTP, true),
+            (ProxyProtocol::HTTPS, true),
+            (
+                "h3://p.example".parse::<ProxyAddress>().unwrap().protocol,
+                true,
+            ),
+            (ProxyProtocol::SOCKS5, false),
+            (ProxyProtocol::SOCKS5H, false),
+            (ProxyProtocol::Custom(SmolStr::new_static("ws")), false),
+            (ProxyProtocol::Custom(SmolStr::new_static("custom")), false),
         ] {
             let proxy = ProxyAddress {
                 protocol,
@@ -382,7 +327,7 @@ mod tests {
         let proxy_leg = Extensions::new();
         proxy_leg.insert(EstablishedProxyRoute::Forward(proxy_address("selected")));
 
-        let tunnel = proxy_leg.fork_nested_connection(&NoConnectionTransfer);
+        let tunnel = proxy_leg.fork_connection(&NoExtensionsTransfer);
         assert_eq!(tunnel.get_ref::<EstablishedProxyRoute>(), None);
 
         let route = EstablishedProxyRoute::Tunnel(proxy_address("selected"));

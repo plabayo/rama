@@ -73,6 +73,7 @@ impl ClientControlFrame {
 
 /// Ordered optional frames appended after client SETTINGS, within native budgets.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Extension)]
+#[extension(scope(connection))]
 pub struct ClientControlPreferences {
     pub frames: Box<[ClientControlFrame]>,
 }

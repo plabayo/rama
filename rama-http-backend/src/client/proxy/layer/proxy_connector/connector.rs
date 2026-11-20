@@ -4,140 +4,70 @@
 
 use super::HttpProxyError;
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_core::graceful::WeakScope;
-use rama_core::io::Io;
-use rama_core::telemetry::tracing;
 use rama_http::HeaderMap;
-use rama_http::io::upgrade;
-use rama_http_core::body::Incoming;
-use rama_http_core::client::conn::{http1, http2};
-use rama_http_headers::{HeaderEncode, HeaderMapExt, Host, HttpRequestBuilderExt, UserAgent};
-use rama_http_types::Response;
-use rama_http_types::{Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version};
-use rama_net::address::HostWithOptPort;
+use rama_http::io::upgrade::{self, Upgraded};
+use rama_http_headers::{HeaderMapExt, Host, HttpRequestBuilderExt, ProxyAuthorization, UserAgent};
+use rama_http_types::{Method, Request, Response, StatusCode, Version};
+use rama_net::address::{HostWithOptPort, HostWithPort};
 use rama_net::uri::Uri;
-use rama_utils::macros::generate_set_and_with;
+use rama_net::user::ProxyCredential;
 
-#[derive(Debug)]
-/// Connector for HTTP proxies.
+/// Build the CONNECT request which opens a tunnel to `target`.
 ///
-/// Used to connect as a client to a HTTP proxy server.
-pub(super) struct InnerHttpProxyConnector {
-    req: Request,
+/// `version` is the version spoken to the proxy; the connection it is sent on has to
+/// speak that same version.
+pub(super) fn connect_request<B: Default>(
+    target: HostWithPort,
+    credential: Option<&ProxyCredential>,
+    version: Version,
+) -> Result<Request<B>, BoxError> {
+    let authority = HostWithOptPort::from(target);
+    let mut request = Request::builder()
+        .method(Method::CONNECT)
+        .version(version)
+        // CONNECT request-target is authority-form (`host:port`); build it as
+        // such. `.uri(string)` would parse it as `scheme:path` and reject the
+        // host (e.g. `127.0.0.1`) as an invalid scheme.
+        .uri(Uri::from_authority_form(authority.clone().into()))
+        .typed_header(Host::from(authority))
+        .typed_header(UserAgent::default())
+        .body(B::default())
+        .context("build CONNECT request")?;
+
+    match credential {
+        Some(ProxyCredential::Basic(basic)) => {
+            request
+                .headers_mut()
+                .typed_insert(ProxyAuthorization(basic.clone()));
+        }
+        Some(ProxyCredential::Bearer(bearer)) => {
+            request
+                .headers_mut()
+                .typed_insert(ProxyAuthorization(bearer.clone()));
+        }
+        None => {}
+    }
+
+    Ok(request)
 }
 
-impl InnerHttpProxyConnector {
-    /// Create a new [`InnerHttpProxyConnector`] with the given authority.
-    pub(super) fn new(
-        authority: HostWithOptPort,
-        req_extensions: Extensions,
-    ) -> Result<Self, BoxError> {
-        let req = Request::builder()
-            .method(Method::CONNECT)
-            .version(Version::HTTP_11)
-            // CONNECT request-target is authority-form (`host:port`); build it as
-            // such. `.uri(string)` would parse it as `scheme:path` and reject the
-            // host (e.g. `127.0.0.1`) as an invalid scheme.
-            .uri(Uri::from_authority_form(authority.clone().into()))
-            .typed_header(Host::from(authority))
-            .typed_header(UserAgent::default())
-            .body(Body::empty())
-            .context("build http request")?
-            .with_extensions(req_extensions);
-
-        Ok(Self { req })
-    }
-
-    generate_set_and_with! {
-        pub(super) fn version(mut self, version: Version) -> Self {
-            *self.req.version_mut() = version;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Add a header to the request.
-        pub(super) fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
-            self.req.headers_mut().insert(name, value);
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Add a typed header to the request.
-        pub(super) fn typed_header(mut self, header: impl HeaderEncode) -> Self {
-            self.req.headers_mut().typed_insert(header);
-            self
-        }
-    }
-
-    /// Connect to the proxy server.
-    pub(super) async fn handshake<S: Io + ExtensionsRef + Unpin>(
-        self,
-        stream: S,
-    ) -> Result<(HeaderMap, upgrade::Upgraded), HttpProxyError> {
-        let response = match self.req.version() {
-            Version::HTTP_10 | Version::HTTP_11 => Self::handshake_h1(self.req, stream).await?,
-            Version::HTTP_2 => Self::handshake_h2(self.req, stream).await?,
-            version => return Err(HttpProxyError::InvalidVersion(version)),
-        };
-
-        match response.status() {
-            status if status.is_success() => upgrade::handle_upgrade(&response)
-                .await
-                .map(|upgraded| {
-                    let (parts, _) = response.into_parts();
-                    (parts.headers, upgraded)
-                })
-                .map_err(|err| HttpProxyError::Transport(BoxError::from(err))),
-            StatusCode::PROXY_AUTHENTICATION_REQUIRED => Err(HttpProxyError::AuthRequired),
-            StatusCode::SERVICE_UNAVAILABLE => Err(HttpProxyError::Unavailable),
-            StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT => {
-                Err(HttpProxyError::UpstreamFailure(response.status()))
-            }
-            status => Err(HttpProxyError::Rejected(status)),
-        }
-    }
-
-    async fn handshake_h1<S: Io + ExtensionsRef + Unpin>(
-        req: Request,
-        stream: S,
-    ) -> Result<Response<Incoming>, HttpProxyError> {
-        let (mut tx, conn) = http1::Builder::default()
-            .with_ignore_invalid_headers(true)
-            .handshake(stream)
+/// Turn the proxy's answer to [`connect_request`] into the tunnel it promised.
+pub(super) async fn upgrade_connect_response(
+    response: Response,
+) -> Result<(HeaderMap, Upgraded), HttpProxyError> {
+    match response.status() {
+        status if status.is_success() => upgrade::handle_upgrade(&response)
             .await
-            .map_err(|err| HttpProxyError::Transport(err.into()))?;
-
-        rama_core::rt::spawn(async move {
-            if let Err(err) = conn.with_upgrades().await {
-                tracing::debug!("http upgrade proxy client conn failed: {err:?}");
-            }
-        });
-
-        tx.send_request(req)
-            .await
-            .map_err(|err| HttpProxyError::Transport(BoxError::from(err)))
-    }
-
-    async fn handshake_h2<S: Io + ExtensionsRef + Unpin>(
-        req: Request,
-        stream: S,
-    ) -> Result<Response<Incoming>, HttpProxyError> {
-        let (mut tx, conn) = http2::Builder::new(WeakScope::detached())
-            .handshake(stream)
-            .await
-            .map_err(|err| HttpProxyError::Transport(err.into()))?;
-
-        rama_core::rt::spawn(async move {
-            if let Err(err) = conn.await {
-                tracing::debug!("http2 proxy client conn failed: {err:?}");
-            }
-        });
-
-        tx.send_request(req)
-            .await
-            .map_err(|err| HttpProxyError::Transport(BoxError::from(err)))
+            .map(|upgraded| {
+                let (parts, _) = response.into_parts();
+                (parts.headers, upgraded)
+            })
+            .map_err(HttpProxyError::Transport),
+        StatusCode::PROXY_AUTHENTICATION_REQUIRED => Err(HttpProxyError::AuthRequired),
+        StatusCode::SERVICE_UNAVAILABLE => Err(HttpProxyError::Unavailable),
+        StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT => {
+            Err(HttpProxyError::UpstreamFailure(response.status()))
+        }
+        status => Err(HttpProxyError::Rejected(status)),
     }
 }

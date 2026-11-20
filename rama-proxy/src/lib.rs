@@ -61,6 +61,15 @@
 //! singular and plural decisions by insertion order before route-aware
 //! middleware runs.
 //!
+//! ## Proxy protocols
+//!
+//! A [`Proxy`] record names every [`ProxyProtocol`] the proxy speaks, each with
+//! one way to reach the proxy and one kind of tunnel: TCP, or UDP for `socks5+udp`
+//! and CONNECT-UDP. The layer turns a selected record plus the requested transport
+//! into one [`ProxyAddress`] with one of them.
+//!
+//! [`ProxyAddress`]: rama_net::address::ProxyAddress
+//! [`ProxyProtocol`]: rama_net::address::ProxyProtocol
 //! [`ProxyRoute`]: rama_net::client::ProxyRoute
 //! [`ProxyRoutes`]: rama_net::client::ProxyRoutes
 //! [`ProxyRoutesLayer`]: rama_net::client::ProxyRoutesLayer
@@ -72,7 +81,7 @@
 //! ```rust
 //! use rama_http_types::{Body, Version, Request};
 //! use rama_proxy::{
-//!      Proxy,
+//!      Proxy, ProxyProtocols, ProxyType,
 //!      ProxyDBLayer, ProxyFilterMode,
 //!      ProxyFilter,
 //! };
@@ -83,6 +92,8 @@
 //!    extensions::{ExtensionsRef},
 //!    Service, Layer,
 //! };
+//! use rama_net::address::ProxyProtocol;
+//! use rama_net::transport::TransportProtocol;
 //! use rama_net::client::ProxyRoute;
 //! use rama_utils::str::non_empty_str;
 //! use std::{convert::Infallible, sync::Arc};
@@ -93,16 +104,16 @@
 //!     let db = MemoryProxyDB::try_from_iter([
 //!         Proxy {
 //!             id: non_empty_str!("42"),
-//!             address: "12.34.12.34:8080".try_into().unwrap(),
-//!             tcp: true,
-//!             udp: true,
-//!             http: true,
-//!             https: false,
-//!             socks5: true,
-//!             socks5h: false,
-//!             datacenter: false,
-//!             residential: true,
-//!             mobile: true,
+//!             address: "12.34.12.34:8080".parse().unwrap(),
+//!             credential: None,
+//!             protocols: ProxyProtocols::from([
+//!                 ProxyProtocol::HTTP,
+//!                 ProxyProtocol::Socks5 {
+//!                     remote_dns: false,
+//!                     transport: Some(TransportProtocol::Udp),
+//!                 },
+//!             ]),
+//!             kind: ProxyType::Mobile,
 //!             pool_id: None,
 //!             continent: Some("*".into()),
 //!             country: Some("*".into()),
@@ -113,16 +124,10 @@
 //!         },
 //!         Proxy {
 //!             id: non_empty_str!("100"),
-//!             address: "123.123.123.123:8080".try_into().unwrap(),
-//!             tcp: true,
-//!             udp: false,
-//!             http: true,
-//!             https: false,
-//!             socks5: false,
-//!             socks5h: false,
-//!             datacenter: true,
-//!             residential: false,
-//!             mobile: false,
+//!             address: "123.123.123.123:8080".parse().unwrap(),
+//!             credential: None,
+//!             protocols: ProxyProtocols::from([ProxyProtocol::HTTP]),
+//!             kind: ProxyType::Datacenter,
 //!             pool_id: None,
 //!             continent: None,
 //!             country: Some("US".into()),
@@ -153,8 +158,7 @@
 //!
 //!     req.extensions().insert(ProxyFilter {
 //!         country: Some(vec!["BE".into()]),
-//!         mobile: Some(true),
-//!         residential: Some(true),
+//!         kind: Some(vec![ProxyType::Mobile]),
 //!         ..Default::default()
 //!     });
 //!
@@ -183,7 +187,7 @@
 //! ```rust
 //! use rama_http_types::{Body, Version, Request};
 //! use rama_proxy::{
-//!    Proxy,
+//!    Proxy, ProxyProtocols, ProxyType,
 //!    ProxyDBLayer, ProxyFilterMode,
 //!    ProxyFilter,
 //! };
@@ -192,7 +196,10 @@
 //!    extensions::{ExtensionsRef},
 //!    Service, Layer,
 //! };
+//! use rama_net::address::ProxyProtocol;
+//! use rama_net::transport::TransportProtocol;
 //! use rama_net::client::ProxyRoute;
+//! use rama_net::user::credentials::basic;
 //! use rama_utils::str::non_empty_str;
 //! use std::{convert::Infallible, sync::Arc};
 //!
@@ -200,16 +207,16 @@
 //! async fn main() {
 //!     let proxy = Proxy {
 //!         id: non_empty_str!("1"),
-//!         address: "john:secret@proxy.example.com:60000".try_into().unwrap(),
-//!         tcp: true,
-//!         udp: true,
-//!         http: true,
-//!         https: false,
-//!         socks5: true,
-//!         socks5h: false,
-//!         datacenter: false,
-//!         residential: true,
-//!         mobile: false,
+//!         address: "proxy.example.com:60000".parse().unwrap(),
+//!         credential: Some(basic!("john", "secret").into()),
+//!         protocols: ProxyProtocols::from([
+//!             ProxyProtocol::HTTP,
+//!             ProxyProtocol::Socks5 {
+//!                 remote_dns: false,
+//!                 transport: Some(TransportProtocol::Udp),
+//!             },
+//!         ]),
+//!         kind: ProxyType::Residential,
 //!         pool_id: None,
 //!         continent: Some("*".into()),
 //!         country: Some("*".into()),
@@ -252,7 +259,7 @@
 //!         .unwrap();
 //!     req.extensions().insert(ProxyFilter {
 //!         country: Some(vec!["BE".into()]),
-//!         residential: Some(true),
+//!         kind: Some(vec![ProxyType::Residential]),
 //!         ..Default::default()
 //!     });
 //!     let output = service.serve(req).await.unwrap();
@@ -262,7 +269,7 @@
 //!         .and_then(ProxyRoute::proxy_address)
 //!         .unwrap();
 //!     assert_eq!(
-//!         "socks5://john-country-be:secret@proxy.example.com:60000",
+//!         "socks5+udp://john-country-be:secret@proxy.example.com:60000",
 //!         proxy_address.to_string()
 //!     );
 //! }
@@ -285,7 +292,8 @@ mod proxydb;
 
 #[doc(inline)]
 pub use proxydb::{
-    Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyID, ProxyQueryPredicate, StringFilter,
+    Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyID, ProxyProtocols, ProxyQueryPredicate,
+    ProxyType, StringFilter,
 };
 
 #[doc(inline)]

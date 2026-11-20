@@ -180,8 +180,8 @@ async fn proxy_route_its_endpoints_do_not_establish_is_refused() {
     let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let proxy: ProxyAddress = "masque://proxy.example:443".parse().unwrap();
-    let other: ProxyAddress = "masque://other.example:443".parse().unwrap();
+    let proxy: ProxyAddress = "h3+udp://proxy.example:443".parse().unwrap();
+    let other: ProxyAddress = "h3+udp://other.example:443".parse().unwrap();
     for (route, peer) in [
         (None, true),
         (Some(EstablishedProxyRoute::Direct), true),
@@ -280,4 +280,46 @@ mod out_of_band {
         .await
         .unwrap();
     }
+}
+
+#[test]
+fn a_nested_leg_takes_its_tls_config_from_the_connector() {
+    use rama_core::extensions::NoExtensionsTransfer;
+    use rama_net::tls::TlsAlpn;
+    use rama_tls::client::{ServerVerifyMode, TlsServerName, TlsServerTrust, TlsServerVerify};
+
+    let identity = identity();
+    let quic = connector((), &identity);
+
+    let origin = Extensions::new();
+    TlsClientConfig::new()
+        .with_alpn_http_1()
+        .with_server_name(Domain::from_static("origin.example").into())
+        .with_server_verify(ServerVerifyMode::Disable)
+        .write_to(&origin);
+
+    let leg = ConnectRequest::new_with_extensions(
+        HostWithPort::localhost_domain_with_port(443),
+        origin.fork_connection(&NoExtensionsTransfer),
+    );
+    let tls = quic.tls_config_for(&leg);
+    let effective = tls.as_extensions();
+
+    assert_eq!(
+        effective.get_ref::<TlsAlpn>().map(|alpn| alpn.0.as_slice()),
+        Some([ApplicationProtocol::from(b"rama-quic-test".as_slice())].as_slice()),
+        "the origin's ALPN is not the proxy connection's",
+    );
+    assert!(
+        effective.get_ref::<TlsServerName>().is_none(),
+        "the origin's server name is not the proxy connection's",
+    );
+    assert!(
+        effective.get_ref::<TlsServerVerify>().is_none(),
+        "the origin's verify mode is not the proxy connection's",
+    );
+    assert!(
+        effective.contains::<TlsServerTrust>(),
+        "the connector's own trust anchors still apply",
+    );
 }

@@ -79,13 +79,12 @@ where
         tls_config.set_server_name(domain.into());
     }
 
-    let inner_client = EasyHttpWebClient::connector_builder()
+    let inner_client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
 

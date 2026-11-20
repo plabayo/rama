@@ -23,7 +23,7 @@ use rama_tls::client::{EchRetryConfig, TlsPoolComponent};
 /// ClientHello. TLS 1.3 and [`rama_tls::client::TlsClientConfig::set_encrypted_client_hello`] must
 /// also be enabled. A usable real ECH configuration takes precedence.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub enum EchGrease {
     /// Use the provider's randomized lengths and hardware-dependent algorithms.
     /// Explicitly selecting this also overrides a shape inherited from a base config.
