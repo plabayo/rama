@@ -41,10 +41,13 @@ impl Default for NativeTrustPolicy {
 
 /// Settings for the platform verifier used by [`ServerTrustSource::Platform`].
 ///
+/// On targets with an OS verifier, the verifier evaluates system trust and
+/// prepares any additional anchors supplied through [`TlsServerTrust`].
 /// If the platform has no operating system verifier, the policy uses native
 /// roots. With the `native-certs` feature, [`TlsServerTrust`] can configure
 /// refresh triggers and an age limit for that fallback.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct PlatformTrustPolicy {
     #[cfg(all(
         feature = "native-certs",
