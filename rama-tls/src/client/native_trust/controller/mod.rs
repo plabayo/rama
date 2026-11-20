@@ -1,10 +1,6 @@
-use arc_swap::ArcSwapOption;
+use arc_swap::ArcSwap;
 use parking_lot::Mutex;
-use rama_core::{
-    error::{BoxError, BoxErrorExt as _},
-    futures::stream::BoxStream,
-    telemetry::tracing::warn,
-};
+use rama_core::{error::BoxError, futures::stream::BoxStream, telemetry::tracing::warn};
 use rama_crypto::{
     native_certs::{load_reloadable_extra_certs, load_reloadable_native_certs},
     pki_types::CertificateDer,
@@ -34,6 +30,9 @@ pub(in crate::client) enum NativeTrustScope {
 #[derive(Clone)]
 pub(in crate::client) struct NativeTrustReload(Arc<ReloadController>);
 
+const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
+
 struct ReloadController {
     // A pool key can outlive this controller. Its identity must survive
     // reuse of the allocation's address.
@@ -41,8 +40,7 @@ struct ReloadController {
     scope: NativeTrustScope,
     wake: Arc<TriggerWake>,
     has_trigger: bool,
-    failed: AtomicBool,
-    current: ArcSwapOption<CheckedSnapshot>,
+    published: ArcSwap<PublishedTrust>,
     reload: Mutex<ReloadState>,
 }
 
@@ -58,6 +56,36 @@ impl Wake for TriggerWake {
     }
 }
 
+#[derive(Default)]
+struct PublishedTrust {
+    current: Option<CheckedSnapshot>,
+    failure: Option<RefreshFailure>,
+}
+
+struct RefreshFailure {
+    retry_at: Instant,
+    error: Arc<dyn Error + Send + Sync>,
+}
+
+impl PublishedTrust {
+    fn ready(&self, max_age: Option<Duration>) -> Option<Result<NativeTrustSnapshot, BoxError>> {
+        match &self.failure {
+            Some(failure) if Instant::now() < failure.retry_at => Some(cached_after_failure(
+                self.current.as_ref(),
+                max_age,
+                &failure.error,
+            )),
+            Some(_) => None,
+            None => self
+                .current
+                .as_ref()
+                .filter(|current| current.is_fresh(max_age))
+                .map(|current| Ok(current.snapshot.clone())),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct CheckedSnapshot {
     snapshot: NativeTrustSnapshot,
     checked_at: Instant,
@@ -73,7 +101,7 @@ struct ReloadState {
     trigger: Option<BoxStream<'static, ()>>,
     pending: bool,
     allow_bundled_fallback: bool,
-    failure: Option<(Instant, Arc<dyn Error + Send + Sync>)>,
+    retry_delay: Duration,
     flight: Option<Arc<RefreshFlight>>,
 }
 
@@ -112,7 +140,7 @@ fn cached_after_failure(
 
 enum PinAction {
     Ready(Result<NativeTrustSnapshot, BoxError>),
-    Wait(Arc<RefreshFlight>, Option<Arc<CheckedSnapshot>>),
+    Wait(Arc<RefreshFlight>, Option<CheckedSnapshot>),
     Refresh(RefreshJob),
 }
 
@@ -122,7 +150,7 @@ struct RefreshJob {
     // The channel carries no messages. Dropping this sender wakes every
     // waiter after the job publishes its result or is cancelled.
     _completion: flume::Sender<Infallible>,
-    current: Option<Arc<CheckedSnapshot>>,
+    current: Option<CheckedSnapshot>,
     allow_bundled_fallback: bool,
 }
 
@@ -155,25 +183,33 @@ impl RefreshJob {
         let mut state = self.reload.0.reload.lock();
         let result = match loaded {
             Ok((snapshot, used_bundled_fallback)) => {
-                self.reload.0.current.store(Some(Arc::new(CheckedSnapshot {
-                    snapshot: snapshot.clone(),
-                    checked_at: Instant::now(),
-                })));
+                self.reload.0.published.store(Arc::new(PublishedTrust {
+                    current: Some(CheckedSnapshot {
+                        snapshot: snapshot.clone(),
+                        checked_at: Instant::now(),
+                    }),
+                    failure: None,
+                }));
                 state.allow_bundled_fallback = used_bundled_fallback;
-                state.failure = None;
-                self.reload.0.failed.store(false, Ordering::Relaxed);
+                state.retry_delay = INITIAL_RETRY_DELAY;
                 Ok(snapshot)
             }
             Err(error) => {
                 let error: Arc<dyn Error + Send + Sync> = Arc::from(error);
-                state.failure = Some((Instant::now(), error.clone()));
-                self.reload.0.failed.store(true, Ordering::Relaxed);
+                self.reload.0.published.store(Arc::new(PublishedTrust {
+                    current: self.current.clone(),
+                    failure: Some(RefreshFailure {
+                        retry_at: Instant::now() + state.retry_delay,
+                        error: error.clone(),
+                    }),
+                }));
+                state.retry_delay = (state.retry_delay * 2).min(MAX_RETRY_DELAY);
                 Err(error)
             }
         };
         let pinned = match &result {
             Ok(snapshot) => Ok(snapshot.clone()),
-            Err(error) => cached_after_failure(self.current.as_deref(), max_age, error),
+            Err(error) => cached_after_failure(self.current.as_ref(), max_age, error),
         };
         let published = self.flight.result.set(result);
         debug_assert!(published.is_ok());
@@ -204,13 +240,12 @@ impl NativeTrustReload {
             scope,
             wake: Arc::new(TriggerWake(AtomicBool::new(trigger.is_some()))),
             has_trigger: trigger.is_some(),
-            failed: AtomicBool::new(false),
-            current: ArcSwapOption::empty(),
+            published: ArcSwap::from_pointee(PublishedTrust::default()),
             reload: Mutex::new(ReloadState {
                 trigger,
                 pending: false,
                 allow_bundled_fallback: true,
-                failure: None,
+                retry_delay: INITIAL_RETRY_DELAY,
                 flight: None,
             }),
         }))
@@ -237,7 +272,7 @@ impl NativeTrustReload {
                 PinAction::Ready(result) => return result,
                 PinAction::Wait(flight, current) => {
                     let _closed = flight.completion.recv();
-                    if let Some(result) = flight.result(current.as_deref(), max_age) {
+                    if let Some(result) = flight.result(current.as_ref(), max_age) {
                         return result;
                     }
                 }
@@ -263,7 +298,7 @@ impl NativeTrustReload {
                 PinAction::Ready(result) => return result,
                 PinAction::Wait(flight, current) => {
                     let _closed = flight.completion.recv_async().await;
-                    if let Some(result) = flight.result(current.as_deref(), max_age) {
+                    if let Some(result) = flight.result(current.as_ref(), max_age) {
                         return result;
                     }
                 }
@@ -284,72 +319,62 @@ impl NativeTrustReload {
     }
 
     fn prepare_pin(&self, max_age: Option<Duration>) -> PinAction {
-        // An unchanged, fresh snapshot can be pinned without locking or polling.
+        // A fresh snapshot or a retry in backoff can be handled without locking.
         if !self.0.wake.0.load(Ordering::Acquire)
-            && !self.0.failed.load(Ordering::Relaxed)
-            && let Some(current) = self.0.current.load().as_ref()
-            && current.is_fresh(max_age)
+            && let Some(result) = self.0.published.load().ready(max_age)
         {
-            return PinAction::Ready(Ok(current.snapshot.clone()));
+            return PinAction::Ready(result);
         }
 
         let mut state = self.0.reload.lock();
-        let current = self.0.current.load_full();
+        let published = self.0.published.load();
+        let current = &published.current;
         if let Some(flight) = &state.flight {
             // Established roots remain usable during a concurrent refresh
             // unless this handshake requires a newer snapshot.
-            return match &current {
+            return match current {
                 Some(current) if current.is_fresh(max_age) => {
                     PinAction::Ready(Ok(current.snapshot.clone()))
                 }
-                _ => PinAction::Wait(flight.clone(), current),
+                _ => PinAction::Wait(flight.clone(), current.clone()),
             };
         }
 
         if self.0.wake.0.swap(false, Ordering::AcqRel) {
             state.poll_trigger(&self.0.wake);
         }
-        if state.should_refresh(current.as_deref(), max_age) {
-            let (completion_sender, completion) = flume::bounded(0);
-            let flight = Arc::new(RefreshFlight {
-                completion,
-                result: OnceLock::new(),
-            });
-            state.pending = false;
-            state.flight = Some(flight.clone());
-            return PinAction::Refresh(RefreshJob {
-                reload: self.clone(),
-                flight,
-                _completion: completion_sender,
-                current,
-                allow_bundled_fallback: state.allow_bundled_fallback,
-            });
+        if !state.pending
+            && let Some(result) = published.ready(max_age)
+        {
+            return PinAction::Ready(result);
         }
 
-        PinAction::Ready(if let Some((_, error)) = &state.failure {
-            cached_after_failure(current.as_deref(), max_age, error)
-        } else {
-            current
-                .map(|checked| checked.snapshot.clone())
-                .ok_or_else(|| {
-                    BoxError::from_static_str("native TLS trust anchors were not initialized")
-                })
+        // Once a retry starts, callers who need fresh roots must join its
+        // flight rather than receive the previous error during backoff.
+        if published.failure.is_some() {
+            self.0.published.store(Arc::new(PublishedTrust {
+                current: current.clone(),
+                failure: None,
+            }));
+        }
+        let (completion_sender, completion) = flume::bounded(0);
+        let flight = Arc::new(RefreshFlight {
+            completion,
+            result: OnceLock::new(),
+        });
+        state.pending = false;
+        state.flight = Some(flight.clone());
+        PinAction::Refresh(RefreshJob {
+            reload: self.clone(),
+            flight,
+            _completion: completion_sender,
+            current: current.clone(),
+            allow_bundled_fallback: state.allow_bundled_fallback,
         })
     }
 }
 
 impl ReloadState {
-    fn should_refresh(&self, current: Option<&CheckedSnapshot>, max_age: Option<Duration>) -> bool {
-        // A fresh notification bypasses backoff. Otherwise retry a failed read
-        // after a delay even if its change notification was consumed.
-        const RETRY_DELAY: Duration = Duration::from_secs(1);
-        self.pending
-            || match self.failure {
-                Some((failed_at, _)) => failed_at.elapsed() >= RETRY_DELAY,
-                None => current.is_none_or(|snapshot| !snapshot.is_fresh(max_age)),
-            }
-    }
-
     fn poll_trigger(&mut self, wake: &Arc<TriggerWake>) {
         let Some(trigger) = &mut self.trigger else {
             return;
@@ -360,7 +385,10 @@ impl ReloadState {
         // ready input must never keep a handshake in this loop.
         for _ in 0..32 {
             match trigger.as_mut().poll_next(&mut cx) {
-                Poll::Ready(Some(())) => self.pending = true,
+                Poll::Ready(Some(())) => {
+                    self.pending = true;
+                    self.retry_delay = INITIAL_RETRY_DELAY;
+                }
                 Poll::Pending => return,
                 Poll::Ready(None) => {
                     self.trigger = None;

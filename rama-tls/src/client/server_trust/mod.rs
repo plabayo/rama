@@ -16,6 +16,10 @@ mod native;
 ///
 /// The default uses a static snapshot. With the `native-certs` feature,
 /// this policy supports refresh triggers and an age limit.
+///
+/// Configure this policy once and clone it so callers share its reload state
+/// and can reuse pooled connections. Refreshes apply to new handshakes.
+/// Established pooled connections can continue serving requests until they close.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NativeTrustPolicy {
     #[cfg(feature = "native-certs")]
@@ -46,6 +50,10 @@ impl Default for NativeTrustPolicy {
 /// only extra anchors supplied through `SSL_CERT_EXTRA_FILE` and
 /// `SSL_CERT_EXTRA_DIR`. On other targets a reload policy refreshes the full
 /// native root store, including its environment configuration.
+///
+/// Configure this policy once and clone it so callers share its reload state
+/// and can reuse pooled connections. Refreshes apply to new handshakes.
+/// Established pooled connections can continue serving requests until they close.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct PlatformTrustPolicy {

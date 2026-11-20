@@ -64,9 +64,84 @@ fn refresh_retries_without_another_request_and_preserves_equal_generations() {
         .unwrap_err();
     assert!(stale.is::<NativeTrustRefreshError>());
 
-    reload.0.reload.lock().failure.as_mut().unwrap().0 -= Duration::from_secs(2);
+    set_retry_at(&reload, Instant::now());
     let retried = reload.pin_with(None, load).unwrap();
     assert_eq!(original, retried);
+}
+
+fn set_retry_at(reload: &NativeTrustReload, retry_at: Instant) {
+    let published = reload.0.published.load();
+    let failure = published.failure.as_ref().unwrap();
+    reload.0.published.store(Arc::new(PublishedTrust {
+        current: published.current.clone(),
+        failure: Some(RefreshFailure {
+            retry_at,
+            error: failure.error.clone(),
+        }),
+    }));
+}
+
+#[test]
+fn retry_backoff_grows_to_a_cap_and_resets_after_trigger_or_success() {
+    use std::cell::Cell;
+
+    let (sender, trigger) = ChannelReloadTrigger::new();
+    let reload = NativeTrustReload::new(NativeTrustScope::Full, Some(Box::pin(trigger)));
+    let reads = Cell::new(0);
+    let fail = |_| {
+        reads.set(reads.get() + 1);
+        Err(std::io::Error::from(std::io::ErrorKind::InvalidData).into())
+    };
+    let assert_failed_read = |delay| {
+        let started = Instant::now();
+        assert!(
+            reload
+                .pin_with(None, fail)
+                .unwrap_err()
+                .is::<NativeTrustRefreshError>()
+        );
+        let published = reload.0.published.load();
+        let retry_at = published.failure.as_ref().unwrap().retry_at;
+        assert!(retry_at >= started + delay);
+        assert!(retry_at <= Instant::now() + delay);
+    };
+
+    for (attempt, delay) in [1, 2, 4, 8, 16, 32, 60, 60].into_iter().enumerate() {
+        assert_failed_read(Duration::from_secs(delay));
+        // Simulate repeated handshakes before the scheduled retry.
+        set_retry_at(&reload, Instant::now() + MAX_RETRY_DELAY);
+        for _ in 0..8 {
+            assert!(
+                reload
+                    .pin_with(None, fail)
+                    .unwrap_err()
+                    .is::<NativeTrustRefreshError>()
+            );
+        }
+        assert_eq!(reads.get(), attempt + 1);
+
+        if attempt < 7 {
+            set_retry_at(&reload, Instant::now());
+        }
+    }
+
+    // A real trigger bypasses the deadline and restarts the backoff sequence.
+    sender.request_reload().unwrap();
+    assert_failed_read(INITIAL_RETRY_DELAY);
+    assert_eq!(reads.get(), 9);
+
+    set_retry_at(&reload, Instant::now());
+    reload
+        .pin_with(None, |_| Ok((bundled_root_certs()[..1].to_vec(), false)))
+        .unwrap();
+    assert!(reload.0.published.load().failure.is_none());
+    let started = Instant::now();
+    let snapshot = reload.pin_with(Some(Duration::ZERO), fail).unwrap_err();
+    assert!(snapshot.is::<NativeTrustRefreshError>());
+    let retry_at = reload.0.published.load().failure.as_ref().unwrap().retry_at;
+    assert!(retry_at >= started + INITIAL_RETRY_DELAY);
+    assert!(retry_at <= Instant::now() + INITIAL_RETRY_DELAY);
+    assert_eq!(reads.get(), 10);
 }
 
 #[test]
