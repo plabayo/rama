@@ -12,7 +12,10 @@ use std::{
 };
 
 use common::*;
-use interop_common::{keys::ask_when_ready, support::Deadline};
+use interop_common::{
+    keys::{ask_when_ready, ensure_updated_keys},
+    support::Deadline,
+};
 use rama::{extensions::ExtensionsRef as _, quic::NegotiatedTlsParameters};
 use rama::{
     net::tls::ApplicationProtocol,
@@ -157,7 +160,7 @@ async fn a_key_update_does_not_disturb_the_traffic_around_it() {
     // Both stacks start with a small random first key-phase budget. Retire that phase
     // before measuring: the first payload below carries this warm-up update to Quinn,
     // so both peers have their normal confidentiality-limit budgets at the baseline.
-    ask_when_ready("settle the initial key phase", Deadline::of(LIMIT), &conn).await;
+    ensure_updated_keys("settle the initial key phase", Deadline::of(LIMIT), &conn).await;
 
     let mut first = step("a stream before the update", conn.open_uni())
         .await

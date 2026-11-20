@@ -1,6 +1,11 @@
 # cargo test and nextest select the same tests: harness-only targets have `test = false` in
 # their manifests and heavy tests are `#[ignore]`d. This file only tunes how CI schedules them.
 
+# Nested Cargo builds share the trybuild target directory. Queue these tests before
+# their timeout starts so waiting for a build lock cannot consume that budget.
+[test-groups.trybuild]
+max-threads = 1
+
 [profile.ci]
 fail-fast = false
 failure-output = "immediate-final"
@@ -30,5 +35,7 @@ filter = """
 | (package(rama-macros) & binary(compiletest))
 | (package(rama-core) & binary(derive_extensions_ref))
 | (package(rama-utils) & binary(include_dir_no_compile))
+| (package(rama-utils) & binary(nonzero) & test(=nonzero_rejects_zero_and_runtime_values))
 """
 slow-timeout = { period = "60s", terminate-after = 20 }
+test-group = "trybuild"

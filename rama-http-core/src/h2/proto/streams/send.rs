@@ -88,6 +88,16 @@ impl Send {
     }
 
     fn check_headers(fields: &rama_http_types::HeaderMap) -> Result<(), UserError> {
+        // RFC 9113 Section 8.2.1: a field value must not contain NUL, CR or LF,
+        // or start or end with SP or HTAB. Checked constructors allow outer
+        // whitespace for HTTP/1, so validate again at the HTTP/2 boundary.
+        if fields.ordered_iter().any(|(_, value)| {
+            !rama_http_types::header::is_valid_h2_h3_field_value(value.as_bytes())
+        }) {
+            tracing::debug!("invalid HTTP/2 header field value found");
+            return Err(UserError::MalformedHeaders);
+        }
+
         // RFC 9113 Section 8.2.2: Connection-Specific Header Fields.
         if rama_http_types::header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS
             .into_iter()
