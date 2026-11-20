@@ -51,9 +51,10 @@ build high-performance proxies, all on a composable
 [Tokio](https://tokio.rs/)-native foundation.
 
 Rama is used in production for network security, data extraction, API gateways,
-routing, and other networked systems. Commercial support and partner offerings
-are available at [ramaproxy.com](https://ramaproxy.com).
+routing, and other networked systems.
 
+> [!NOTE]
+>
 > This framework is developed and maintained by [Plabayo](https://plabayo.tech),
 > a European software studio based in Gent, Belgium, focused on building resilient,
 > interoperable, and secure digital infrastructure.
@@ -70,127 +71,123 @@ are available at [ramaproxy.com](https://ramaproxy.com).
   </picture>
 </p>
 
-## Start here
+## How the pieces fit together
 
-The book explains the ideas, the examples show working stacks, and the Rust docs
-are the API reference.
+Start with a service that does one job. Wrap it in a layer to add behavior, or
+connect it to another service. The same model works across network layers and
+protocols, so you can start with built-in pieces and add your own Rust code
+where you need it.
 
-| If you want to... | Go here |
-|---|---|
-| Understand why Rama exists | [Why Rama](https://ramaproxy.org/book/why_rama.html) |
-| Learn the core model | [Intro to Rama](https://ramaproxy.org/book/intro.html) |
-| Run working code | [Examples](https://github.com/plabayo/rama/tree/main/examples) |
-| Build a proxy | [Intro to proxies](https://ramaproxy.org/book/proxies/intro.html) and [proxy examples](https://github.com/plabayo/rama/tree/main/examples#proxies) |
-| Operate advanced proxy stacks | [Operate Proxies](https://ramaproxy.org/book/proxies/operate/intro.html) |
-| Build an HTTP service | [Web servers](https://ramaproxy.org/book/web_servers.html) and [HTTP service examples](https://github.com/plabayo/rama/tree/main/examples#http-servers-and-services) |
-| Build an HTTP client | [HTTP clients](https://ramaproxy.org/book/http/http_clients.html) and [`http_high_level_client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_high_level_client.rs) |
-| Use Rama from the terminal | [`rama` CLI](https://ramaproxy.org/book/deploy/rama-cli.html) |
-| Look up APIs | [docs.rs](https://docs.rs/rama) or [edge docs](https://ramaproxy.org/docs/rama) |
-| Learn by reading | [Rama 101 blog series](https://plabayo.tech/blog/rama-101-1-https-clients-and-abstractions) and [all Rama articles](https://plabayo.tech/blog?tag=Rama) |
-| Learn by listening | [Netstack.FM](https://netstack.fm) episodes: [welcome to Netstack.FM](https://netstack.fm/episodes/welcome-to-netstack-fm), [building and testing network stacks with Rama](https://netstack.fm/episodes/building-and-testing-network-stacks-with-rama), [MITM proxies and transparent L4 interception](https://netstack.fm/episodes/protocol-shorts-mitm-proxies-and-transparent-l4-interception), [dial9](https://netstack.fm/episodes/dial9-from-black-box-to-insight-in-tokio), [gRPC](https://netstack.fm/episodes/grpc-with-lucio-franco) |
-| Get commercial support | [ramaproxy.com](https://ramaproxy.com) |
+The map and tables below give you an overview. To get a feel for building with
+Rama, browse the [examples](./examples/README.md), run one close to what you
+want to build, and make it your own. Try swapping a connector or writing a layer
+in Rust.
+The [Rama Book](https://ramaproxy.org/book/intro.html) explains how the pieces
+compose, and the [edge API docs](https://ramaproxy.org/docs/rama) cover the code
+you’re working with on `main`.
 
-## What can you build?
+The [`rama` CLI](https://ramaproxy.org/book/deploy/rama-cli.html) lets you run ready-made stacks from the terminal.
+Try `rama serve proxy --mitm` to start a proxy with a traffic inspection UI.
+Alongside the examples, the [CLI source](./rama-cli/src/cmd/) shows how a full
+application composes Rama services into clients, servers, proxies and diagnostic tools.
 
-Rama is built for programmable network services: software that accepts, opens,
-inspects, transforms, routes, proxies, or generates network traffic.
+A client can connect straight to a server. Add a proxy, a gateway, or both when
+traffic needs an intermediate hop. The server can answer on its own or delegate
+some or all requests to an application backend.
 
-| Area | Capabilities and building blocks |
-|---|---|
-| Proxies | [reverse proxies](https://ramaproxy.org/book/proxies/reverse.html), [TLS termination proxies](https://ramaproxy.org/book/proxies/tls.html), [HTTP(S) proxies](https://ramaproxy.org/book/proxies/http.html), [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5.html), [MASQUE (CONNECT-UDP, CONNECT-IP) proxies](https://ramaproxy.org/book/proxies/masque.html), [SNI proxies](https://ramaproxy.org/book/proxies/sni.html), [MITM proxies](https://ramaproxy.org/book/proxies/mitm.html), [transparent proxies](https://ramaproxy.org/book/proxies/transparent.html), [distortion proxies](https://ramaproxy.org/book/proxies/distort.html), [network proxies](https://ramaproxy.org/book/proxies/network.html), [HAProxy PROXY protocol](https://ramaproxy.org/book/proxies/haproxy.html) |
-| [Web applications and APIs](https://ramaproxy.org/book/web_servers.html) | [path and matcher routing](https://ramaproxy.org/docs/rama/http/service/web/index.html), [async handlers](https://ramaproxy.org/docs/rama/http/service/web/trait.EndpointServiceFn.html) with [typed request extractors and shared state](https://ramaproxy.org/docs/rama/http/service/web/extract/index.html), [typed HTML, JSON, and streaming responses](https://ramaproxy.org/docs/rama/http/service/web/response/index.html), [forms and streaming file uploads](https://ramaproxy.org/book/http/multipart.html), [static and embedded assets](https://ramaproxy.org/docs/rama/http/service/fs/index.html), and [authentication, CSRF, CORS, compression, timeouts, tracing, and other middleware](https://ramaproxy.org/docs/rama/http/layer/index.html) |
-| Clients and connector stacks | [async HTTP(S) clients](https://ramaproxy.org/book/http/http_clients.html) for HTTP/1.1, HTTP/2, and HTTP/3 with [Alt-Svc discovery](https://ramaproxy.org/book/http/http_clients.html#alternative-services-and-custom-connectors), [WebSocket clients](https://ramaproxy.org/book/http/ws.html), [gRPC clients](https://ramaproxy.org/book/http/grpc.html), [ttRPC clients](https://ramaproxy.org/book/http/grpc.html#ttrpc-a-sibling-protocol), [FastCGI clients](https://ramaproxy.org/book/gateway/fastcgi.html), [custom connector stacks](https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpConnectorBuilder.html) across transport, DNS, proxy, TLS, and HTTP stages, [custom connection pools and reuse policies](https://ramaproxy.org/docs/rama/net/client/pool/index.html), [request and response middleware](https://ramaproxy.org/docs/rama/http/layer/index.html), [client and proxy HTTP/TLS User-Agent emulation with real-browser profiles](https://ramaproxy.org/book/intro/user_agent_emulation.html), [custom services and layers](https://ramaproxy.org/book/diy.html) |
-| Servers and ingress controls | [HTTP/1.1 and HTTP/2 servers with automatic protocol detection](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.auto), [HTTP/3 servers over QUIC](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.new_http3), [WebSocket servers](https://ramaproxy.org/book/http/ws.html), [SSE and Datastar streams](https://ramaproxy.org/book/http/sse.html), [gRPC servers](https://ramaproxy.org/book/http/grpc.html), [ttRPC servers](https://ramaproxy.org/book/http/grpc.html#ttrpc-a-sibling-protocol), [TCP, UDP, QUIC, and Unix transport stacks](https://ramaproxy.org/book/transport.html), [TLS termination, dynamic certificates, mTLS, and ACME](https://ramaproxy.org/book/proxies/tls.html), [protocol inspection and routing](https://ramaproxy.org/book/proxies/protocol_inspection.html), [User-Agent parsing and classification](https://ramaproxy.org/docs/rama/ua/layer/classifier/index.html), [JA3, JA4, and PeetPrint TLS fingerprinting](https://ramaproxy.org/docs/rama/tls/fingerprint/index.html), [JA4H and Akamai HTTP/2 fingerprinting](https://ramaproxy.org/docs/rama/http/fingerprint/index.html), [authentication, CSRF, CORS, rate and body limits, timeouts, and tracing middleware](https://ramaproxy.org/docs/rama/http/layer/index.html) |
-| Application protocols and gateways | [WebSockets](https://ramaproxy.org/book/http/ws.html), [SSE](https://ramaproxy.org/book/http/sse.html), [Datastar](https://ramaproxy.org/docs/rama/http/sse/datastar/index.html), [gRPC](https://ramaproxy.org/book/http/grpc.html), [ttRPC](https://ramaproxy.org/book/http/grpc.html#ttrpc-a-sibling-protocol), [FastCGI](https://ramaproxy.org/book/gateway/fastcgi.html), [RSS and Atom feeds](https://ramaproxy.org/book/http/rss.html) |
-| Proxy routing and discovery | [explicit routes, route plans, and ordered fallback](https://ramaproxy.org/book/intro/service_zen.html), [HTTP(S) and SOCKS5 upstream proxies](https://ramaproxy.org/book/proxies/operate/proxies_and_vpns.html), [MASQUE upstreams for UDP and HTTP/3](https://ramaproxy.org/book/proxies/masque.html), [proxy environment variables and `NO_PROXY`](https://ramaproxy.org/book/proxies/operate/app.html), [system proxy settings on macOS, iOS, Windows and Linux](https://ramaproxy.org/book/proxies/operate/system.html), [PAC fetching, caching, evaluation, generation, and system integration](https://ramaproxy.org/book/proxies/operate/pac.html), [bypass rules](https://ramaproxy.org/docs/rama/net/client/struct.BypassRules.html), [route failure caching](https://ramaproxy.org/docs/rama/net/client/struct.ProxyRouteFailureCache.html) |
-| Content adaptation | [ICAP clients](https://ramaproxy.org/docs/rama/icap/client/index.html), [servers](https://ramaproxy.org/docs/rama/icap/server/index.html), [HTTP adaptation layers](https://ramaproxy.org/docs/rama/icap/http/layer/index.html), and [Preview support](https://ramaproxy.org/docs/rama/icap/proto/struct.Preview.html) |
-| Runtime and interoperability | [async services](https://ramaproxy.org/docs/rama/service/trait.Service.html), optional [blocking adapters](https://ramaproxy.org/docs/rama/rt/blocking/index.html) in front of any async service or client, such as the [HTTP(S) client](https://ramaproxy.org/docs/rama/http/client/type.BlockingHttpWebClient.html) or [WebSocket client](https://ramaproxy.org/docs/rama/http/ws/handshake/client/trait.BlockingHttpClientWebSocketExt.html), [Tower interoperability](https://ramaproxy.org/docs/rama/utils/tower/index.html), [graceful scopes](https://ramaproxy.org/docs/rama/graceful/index.html) |
-| TLS and identity | [Rustls](https://ramaproxy.org/docs/rama/tls/rustls/index.html), [BoringSSL](https://ramaproxy.org/docs/rama/tls/boring/index.html), [TLS termination](https://ramaproxy.org/book/proxies/tls.html), [dynamic certificates](https://ramaproxy.org/book/proxies/reverse.html), [mTLS](https://ramaproxy.org/book/proxies/tls.html), [ACME](https://ramaproxy.org/docs/rama/tls/acme/index.html), [certificate pinning](https://github.com/plabayo/rama/blob/main/examples/src/tls_rustls_cert_pinning.rs) |
-| Traffic inspection | [protocol inspection](https://ramaproxy.org/book/proxies/protocol_inspection.html), [HTTP, WebSocket and TLS capture and interception](https://ramaproxy.org/docs/rama/inspect/index.html), [MITM proxy with a web UI in the `rama` CLI](https://ramaproxy.org/book/deploy/rama-cli.html#mitm-proxy-with-web-ui), [HAR recording and replay](https://ramaproxy.org/book/http/har.html), [curl export](https://ramaproxy.org/docs/rama/http/convert/curl/index.html), [diagnostics](https://ramaproxy.org/docs/rama/telemetry/index.html) |
-| Data processing | [streaming HTML rewriting](https://ramaproxy.org/docs/rama/http/layer/html_rewrite/index.html), [streaming JSON and JSONPath selection and rewriting](https://ramaproxy.org/docs/rama/json/index.html), [JSON-LD responses and extraction](https://ramaproxy.org/docs/rama/http/protocols/json_ld/index.html) |
-| Observability | [tracing and OpenTelemetry](https://ramaproxy.org/book/intro/telemetry.html), [HTTP metrics](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html), [transport metrics](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html), [runtime telemetry](https://ramaproxy.org/book/dial9.html) |
-| Embedded scripting | [JavaScript runtime](https://ramaproxy.org/docs/rama/js/struct.JsRuntime.html), [PAC evaluation](https://ramaproxy.org/docs/rama/js/pac/struct.PacResolver.html) and [generation](https://ramaproxy.org/docs/rama/js/pac/struct.PacGenerator.html) |
-| Lower-level networking | [TCP](https://ramaproxy.org/docs/rama/tcp/index.html), [UDP](https://ramaproxy.org/docs/rama/udp/index.html), [QUIC v1 and v2](https://ramaproxy.org/docs/rama/quic/index.html), [Unix sockets](https://ramaproxy.org/docs/rama/unix/index.html), [DNS](https://ramaproxy.org/book/dns.html), [transport middleware](https://ramaproxy.org/docs/rama/net/stream/layer/index.html), [connection pooling](https://ramaproxy.org/docs/rama/net/client/pool/index.html) |
-| Platform integrations | [Apple Network Extension](https://ramaproxy.org/book/proxies/operate/transparent/macos.html), [Apple XPC](https://ramaproxy.org/book/xpc.html), [Linux tproxy](https://ramaproxy.org/book/proxies/operate/transparent.html#1-linux-tproxy), [Windows WFP](https://ramaproxy.org/book/proxies/operate/transparent/windows.html) |
+An optional platform SDK gives your service another entry point. The OS can
+redirect a flow into your stack before it reaches its original destination.
 
-All clients and servers are async. The blocking APIs are optional adapters on top,
-for when you need to call them from synchronous code.
+![Clients connect directly or through an optional proxy or gateway. Servers can delegate to a backend. A separate OS or SDK path can deliver redirected flows to a Rama service in any role.](./docs/img/rama-network-stack.svg)
 
-For the full capability overview, see the [website feature table](https://ramaproxy.org/#features-table)
-and the [API docs](https://docs.rs/rama). All protocols implemented in rama are made with the
-entire range of clients, servers and proxies in mind.
+### What each part can do
 
-For advanced proxy operation, see the [Operate Proxies](https://ramaproxy.org/book/proxies/operate/intro.html)
-chapters. For Apple transparent proxying, see the
-[Apple transparent proxy example](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy).
+| Role | Building blocks | Guide · Working code |
+| --- | --- | --- |
+| Discovery | [DNS resolution], [load balancing], [system proxy settings] and [environment variables], [PAC], [bypass rules] and [route fallback][PAC client example] | [Proxy discovery guide] · [PAC client example] |
+| Client | [Connection pooling], [retries], [redirects], [Alt-Svc], [upstream proxies] and [browser profiles] | [HTTP client guide] · [Pooled client example] |
+| Proxy | [Forwarding], [tunneling][CONNECT proxy example], [transparent interception], [traffic capture], [HAR replay][HAR replay example] and [ICAP] adaptation | [ICAP guide] · [ICAP example] |
+| Gateway | [SNI routing][SNI routing guide] and [request routing], [TLS termination], [mTLS][mTLS example], [ACME] certificates and [TLS fingerprinting] | [SNI routing guide] · [SNI router example] |
+| Server | [Typed handlers and routing], [static files], [uploads], [streaming responses], [authentication] and [limits] | [Web server guide] · [Router example] |
+| Application backend | [FastCGI] over [TCP] or [Unix sockets] for a [whole application], [selected routes] or a [fallback] | [Gateway guide] · [PHP-FPM examples] |
+| OS / SDK | Receive OS-selected flows through [Apple Network Extension][Apple platform guide] and pass them to a Rama service.<br><br>**Roadmap.** For **Rama 0.6**, we plan to add integrations for [Windows Filtering Platform][WFP guide] and Linux eBPF. | [Platform guide][transparent interception] · [Apple Network Extension example] |
+| Across the stack | Async [services], [layers], [shared state], [blocking adapters] and [Tower interop] | [Service model guide] · [Tower example] |
+| Telemetry | [Tracing] spans, OpenTelemetry metrics for [HTTP] and [transport], and [dial9] recordings of Tokio scheduling and protocol activity.<br><br>**Roadmap.** In **Rama 0.6**, we plan to unify tracing, OpenTelemetry and dial9 behind a shared Rama event system. | [Telemetry guide] · [Local recording example] |
 
-## Core ideas
+### Protocols by OSI layer
 
-- **Services all the way down:** Rama uses the same service model across clients,
-  servers, middleware, and lower network layers.
-- **Explicit stacks:** transports, TLS, protocols, state, and middleware are
-  composed in code, so the path traffic takes stays visible.
-- **Transport-to-HTTP control:** work at the HTTP layer when that is enough, or
-  reach into TCP, UDP, QUIC, TLS, DNS, and connection state when needed.
-- **Modular by design:** use the top-level `rama` crate and compose only the
-  protocol and runtime building blocks you need for an application, library,
-  or framework, with your own services and layers where desired.
-- **Tower interop:** Rama has its own service traits, with compatibility for
-  Tower where that helps.
-- **Blocking boundaries:** expose async stacks to synchronous code through
-  `BlockingService` and `rt::blocking`, without making the stack itself synchronous.
+The OSI model gives us a shared vocabulary for teaching and documenting networks.
+Real protocols often span layers. Here the layers serve as an index into the
+parts of the stack you can work with in Rama.
 
-## Examples
+| OSI layer | Protocols and capabilities | Guide · Working code |
+| --- | --- | --- |
+| 7 · Application | [HTTP/1.1], [HTTP/2] and [HTTP/3], [WebSocket], [SSE], [gRPC], [ttRPC], [FastCGI], [ICAP], [DNS][DNS resolution], [ACME]. Proxying with [HTTP CONNECT], [SOCKS5] and [MASQUE][MASQUE guide]. | [MASQUE guide] · [CONNECT-UDP example] |
+| 6 · Presentation | [TLS handshakes and certificates] with [Rustls] or [BoringSSL]. [Content encoding and compression][compression]. | [TLS guide] · [mTLS example] |
+| 5 · Session | [Connection pooling], [client TLS resumption policy] and [QUIC connection migration]. | [HTTP client guide] · [Pooled client example] |
+| 4 · Transport | [TCP] streams, [UDP] datagrams, [QUIC] v1 and v2 over [UDP]. [Unix sockets] for local transport.<br><br>**Roadmap.** Userspace TCP and UDP stacks are planned for **Rama 0.6**. | [Transport guide] · [QUIC client and server example] |
+| 3 · Network | [IPv4 and IPv6 packet parsing][IP API], [ICMP forwarding errors] and [IP tunneling with CONNECT-IP][CONNECT-IP].<br><br>**Roadmap.** In **Rama 0.6**, we plan to integrate platform tunnel interfaces, including Apple’s `utun`, so Rama services can send and receive IP packets through OS-managed tunnels. | [CONNECT-IP guide] · [CONNECT-IP interop test] |
 
-The [`examples`](https://github.com/plabayo/rama/tree/main/examples) directory
-contains tested examples for common stacks.
+### Where to start for your use case
 
-| Goal | Example |
-|---|---|
-| Minimal HTTP service | [`http_service_hello.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_service_hello.rs) |
-| HTTP router | [`http_web_router.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_web_router.rs) |
-| High-level HTTP client | [`http_high_level_client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_high_level_client.rs) |
-| HTTP CONNECT proxy | [`http_connect_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_connect_proxy.rs) |
-| SOCKS5 proxy | [`socks5_connect_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/src/socks5_connect_proxy.rs) |
-| MITM proxy | [`http_mitm_proxy_boring.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_mitm_proxy_boring.rs) |
-| HTTP(S) proxy with ICAP | [`http_icap_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_icap_proxy.rs) |
-| Linux transparent proxy | [`linux_tproxy_tcp.rs`](https://github.com/plabayo/rama/blob/main/examples/src/linux_tproxy_tcp.rs) |
-| Apple transparent proxy | [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy) |
-| Tower integration | [`http_rama_tower.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_rama_tower.rs) |
+| If you're building… | Start here | Then try |
+| --- | --- | --- |
+| An endpoint security proxy | [Apple Network Extension example] or [Linux TPROXY example] | Decide which hosts to intercept in the [HTTP/3 inspection example]. |
+| A data collection client | [Emulation guide] for browser TLS and HTTP profiles | Select an outbound profile per client in the [emulating proxy example]. |
+| An edge router or API gateway | [SNI router example] for routing encrypted connections by name | Terminate TLS and authenticate both peers in the [mTLS example]. |
+| A web service alongside an existing app | [Router example] for typed Rust handlers | Move routes from PHP-FPM to Rust one at a time with the [PHP-FPM examples]. |
+| A traffic debugging tool | [CLI inspection guide] for the MITM proxy and its web UI | Reproduce a recorded exchange with the [HAR replay example]. |
 
-Most examples can be run with `cargo` and the required feature flags:
+Rama can be the networking foundation for a project of any size. You can start
+with a single service, then build across the layers and roles in the map as your
+needs grow. The same services and layers you use in a small tool can become part
+of an endpoint agent, a gateway, or a network stack of your own design.
 
-```bash
-cargo run -p rama-examples --bin http_service_hello --features=http-full
-cargo run -p rama-examples --bin http_connect_proxy --features=http-full
-cargo run -p rama-examples --bin socks5_connect_proxy --features=dns,socks5
-```
+> [!NOTE]
+>
+> **Commercial partnerships**
+>
+> Plabayo can help your team migrate an existing system to Rama or build your
+> first MVP or project for you. We also offer ongoing maintenance, code audits,
+> and training for the engineers who will run and extend it.
+>
+> Partnerships help fund Rama’s maintenance and shape its development. Working
+> with teams in production shows us which features and fixes matter, and those
+> improvements benefit everyone using the framework. [Explore partnership options](https://ramaproxy.com).
 
-Check each example's module documentation for exact usage and feature
-requirements.
+## Built for production
 
-## `rama` binary
+Production deployments have shaped Rama from the start. Whether a service runs
+on an endpoint device, at a gateway, or on a server, we design its network stack
+to bound resource use and avoid unnecessary copies on hot paths. We track
+protocol performance with benchmarks such as the [QUIC benchmark suite](./rama-quic/e2e/bench/).
 
-The `rama` binary lets you use parts of Rama without writing Rust code. It can
-act as an HTTP(S) and WebSocket client, run an HTTP(S) and SOCKS5 proxy with a
-MITM mode and web UI to inspect traffic, resolve DNS, probe TLS servers,
-evaluate PAC scripts, and run local echo, IP, fingerprinting and HTTP test services.
+- **Deployment targets.** Linux, macOS, and Windows are tier 1 platforms. CI also checks Android and iOS targets. The minimum supported Rust version is `1.96`.
+- **Dependency audits.** We use [cargo vet](https://github.com/mozilla/cargo-vet) to audit third-party dependencies.
 
-Learn how to install and use it in the [`rama` CLI chapter](https://ramaproxy.org/book/deploy/rama-cli.html).
+## Sponsors and support
 
-## Status
+[![GitHub Sponsors][ghs-badge]][ghs-url]
+[![Buy Me A Coffee][bmac-badge]][bmac-url]
+[![Paypal Donation][paypal-badge]][paypal-url]
 
-- **MSRV:** Rama requires Rust `1.96`.
-- **Platforms:** Linux, macOS, and Windows are tier 1 platforms. Android and iOS
-  targets are checked in CI.
-- **Safety:** Rama avoids unsafe code where possible. Low-level protocol code and
-  FFI-backed crates use unsafe where needed.
-- **Supply chain:** dependencies are audited with [`cargo vet`](https://github.com/mozilla/cargo-vet).
-- **Performance:** Rama is built for production network services, whatever the
-  protocol: hot paths avoid copies where they can, memory and other resources are
-  explicitly bounded, and protocol stacks are tracked with benchmarks such as the
-  [QUIC benchmarks](https://github.com/plabayo/rama/tree/main/rama-quic/e2e/bench).
-- **Roadmap:** planned work is tracked in [GitHub milestones](https://github.com/plabayo/rama/milestones).
+Rama is free and open-source software. Sponsorships help fund development,
+infrastructure, testing, and maintenance.
+
+Commercial support, consulting, training, and custom development are available
+through [ramaproxy.com](https://ramaproxy.com). More background is available in
+the [Sponsor chapter](https://ramaproxy.org/book/sponsor.html).
+
+## Community
+
+[![Discord][discord-badge]][discord-url]
+
+Questions, ideas, and project discussion are welcome on [Discord][discord-url].
+Bug reports and feature requests can be opened as
+[GitHub issues](https://github.com/plabayo/rama/issues).
+
+Rama also has a public channel on the official Discord of the Tokio project:
+<https://discord.com/channels/500028886025895936/1349098858831024209>.
 
 ## All rama and other crates developed by Plabayo
 
@@ -259,17 +256,6 @@ Related Plabayo crates and projects:
 - [`venndb`](https://crates.io/crates/venndb): set and relation matching utilities used by Rama proxy components
 - [`homebrew-rama`](https://github.com/plabayo/homebrew-rama): Homebrew formula for the `rama` CLI
 
-## Community
-
-[![Discord][discord-badge]][discord-url]
-
-Questions, ideas, and project discussion are welcome on [Discord][discord-url].
-Bug reports and feature requests can be opened as
-[GitHub issues](https://github.com/plabayo/rama/issues).
-
-Rama also has a public channel on the official Discord of the Tokio project:
-<https://discord.com/channels/500028886025895936/1349098858831024209>.
-
 ## Contributing
 
 Contributions are welcome. Please read [CONTRIBUTING.md](https://github.com/plabayo/rama/blob/main/CONTRIBUTING.md)
@@ -298,28 +284,6 @@ Rama is licensed under either of:
 - [MIT](https://github.com/plabayo/rama/blob/main/LICENSE-MIT)
 - [Apache-2.0](https://github.com/plabayo/rama/blob/main/LICENSE-APACHE)
 
-## Sponsors and support
-
-[![GitHub Sponsors][ghs-badge]][ghs-url]
-[![Buy Me A Coffee][bmac-badge]][bmac-url]
-[![Paypal Donation][paypal-badge]][paypal-url]
-
-Rama is free and open-source software. Sponsorships help fund development,
-infrastructure, testing, and maintenance.
-
-Commercial support, consulting, training, and custom development are available
-through [ramaproxy.com](https://ramaproxy.com). More background is available in
-the [Sponsor chapter](https://ramaproxy.org/book/sponsor.html).
-
-## Alternatives
-
-If Rama is not the right fit for your proxy work, you may also want to look at
-[`pingora`](https://github.com/cloudflare/pingora) by Cloudflare and
-[`g3proxy`](https://github.com/bytedance/g3) by ByteDance.
-
-The [Why Rama](https://ramaproxy.org/book/why_rama.html) chapter explains how
-Rama fits between off-the-shelf proxies and building a stack from scratch.
-
 ## FAQ
 
 Available at <https://ramaproxy.org/book/faq.html>.
@@ -330,3 +294,99 @@ Available at <https://ramaproxy.org/book/faq.html>.
 >
 > 📚 If you like Rama, you might also like [Netstack.FM®](https://netstack.fm),
 > a podcast about networking, Rust, and everything in between.
+
+[DNS resolution]: https://ramaproxy.org/docs/rama/dns/index.html
+[load balancing]: https://ramaproxy.org/docs/rama/dns/client/lb/index.html
+[PAC]: https://ramaproxy.org/docs/rama/js/pac/index.html
+[Proxy discovery guide]: https://ramaproxy.org/book/proxies/operate/intro.html
+[PAC client example]: ./examples/src/http_pac_client.rs
+[Connection pooling]: https://ramaproxy.org/docs/rama/net/client/pool/index.html
+[retries]: https://ramaproxy.org/docs/rama/http/layer/retry/index.html
+[redirects]: https://ramaproxy.org/docs/rama/http/layer/follow_redirect/index.html
+[browser profiles]: https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.ProfileEmulateLayer.html
+[HTTP client guide]: https://ramaproxy.org/book/http/http_clients.html
+[Pooled client example]: ./examples/src/http_pooled_client.rs
+[traffic capture]: https://ramaproxy.org/docs/rama/inspect/index.html
+[ICAP]: https://ramaproxy.org/docs/rama/icap/index.html
+[ICAP guide]: https://ramaproxy.org/book/proxies/icap.html
+[ICAP example]: ./examples/src/http_icap_proxy.rs
+[ACME]: https://ramaproxy.org/docs/rama/tls/acme/index.html
+[TLS fingerprinting]: https://ramaproxy.org/docs/rama/tls/fingerprint/index.html
+[SNI routing guide]: https://ramaproxy.org/book/proxies/sni.html
+[SNI router example]: ./examples/src/tls_sni_router.rs
+[Typed handlers and routing]: https://ramaproxy.org/docs/rama/http/service/web/struct.WebService.html
+[static files]: https://ramaproxy.org/docs/rama/http/service/fs/index.html
+[authentication]: https://ramaproxy.org/docs/rama/http/layer/auth/index.html
+[limits]: https://ramaproxy.org/docs/rama/layer/limit/index.html
+[Web server guide]: https://ramaproxy.org/book/web_servers.html
+[Router example]: ./examples/src/http_web_router.rs
+[FastCGI]: https://ramaproxy.org/docs/rama/gateway/fastcgi/index.html
+[Gateway guide]: https://ramaproxy.org/book/gateway/fastcgi.html
+[PHP-FPM examples]: ./examples/src/gateway/fastcgi-php/
+[services]: https://ramaproxy.org/docs/rama/service/trait.Service.html
+[layers]: https://ramaproxy.org/docs/rama/layer/trait.Layer.html
+[blocking adapters]: https://ramaproxy.org/docs/rama/rt/blocking/index.html
+[Tower interop]: https://ramaproxy.org/docs/rama/utils/tower/index.html
+[Service model guide]: https://ramaproxy.org/book/intro.html
+[Tower example]: ./examples/src/http_rama_tower.rs
+[WebSocket]: https://ramaproxy.org/docs/rama/http/ws/index.html
+[SSE]: https://ramaproxy.org/docs/rama/http/sse/index.html
+[gRPC]: https://ramaproxy.org/docs/rama/http/grpc/index.html
+[ttRPC]: https://ramaproxy.org/docs/rama/ttrpc/index.html
+[MASQUE guide]: https://ramaproxy.org/book/proxies/masque.html
+[CONNECT-UDP example]: ./examples/src/masque_connect_udp_proxy.rs
+[Rustls]: https://ramaproxy.org/docs/rama/tls/rustls/index.html
+[BoringSSL]: https://ramaproxy.org/docs/rama/tls/boring/index.html
+[compression]: https://ramaproxy.org/docs/rama/http/layer/compression/index.html
+[TLS guide]: https://ramaproxy.org/book/proxies/tls.html
+[mTLS example]: ./examples/src/mtls_tunnel_and_service.rs
+[TCP]: https://ramaproxy.org/docs/rama/tcp/index.html
+[UDP]: https://ramaproxy.org/docs/rama/udp/index.html
+[QUIC]: https://ramaproxy.org/docs/rama/quic/index.html
+[Unix sockets]: https://ramaproxy.org/docs/rama/unix/index.html
+[Transport guide]: https://ramaproxy.org/book/transport.html
+[QUIC client and server example]: ./examples/src/quic_client_server.rs
+[IP API]: https://ramaproxy.org/docs/rama/net/ip/index.html
+[CONNECT-IP]: https://ramaproxy.org/docs/rama/proxy/masque/connect_ip/index.html
+[CONNECT-IP guide]: https://ramaproxy.org/book/proxies/masque.html#connect-ip
+[CONNECT-IP interop test]: ./rama-quic/e2e/http-interop/tests/connect_ip.rs
+[Apple Network Extension example]: ./ffi/apple/examples/transparent_proxy/
+[Linux TPROXY example]: ./examples/src/linux_tproxy_tcp.rs
+[HTTP/3 inspection example]: ./examples/src/quic_h3_mitm_proxy.rs
+[Emulation guide]: https://ramaproxy.org/book/intro/user_agent_emulation.html
+[emulating proxy example]: ./examples/src/http_mitm_proxy_emulate_boring.rs
+[CLI inspection guide]: https://ramaproxy.org/book/deploy/rama-cli.html#mitm-proxy-with-web-ui
+[HAR replay example]: ./examples/src/http_har_replay.rs
+[system proxy settings]: https://ramaproxy.org/book/proxies/operate/system.html
+[environment variables]: https://ramaproxy.org/book/proxies/operate/app.html
+[bypass rules]: https://ramaproxy.org/docs/rama/net/client/struct.BypassRules.html
+[Alt-Svc]: https://ramaproxy.org/book/http/http_clients.html#alternative-services-and-custom-connectors
+[upstream proxies]: https://ramaproxy.org/book/proxies/operate/proxies_and_vpns.html
+[Forwarding]: https://ramaproxy.org/book/proxies/http.html
+[transparent interception]: https://ramaproxy.org/book/proxies/operate/transparent.html
+[request routing]: https://ramaproxy.org/docs/rama/http/service/web/struct.Router.html
+[TLS termination]: ./examples/src/tls_rustls_termination.rs
+[uploads]: https://ramaproxy.org/book/http/multipart.html
+[streaming responses]: https://ramaproxy.org/book/http/sse.html
+[whole application]: ./examples/src/gateway/fastcgi-php/gateway/main.rs
+[selected routes]: https://ramaproxy.org/book/gateway/fastcgi.html#beyond-the-gateway-role-as-a-sub-service
+[fallback]: ./examples/src/gateway/fastcgi-php/migration/main.rs
+[shared state]: https://ramaproxy.org/docs/rama/extensions/index.html
+[Tracing]: https://ramaproxy.org/docs/rama/telemetry/tracing/index.html
+[HTTP]: https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html
+[transport]: https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html
+[dial9]: https://ramaproxy.org/book/dial9.html
+[Telemetry guide]: https://ramaproxy.org/book/intro/telemetry.html
+[Local recording example]: ./examples/src/dial9_local.rs
+[TLS handshakes and certificates]: https://ramaproxy.org/book/tls.html
+[client TLS resumption policy]: https://ramaproxy.org/docs/rama/tls/client/enum.ClientHandshake.html
+[QUIC connection migration]: https://ramaproxy.org/book/proxies/quic_migration.html
+[ICMP forwarding errors]: https://ramaproxy.org/docs/rama/net/ip/icmp/index.html
+[SOCKS5]: https://ramaproxy.org/book/proxies/socks5.html
+[HTTP CONNECT]: https://ramaproxy.org/book/proxies/http.html
+[HTTP/1.1]: https://ramaproxy.org/docs/rama/http/core/index.html
+[HTTP/2]: https://ramaproxy.org/docs/rama/http/core/h2/index.html
+[HTTP/3]: https://ramaproxy.org/book/http/http3.html
+[CONNECT proxy example]: ./examples/src/http_connect_proxy.rs
+[Apple platform guide]: https://ramaproxy.org/book/proxies/operate/transparent/macos.html
+[WFP guide]: https://ramaproxy.org/book/proxies/operate/transparent/windows.html

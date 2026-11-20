@@ -53,7 +53,7 @@ async fn transparent(proxy: SocketAddress, intercepted: bool) -> (SocketAddress,
             }
         }
     });
-    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route);
+    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider::new(), route);
     let bridge =
         AddInputExtensionLayer::new(ConnectorTarget(HostWithPort::from(proxy))).into_layer(
             DatagramToProxyBridge::new(inspect, HostWithPort::from(proxy)),

@@ -215,7 +215,7 @@ async fn run(version: QuicVersion, port: u16, case: Case) -> Outcome {
             ServerConfig::try_from_rama_tls_with_provider(
                 &origin_tls,
                 TlsOptions::default(),
-                &BoringTlsProvider,
+                &BoringTlsProvider::new(),
             )
             .unwrap(),
         )
@@ -257,7 +257,7 @@ async fn run(version: QuicVersion, port: u16, case: Case) -> Outcome {
         mitm.set_handshake_timeout(budget);
     }
     let service = PeekQuicClientHelloService::new(
-        BoringTlsProvider,
+        BoringTlsProvider::new(),
         mitm.into_layer(service_fn(
             async |BridgeIo(ingress, egress): BridgeIo<Connection, Connection>| {
                 // The origin completes its handshake only with the client's last flight.
@@ -279,7 +279,7 @@ async fn run(version: QuicVersion, port: u16, case: Case) -> Outcome {
     let mut config = ClientConfig::try_from_rama_tls_with_provider(
         &client_tls,
         TlsOptions::default(),
-        &BoringTlsProvider,
+        &BoringTlsProvider::new(),
     )
     .unwrap();
     config.set_version(version).unwrap();

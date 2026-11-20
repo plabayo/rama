@@ -163,12 +163,18 @@ impl Loopback {
             .try_with_server_trust_anchors([ca.certificate_chain()[0].clone()])
             .unwrap();
         let options = TlsOptions::default();
-        let server_config =
-            ServerConfig::try_from_rama_tls_with_provider(&server_tls, options, &BoringTlsProvider)
-                .unwrap();
-        let client_config =
-            ClientConfig::try_from_rama_tls_with_provider(&client_tls, options, &BoringTlsProvider)
-                .unwrap();
+        let server_config = ServerConfig::try_from_rama_tls_with_provider(
+            &server_tls,
+            options,
+            &BoringTlsProvider::new(),
+        )
+        .unwrap();
+        let client_config = ClientConfig::try_from_rama_tls_with_provider(
+            &client_tls,
+            options,
+            &BoringTlsProvider::new(),
+        )
+        .unwrap();
         let (client, server) = runtime.block_on(async {
             let server = Endpoint::build(WeakScope::detached())
                 .with_server_config(server_config)
@@ -303,12 +309,18 @@ impl Flooded {
             .try_with_server_trust_anchors([ca.certificate_chain()[0].clone()])
             .unwrap();
         let options = TlsOptions::default();
-        let server_config =
-            ServerConfig::try_from_rama_tls_with_provider(&server_tls, options, &BoringTlsProvider)
-                .unwrap();
-        let client_config =
-            ClientConfig::try_from_rama_tls_with_provider(&client_tls, options, &BoringTlsProvider)
-                .unwrap();
+        let server_config = ServerConfig::try_from_rama_tls_with_provider(
+            &server_tls,
+            options,
+            &BoringTlsProvider::new(),
+        )
+        .unwrap();
+        let client_config = ClientConfig::try_from_rama_tls_with_provider(
+            &client_tls,
+            options,
+            &BoringTlsProvider::new(),
+        )
+        .unwrap();
 
         let server_rt = Builder::new_multi_thread()
             .worker_threads(SERVER_WORKERS)

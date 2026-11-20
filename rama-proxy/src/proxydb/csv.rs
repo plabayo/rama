@@ -535,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proxy_is_match_happy_path_proxy_with_any_filters_cases() {
+    fn direct_match_requires_a_wildcard_row_for_a_wildcard_filter() {
         let proxy = parse_csv_row(
             "id,datacenter,authority:80,pool,continent,country,state,city,carrier,42,,http",
         )
@@ -544,8 +544,21 @@ mod tests {
             protocol: TransportProtocol::Tcp,
         };
 
+        assert!(proxy.is_match(&ctx, &ProxyFilter::default()));
+        assert!(proxy.is_match(
+            &ctx,
+            &ProxyFilter {
+                pool_id: Some(vec![StringFilter::new("pool")]),
+                continent: Some(vec![StringFilter::new("continent")]),
+                country: Some(vec![StringFilter::new("country")]),
+                state: Some(vec![StringFilter::new("state")]),
+                city: Some(vec![StringFilter::new("city")]),
+                carrier: Some(vec![StringFilter::new("carrier")]),
+                asn: Some(vec![Asn::from_static(42)]),
+                ..Default::default()
+            }
+        ));
         for filter in [
-            ProxyFilter::default(),
             ProxyFilter {
                 pool_id: Some(vec![StringFilter::new("*")]),
                 ..Default::default()
@@ -568,16 +581,6 @@ mod tests {
             },
             ProxyFilter {
                 carrier: Some(vec![StringFilter::new("*")]),
-                ..Default::default()
-            },
-            ProxyFilter {
-                pool_id: Some(vec![StringFilter::new("pool")]),
-                continent: Some(vec![StringFilter::new("continent")]),
-                country: Some(vec![StringFilter::new("country")]),
-                state: Some(vec![StringFilter::new("state")]),
-                city: Some(vec![StringFilter::new("city")]),
-                carrier: Some(vec![StringFilter::new("carrier")]),
-                asn: Some(vec![Asn::from_static(42)]),
                 ..Default::default()
             },
             ProxyFilter {
@@ -613,7 +616,7 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            assert!(proxy.is_match(&ctx, &filter), "filter: {filter:?}");
+            assert!(!proxy.is_match(&ctx, &filter), "filter: {filter:?}");
         }
     }
 }

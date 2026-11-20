@@ -86,15 +86,15 @@ fn parse(fields: Vec<FieldPair>, trailers: bool) -> Result<Fields, Error> {
         regular = true;
         let name = HeaderName::from_lowercase_bytes(field.name)
             .map_err(|_error| malformed("invalid field name"))?;
-        if !validate_name(&name, &field.value, trailers)? {
-            debug!("dropping trailer field that frames or routes the message: {name:?}");
-            continue;
-        }
         let mut value = HeaderValue::from_maybe_shared(field.value)
             .map_err(|_error| malformed("invalid field value"))?;
         // RFC 9114 §4.2 and RFC 9113 §8.2.1: outer SP or HTAB makes the message malformed.
         if value.has_outer_whitespace() {
             return Err(malformed("field value with outer whitespace"));
+        }
+        if !validate_name(&name, value.as_bytes(), trailers)? {
+            debug!("dropping trailer field that frames or routes the message: {name:?}");
+            continue;
         }
         value.set_sensitive(field.never_index);
         result
@@ -343,7 +343,7 @@ pub(crate) fn request_head(
             if uri.scheme().is_some() || uri.authority().is_some() {
                 return Err(malformed("invalid request path"));
             }
-            uri
+            uri.without_fragment()
         };
         if path != "*" {
             if let Some(authority) = authority {
@@ -3674,6 +3674,31 @@ mod tests {
             assert!(h1.is_some(), "{path}: h1");
             assert_eq!(h2, h1, "{path}: h2 vs h1");
             assert_eq!(h3, h1, "{path}: h3 vs h1");
+        }
+    }
+
+    #[test]
+    fn lenient_request_target_can_be_forwarded_over_http3() {
+        let received = request(fields(&[
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":authority", "example.com"),
+            (":path", "/a?q=x#fragment"),
+        ]))
+        .unwrap();
+        let forwarded = request(decode(encode_request(&shared(), 0, &received).unwrap())).unwrap();
+        assert_eq!(forwarded.uri().to_string(), "https://example.com/a?q=x");
+    }
+
+    #[test]
+    fn discarded_trailer_fields_still_require_valid_values() {
+        for name in ["host", "content-length"] {
+            for value in ["a\rb", "a\0b", " leading", "trailing\t"] {
+                assert_eq!(
+                    trailers(fields(&[(name, value)])).unwrap_err().code(),
+                    Code::H3_MESSAGE_ERROR
+                );
+            }
         }
     }
 

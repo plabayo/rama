@@ -27,7 +27,7 @@ use std::{
 use jiff::{Timestamp, tz::TimeZone};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
-use rama_utils::fs::{CreatedFilePermissions, OpenOptionsSync};
+use rama_utils::fs::{CreatedFilePermissions, OpenOptions};
 
 use super::sink::KeyLogSink;
 
@@ -100,7 +100,7 @@ impl RotationPeriod {
         // making progress rather than panicking.
         match Timestamp::from_second(bucket * self.bucket_size_seconds()) {
             Ok(ts) => ts
-                .to_zoned(TimeZone::UTC)
+                .to_zoned_datetime(TimeZone::UTC)
                 .strftime(self.strftime_pattern())
                 .to_string(),
             Err(_) => format!("bucket-{bucket}"),
@@ -110,7 +110,7 @@ impl RotationPeriod {
     fn parse_bucket_suffix(self, suffix: &str) -> Option<i64> {
         let parsed = jiff::fmt::strtime::parse(self.strftime_pattern(), suffix).ok()?;
         let civil = parsed.to_datetime().ok()?;
-        let ts = civil.to_zoned(TimeZone::UTC).ok()?.timestamp();
+        let ts = civil.to_zoned_datetime(TimeZone::UTC).ok()?.timestamp();
         Some(self.bucket_from_timestamp(ts))
     }
 }
@@ -267,11 +267,11 @@ fn writer_loop(
                     continue;
                 }
             };
-            match OpenOptionsSync::new()
+            match OpenOptions::new()
                 .append(true)
                 .create(true)
                 .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
-                .open(&new_path)
+                .open_sync(&new_path)
             {
                 Ok(file) => {
                     if let Some(retain) = retention_buckets {

@@ -293,7 +293,7 @@ impl Ponger {
                 }
 
                 if let Some(bdp) = &mut self.bdp {
-                    let bytes = locked.bytes.take().unwrap_or_else(|| {
+                    let bytes = locked.bytes.replace(0).unwrap_or_else(|| {
                         warn!("h2 Ponger: bdp enabled implies bytes: but locked bytes is None: fall back to 0 bytes");
                         0
                     });
@@ -523,5 +523,56 @@ impl fmt::Display for KeepAliveTimedOut {
 impl std::error::Error for KeepAliveTimedOut {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&crate::error::TimedOut)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::ServiceInput;
+
+    #[tokio::test(start_paused = true)]
+    async fn bdp_keeps_sampling_after_a_pong_without_a_size_update() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let server_hs = crate::h2::server::Builder::default()
+            .handshake::<_, rama_core::bytes::Bytes>(ServiceInput::new(server_io));
+        let client_hs = crate::h2::client::Builder::default()
+            .handshake::<_, rama_core::bytes::Bytes>(ServiceInput::new(client_io));
+        let (server, client) = tokio::join!(server_hs, client_hs);
+        let mut server = server.unwrap();
+        let (_tx, mut client) = client.unwrap();
+        let (recorder, mut ponger) = channel(
+            server.ping_pong().unwrap(),
+            &Config {
+                bdp_initial_window: Some(65_535),
+                keep_alive_interval: None,
+                keep_alive_timeout: Duration::from_secs(15),
+                keep_alive_while_idle: false,
+            },
+        );
+
+        let rtt = Duration::from_millis(20);
+        let mut read_pong = |ponger: &mut Ponger| {
+            let cx = &mut task::Context::from_waker(task::Waker::noop());
+            // Flush the queued PING, let the peer reply, then read its PONG.
+            _ = Pin::new(&mut server).poll_closed(cx);
+            _ = Pin::new(&mut client).poll(cx);
+            _ = Pin::new(&mut server).poll_closed(cx);
+            ponger.poll(cx)
+        };
+
+        recorder.record_data(16 * 1024);
+        tokio::time::advance(rtt).await;
+        assert!(read_pong(&mut ponger).is_pending());
+        assert_eq!(ponger.latest_rtt(), Some(rtt));
+
+        // Once sampling resumes, only bytes from the new sample count.
+        tokio::time::advance(Duration::from_millis(200)).await;
+        recorder.record_data(48 * 1024);
+        tokio::time::advance(rtt).await;
+        let Poll::Ready(Ponged::SizeUpdate(window)) = read_pong(&mut ponger) else {
+            panic!("expected a window update after the second sample");
+        };
+        assert_eq!(window, 96 * 1024);
     }
 }

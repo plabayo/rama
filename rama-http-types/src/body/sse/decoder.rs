@@ -355,11 +355,12 @@ impl<T: EventDataRead> DecodeState<T> {
 
     /// Reuse the handed-off line's allocation as `carry`, unless one large line grew it.
     fn restore_carry(&mut self, mut line: Vec<u8>) {
-        if line.capacity() > RETAINED_BUFFER_LEN {
-            line = Vec::new();
-        }
-        line.clear();
-        self.carry = line;
+        self.carry = if line.capacity() > RETAINED_BUFFER_LEN {
+            Vec::new()
+        } else {
+            line.clear();
+            line
+        };
     }
 
     /// Extend `carry` while validating only bytes not already known valid.

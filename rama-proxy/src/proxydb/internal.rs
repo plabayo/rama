@@ -123,18 +123,16 @@ pub(crate) fn record_transport(protocol: &ProxyProtocol) -> Option<TransportProt
     }
 }
 
-fn string_filter_matches(
-    filters: Option<&[StringFilter]>,
-    candidate: Option<&StringFilter>,
+fn column_matches<T: PartialEq>(
+    filters: Option<&[T]>,
+    candidate: Option<&T>,
+    is_any: fn(&T) -> bool,
 ) -> bool {
-    match filters {
-        None => true,
-        Some(filters) => candidate.is_some_and(|candidate| {
-            filters
-                .iter()
-                .any(|filter| candidate.is_any() || filter.is_any() || filter == candidate)
-        }),
-    }
+    filters.is_none_or(|filters| {
+        candidate.is_some_and(|candidate| {
+            !filters.is_empty() && (is_any(candidate) || filters.contains(candidate))
+        })
+    })
 }
 
 impl Proxy {
@@ -167,20 +165,15 @@ impl Proxy {
             return false;
         }
 
-        string_filter_matches(filter.continent.as_deref(), self.continent.as_ref())
-            && string_filter_matches(filter.country.as_deref(), self.country.as_ref())
-            && string_filter_matches(filter.state.as_deref(), self.state.as_ref())
-            && string_filter_matches(filter.city.as_deref(), self.city.as_ref())
-            && string_filter_matches(filter.pool_id.as_deref(), self.pool_id.as_ref())
-            && string_filter_matches(filter.carrier.as_deref(), self.carrier.as_ref())
-            && filter
-                .asn
-                .as_ref()
-                .map(|a| {
-                    let asn = self.asn.as_ref();
-                    a.iter().any(|a| Some(a) == asn)
-                })
-                .unwrap_or(true)
+        let strings_match =
+            |filters, candidate| column_matches(filters, candidate, StringFilter::is_any);
+        strings_match(filter.continent.as_deref(), self.continent.as_ref())
+            && strings_match(filter.country.as_deref(), self.country.as_ref())
+            && strings_match(filter.state.as_deref(), self.state.as_ref())
+            && strings_match(filter.city.as_deref(), self.city.as_ref())
+            && strings_match(filter.pool_id.as_deref(), self.pool_id.as_ref())
+            && strings_match(filter.carrier.as_deref(), self.carrier.as_ref())
+            && column_matches(filter.asn.as_deref(), self.asn.as_ref(), Asn::is_any)
             && filter
                 .kind
                 .as_ref()

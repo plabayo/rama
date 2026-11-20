@@ -67,6 +67,13 @@ impl SizeHint {
         self.upper = Some(value);
     }
 
+    /// Reduce the remaining byte bounds after consuming a data frame.
+    /// Unknown upper bounds stay unknown and both bounds saturate at zero.
+    pub fn consume(&mut self, bytes: u64) {
+        self.lower = self.lower.saturating_sub(bytes);
+        self.upper = self.upper.map(|upper| upper.saturating_sub(bytes));
+    }
+
     /// Returns the exact size of data that will be yielded **if** the
     /// `lower` and `upper` bounds are equal.
     #[inline]

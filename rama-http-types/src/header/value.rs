@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
 use std::convert::TryFrom;
 use std::error::Error;
@@ -6,10 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::{cmp, fmt, str};
 
-use crate::{
-    header::name::HeaderName,
-    utils::http_date::{format_http_date, format_http_date_now_bytes},
-};
+use crate::header::name::HeaderName;
 use rama_utils::collections::smallvec::SmallVec;
 
 /// Represents an HTTP header field value.
@@ -46,6 +43,23 @@ pub struct ToStrError {
     _priv: (),
 }
 
+/// Move `src` into a [`Bytes`] when its type converts into one without copying.
+fn try_into_shared<T: 'static>(src: T) -> Result<Bytes, T> {
+    if_downcast_into!(T, Bytes, src, {
+        return Ok(src);
+    });
+    if_downcast_into!(T, Vec<u8>, src, {
+        return Ok(Bytes::from(src));
+    });
+    if_downcast_into!(T, String, src, {
+        return Ok(Bytes::from(src));
+    });
+    if_downcast_into!(T, BytesMut, src, {
+        return Ok(src.freeze());
+    });
+    Err(src)
+}
+
 impl HeaderValue {
     /// Convert a static string to a `HeaderValue`.
     ///
@@ -80,6 +94,11 @@ impl HeaderValue {
             inner: Bytes::from_static(bytes),
             is_sensitive: false,
         }
+    }
+
+    /// Validate a static string without copying or allocating its bytes.
+    pub fn try_from_static(src: &'static str) -> Result<Self, InvalidHeaderValue> {
+        Self::try_from_generic(src.as_bytes(), Bytes::from_static, is_valid_ascii)
     }
 
     /// Attempt to convert a string to a `HeaderValue`.
@@ -135,24 +154,6 @@ impl HeaderValue {
         name.into()
     }
 
-    /// IMF-fixdate HTTP-date for `unix_secs`, clamped to year 9999.
-    #[must_use]
-    pub fn from_http_date(unix_secs: u64) -> Self {
-        Self {
-            inner: Bytes::copy_from_slice(&format_http_date(unix_secs)),
-            is_sensitive: false,
-        }
-    }
-
-    /// HTTP-date for the current second, shared per thread: see [`format_http_date_now_bytes`].
-    #[must_use]
-    pub fn http_date_now() -> Self {
-        Self {
-            inner: format_http_date_now_bytes(),
-            is_sensitive: false,
-        }
-    }
-
     /// Attempt to convert a byte slice to a `HeaderValue`.
     ///
     /// If the argument contains invalid header value bytes, an error is
@@ -185,16 +186,16 @@ impl HeaderValue {
     /// Attempt to convert a `Bytes` buffer to a `HeaderValue`.
     ///
     /// This will try to prevent a copy if the type passed is the type used
-    /// internally, and will copy the data if it is not.
+    /// internally or an owned buffer that converts into it for free
+    /// (`Vec<u8>`, `String`, `BytesMut`), and will copy the data if it is not.
     pub fn from_maybe_shared<T>(src: T) -> Result<HeaderValue, InvalidHeaderValue>
     where
         T: AsRef<[u8]> + 'static,
     {
-        if_downcast_into!(T, Bytes, src, {
-            return HeaderValue::from_shared(src);
-        });
-
-        HeaderValue::from_bytes(src.as_ref())
+        match try_into_shared(src) {
+            Ok(shared) => HeaderValue::from_shared(shared),
+            Err(src) => HeaderValue::from_bytes(src.as_ref()),
+        }
     }
 
     /// Convert a `Bytes` directly into a `HeaderValue` without validating.
@@ -231,14 +232,8 @@ impl HeaderValue {
                 }
             }
         } else {
-            if_downcast_into!(T, Bytes, src, {
-                return HeaderValue {
-                    inner: src,
-                    is_sensitive: false,
-                };
-            });
-
-            let src = Bytes::copy_from_slice(src.as_ref());
+            let src =
+                try_into_shared(src).unwrap_or_else(|src| Bytes::copy_from_slice(src.as_ref()));
             HeaderValue {
                 inner: src,
                 is_sensitive: false,
@@ -546,6 +541,30 @@ mod from_header_name_tests {
     use super::*;
     use crate::header::map::HeaderMap;
     use crate::header::name;
+
+    #[test]
+    fn owned_buffers_become_header_values_without_a_copy() {
+        let vec = b"from a vec".to_vec();
+        let ptr = vec.as_ptr();
+        let value = HeaderValue::from_maybe_shared(vec).unwrap();
+        assert_eq!(value.as_bytes().as_ptr(), ptr);
+
+        let string = String::from("from a string");
+        let ptr = string.as_ptr();
+        let value = HeaderValue::from_maybe_shared(string).unwrap();
+        assert_eq!(value.as_bytes().as_ptr(), ptr);
+
+        let buf = BytesMut::from(&b"from bytes mut"[..]);
+        let ptr = buf.as_ptr();
+        let value = HeaderValue::from_maybe_shared(buf).unwrap();
+        assert_eq!(value.as_bytes().as_ptr(), ptr);
+
+        assert_eq!(
+            HeaderValue::from_maybe_shared(&b"borrowed"[..]).unwrap(),
+            "borrowed"
+        );
+        HeaderValue::from_maybe_shared(b"line\nbreak".to_vec()).unwrap_err();
+    }
 
     #[test]
     fn it_can_insert_header_name_as_header_value() {
@@ -1060,27 +1079,4 @@ fn quoted_field_values_remain_valid() {
     let value = HeaderValue::from_static("\"quoted field value\"");
     assert!(!value.has_outer_whitespace());
     assert!(is_valid_h2_h3_field_value(value.as_bytes()));
-}
-
-#[cfg(test)]
-mod http_date_tests {
-    use super::*;
-    use crate::utils::http_date::MAX_HTTP_DATE_UNIX_SECS;
-
-    #[test]
-    fn from_http_date_formats_and_clamps() {
-        assert_eq!(
-            HeaderValue::from_http_date(1_000).as_bytes(),
-            &format_http_date(1_000)
-        );
-        assert_eq!(
-            HeaderValue::from_http_date(u64::MAX).as_bytes(),
-            &format_http_date(MAX_HTTP_DATE_UNIX_SECS)
-        );
-    }
-
-    #[test]
-    fn http_date_now_is_an_http_date() {
-        assert_eq!(HeaderValue::http_date_now().len(), 29);
-    }
 }

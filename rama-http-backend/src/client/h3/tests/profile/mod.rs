@@ -293,7 +293,7 @@ async fn fixture_with_profile(profile: QuicProfile) -> Fixture {
         .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
         .unwrap();
     let connector = Http3Connector::builder(WeakScope::detached())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
         .with_tls_config(tls)
         .build_lazy()
         .unwrap();

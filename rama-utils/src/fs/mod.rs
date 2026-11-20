@@ -14,12 +14,18 @@ pub use sanitize::{
 };
 
 use crate::rng::{HasherRng, Rng};
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::{
     ffi::{OsStr, OsString},
-    fs, io,
+    fs,
+    io::{self, Write},
     ops::Deref,
     path::{Path, PathBuf},
+    sync::Arc,
 };
+#[cfg(not(loom))]
+use tokio::io::AsyncWriteExt as _;
 use tokio::sync::{mpsc, oneshot};
 
 #[cfg(loom)]
@@ -37,8 +43,9 @@ pub struct TempPath {
     cleanup: TempPathCleanup,
 }
 
-/// Guard for a private temporary directory that removes it recursively on
-/// drop.
+/// Guard for a private temporary directory that removes it recursively on drop.
+/// An outstanding anonymous-file job keeps the directory alive until it finishes.
+/// [`Self::close`] runs explicit cleanup on the blocking pool and reports failures.
 ///
 /// [`new`][Self::new] and [`with_prefix`][Self::with_prefix] generate an
 /// unpredictable name below the platform temporary directory. [`create`]
@@ -49,7 +56,15 @@ pub struct TempPath {
 /// [`create`]: Self::create
 #[derive(Debug)]
 pub struct TempDir {
+    directory: Arc<TempDirInner>,
+}
+
+#[derive(Debug)]
+struct TempDirInner {
     path: PathBuf,
+    // Explicit close revokes queued opens and waits for any open already
+    // inside its filesystem operation. Ordinary drop only releases an owner.
+    closed: parking_lot::RwLock<bool>,
 }
 
 /// Handle for an asynchronous temporary-file cleanup worker.
@@ -123,8 +138,13 @@ impl TempPath {
 impl TempDir {
     /// Create an unpredictably named private temporary directory below the
     /// platform temporary directory.
-    pub fn new() -> io::Result<Self> {
-        Self::with_prefix("rama-")
+    pub async fn new() -> io::Result<Self> {
+        run_blocking(Self::new_sync).await
+    }
+
+    /// Blocking counterpart to [`Self::new`].
+    pub fn new_sync() -> io::Result<Self> {
+        Self::with_prefix_sync("rama-")
     }
 
     /// Create an unpredictably named private temporary directory with
@@ -132,7 +152,33 @@ impl TempDir {
     ///
     /// The prefix must be one ordinary path component. Creation is exclusive,
     /// so an existing file, directory, or symlink is never reused.
-    pub fn with_prefix(prefix: impl AsRef<OsStr>) -> io::Result<Self> {
+    pub async fn with_prefix(prefix: impl AsRef<OsStr>) -> io::Result<Self> {
+        Self::with_prefix_in(prefix, std::env::temp_dir()).await
+    }
+
+    /// Blocking counterpart to [`Self::with_prefix`].
+    pub fn with_prefix_sync(prefix: impl AsRef<OsStr>) -> io::Result<Self> {
+        Self::with_prefix_in_sync(prefix, std::env::temp_dir())
+    }
+
+    /// Create an unpredictably named private temporary directory with the given
+    /// prefix below the existing `parent`. The prefix must be one ordinary path
+    /// component. A relative parent is resolved at creation time, so the guard
+    /// keeps referring to the same path if the working directory changes.
+    pub async fn with_prefix_in(
+        prefix: impl AsRef<OsStr>,
+        parent: impl AsRef<Path>,
+    ) -> io::Result<Self> {
+        let prefix = prefix.as_ref().to_owned();
+        let parent = parent.as_ref().to_owned();
+        run_blocking(move || Self::with_prefix_in_sync(prefix, parent)).await
+    }
+
+    /// Blocking counterpart to [`Self::with_prefix_in`].
+    pub fn with_prefix_in_sync(
+        prefix: impl AsRef<OsStr>,
+        parent: impl AsRef<Path>,
+    ) -> io::Result<Self> {
         let prefix = prefix.as_ref();
         let prefix_path = Path::new(prefix);
         if prefix.is_empty()
@@ -146,33 +192,83 @@ impl TempDir {
         }
 
         let mut rng = HasherRng::new();
-        Self::with_prefix_in(prefix, &std::env::temp_dir(), &mut rng)
+        Self::create_with_rng(prefix, &std::path::absolute(parent)?, &mut rng)
     }
 
-    fn with_prefix_in(prefix: &OsStr, parent: &Path, rng: &mut impl Rng) -> io::Result<Self> {
-        const MAX_ATTEMPTS: usize = 16;
+    fn create_with_rng(prefix: &OsStr, parent: &Path, rng: &mut impl Rng) -> io::Result<Self> {
+        create_temp_entry(prefix, rng, |name| Self::create_sync(parent.join(name)))
+    }
 
-        for _ in 0..MAX_ATTEMPTS {
-            let mut name = OsString::from(prefix);
-            name.push(format!("{:016x}{:016x}", rng.next_u64(), rng.next_u64()));
-            match Self::create(parent.join(name)) {
-                Ok(directory) => return Ok(directory),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
+    /// Exclusively create an anonymous read/write file in this directory.
+    ///
+    /// The operation requests removal before returning the open
+    /// file. On Unix the file is unlinked immediately. On Windows the standard
+    /// file sharing mode permits deletion, which completes when the last
+    /// handle closes. Filesystems that reject removal of an open file return
+    /// an error before the caller can write data.
+    pub async fn anonymous_file(&self) -> io::Result<File> {
+        let directory = self.directory.clone();
+        let file = run_blocking(move || {
+            let closed = directory.closed.read();
+            if *closed {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "temporary directory is closed",
+                ));
             }
+            Self::anonymous_file_in(&directory.path)
+        })
+        .await?;
+        #[cfg(not(loom))]
+        let file = File::from_std(file);
+        Ok(file)
+    }
+
+    /// Blocking counterpart to [`Self::anonymous_file`].
+    pub fn anonymous_file_sync(&self) -> io::Result<fs::File> {
+        Self::anonymous_file_in(self.path())
+    }
+
+    // Create and unlink in the same worker operation. Cancellation can drop the
+    // returned descriptor but cannot interrupt the removal of a newly created name.
+    fn anonymous_file_in(directory: &Path) -> io::Result<fs::File> {
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .jail(directory)
+            .created_file_permissions(CreatedFilePermissions::OwnerReadWrite);
+        let (file, path) = create_temp_entry("file-".as_ref(), &mut HasherRng::new(), |name| {
+            let file = options.open_sync(&name)?;
+            Ok((file, directory.join(name)))
+        })?;
+        if let Err(err) = fs::remove_file(&path) {
+            drop(file);
+            // Some filesystems only allow removal after close. The TempDir
+            // also guards this empty entry if the second removal fails.
+            if let Err(cleanup) = fs::remove_file(&path)
+                && cleanup.kind() != io::ErrorKind::NotFound
+            {
+                tracing::debug!(?path, "failed to remove empty temporary file: {cleanup}");
+            }
+            return Err(err);
         }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not create a unique temporary directory",
-        ))
+        Ok(file)
     }
 
     /// Exclusively create and guard a temporary directory at `path`.
-    pub fn create(path: impl Into<PathBuf>) -> io::Result<Self> {
+    /// The guard retains its absolute path for cleanup.
+    pub async fn create(path: impl Into<PathBuf>) -> io::Result<Self> {
         let path = path.into();
+        run_blocking(move || Self::create_sync(path)).await
+    }
+
+    /// Blocking counterpart to [`Self::create`].
+    pub fn create_sync(path: impl Into<PathBuf>) -> io::Result<Self> {
+        let path = std::path::absolute(path.into())?;
         #[cfg(unix)]
         let builder = {
-            use std::os::unix::fs::DirBuilderExt as _;
             let mut builder = fs::DirBuilder::new();
             builder.mode(0o700);
             builder
@@ -180,26 +276,56 @@ impl TempDir {
         #[cfg(not(unix))]
         let builder = fs::DirBuilder::new();
         builder.create(&path)?;
-        Ok(Self { path })
+        Ok(Self {
+            directory: Arc::new(TempDirInner {
+                path,
+                closed: parking_lot::RwLock::new(false),
+            }),
+        })
     }
 
     /// Return the guarded directory path.
     #[must_use]
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.directory.path
     }
 
     /// Remove the directory now and report any cleanup failure.
-    pub fn close(mut self) -> io::Result<()> {
-        let path = std::mem::take(&mut self.path);
-        remove_temp_dir(&path)
+    pub async fn close(self) -> io::Result<()> {
+        run_blocking(move || self.close_sync()).await
+    }
+
+    /// Blocking counterpart to [`Self::close`].
+    pub fn close_sync(self) -> io::Result<()> {
+        *self.directory.closed.write() = true;
+        remove_temp_dir(self.path())
     }
 }
 
-/// Create an unpredictably named private temporary directory below the
-/// platform temporary directory.
+/// Synchronous shorthand for [`TempDir::new_sync`]. For async callers, use [`TempDir::new`].
 pub fn tempdir() -> io::Result<TempDir> {
-    TempDir::new()
+    TempDir::new_sync()
+}
+
+fn create_temp_entry<T>(
+    prefix: &OsStr,
+    rng: &mut impl Rng,
+    mut create: impl FnMut(OsString) -> io::Result<T>,
+) -> io::Result<T> {
+    const MAX_ATTEMPTS: usize = 16;
+    for _ in 0..MAX_ATTEMPTS {
+        let mut name = OsString::from(prefix);
+        name.push(format!("{:016x}{:016x}", rng.next_u64(), rng.next_u64()));
+        match create(name) {
+            Ok(entry) => return Ok(entry),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not create a unique temporary entry",
+    ))
 }
 
 impl AsRef<Path> for TempPath {
@@ -230,19 +356,17 @@ impl Drop for TempPath {
     }
 }
 
-impl Drop for TempDir {
+impl Drop for TempDirInner {
     fn drop(&mut self) {
-        let path = std::mem::take(&mut self.path);
-        if let Err(err) = remove_temp_dir(&path) {
-            tracing::debug!(?path, "failed to remove temporary directory: {err}");
+        if !*self.closed.get_mut()
+            && let Err(err) = remove_temp_dir(&self.path)
+        {
+            tracing::debug!(path = ?self.path, "failed to remove temporary directory: {err}");
         }
     }
 }
 
 fn remove_temp_dir(path: &Path) -> io::Result<()> {
-    if path.as_os_str().is_empty() {
-        return Ok(());
-    }
     match fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -302,7 +426,7 @@ pub async fn safe_open(path: impl AsRef<Path>) -> io::Result<File> {
 
 /// Blocking variant of [`safe_open`].
 pub fn safe_open_sync(path: impl AsRef<Path>) -> io::Result<fs::File> {
-    OpenOptionsSync::new().read(true).open(path)
+    OpenOptions::new().read(true).open_sync(path)
 }
 
 /// Open a file read-only, confined to within the trusted directory `root`.
@@ -326,13 +450,8 @@ pub async fn safe_open_in(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io:
 /// absolute ones; this accepts an absolute path (as a `file:` uri yields)
 /// and rejects it when it does not live under `root`.
 pub async fn safe_open_under(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::Result<File> {
-    let (root, path) = (root.as_ref(), path.as_ref());
-    let relative = path.strip_prefix(root).map_err(|_e| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "path is outside the confined root",
-        )
-    })?;
+    let root = root.as_ref();
+    let relative = strip_root(root, path.as_ref())?;
     safe_open_in(root, relative).await
 }
 
@@ -341,22 +460,26 @@ pub fn safe_open_under_sync(
     root: impl AsRef<Path>,
     path: impl AsRef<Path>,
 ) -> io::Result<fs::File> {
-    let (root, path) = (root.as_ref(), path.as_ref());
-    let relative = path.strip_prefix(root).map_err(|_e| {
+    let root = root.as_ref();
+    let relative = strip_root(root, path.as_ref())?;
+    safe_open_in_sync(root, relative)
+}
+
+fn strip_root<'a>(root: &Path, path: &'a Path) -> io::Result<&'a Path> {
+    path.strip_prefix(root).map_err(|_err| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "path is outside the confined root",
         )
-    })?;
-    safe_open_in_sync(root, relative)
+    })
 }
 
 /// Blocking variant of [`safe_open_in`].
 pub fn safe_open_in_sync(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::Result<fs::File> {
-    OpenOptionsSync::new()
+    OpenOptions::new()
         .read(true)
         .jail(root.as_ref())
-        .open(path)
+        .open_sync(path)
 }
 
 /// Resolve `path` below `root` after applying root-confined path validation.
@@ -369,18 +492,16 @@ pub fn safe_open_in_sync(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::
 /// modified after this function returns, callers must validate again or perform
 /// the filesystem operation through a safe helper.
 pub async fn safe_path_in(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::Result<PathBuf> {
-    let root = root.as_ref();
-    let path = root.join(sanitize_relative_path(path)?);
-    let canonical_root = canonicalize_root(root).await?;
-    ensure_within_canonical_root(&canonical_root, &path).await?;
-    Ok(path)
+    let root = root.as_ref().to_owned();
+    let path = path.as_ref().to_owned();
+    run_blocking(move || safe_path_in_sync(root, path)).await
 }
 
 /// Blocking variant of [`safe_path_in`].
 pub fn safe_path_in_sync(root: impl AsRef<Path>, path: impl AsRef<Path>) -> io::Result<PathBuf> {
     let root = root.as_ref();
     let path = root.join(sanitize_relative_path(path)?);
-    let canonical_root = canonicalize_root_sync(root)?;
+    let canonical_root = fs::canonicalize(root)?;
     ensure_within_canonical_root_sync(&canonical_root, &path)?;
     Ok(path)
 }
@@ -394,14 +515,9 @@ pub async fn safe_canonicalize_in(
     root: impl AsRef<Path>,
     path: impl AsRef<Path>,
 ) -> io::Result<PathBuf> {
-    let root = root.as_ref();
-    let path = root.join(sanitize_relative_path(path)?);
-    let canonical_root = canonicalize_root(root).await?;
-    let canonical_path = canonicalize_existing_path(&path).await?;
-    if !canonical_path.starts_with(&canonical_root) {
-        return Err(UnsafePathError::EscapesRoot.into());
-    }
-    Ok(canonical_path)
+    let root = root.as_ref().to_owned();
+    let path = path.as_ref().to_owned();
+    run_blocking(move || safe_canonicalize_in_sync(root, path)).await
 }
 
 /// Blocking variant of [`safe_canonicalize_in`].
@@ -411,7 +527,7 @@ pub fn safe_canonicalize_in_sync(
 ) -> io::Result<PathBuf> {
     let root = root.as_ref();
     let path = root.join(sanitize_relative_path(path)?);
-    let canonical_root = canonicalize_root_sync(root)?;
+    let canonical_root = fs::canonicalize(root)?;
     let canonical_path = canonicalize_existing_path_sync(&path)?;
     if !canonical_path.starts_with(&canonical_root) {
         return Err(UnsafePathError::EscapesRoot.into());
@@ -428,15 +544,9 @@ pub async fn safe_create_dir_all_in(
     root: impl AsRef<Path>,
     path: impl AsRef<Path>,
 ) -> io::Result<()> {
-    let root = root.as_ref();
-    let path = root.join(sanitize_relative_path(path)?);
-    let canonical_root = canonicalize_root(root).await?;
-    ensure_within_canonical_root(&canonical_root, &path).await?;
-    #[cfg(loom)]
-    fs::create_dir_all(&path)?;
-    #[cfg(not(loom))]
-    tokio::fs::create_dir_all(&path).await?;
-    ensure_within_canonical_root(&canonical_root, &path).await
+    let root = root.as_ref().to_owned();
+    let path = path.as_ref().to_owned();
+    run_blocking(move || safe_create_dir_all_in_sync(root, path)).await
 }
 
 /// Blocking variant of [`safe_create_dir_all_in`].
@@ -446,7 +556,7 @@ pub fn safe_create_dir_all_in_sync(
 ) -> io::Result<()> {
     let root = root.as_ref();
     let path = root.join(sanitize_relative_path(path)?);
-    let canonical_root = canonicalize_root_sync(root)?;
+    let canonical_root = fs::canonicalize(root)?;
     ensure_within_canonical_root_sync(&canonical_root, &path)?;
     fs::create_dir_all(&path)?;
     ensure_within_canonical_root_sync(&canonical_root, &path)
@@ -463,26 +573,21 @@ pub async fn safe_write_in(
     path: impl AsRef<Path>,
     contents: impl AsRef<[u8]>,
 ) -> io::Result<()> {
-    let root = root.as_ref();
-    let path = root.join(sanitize_relative_path(path)?);
-    let contents = contents.as_ref().to_owned();
-    let canonical_root = canonicalize_root(root).await?;
-
-    if let Some(parent) = path.parent() {
-        ensure_within_canonical_root(&canonical_root, parent).await?;
-        #[cfg(loom)]
-        fs::create_dir_all(parent)?;
-        #[cfg(not(loom))]
-        tokio::fs::create_dir_all(parent).await?;
-        ensure_within_canonical_root(&canonical_root, parent).await?;
-    }
-
-    ensure_within_canonical_root(&canonical_root, &path).await?;
-    #[cfg(loom)]
-    fs::write(&path, contents)?;
+    let root = root.as_ref().to_owned();
+    let path = path.as_ref().to_owned();
+    let (canonical_root, path, file) = run_blocking(move || create_for_write(&root, &path)).await?;
     #[cfg(not(loom))]
-    tokio::fs::write(&path, contents).await?;
-    ensure_within_canonical_root(&canonical_root, &path).await
+    {
+        let mut file = File::from_std(file);
+        file.write_all(contents.as_ref()).await?;
+        file.flush().await?;
+    }
+    #[cfg(loom)]
+    {
+        let mut file = file;
+        file.write_all(contents.as_ref())?;
+    }
+    run_blocking(move || ensure_within_canonical_root_sync(&canonical_root, &path)).await
 }
 
 /// Blocking variant of [`safe_write_in`].
@@ -491,19 +596,37 @@ pub fn safe_write_in_sync(
     path: impl AsRef<Path>,
     contents: impl AsRef<[u8]>,
 ) -> io::Result<()> {
-    let root = root.as_ref();
-    let path = root.join(sanitize_relative_path(path)?);
-    let canonical_root = canonicalize_root_sync(root)?;
+    let (canonical_root, path, mut file) = create_for_write(root.as_ref(), path.as_ref())?;
+    file.write_all(contents.as_ref())?;
+    ensure_within_canonical_root_sync(&canonical_root, &path)
+}
 
+fn create_for_write(root: &Path, path: &Path) -> io::Result<(PathBuf, PathBuf, fs::File)> {
+    let path = root.join(sanitize_relative_path(path)?);
+    let canonical_root = fs::canonicalize(root)?;
     if let Some(parent) = path.parent() {
         ensure_within_canonical_root_sync(&canonical_root, parent)?;
         fs::create_dir_all(parent)?;
         ensure_within_canonical_root_sync(&canonical_root, parent)?;
     }
-
     ensure_within_canonical_root_sync(&canonical_root, &path)?;
-    fs::write(&path, contents)?;
-    ensure_within_canonical_root_sync(&canonical_root, &path)
+    let file = fs::File::create(&path)?;
+    Ok((canonical_root, path, file))
+}
+
+// Keep each validated filesystem operation in one blocking-pool job. Loom
+// builds use std files and run the same operation on the calling thread.
+async fn run_blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> io::Result<T> {
+    #[cfg(not(loom))]
+    {
+        tokio::task::spawn_blocking(operation).await?
+    }
+    #[cfg(loom)]
+    {
+        operation()
+    }
 }
 
 /// Options to open a file with async path-traversal protection.
@@ -514,53 +637,57 @@ pub fn safe_write_in_sync(
 /// directory.
 #[derive(Debug, Clone)]
 pub struct OpenOptions {
-    inner: OpenOptionsInner,
+    options: fs::OpenOptions,
+    jail: Option<PathBuf>,
+    symlinks: SymlinkPolicy,
+    created_file_permissions: CreatedFilePermissions,
 }
 
 impl OpenOptions {
-    /// Create a new set of options with every flag disabled, matching
-    /// [`tokio::fs::OpenOptions::new`]. Enable at least one access mode (e.g.
-    /// [`read`](Self::read)) before calling [`open`](Self::open).
+    /// Create options with every access mode disabled.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: OpenOptionsInner::new(),
+            options: fs::OpenOptions::new(),
+            jail: None,
+            symlinks: SymlinkPolicy::default(),
+            created_file_permissions: CreatedFilePermissions::default(),
         }
     }
 
     /// Set the option for read access.
     pub fn read(&mut self, read: bool) -> &mut Self {
-        self.inner.read = read;
+        self.options.read(read);
         self
     }
 
     /// Set the option for write access.
     pub fn write(&mut self, write: bool) -> &mut Self {
-        self.inner.write = write;
+        self.options.write(write);
         self
     }
 
     /// Set the option for append mode.
     pub fn append(&mut self, append: bool) -> &mut Self {
-        self.inner.append = append;
+        self.options.append(append);
         self
     }
 
     /// Set the option for truncating a previous file.
     pub fn truncate(&mut self, truncate: bool) -> &mut Self {
-        self.inner.truncate = truncate;
+        self.options.truncate(truncate);
         self
     }
 
     /// Set the option to create a new file, or open it if it already exists.
     pub fn create(&mut self, create: bool) -> &mut Self {
-        self.inner.create = create;
+        self.options.create(create);
         self
     }
 
     /// Set the option to create a new file, failing if it already exists.
     pub fn create_new(&mut self, create_new: bool) -> &mut Self {
-        self.inner.create_new = create_new;
+        self.options.create_new(create_new);
         self
     }
 
@@ -571,7 +698,7 @@ impl OpenOptions {
     /// within `root` or the open fails with [`UnsafePathError::EscapesRoot`].
     /// `root` must exist when opening.
     pub fn jail(&mut self, root: impl Into<PathBuf>) -> &mut Self {
-        self.inner.jail = Some(root.into());
+        self.jail = Some(root.into());
         self
     }
 
@@ -580,28 +707,52 @@ impl OpenOptions {
     /// Defaults to [`SymlinkPolicy::RestrictToRoot`]. Has no effect unless a
     /// jail root is configured.
     pub fn symlinks(&mut self, policy: SymlinkPolicy) -> &mut Self {
-        self.inner.symlinks = policy;
+        self.symlinks = policy;
         self
     }
 
     /// Set permissions used when this open operation creates a new file.
     pub fn created_file_permissions(&mut self, permissions: CreatedFilePermissions) -> &mut Self {
-        self.inner.created_file_permissions = permissions;
+        self.created_file_permissions = permissions;
         self
     }
 
-    /// Open the file at `path` with the configured options, after validating it
-    /// against path-traversal attacks.
+    /// Open a file after applying the configured traversal and jail checks.
     pub async fn open(&self, path: impl AsRef<Path>) -> io::Result<File> {
-        let path = self.inner.resolve(path.as_ref()).await?;
-        #[cfg(loom)]
-        let file = self.inner.std_options().open(&path)?;
+        let options = self.clone();
+        let path = path.as_ref().to_owned();
+        let file = run_blocking(move || options.open_sync(path)).await?;
         #[cfg(not(loom))]
-        let file = self.inner.tokio_options().open(&path).await?;
-        if let Some(root) = &self.inner.jail
-            && self.inner.symlinks == SymlinkPolicy::RestrictToRoot
-        {
-            ensure_within_root(root, &path).await?;
+        let file = File::from_std(file);
+        Ok(file)
+    }
+
+    /// Blocking variant of [`open`](Self::open).
+    pub fn open_sync(&self, path: impl AsRef<Path>) -> io::Result<fs::File> {
+        let path = match &self.jail {
+            Some(root) => root.join(sanitize_relative_path(path)?),
+            None => sanitize_path(path)?,
+        };
+        let confined_root = self
+            .jail
+            .as_ref()
+            .filter(|_| self.symlinks == SymlinkPolicy::RestrictToRoot);
+        if let Some(root) = confined_root {
+            ensure_within_root_sync(root, &path)?;
+        }
+        #[cfg(unix)]
+        let options = {
+            let mut options = self.options.clone();
+            if self.created_file_permissions == CreatedFilePermissions::OwnerReadWrite {
+                options.mode(0o600);
+            }
+            options
+        };
+        #[cfg(not(unix))]
+        let options = &self.options;
+        let file = options.open(&path)?;
+        if let Some(root) = confined_root {
+            ensure_within_root_sync(root, &path)?;
         }
         Ok(file)
     }
@@ -613,186 +764,35 @@ impl Default for OpenOptions {
     }
 }
 
-/// Options to open a file with blocking path-traversal protection.
-///
-/// This is the sync counterpart to [`OpenOptions`].
-#[derive(Debug, Clone)]
-pub struct OpenOptionsSync {
-    inner: OpenOptionsInner,
+/// Blocking spelling of [`OpenOptions`]. Its `open` method calls [`OpenOptions::open_sync`].
+#[derive(Debug, Clone, Default)]
+pub struct OpenOptionsSync(OpenOptions);
+
+macro_rules! sync_open_setters {
+    ($($name:ident: $arg:ty),+ $(,)?) => {$(
+        #[doc = concat!("See [`OpenOptions::", stringify!($name), "`].")]
+        pub fn $name(&mut self, value: $arg) -> &mut Self {
+            self.0.$name(value);
+            self
+        }
+    )+};
 }
 
 impl OpenOptionsSync {
-    /// Create a new set of options with every flag disabled, matching
-    /// [`std::fs::OpenOptions::new`]. Enable at least one access mode (e.g.
-    /// [`read`](Self::read)) before calling [`open`](Self::open).
+    /// Create options with every access mode disabled.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            inner: OpenOptionsInner::new(),
-        }
+        Self::default()
     }
 
-    /// Set the option for read access.
-    pub fn read(&mut self, read: bool) -> &mut Self {
-        self.inner.read = read;
-        self
+    sync_open_setters! {
+        read: bool, write: bool, append: bool, truncate: bool, create: bool, create_new: bool,
+        jail: impl Into<PathBuf>, symlinks: SymlinkPolicy, created_file_permissions: CreatedFilePermissions,
     }
 
-    /// Set the option for write access.
-    pub fn write(&mut self, write: bool) -> &mut Self {
-        self.inner.write = write;
-        self
-    }
-
-    /// Set the option for append mode.
-    pub fn append(&mut self, append: bool) -> &mut Self {
-        self.inner.append = append;
-        self
-    }
-
-    /// Set the option for truncating a previous file.
-    pub fn truncate(&mut self, truncate: bool) -> &mut Self {
-        self.inner.truncate = truncate;
-        self
-    }
-
-    /// Set the option to create a new file, or open it if it already exists.
-    pub fn create(&mut self, create: bool) -> &mut Self {
-        self.inner.create = create;
-        self
-    }
-
-    /// Set the option to create a new file, failing if it already exists.
-    pub fn create_new(&mut self, create_new: bool) -> &mut Self {
-        self.inner.create_new = create_new;
-        self
-    }
-
-    /// Confine every opened path to within `root`.
-    pub fn jail(&mut self, root: impl Into<PathBuf>) -> &mut Self {
-        self.inner.jail = Some(root.into());
-        self
-    }
-
-    /// Set how symbolic links are treated within the [`jail`](Self::jail) root.
-    ///
-    /// Defaults to [`SymlinkPolicy::RestrictToRoot`]. Has no effect unless a
-    /// jail root is configured.
-    pub fn symlinks(&mut self, policy: SymlinkPolicy) -> &mut Self {
-        self.inner.symlinks = policy;
-        self
-    }
-
-    /// Set permissions used when this open operation creates a new file.
-    pub fn created_file_permissions(&mut self, permissions: CreatedFilePermissions) -> &mut Self {
-        self.inner.created_file_permissions = permissions;
-        self
-    }
-
-    /// Open the file at `path` with the configured options, after validating it
-    /// against path-traversal attacks.
+    /// Open a file with the configured traversal and jail checks.
     pub fn open(&self, path: impl AsRef<Path>) -> io::Result<fs::File> {
-        let path = self.inner.resolve_sync(path.as_ref())?;
-        let file = self.inner.std_options().open(&path)?;
-        if let Some(root) = &self.inner.jail
-            && self.inner.symlinks == SymlinkPolicy::RestrictToRoot
-        {
-            ensure_within_root_sync(root, &path)?;
-        }
-        Ok(file)
-    }
-}
-
-impl Default for OpenOptionsSync {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone)]
-struct OpenOptionsInner {
-    read: bool,
-    write: bool,
-    append: bool,
-    truncate: bool,
-    create: bool,
-    create_new: bool,
-    jail: Option<PathBuf>,
-    symlinks: SymlinkPolicy,
-    created_file_permissions: CreatedFilePermissions,
-}
-
-impl OpenOptionsInner {
-    fn new() -> Self {
-        Self {
-            read: false,
-            write: false,
-            append: false,
-            truncate: false,
-            create: false,
-            create_new: false,
-            jail: None,
-            symlinks: SymlinkPolicy::RestrictToRoot,
-            created_file_permissions: CreatedFilePermissions::Default,
-        }
-    }
-
-    #[cfg(not(loom))]
-    fn tokio_options(&self) -> tokio::fs::OpenOptions {
-        let mut opts = tokio::fs::OpenOptions::new();
-        opts.read(self.read)
-            .write(self.write)
-            .append(self.append)
-            .truncate(self.truncate)
-            .create(self.create)
-            .create_new(self.create_new);
-        #[cfg(unix)]
-        if self.created_file_permissions == CreatedFilePermissions::OwnerReadWrite {
-            opts.mode(0o600);
-        }
-        opts
-    }
-
-    fn std_options(&self) -> fs::OpenOptions {
-        let mut opts = fs::OpenOptions::new();
-        opts.read(self.read)
-            .write(self.write)
-            .append(self.append)
-            .truncate(self.truncate)
-            .create(self.create)
-            .create_new(self.create_new);
-        #[cfg(unix)]
-        if self.created_file_permissions == CreatedFilePermissions::OwnerReadWrite {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            opts.mode(0o600);
-        }
-        opts
-    }
-
-    async fn resolve(&self, path: &Path) -> io::Result<PathBuf> {
-        match &self.jail {
-            None => Ok(sanitize_path(path)?),
-            Some(root) => {
-                let full = root.join(sanitize_relative_path(path)?);
-                if self.symlinks == SymlinkPolicy::RestrictToRoot {
-                    ensure_within_root(root, &full).await?;
-                }
-                Ok(full)
-            }
-        }
-    }
-
-    fn resolve_sync(&self, path: &Path) -> io::Result<PathBuf> {
-        match &self.jail {
-            None => Ok(sanitize_path(path)?),
-            Some(root) => {
-                let full = root.join(sanitize_relative_path(path)?);
-                if self.symlinks == SymlinkPolicy::RestrictToRoot {
-                    ensure_within_root_sync(root, &full)?;
-                }
-                Ok(full)
-            }
-        }
+        self.0.open_sync(path)
     }
 }
 
@@ -802,73 +802,19 @@ impl OpenOptionsInner {
 /// Only the portion of `target` that already exists is canonicalized; the
 /// lexical sanitization already guarantees the not-yet-existing tail contains
 /// no `..` components.
-async fn ensure_within_root(root: &Path, target: &Path) -> io::Result<()> {
-    let canonical_root = canonicalize_root(root).await?;
-    ensure_within_canonical_root(&canonical_root, target).await
-}
-
-#[cfg(loom)]
-async fn canonicalize_root(root: &Path) -> io::Result<PathBuf> {
-    canonicalize_root_sync(root)
-}
-
-#[cfg(not(loom))]
-async fn canonicalize_root(root: &Path) -> io::Result<PathBuf> {
-    tokio::fs::canonicalize(root).await
-}
-
-#[cfg(loom)]
-async fn ensure_within_canonical_root(canonical_root: &Path, target: &Path) -> io::Result<()> {
-    ensure_within_canonical_root_sync(canonical_root, target)
-}
-
-#[cfg(not(loom))]
-async fn ensure_within_canonical_root(canonical_root: &Path, target: &Path) -> io::Result<()> {
-    if let Some(existing) = nearest_existing_ancestor(target).await {
-        let canonical_target = canonicalize_existing_path(&existing).await?;
-        if !canonical_target.starts_with(canonical_root) {
-            return Err(UnsafePathError::EscapesRoot.into());
-        }
-    }
-    Ok(())
-}
-
 fn ensure_within_root_sync(root: &Path, target: &Path) -> io::Result<()> {
-    let canonical_root = canonicalize_root_sync(root)?;
+    let canonical_root = fs::canonicalize(root)?;
     ensure_within_canonical_root_sync(&canonical_root, target)
 }
 
-fn canonicalize_root_sync(root: &Path) -> io::Result<PathBuf> {
-    fs::canonicalize(root)
-}
-
 fn ensure_within_canonical_root_sync(canonical_root: &Path, target: &Path) -> io::Result<()> {
-    if let Some(existing) = nearest_existing_ancestor_sync(target) {
-        let canonical_target = canonicalize_existing_path_sync(&existing)?;
+    if let Some(existing) = target.ancestors().find(|p| fs::symlink_metadata(p).is_ok()) {
+        let canonical_target = canonicalize_existing_path_sync(existing)?;
         if !canonical_target.starts_with(canonical_root) {
             return Err(UnsafePathError::EscapesRoot.into());
         }
     }
     Ok(())
-}
-
-#[cfg(not(loom))]
-async fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
-    match tokio::fs::canonicalize(path).await {
-        Ok(path) => Ok(path),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            if tokio::fs::symlink_metadata(path).await.is_ok() {
-                return Err(UnsafePathError::EscapesRoot.into());
-            }
-            Err(err)
-        }
-        Err(err) => Err(err),
-    }
-}
-
-#[cfg(loom)]
-async fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
-    canonicalize_existing_path_sync(path)
 }
 
 fn canonicalize_existing_path_sync(path: &Path) -> io::Result<PathBuf> {
@@ -884,33 +830,12 @@ fn canonicalize_existing_path_sync(path: &Path) -> io::Result<PathBuf> {
     }
 }
 
-/// Walk up from `path` until an existing path is found, returning it.
-#[cfg(not(loom))]
-async fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
-    let mut current = Some(path);
-    while let Some(candidate) = current {
-        if tokio::fs::symlink_metadata(candidate).await.is_ok() {
-            return Some(candidate.to_path_buf());
-        }
-        current = candidate.parent();
-    }
-    None
-}
-
-fn nearest_existing_ancestor_sync(path: &Path) -> Option<PathBuf> {
-    let mut current = Some(path);
-    while let Some(candidate) = current {
-        if fs::symlink_metadata(candidate).is_ok() {
-            return Some(candidate.to_path_buf());
-        }
-        current = candidate.parent();
-    }
-    None
-}
-
 #[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
+    use std::io::{Read as _, Seek as _};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
     use tokio::io::AsyncReadExt;
 
     async fn read_to_string(mut file: File) -> io::Result<String> {
@@ -926,7 +851,7 @@ mod tests {
     #[test]
     fn generated_temp_dirs_are_unique_prefixed_and_reject_path_prefixes() {
         let first = tempdir().unwrap();
-        let second = TempDir::with_prefix("rama-test.").unwrap();
+        let second = TempDir::with_prefix_sync("rama-test.").unwrap();
         assert_ne!(first.path(), second.path());
         assert!(
             second
@@ -939,10 +864,75 @@ mod tests {
 
         for prefix in ["", ".", "..", "nested/path"] {
             assert_eq!(
-                TempDir::with_prefix(prefix).unwrap_err().kind(),
+                TempDir::with_prefix_sync(prefix).unwrap_err().kind(),
                 io::ErrorKind::InvalidInput
             );
         }
+    }
+
+    #[test]
+    fn anonymous_tempfile_lives_until_last_handle_closes() {
+        let parent = tempdir().unwrap();
+        let directory = TempDir::with_prefix_in_sync("anonymous-", parent.path()).unwrap();
+        assert_eq!(directory.path().parent(), Some(parent.path()));
+        let mut writer = directory.anonymous_file_sync().unwrap();
+        writer.write_all(b"saved").unwrap();
+        #[cfg(unix)]
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+        let mut reader = writer.try_clone().unwrap();
+        drop(writer);
+        reader.rewind().unwrap();
+        let mut bytes = [0; 5];
+        reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"saved");
+        drop(reader);
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn canceled_tempdir_jobs_still_clean_up_their_resources() {
+        // Queue each operation behind a known blocker so cancellation falls
+        // between spawning the job and doing any filesystem work.
+        async fn cancel_after_start<T>(future: impl Future<Output = T>) {
+            let mut future = std::pin::pin!(future);
+            std::future::poll_fn(|cx| {
+                assert!(future.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        let parent = tempdir().unwrap();
+        let create = parent.path().join("create");
+        let close = parent.path().join("close");
+        runtime.block_on(async {
+            let directory = TempDir::create(&close).await.unwrap();
+            let pending = TempDir::with_prefix_in("opening-", parent.path())
+                .await
+                .unwrap();
+            let pending_path = pending.path().to_owned();
+            let file = parent.anonymous_file().await.unwrap();
+            drop(file);
+            let (release, gate) = std::sync::mpsc::channel();
+            let worker = tokio::task::spawn_blocking(move || gate.recv().unwrap());
+            cancel_after_start(TempDir::create(&create)).await;
+            cancel_after_start(pending.anonymous_file()).await;
+            drop(pending);
+            assert!(
+                pending_path.exists(),
+                "queued open still owns its private directory"
+            );
+            cancel_after_start(directory.close()).await;
+            release.send(()).unwrap();
+            worker.await.unwrap();
+        });
+        // Runtime shutdown joins the detached blocking operations.
+        drop(runtime);
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
     }
 
     struct SequenceRng {
@@ -967,7 +957,8 @@ mod tests {
             calls: 0,
         };
 
-        let directory = TempDir::with_prefix_in("test-".as_ref(), parent.path(), &mut rng).unwrap();
+        let directory =
+            TempDir::create_with_rng("test-".as_ref(), parent.path(), &mut rng).unwrap();
         assert_eq!(
             directory.path().file_name().unwrap(),
             "test-00000000000000030000000000000004"
@@ -983,7 +974,7 @@ mod tests {
             calls: 0,
         };
         assert_eq!(
-            TempDir::with_prefix_in("test-".as_ref(), &not_a_directory, &mut rng)
+            TempDir::create_with_rng("test-".as_ref(), &not_a_directory, &mut rng)
                 .unwrap_err()
                 .kind(),
             expected_error.kind()
@@ -1032,15 +1023,14 @@ mod tests {
     fn temp_dir_is_private_exclusive_and_recursively_removed() {
         let parent = tempdir().unwrap();
         let path = parent.path().join("guarded");
-        let directory = TempDir::create(path.clone()).unwrap();
+        let directory = TempDir::create_sync(path.clone()).unwrap();
         assert_eq!(directory.path(), path);
         fs::create_dir(path.join("nested")).unwrap();
         fs::write(path.join("nested/artifact"), b"temporary").unwrap();
-        TempDir::create(path.clone()).unwrap_err();
+        TempDir::create_sync(path.clone()).unwrap_err();
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(
                 fs::metadata(&path).unwrap().permissions().mode() & 0o777,
                 0o700
@@ -1055,20 +1045,23 @@ mod tests {
     fn temp_dir_close_reports_cleanup_and_missing_directory_is_tolerated() {
         let parent = tempdir().unwrap();
         let first = parent.path().join("first");
-        TempDir::create(first.clone()).unwrap().close().unwrap();
+        TempDir::create_sync(first.clone())
+            .unwrap()
+            .close_sync()
+            .unwrap();
         assert!(!first.exists());
 
         let second = parent.path().join("second");
-        let directory = TempDir::create(second.clone()).unwrap();
+        let directory = TempDir::create_sync(second.clone()).unwrap();
         fs::remove_dir(&second).unwrap();
-        directory.close().unwrap();
+        directory.close_sync().unwrap();
 
         let replaced = parent.path().join("replaced-by-file");
-        let directory = TempDir::create(replaced.clone()).unwrap();
+        let directory = TempDir::create_sync(replaced.clone()).unwrap();
         fs::remove_dir(&replaced).unwrap();
         fs::write(&replaced, b"not a directory").unwrap();
         assert_ne!(
-            directory.close().unwrap_err().kind(),
+            directory.close_sync().unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
         assert!(replaced.is_file());
@@ -1098,7 +1091,6 @@ mod tests {
 
         let text = {
             let mut s = String::new();
-            use std::io::Read as _;
             safe_open_sync(&path)
                 .unwrap()
                 .read_to_string(&mut s)
@@ -1303,8 +1295,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn open_options_private_created_file_has_no_group_or_other_bits() {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let root = tempdir().unwrap();
         let path = root.path().join("secret.txt");
         let _file = OpenOptions::new()
@@ -1326,15 +1316,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn open_options_sync_private_created_file_has_no_group_or_other_bits() {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let root = tempdir().unwrap();
         let path = root.path().join("secret.txt");
-        let _file = OpenOptionsSync::new()
+        let _file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
-            .open(&path)
+            .open_sync(&path)
             .unwrap();
 
         let mode = fs::metadata(&path).unwrap().permissions().mode();

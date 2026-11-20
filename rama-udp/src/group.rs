@@ -105,6 +105,13 @@ impl fmt::Debug for Path {
     }
 }
 
+impl Path {
+    fn stop(&self) {
+        (self.close)();
+        self.stopped.notify_waiters();
+    }
+}
+
 impl Wake for Path {
     fn wake(self: Arc<Self>) {
         self.wake_by_ref();
@@ -117,26 +124,27 @@ impl Wake for Path {
 }
 
 impl Shared {
+    fn update_retained_size(&self, paths: &HashMap<SocketAddress, Arc<Path>>) {
+        let size = paths
+            .values()
+            .map(|path| path.retained_size.load(Ordering::Acquire))
+            .max()
+            .unwrap_or(0);
+        self.retained_size.store(size, Ordering::Release);
+    }
+
     fn remove(&self, path: &Arc<Path>) {
         path.closed.store(true, Ordering::Release);
         let mut paths = self.paths.lock();
         if paths.get(&path.peer).is_some_and(|p| Arc::ptr_eq(p, path)) {
             paths.remove(&path.peer);
-            self.retained_size.store(
-                paths
-                    .values()
-                    .map(|path| path.retained_size.load(Ordering::Acquire))
-                    .max()
-                    .unwrap_or(0),
-                Ordering::Release,
-            );
+            self.update_retained_size(&paths);
             self.generation.fetch_add(1, Ordering::Release);
         }
         drop(paths);
 
         // Destroy transports and wake consumers outside the membership lock.
-        (path.close)();
-        path.stopped.notify_waiters();
+        path.stop();
         self.receiver.wake();
         self.changed.notify_waiters();
     }
@@ -186,6 +194,17 @@ impl DatagramGroup {
         &self,
         socket: S,
     ) -> Result<DatagramGroupAttachment<S>, DatagramError> {
+        self.attach_with_eviction(socket, None)
+            .map(|(attachment, _)| attachment)
+    }
+
+    /// Attach a path, evicting `evict_if_full` only if the candidate can be registered and
+    /// capacity requires it. Returns the peer actually evicted, if any.
+    pub fn attach_with_eviction<S: DatagramSocket>(
+        &self,
+        socket: S,
+        evict_if_full: Option<SocketAddress>,
+    ) -> Result<(DatagramGroupAttachment<S>, Option<SocketAddress>), DatagramError> {
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(DatagramError::Closed);
         }
@@ -275,31 +294,48 @@ impl DatagramGroup {
             )
             .into());
         }
-        if paths.len() >= self.shared.max_paths {
-            return Err(io::Error::new(
-                io::ErrorKind::StorageFull,
-                "datagram group path limit reached",
-            )
-            .into());
-        }
+        let evicted = if paths.len() >= self.shared.max_paths {
+            let path = evict_if_full
+                .and_then(|peer| paths.remove(&peer.into_canonical_ip_addr()))
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::StorageFull,
+                        "datagram group path limit reached",
+                    )
+                })?;
+            path.closed.store(true, Ordering::Release);
+            Some(path)
+        } else {
+            None
+        };
 
-        // Publish the path and its buffer requirement before waking the receiver.
-        self.shared.retained_size.fetch_max(
-            path.retained_size.load(Ordering::Acquire),
-            Ordering::Release,
-        );
         paths.insert(peer, path.clone());
+        if evicted.is_some() {
+            self.shared.update_retained_size(&paths);
+        } else {
+            self.shared.retained_size.fetch_max(
+                path.retained_size.load(Ordering::Acquire),
+                Ordering::Release,
+            );
+        }
         self.shared.generation.fetch_add(1, Ordering::Release);
         drop(paths);
 
+        let evicted = evicted.map(|path| {
+            path.stop();
+            path.peer
+        });
         self.shared.receiver.wake();
         self.shared.changed.notify_waiters();
 
-        Ok(DatagramGroupAttachment {
-            group: self.clone(),
-            _socket: socket,
-            path,
-        })
+        Ok((
+            DatagramGroupAttachment {
+                group: self.clone(),
+                _socket: socket,
+                path,
+            },
+            evicted,
+        ))
     }
 
     /// Detach a peer without affecting other paths, waking its attachment and pending senders.
@@ -488,12 +524,7 @@ impl DatagramSocket for DatagramSocketGroup {
                         // Retained prefixes are a setup cost only. Serialize with attach so
                         // consuming one prefix cannot hide a newly registered larger prefix.
                         let paths = self.shared.paths.lock();
-                        let size = paths
-                            .values()
-                            .map(|path| path.retained_size.load(Ordering::Acquire))
-                            .max()
-                            .unwrap_or(0);
-                        self.shared.retained_size.store(size, Ordering::Release);
+                        self.shared.update_retained_size(&paths);
                     }
 
                     return Poll::Ready(Ok(n));

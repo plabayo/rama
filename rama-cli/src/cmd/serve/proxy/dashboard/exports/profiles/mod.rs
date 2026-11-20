@@ -20,7 +20,7 @@ use rama::{
         },
     },
     utils::{
-        fs::{CreatedFilePermissions, OpenOptionsSync, TempDir},
+        fs::{CreatedFilePermissions, OpenOptions, TempDir},
         octets::kib,
     },
 };
@@ -122,14 +122,14 @@ impl StagedProfiles {
         horizon: u32,
         limits: ProfileArchiveLimits,
     ) -> Result<Self, BoxError> {
-        let staging = TempDir::with_prefix("rama-proxy-profiles-")?;
-        let file = OpenOptionsSync::new()
+        let staging = TempDir::with_prefix_sync("rama-proxy-profiles-")?;
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
             .jail(staging.path())
-            .open("profiles.json")?;
+            .open_sync("profiles.json")?;
         Ok(Self {
             file: ProfileArchiveWriter::new(
                 BufWriter::with_capacity(kib(16), file),

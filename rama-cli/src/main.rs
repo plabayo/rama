@@ -44,6 +44,8 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+// deferred variants only get their about (the args struct doc) when built, so `rama --help` lists them blank
+#[command(defer = false)]
 #[expect(
     clippy::large_enum_variant,
     reason = "Subcommand variants vary in size; reordering would change CLI semantics"
@@ -199,6 +201,30 @@ mod tests {
                 "{argv:?}"
             );
         }
+    }
+
+    #[test]
+    fn every_subcommand_is_described_in_its_parent_help() {
+        fn check(cmd: &mut clap::Command, path: &str) {
+            let help = cmd.render_help().to_string();
+            for sub in cmd.get_subcommands_mut() {
+                let name = sub.get_name().to_owned();
+                if name == "help" {
+                    continue;
+                }
+                let path = format!("{path} {name}");
+                let described = help.lines().any(|line| {
+                    let mut words = line.split_whitespace();
+                    words.next() == Some(name.as_str()) && words.next().is_some()
+                });
+                assert!(
+                    described,
+                    "`{path}` has no description in its parent's help"
+                );
+                check(sub, &path);
+            }
+        }
+        check(&mut Cli::command(), "rama");
     }
 
     #[test]

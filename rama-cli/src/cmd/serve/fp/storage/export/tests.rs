@@ -6,7 +6,7 @@ use rama::ua::profile::{
 
 #[test]
 fn export_publishes_complete_json_and_does_not_clobber_without_replace() {
-    let parent = TempDir::new().unwrap();
+    let parent = TempDir::new_sync().unwrap();
     let output = parent.path().join("profiles.json");
     StagedExport::create(
         output.clone(),
@@ -61,7 +61,7 @@ fn export_publishes_complete_json_and_does_not_clobber_without_replace() {
 
 #[test]
 fn bounded_or_invalid_exports_publish_nothing_and_remove_staging() {
-    let parent = TempDir::new().unwrap();
+    let parent = TempDir::new_sync().unwrap();
     let output = parent.path().join("profiles.json");
     match StagedExport::create(
         output.clone(),
@@ -112,7 +112,7 @@ fn bounded_or_invalid_exports_publish_nothing_and_remove_staging() {
 
 #[test]
 fn embed_publishes_a_bounded_compiled_set() {
-    let parent = TempDir::new().unwrap();
+    let parent = TempDir::new_sync().unwrap();
     let input = parent.path().join("profiles.json");
     let output = parent.path().join("embed_profiles.bin");
     StagedExport::create(
@@ -163,7 +163,7 @@ fn embed_publishes_a_bounded_compiled_set() {
 
 #[test]
 fn compact_recompiles_a_compiled_set_without_excluded_user_agents() {
-    let parent = TempDir::new().unwrap();
+    let parent = TempDir::new_sync().unwrap();
     let input = parent.path().join("profiles.json");
     let compiled = parent.path().join("embed_profiles.bin");
     let filtered = parent.path().join("filtered.bin");
@@ -273,7 +273,7 @@ fn export_orders_selected_scopes_canonically() {
     evidence
         .scopes
         .sort_unstable_by_key(|scope| std::cmp::Reverse(scope.scope.id));
-    let parent = TempDir::new().unwrap();
+    let parent = TempDir::new_sync().unwrap();
     let output = parent.path().join("profiles.json");
     StagedExport::create(
         output.clone(),

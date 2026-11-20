@@ -64,7 +64,7 @@ fn verify_literal_versions(provider: &dyn QuicClientConfigProvider) {
 #[cfg(feature = "boring")]
 #[test]
 fn boring_emits_literal_reserved_versions_in_v1_and_v2() {
-    verify_literal_versions(&crate::tls::BoringTlsProvider);
+    verify_literal_versions(&crate::tls::BoringTlsProvider::new());
 }
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]

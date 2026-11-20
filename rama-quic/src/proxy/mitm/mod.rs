@@ -18,8 +18,8 @@ use rama_core::{
 use rama_crypto::{
     dep::boring::{
         ssl::{
-            AsyncSelectCertError, BoxCertificateFinish, CertificateSelection, GreaseValues,
-            SelectCertError, SslCredential, SslRef, UnknownValues,
+            AsyncSelectCertError, BoxCertificateFinish, CertificateSelection, SelectCertError,
+            SslCredential, SslRef,
         },
         x509::X509,
     },
@@ -33,7 +33,10 @@ use rama_net::{
 };
 use rama_quic_proto::{
     ConnectionId, Side, VarInt,
-    capture::{CaptureLimits, RawParameter, transport_parameters_iter_from_hello},
+    capture::{
+        CaptureCompleteness, CaptureLimits, QuicObservation, RawParameter,
+        transport_parameters_from_hello, transport_parameters_iter_from_hello,
+    },
     coding::{BufExt, Codec as _},
     crypto::CryptoError,
     peek::PeekedClientHello,
@@ -44,13 +47,12 @@ use rama_quic_proto::{
     transport_parameters::{TransportParameterId, TransportParameters},
     version::{ClientVersionPolicy, ReservedVersionGrease},
 };
-#[cfg(test)]
-use rama_tls::client::ClientHello;
 use rama_tls::{
+    SecureTransport,
     client::TlsClientConfig,
     server::{ServerAuthData, TlsServerConfig},
 };
-use rama_tls_boring::client::{BoringClientConfigExt as _, ServerAnswerRecorder};
+use rama_tls_boring::client::ServerAnswerRecorder;
 use rama_tls_boring::proxy::{
     cert_issuer::BoringMitmCertIssuer,
     client_auth::{
@@ -158,6 +160,12 @@ impl QuicMirrorCeiling {
 ///
 /// The origin sees the client's own first flight as far as this relay can reproduce it; see
 /// [`Self::with_mirror_client`].
+///
+/// The accepted ingress connection carries what was peeked, as the TLS MITM relay publishes
+/// its ClientHello: the client's ClientHello as a [`SecureTransport`] and its original
+/// attempt as a [`QuicObservation`] (transport parameters, and the first flight through the
+/// datagram that completed the ClientHello when the peek retained it). The raw handshake
+/// bytes are not kept; requests served over the connection resolve both.
 ///
 /// An origin requesting a client certificate is answered by the [`TlsMitmClientAuthPolicy`]
 /// (a flow's own extension overrides the relay's): its plan configures the ingress handshake,
@@ -416,6 +424,10 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
             .or_else(|| self.client_auth.clone())
             .map(|policy| (policy, ingress.extensions().clone()));
 
+        // Published on the accepted ingress connection, as the TLS relay publishes its hello.
+        let observation = peeked_observation(&peeked);
+        let client_hello = SecureTransport::with_client_hello(peeked.client_hello.clone());
+
         let origin = Arc::new(Mutex::new(None::<Origin>));
         let failure_code = self.failure_code;
         // An origin reached for a client that is not accepted after all learns why. One paused
@@ -465,6 +477,8 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
         if let Some(attempt) = &attempt {
             attempt.established(&ingress_connection);
         }
+        ingress_connection.extensions().insert(client_hello);
+        ingress_connection.extensions().insert(observation);
         let mut close_ingress = close_on_drop(&ingress_connection, failure_code);
         let (negotiated, client_auth) = {
             let mut origin = origin.lock();
@@ -682,7 +696,7 @@ where
             ClientConfig::try_from_rama_tls_with_provider(
                 &tls,
                 TlsOptions::default(),
-                &BoringTlsProvider,
+                &BoringTlsProvider::new(),
             )
         };
         // The configured egress TLS layers over the mirror: its trust and every
@@ -692,9 +706,8 @@ where
                 "QUIC MITM mirrors the ClientHello without values the native engine cannot negotiate"
             );
             client_config(
-                TlsClientConfig::new_from_client_hello(&self.peeked.client_hello)
-                    .with_unknown_values(UnknownValues::Drop)
-                    .with_grease_values(GreaseValues::Pinned)
+                BoringTlsProvider::new()
+                    .mirror_client_hello(&self.peeked.client_hello)
                     .with_overrides(self.relay.egress_tls.as_extensions()),
             )
         });
@@ -944,6 +957,29 @@ where
                 async move { self.reach_origin().await },
             )))
         })
+    }
+}
+
+/// The peeked original attempt as a server capture records it: the first flight through the
+/// datagram that completed the ClientHello, whose raw handshake bytes the peek does not keep.
+fn peeked_observation(peeked: &PeekedClientHello) -> QuicObservation {
+    let parameters =
+        transport_parameters_from_hello(&peeked.client_hello, &CaptureLimits::default());
+    let retained = peeked.first_flight.is_some();
+    QuicObservation {
+        connection_id: Vec::new(),
+        attempt_id: Vec::new(),
+        retry_parent: None,
+        first_flight: peeked.first_flight.clone(),
+        completeness: CaptureCompleteness {
+            datagrams: retained,
+            frames: retained,
+            client_hello: true,
+            transport_parameters: parameters.is_ok(),
+            original_attempt: true,
+        },
+        transport_parameters: parameters.unwrap_or_default(),
+        client_hello_message: Vec::new(),
     }
 }
 

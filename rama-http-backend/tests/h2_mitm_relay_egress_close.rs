@@ -91,6 +91,7 @@ enum Middleware {
     Propagate,
     /// Like the relay's default middleware: errors become a `502`.
     ConsumeErrors,
+    CustomError,
     /// Follows redirects, so one request can make several egress hops.
     FollowRedirects,
 }
@@ -243,6 +244,23 @@ async fn harness_in_scope(
         match middleware {
             Middleware::Propagate => {
                 relay
+                    .with_http_middleware((gate, ArcLayer::new()))
+                    .serve(io)
+                    .await
+            }
+            Middleware::CustomError => {
+                relay
+                    .with_error_response(|ctx| {
+                        assert_eq!(
+                            ctx.reason,
+                            rama_http_backend::proxy::mitm::RelayErrorReason::NeverProcessed
+                        );
+                        let response = rama_http::Response::new(rama_http::Body::empty());
+                        response
+                            .extensions()
+                            .insert(rama_http_types::proto::h2::ext::ResetStream(Reason::CANCEL));
+                        response
+                    })
                     .with_http_middleware((gate, ArcLayer::new()))
                     .serve(io)
                     .await
@@ -601,7 +619,7 @@ async fn requests_above_egress_goaway_last_stream_are_refused_with_default_middl
 /// refusal is passed on (retry safe) and both connections stay usable.
 #[tokio::test(start_paused = true)]
 async fn egress_refused_stream_is_refused_on_ingress() {
-    let mut h = harness_with(EgressMode::Eager, Middleware::ConsumeErrors).await;
+    let mut h = harness_with(EgressMode::Eager, Middleware::CustomError).await;
     let mut origin = h.origin().await;
 
     let refused = h.send_post("/submit", b"a=1").await;

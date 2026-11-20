@@ -193,7 +193,7 @@ async fn rustls_stream_policy_is_independent_of_boring_quic() {
         .with_default_dns_connector()
         .with_default_proxy_support()
         .with_tls_support_using_rustls(tls)
-        .with_quic_tls_provider(Arc::new(BoringTlsProvider))
+        .with_quic_tls_provider(Arc::new(BoringTlsProvider::new()))
         .with_default_http_connector()
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
@@ -222,7 +222,7 @@ async fn conditional_ech_reliance_uses_each_selected_backend_capability() {
             .with_default_dns_connector()
             .without_proxy_support()
             .with_tls_support_using_rustls(tls)
-            .with_quic_tls_provider(Arc::new(BoringTlsProvider))
+            .with_quic_tls_provider(Arc::new(BoringTlsProvider::new()))
             .with_default_http_connector()
             .without_connection_pool()
             .build_client();

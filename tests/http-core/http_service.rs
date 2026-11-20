@@ -2313,7 +2313,7 @@ async fn http3_connector_rustls_cache_tracks_mutated_defaults() {
 #[cfg(feature = "boring")]
 #[tokio::test]
 async fn http3_connector_boring_cache_tracks_mutated_defaults() {
-    check_http3_config_cache_tracks_mutated_defaults(Arc::new(BoringTlsProvider)).await;
+    check_http3_config_cache_tracks_mutated_defaults(Arc::new(BoringTlsProvider::new())).await;
 }
 
 #[cfg(feature = "rustls")]
@@ -2325,7 +2325,7 @@ async fn http3_connector_rustls_reuses_compatible_resumption_state() {
 #[cfg(feature = "boring")]
 #[tokio::test]
 async fn http3_connector_boring_reuses_compatible_resumption_state() {
-    check_http3_connector_resumption(Arc::new(BoringTlsProvider)).await;
+    check_http3_connector_resumption(Arc::new(BoringTlsProvider::new())).await;
 }
 
 #[tokio::test]

@@ -91,7 +91,7 @@ impl Default for HeapReader {
 
 impl From<Bytes> for HeapReader {
     fn from(data: Bytes) -> Self {
-        Self::new(data.to_vec())
+        Self::new(data.into())
     }
 }
 

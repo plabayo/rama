@@ -51,7 +51,7 @@ async fn exchange(connection: &Connection, bytes: usize) {
     assert_eq!(recv.read_to_end(bytes).await.unwrap(), payload);
 }
 
-async fn sample(scenario: Scenario) -> Sample {
+async fn sample(scenario: Scenario, payload_bytes: usize) -> Sample {
     let scope = rama_core::graceful::Scope::new();
     let weak_scope = scope.clone_weak();
     let mitm = identity();
@@ -105,7 +105,7 @@ async fn sample(scenario: Scenario) -> Sample {
         policy,
     });
     let bridge = PeekQuicClientHelloService::new(
-        BoringTlsProvider,
+        BoringTlsProvider::new(),
         DatagramToProxyBridge::new(relay, origin_address),
     );
     let routed = bridge.clone().with_router(ingress);
@@ -161,7 +161,7 @@ async fn sample(scenario: Scenario) -> Sample {
             .unwrap()
             .await
             .unwrap();
-        exchange(&connection, 1024 * 1024).await;
+        exchange(&connection, payload_bytes).await;
         let port = client.local_addr().unwrap().port();
         let ingress = observed
             .lock()
@@ -248,7 +248,7 @@ async fn sample(scenario: Scenario) -> Sample {
                 let conn = connection.clone();
                 transfers.spawn(async move {
                     let start = Instant::now();
-                    exchange(&conn, 1024 * 1024).await;
+                    exchange(&conn, payload_bytes).await;
                     start.elapsed().as_secs_f64() * 1000.0
                 });
             }
@@ -258,9 +258,10 @@ async fn sample(scenario: Scenario) -> Sample {
         }
         steady += phase_start.elapsed();
     }
-    // Count application bytes in both directions: 4 phases * 4 streams * 1 MiB * 2.
-    let total_mib_s = (32.0 * scenario.connections as f64) / total.elapsed().as_secs_f64();
-    let steady_mib_s = (32.0 * scenario.connections as f64) / steady.as_secs_f64();
+    // Four phases, four streams per connection and an echo in each direction.
+    let mib = 32.0 * scenario.connections as f64 * payload_bytes as f64 / (1024.0 * 1024.0);
+    let total_mib_s = mib / total.elapsed().as_secs_f64();
+    let steady_mib_s = mib / steady.as_secs_f64();
     let ingress_mtu = observed
         .lock()
         .iter()
@@ -371,7 +372,7 @@ async fn compare_native_relay_migration() {
     for round in 0..=rounds {
         for offset in 0..selected.len() {
             let index = selected[(round + offset) % selected.len()];
-            let measured = timeout(Duration::from_secs(60), sample(cases[index]))
+            let measured = timeout(Duration::from_secs(60), sample(cases[index], 1024 * 1024))
                 .await
                 .unwrap();
             if round == 0 {
@@ -394,13 +395,16 @@ async fn compare_native_relay_migration() {
 async fn retired_peer_tuple_can_move_to_another_independent_connection() {
     timeout(
         Duration::from_secs(15),
-        sample(Scenario {
-            migration: true,
-            policy: false,
-            connections: 2,
-            rebinds: 1,
-            reuse_peer: true,
-        }),
+        sample(
+            Scenario {
+                migration: true,
+                policy: false,
+                connections: 2,
+                rebinds: 1,
+                reuse_peer: true,
+            },
+            1024,
+        ),
     )
     .await
     .unwrap();

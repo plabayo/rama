@@ -5,6 +5,1049 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+# 0.5.0
+
+> Release date: `2026-11-19`
+
+In the 0.5.0 release, Rama adds support for QUIC, h3 (HTTP/3) and MASQUE
+proxies. It was tracked as issue #14 since December 2023, and we now support it
+for clients, servers and proxies (incl. peek and relay support). The existing
+HTTP types `Request`, `Response` and `Body` are used for h3, just like they work
+for HTTP/1 and h2. You can connect to h3 servers by use of prior knowledge (e.g.
+setting the `TargetHttpVersion`) or by making use of the Alt-Svc and DNS HTTPS
+discovery support that is now also available for your own network stacks as
+well as built into the `EasyHttpWebClient`.
+
+On top of that foundation comes MASQUE, with the new `rama-masque` crate: proxying
+UDP (CONNECT-UDP) and IP (CONNECT-IP) over HTTP/1.1, HTTP/2 and HTTP/3, a
+CONNECT-UDP proxy hardened for untrusted networks, a MITM relay for MASQUE
+sessions, and CLI support to serve and use CONNECT-UDP proxies. Encrypted Client
+Hello (ECH) is supported on BoringSSL clients and servers, over TCP and QUIC.
+
+User-agent emulation was redesigned around a new profile system. Profiles are
+captured from real browsers and retain counted observations and bounded samples
+of the variants a browser sends (header orders, TLS extension orders, SETTINGS).
+They cover QUIC (incl. TLS), ECH and HTTP/3 next to TLS-over-TCP, HTTP/1.1 and
+HTTP/2, and ship as a precompiled embedded set. The public fingerprinting
+services expose the matching QUIC and HTTP/3 data.
+
+Graceful shutdown was rebuilt as well. Rama's own scopes replace the `Executor`
+and the `tokio-graceful` guards: a scope is cancelled to drain and aborted to
+stop, and every server, client and relay takes one. This is the breaking change
+most existing (rama user) code will have to adapt to.
+
+The `rama` CLI proxy grew into an interception tool with a live web inspector,
+interception rules and a scriptable API, backed by the new `rama-inspect` crate.
+This cycle also adds ICAP (`rama-icap`), the `rama inspect` TUI for HAR and qlog
+files, platform TLS verification, staged client authentication for the TLS MITM
+relay, a rebuilt HTTP client connection pool, and a stabilised Apple Network
+Extension transparent proxy.
+
+The README, book and website now show how Rama's services and layers fit
+together in a network stack, with examples of building clients, servers and
+proxies from the same components.
+
+Please read **Breaking API Changes** before upgrading, and
+**Migrating from User-Agent Emulation to Profiles** if you use `rama::ua`. As
+always, this changelog calls out the user-visible work; the code diff is the
+authoritative source of truth.
+
+### Community
+
+Thank you to everyone who contributed code, reviews, documentation, testing,
+bug reports, ideas, and production feedback during the 0.5 cycle. This release
+includes work from Glen De Cauwsemaecker, Brecht Stamper, Abdelkader Boudih,
+Maarten Deprez, Julián Montes de Oca, Attila Nagy, Ivan Porto Carrero, and Yann
+(yfe404). Thank you also to Tudor Timcu for the field report and proposed fix
+behind the Apple Network Extension sleep/wake recovery work (#1308, #1309),
+Attila Nagy for reporting the DNS burst overflow (#1218), Ivan Porto Carrero
+for the mTLS use cases behind staged client authentication (#1200), Yann for
+reporting the missing `trust_anchors` extension (#1195), and Maarten Deprez for
+reporting the missing `ExtensionsRef` forwarding (#1306).
+
+Rama also builds on the work of the upstream projects it maintains forks or
+ports of. Four sync rounds this cycle (#1139, #1241, #1298, #1318, and the h2
+sync in #1239) brought in fixes from hyper, h2, h3, http, http-body,
+http-body-util, hyper-util, headers, tower-http, axum, tonic, tungstenite,
+lol-html, quinn, quinn-udp, and rustls-native-certs, credited in those commits
+to: 0x676e67,
+Aaron Todd, Aashish Thapa, aiqubits, Alex (ragen1337), Alex Butler, Alexander
+(AlexanderHD27), Alexander Kjäll, Almaz, Andrea Bozzo, Andrei Gheorghe, André
+Cruz, Ariel Ben-Yehuda, Benjamin Saunders, Bill Fraser, Breeze, brentechols,
+Brian Schroeder, Bugen Zhao, Chen Hongzhi, Choudhry Shehryar, ChrisJr404,
+Christoph Sens, cui (cuiweixie), cui fliter, CyberneticX-Tech, Dahale Aditya
+Dnyaneshwar, Dan Bondarenko, darkuss, David Mládek, David Pedersen, David
+Tolnay, Denis Cornehl, Dihan Nahdi, Diogo Sousa, Dirkjan Ochtman, Dmitry
+Adamushka, Dmitry B., Dmitry Marakasov, Dominic Rubas, dox4, dswij, Endale
+Dinh, Erick Tryzelaar, Evgenii Shutov, f3ath, Falk Woldmann Lu, Feldt, Florian
+Uekermann, Frank Taylor, Gavin D., Ignacio Goldchluk, Jacob Thrane Lund,
+jaeminbird, Jaideep Pyne, James (jg-rp), Jan (Threated), Jayakumar Thanakodi,
+Jeremy Schoemaker, jeremyjpj0916, Jess Izen, Jindřich Bär, Joey de Waal, Jonas
+Platte, Joseph Dye, K-tecchan, karanabe, katelyn martin, kaze, Lars Eggert,
+Laurence Rowe, Leo Camus, Lethe Lee, LoadingALIAS, Lorenz Leutgeb, Lucio
+Franco, Luke Curley, Luke Parker, Martin Trigaux, Mathieu (4Mathleu), Mathieu
+Tricoire, Max Inden, Minh Vu, Mira Sato, Muhamad Awad, Muhammed Çiçekel,
+Nakaryo, Nanasi, Nathan Jaremko, Nathaniel Ford, Nor.na, Paolo Barbolini,
+Patrick Hintermayer, Patrik Wenger, PeterUlb, Phoenix K, Reiner Pope, Robert
+Kiel, ruben (Ruben2424), Rémi Berson, Sabnock, Sai Asish Y, Sam Hitz, Sean
+Lynch, Sean McArthur, Seungtaek Oh, Shai (Shaisolaris), shodoco, Shuvro Roy,
+subotac, syszery, t0ms, tangaac, Temporary Fix, Thomas Eizinger, Tim Vilgot
+Mikael Fredenberg, Tobias Bieniek, Toshit Chawda, tottoto, Toyeshh Medikonda,
+Trivikram Kamat, ump45nose, Vaibhav Srivastava, Vaiz, vcarus, vishal-770, vk
+(kv-cache), vvvviiv, WaterWhisperer, xd009642, Yann Simon, Yusuke Tanaka,
+zerox80, Árni Dagur, Örjan Fors, and 赤坂理子.
+
+Thank you also to our GitHub Sponsors for directly funding Rama development,
+and to our commercial partners for funding a significant part of the work in
+this cycle. If you want to support Rama, you can become a
+[GitHub Sponsor](https://github.com/sponsors/plabayo). If your organisation is
+looking for a long-term partner around proxies, protocol work, support,
+training, or custom integrations, see [ramaproxy.com](https://ramaproxy.com).
+
+### Highlights
+
+* **Native QUIC transport**: `rama-quic` is a Rama-owned QUIC v1 and v2 stack
+  on BoringSSL or Rustls with 0-RTT, connection migration and qlog, checked
+  against the QUIC interop runner as client and server; `rama-quic-proto` holds
+  the engine-free wire layer (#1172, #1182, #1191, #1281, #1337, #1345).
+* **HTTP/3**: a Rama-native HTTP/3 and QPACK engine behind the usual Rama
+  types, with Alt-Svc and DNS HTTPS discovery in the default client, Extended
+  CONNECT, WebSockets and HTTP datagrams over HTTP/2 and HTTP/3, early data with
+  `425` recovery, and HTTP/3 in `rama serve` and the public services (#1192,
+  #1198, #1228, #1232, #1304, #1350).
+* **MASQUE**: `rama-masque` proxies UDP (CONNECT-UDP) and IP (CONNECT-IP) over
+  HTTP/1.1, HTTP/2 and HTTP/3, with a CONNECT-UDP proxy that denies private
+  destinations by default and enforces per-principal limits, and CLI support on
+  both ends (#1274, #1277, #1287, #1295).
+* **Encrypted Client Hello**: BoringSSL clients offer real ECH from DNS HTTPS
+  records or preknowledge, over TCP and QUIC, with one authenticated retry;
+  servers accept it with reloadable keys, and profiles capture and replay it
+  (#1350, #1354).
+* **Graceful scopes**: `Scope` and `WeakScope` replace `Executor` and the
+  `tokio-graceful` guards with a cancellation tree that drains first and aborts
+  second, used by every server, client, pool and relay (#1317, #1330, #1335).
+* **Browser profiles**: emulation moved to `ProfileEmulateLayer` and counted,
+  multi-variant profiles that cover QUIC, ECH and HTTP/3, ship as a compiled
+  embedded set, and are managed with `rama ua` (#1234, #1258, #1282, #1286,
+  #1313, #1320, #1354).
+* **Interactive MITM proxy**: `rama serve proxy --mitm` serves a live inspector
+  with capture, export, interception rules and a scriptable API, built on the
+  new `rama-inspect` crate; `rama inspect` views HAR and qlog files (#1135,
+  #1160, #1163, #1175).
+* **ICAP**: `rama-icap` adds an ICAP client, server and HTTP adaptation layer,
+  `rama serve icap` and `--icap` in the proxy (#1136, #1142, #1143).
+* **Trust and TLS fidelity**: platform certificate verification, SPKI deny
+  lists, staged client authentication in the TLS MITM relay, closer BoringSSL
+  ClientHello replay, and reassembly of fragmented ClientHellos (#1209, #1234,
+  #1276, #1303, #1313).
+* **Protocol hardening**: one header limit and strict field validation across
+  HTTP/1.1, HTTP/2 and HTTP/3, adaptive server deadlines, panic-free header
+  decoding, bounded decompression and multipart, and a safety proof for every
+  `unsafe` block (#1217, #1241, #1291, #1321, #1340, #1355).
+* **Foundations**: a rebuilt client connection pool, constant-time `Extensions`
+  forks with connection-scoped values for tunnels, richer errors, and peeking
+  that judges both sides of a connection without timers (#1239, #1305, #1331,
+  #1351).
+* **Apple Network Extension**: bounded memory, fail-open refusals, explicit
+  egress proxy policy, intact large uploads, and flow recovery across sleep/wake
+  (#1153, #1159, #1243, #1272, #1309).
+
+### Getting Started with QUIC, HTTP/3 and MASQUE
+
+* **Cargo features**: enable `quic` on the `rama` crate together with a QUIC
+  capable TLS backend: `boring`, or `rustls` with `ring` or `aws-lc`. The
+  `http-full` feature now includes `quic` and `masque`, so `http-full` plus
+  `boring` (or `rustls` and `ring`) is enough for HTTP/3 and MASQUE. The engine
+  lives at `rama::quic` (wire types at `rama::quic::proto`), the HTTP/3 engine
+  at `rama::http::core::h3` and MASQUE at `rama::proxy::masque`.
+* **Client**: with those features, `EasyHttpWebClient::default()` discovers
+  HTTP/3 from DNS HTTPS records and `Alt-Svc`, and falls back to the origin
+  connection when an alternative fails. Set `.version(Version::HTTP_3)` on a
+  request to require HTTP/3 without fallback. Custom stacks add HTTP/3 with
+  `Http3Connector::builder(scope)` and
+  `EasyHttpConnectorBuilder::with_http3_support(connector)`, and opt out of
+  discovery with `.without_https_discovery()` and `.without_alt_svc()`.
+* **Server**: `HttpServer::new_http3(scope)` serves a normal Rama HTTP service
+  on a `rama::quic::Endpoint` (`ServerConfig::try_from_rama_tls` builds the QUIC
+  server config from a Rama TLS server config with the `h3` ALPN). Serve
+  HTTP/1.1 and HTTP/2 on TCP as before and advertise HTTP/3 with an `Alt-Svc`
+  response header (`AltSvc`, `AlternativeService`).
+* **Examples** (`cargo run -p rama-examples --bin <name> --features ...`):
+  `quic_client_server` and `quic_terminating_relay` (`quic` plus a backend),
+  `http3_client_server`, `ws_over_h3`, `http_datagram_echo` and
+  `http_early_data` (`http-full` plus a backend), `http_version_proxy`,
+  `quic_h3_mitm_proxy`, `masque_connect_udp_proxy` and `http_ech_preknowledge`
+  (`http-full,boring`), and `http_https_discovery_custom_resolver`
+  (`http-full,boring,dns-hickory`).
+* **CLI**: `rama send --http3 https://echo.ramaproxy.org` requires HTTP/3, and
+  `rama send --http3 wss://...` runs a WebSocket over HTTP/3. Without `--http3`,
+  `rama send` may still select HTTP/3 through discovery; `--no-alt-svc` turns
+  Alt-Svc off. `rama serve echo|fp|http-test|ip` serve HTTP/3 next to HTTP/1.1
+  and HTTP/2 whenever TLS is enabled (`--http-version`, `--h3-bind`). The public
+  `echo`, `ipv4`, `http-test` and `fp` services at `ramaproxy.org` speak HTTP/3.
+* **MASQUE**: `rama serve proxy --bind 127.0.0.1:8443 --protocol masque` serves
+  a CONNECT-UDP proxy, and
+  `rama send --http3 -x masque://127.0.0.1:8443 --proxy-insecure <URL>` sends an
+  HTTP/3 request through it. `--proxy-insecure` is only needed because that
+  local proxy generates its own certificate; use `--proxy-cacert FILE` or a
+  trusted certificate otherwise. In Rust, start from
+  `rama::proxy::masque::connect_udp` (`ConnectUdpService` to serve,
+  `ConnectUdpConnector` to open tunnels as UDP sockets) or
+  `DefaultHttpWebClient::default_masque_with_scope` for web requests through a
+  `masque://` proxy.
+* **ECH**: the default client with BoringSSL offers real ECH when the HTTPS
+  record of an origin carries a configuration, and reports the outcome as
+  `TlsEchAccepted`. Use `EchRequirement::Required` to fail instead of connecting
+  without it, and `TlsClientConfig::with_encrypted_client_hello(false)` to turn
+  it off. Servers install keys with `with_ech_keys`; `rama serve echo|fp` read
+  them from `RAMA_TLS_ECH_KEYS_FILE`.
+* **Docs**: the book has chapters on [QUIC](https://ramaproxy.org/book/quic.html),
+  [HTTP/3](https://ramaproxy.org/book/http/http3.html),
+  [HTTP clients](https://ramaproxy.org/book/http/http_clients.html) (Alt-Svc,
+  HTTPS discovery and ECH),
+  [early data](https://ramaproxy.org/book/http/early_data.html),
+  [MASQUE](https://ramaproxy.org/book/proxies/masque.html) and
+  [QUIC MITM across changing flows](https://ramaproxy.org/book/proxies/quic_migration.html).
+  `rama-quic/README.md` documents backends, handshake budgets and benchmarks.
+* **Current limits**: WebTransport is not supported yet. Server push exists only
+  in the low-level HTTP/3 engine (off by default) and relays refuse it. Alt-Svc
+  entries are kept in memory only, and named-proxy routes skip HTTPS discovery
+  unless asked. Real (inner) ECH needs BoringSSL. The CLI serves CONNECT-UDP
+  only; CONNECT-IP is a library API without a platform TUN integration (planned
+  for the next release). A Rustls QUIC client offers a single QUIC version
+  (BoringSSL clients can negotiate up to QUIC v2 mid-handshake). Early data is
+  sent and accepted natively over QUIC and HTTP/3 only.
+
+### Recommendations
+
+* **Plan the move to graceful scopes first**: every constructor that took an
+  `Executor` now takes a scope, so this touches most applications. Create one
+  root `Scope`, pass `WeakScope`s to servers and clients, bound a connection's
+  lifetime with `ScopeLayer` (instead of `TimeoutLayer`), and finish with
+  `scope.join()`. The
+  [graceful shutdown](https://ramaproxy.org/book/intro/graceful.html) chapter
+  walks through it (#1317).
+* **Pick your features deliberately**: `http-full` now builds QUIC, HTTP/3
+  and MASQUE, and no longer includes user-agent support. Add `ua` (or
+  `ua-embed-profiles` for the embedded profile set) when you use `rama::ua`. If
+  you want an HTTP stack without QUIC, start from `http-backend` plus `tcp`,
+  `dns` and a TLS backend instead of `http-full` (#1258, #1293).
+* **Decide what a client may reveal and link**: like a browser,
+  `DefaultHttpWebClient` looks up DNS HTTPS records, learns alternative
+  services and resumes TLS sessions (with BoringSSL also over TCP), which lets
+  servers link connections made by one client. Use
+  `.without_https_discovery()`, `.without_alt_svc()` or a client without a
+  session store where that matters (#1198, #1234, #1350).
+* **Add the response headers you rely on**: servers no longer add `Date` on
+  their own. Wrap services that should send `Date` and `Server` in
+  `AddRequiredResponseHeadersLayer` (#1355). Call `header::set_identity` at
+  startup to use your product name in both `Server` and `User-Agent` across
+  Rama. Use `Server::default()` and `UserAgent::default()` for typed headers
+  or `header::identity_header()` for the raw value. All three default to
+  `rama/<version>`. Explicit layer settings take precedence. The default 502
+  generated by `HttpMitmRelay` includes `Date`. Use `with_error_response` to supply its
+  status, headers and body. Its `x-proxy-framework` header carries the same
+  identity and replaces `x-proxy-framework-name` and `x-proxy-framework-version`.
+* **Configure `Forwarded` for your deployment**: client information is now read
+  from the nearest (rightmost) hop by default, the safe choice when the
+  leftmost values are client-supplied. Behind a known chain of proxies, install
+  a `ForwardedSelectionPolicy` with `with_hops` or `with_trusted_proxies`; with
+  trusted proxies, forwarding headers only count when the connection's peer is
+  one of them (#1228, #1340).
+* **Make strict SNI routing strict**: for routing that must not be bypassed,
+  combine `MalformedTlsPolicy::Reject` with `PeekPolicy::FAIL_CLOSED` on
+  `PeekTlsClientHelloService` / `SniRouter`, and bound how long a silent client
+  may hold the connection through its scope, since peeking no longer has a
+  timeout of its own. QUIC ClientHello peeking defaults to best-effort
+  passthrough; select `QuicPeekFallbackPolicy::NOT_QUIC` when unparseable QUIC
+  must not reach the fallback (#1303, #1331).
+* **Keep MASQUE destinations scoped**: the default `DestinationScopePolicy`
+  refuses loopback, private, link-local and other special-purpose ranges, and
+  the proxy's own address. Only open them (`--masque-allow-private`, or explicit
+  `ConnectUdpRules`) for the networks you intend to expose, and set
+  `TunnelLimits` per principal on shared proxies (#1287).
+* **Only send early data you can replay**: HTTP early data stays off unless
+  enabled, and clients only send safe, bodyless requests early. On servers, use
+  `require_confirmed` for routes that are not replay-safe: it waits for the
+  current hop's handshake to confirm and answers `425 Too Early` when exposure
+  was inherited from an earlier hop. Gateways use `forward_to` with the selected
+  origin's early-data capability (#1304).
+* **Bound the platform verifier**: OS verification can block on network
+  fetches (revocation, intermediate fetching) and cannot be cancelled. Size the
+  blocking pool and bound concurrent handshakes accordingly (#1276).
+* **Load profile databases once**: the embedded profile set takes a noticeable
+  amount of memory when decoded. Build one `UserAgentDatabase` and share it as
+  an `Arc` across layers and clients (#1282).
+
+### Breaking API Changes
+
+Rama remains below 1.0, so a `0.x` minor release may change public APIs. The
+items below are the main migration points, ordered roughly by how many users
+they affect. They are not an exhaustive symbol-by-symbol inventory; users with
+a broad public-API footprint should also inspect the `rama-0.4.0..rama-0.5.0`
+diff once the release tag is published. The minimum supported Rust version
+stays at 1.96 and the edition at 2024.
+
+* **Graceful scopes replace `Executor`**: `rama::rt::Executor` and the
+  `tokio-graceful` re-exports in `rama::graceful` (`Shutdown`, `ShutdownGuard`)
+  are gone. `rama::graceful::Scope` is a cancellation tree with a graceful
+  phase (cancelled: stop taking work and drain) and a hard phase (aborted: drop
+  what still runs); a `WeakScope` observes a scope without keeping its drain
+  open. Every API that took an `Executor` now takes `impl Into<WeakScope>`:
+  `HttpServer::auto`, `TcpListener::bind_address`,
+  `with_default_http_connector`, `IoForwardService::new`, the upgrade and MITM
+  relay layers, the SOCKS5 acceptor, and the Apple Network Extension handler
+  hooks. `*_with_executor`
+  and `default_with_exec` constructors became `*_with_scope`. To migrate,
+  replace `Shutdown::default()` and `Executor::graceful(guard)` with
+  `Scope::new().with_default_signal().with_grace(..)`, hand `scope.clone_weak()`
+  to servers and clients, spawn with `scope.spawn_task(..)`, and end with
+  `scope.join().await`. Use `WeakScope::detached()` where `Executor::default()`
+  was used, `ScopeLayer` (`with_max_age`, `with_grace`) to bound a connection,
+  `spawn_task_to_completion` for work that must finish, and `rama::rt::spawn`
+  for detached tasks; `spawn_task` now yields `None` when the hard phase drops
+  the task. `GracefulIo` and `CancelIo` became `AbortableIo` (#1317, #1330,
+  #1335).
+* **Cargo features**: `http` no longer enables `ua`, and `http-full` no longer
+  enables `ua-embed-profiles`; add those features explicitly when you use
+  `rama::ua` or the embedded profiles. `http-full` now enables `quic` and
+  `masque`. The `rama-net` crate lost its `http` feature (its HTTP helpers only
+  need `std`) and its `venndb` feature, `rama_net::test_utils` needs the new
+  `test-utils` feature, and `multipart` no longer enables `hyperium`.
+  `rama::http::server` and the backend parts of `rama::http::proxy` only need
+  `http-backend` (#1146, #1188, #1258, #1293, #1328, #1348).
+* **User-agent emulation**: `UserAgentEmulate*` became `ProfileEmulate*` on a
+  new profile model; see **Migrating from User-Agent Emulation to Profiles**
+  below (#1258, #1282).
+* **HTTP client pool**: `EasyHttpConnectorBuilder::try_with_connection_pool`
+  became the infallible `with_connection_pool`. `HttpPooledConnectorConfig`
+  replaced `max_total` and `max_concurrent_streams` with optional
+  `NonZeroUsize` limits (`max_connections_total`, `max_streams_per_connection`,
+  `max_connections_per_id`, `max_idle_per_id`, `max_idle_total`,
+  `max_connecting_per_id`) plus `saturation_policy`, `max_wait_before_dial` and
+  `http1_body_drain`, and `build_default_connector`/`try_build_connector` became
+  `build_connector`, `build_connector_with_identifier` and `build_pool`.
+  `MultiplexPool::new()` takes no arguments (use its builder methods), custom
+  `Pool` implementations gain `abandon` plus `input`/`deadline` arguments, and
+  `ConnID` now requires `Eq + Hash`. `BasicHttpConnIdentifier`/`BasicHttpConId`
+  became `HttpConnIdentifier`/`HttpConnId`, with a protocol-agnostic
+  `rama_net::client::pool::{BasicConnIdentifier, BasicConnId}` beside them.
+  Defaults changed too: no total cap (0.4 capped the pool at 50 connections
+  across all origins), streams per connection decided by the peer, a 90 s idle
+  timeout (was 300 s), and abandoned HTTP/1 bodies are drained for reuse (#1142,
+  #1146, #1176, #1239, #1254).
+* **Default web client behaviour**: clients built through
+  `EasyHttpConnectorBuilder` learn `Alt-Svc` advertisements and, with `quic`,
+  look up DNS HTTPS records, and may use an alternative service for HTTPS
+  requests; opt out with `.without_alt_svc()` and `.without_https_discovery()`.
+  `DefaultHttpWebClient` also configures HTTP/3 when `quic` and a QUIC-capable
+  TLS backend are enabled (now the case for `http-full` plus `boring`, or
+  `rustls` with `ring` or `aws-lc`), resumes TLS sessions, and with BoringSSL
+  offers ECH when a record carries a configuration. Custom builders install
+  HTTP/3 with `with_http3_support` or `with_http3_connector`. The
+  `DefaultHttpWebClient` type alias changed accordingly (#1198, #1234, #1350).
+* **No automatic `Date` header**: HTTP/1.1, HTTP/2 and HTTP/3 servers relay
+  responses as written and no longer add `Date`; `auto_date_header` was removed.
+  Add `AddRequiredResponseHeadersLayer` (it adds `Date` and `Server` when
+  missing) or your own layer (#1355). That layer now takes a typed `Server`
+  header: `with_server` replaces `with_server_header_value`.
+* **HTTP limits and validation**: received headers share one default limit of
+  1 MiB and 4096 fields on HTTP/1.1, HTTP/2 and HTTP/3, answered with `431`
+  when exceeded (0.4 allowed 100 fields on HTTP/1.1 and a 16 KiB list on
+  HTTP/2). Invalid field names and values make a message malformed on every
+  version, and on HTTP/2 and HTTP/3 a field value with leading or trailing
+  whitespace is answered `400` and reset. `max_local_error_reset_streams` became
+  `refused_stream_budget(Option<RateBudget>)`, by default a burst of 1000
+  regained at 33 per second; `RateBudget::lifetime(1024)` approximates the old
+  count. SSE and NDJSON decoders cap a line at 16 MiB by default
+  (`without_max_line_len`, `without_max_event_len`, `without_max_line_bytes` to
+  lift it) (#1340, #1355).
+* **HTTP server deadlines**: HTTP/1.1 and HTTP/2 servers now apply an adaptive
+  header-read deadline (`HeaderReadTimeout`: 10 s grace, then a 256 B/s floor up
+  to a 60 s ceiling) and an idle deadline (`IdleTimeout`: 10 s before the first
+  request, 90 s between requests) by default. `header_read_timeout` takes
+  `Option<HeaderReadTimeout>` instead of a `Duration`; pass `None` to disable,
+  and use `idle_timeout(..)` to change how long an unused connection may stay
+  open between requests. Open requests, streamed responses, WebSockets and
+  tunnels pause the idle clock (#1241, #1297).
+* **Peeking without timeouts**: `PeekTimeoutPolicy`, `with_peek_timeout` and
+  `with_peek_timeout_policy` were removed from `PeekRouter`, `TlsPeekRouter`,
+  `PeekTlsClientHelloService`, `SniRouter`, `Socks5PeekRouter` and
+  `HttpPeekRouter`, together with the `HttpPeekConfig` timeout fields and the
+  `peek_input_until*` helpers. A waiting peek now ends when the input's scope
+  is cancelled or aborted, or when the other side of a bridge cuts it, and a
+  `PeekPolicy` (`FAIL_OPEN` by default, `FAIL_CLOSED` where 0.4 used
+  `PeekTimeoutPolicy::FailClosed`) decides between fallback and failure. Drop
+  the timeout and bound the connection's scope instead. `SniRouter` is built on
+  `PeekTlsClientHelloService` and hands handlers the peeked input, and custom
+  `PeekIoProvider` implementations expose both sides (`peek_ios_mut`) (#1324,
+  #1331, #1355).
+* **Connection-scoped extensions**: a CONNECT, SOCKS5 or CONNECT-UDP tunnel is
+  a nested connection, on clients and servers. Values scoped to a connection,
+  such as `SecureTransport`, `NegotiatedTlsParameters`, `TargetHttpVersion`,
+  `MaxConcurrency` and `EstablishedProxyRoute`, no longer resolve from inside
+  the tunnel, so facts about the proxy hop stop answering for the tunnelled
+  connection. Read the hop with `Extensions::outer_connection()`, or carry a
+  value across with `with_nested_connection_transfer(..)`. Your own types opt in
+  with `#[extension(scope(connection))]` (#1351, by Brecht Stamper; #1355).
+* **`Forwarded` client information**: the `Forwarded::client_*` accessors
+  became the `ForwardedClientExt` extension trait (`forwarded_client_ip()`,
+  `forwarded_client_socket_addr()`, ...) available on anything with extensions,
+  and the default now reads the nearest (rightmost) hop instead of the leftmost.
+  Use `Forwarded::client(&policy)` or install a `ForwardedSelectionPolicy` to
+  pick another side or trust a known number of proxies. `XForwardedHost` and
+  `XForwardedProto` now hold every value (`into_protocols()` replaces
+  `into_protocol()`) (#1228).
+* **Proxy credentials and hop-by-hop headers**: `SetProxyAuthHttpHeaderLayer`
+  and its service were removed. The HTTP connector now inserts
+  `Proxy-Authorization` only on an established HTTP forward-proxy route and
+  strips it elsewhere; `with_forward_proxy_auth(false)` disables the insertion,
+  while credentials are still stripped on other routes. Custom proxy connectors
+  must publish `EstablishedProxyRoute` in the established connection's
+  extensions, and intermediaries should set
+  `with_isolate_forward_proxy_auth_error(true)` on their egress client.
+  `RemoveRequestHeaderLayer::hop_by_hop()` and its response counterpart no
+  longer remove `Proxy-Authorization`/`Proxy-Authenticate` (use the new
+  `proxy_auth()` modes) and re-originate `TE: trailers` and valid upgrade
+  headers for the next hop; `hop_by_hop_strict()` also removes the upgrade and
+  `TE` envelope, and is combined with `proxy_auth()` when proxy authentication
+  fields must go too. `ProxyAuthLayer` consumes `Proxy-Authorization` after
+  authenticating unless `with_preserve_header(true)` is set. The
+  `remove_hop_by_hop_*` helpers moved to `rama::http::header::hop_by_hop`
+  (#1150, #1158).
+* **Authorizers fail closed**: an empty list of `Authorizer`s now rejects every
+  credential, where 0.4 accepted all. Use `Option<A>` with `None` for "open
+  when unconfigured" (#1340).
+* **Moved and renamed types**: `ApplicationProtocol` and `TlsAlpn` moved from
+  `rama::tls` to `rama::net::tls`. URI match-replace moved from
+  `rama::net::http::uri` to `rama::net::uri`. The upgrade token `Protocol`
+  moved from `proto::h2::ext` to `rama::http::proto::ext`, is shared by
+  HTTP/1.1 upgrades and HTTP/2 and HTTP/3 Extended CONNECT, and is built with
+  `TryFrom<&str>` (or the `WEBSOCKET`, `CONNECT_UDP` and `CONNECT_IP` constants)
+  instead of `From<&str>`. `ServerTrustRoots` became `ServerTrustSource`
+  (`Default` is now `Native`, with a new `Platform` variant), with
+  `TlsServerTrust::native_roots()`, `source()` and `with_source()` replacing
+  `default_roots()`, `roots()` and `with_roots()`. The HTTP layer's
+  `TimeoutError` became `rama::error::TimeoutError` (#1146, #1228, #1276,
+  #1347).
+* **`SocketInfo`** is a shared cell that QUIC updates after connection
+  migration, so it is no longer `Clone`. Copy `info.address_pair()` (a
+  `SocketAddresses` value) where you cloned it before; `local_addr()` and
+  `peer_addr()` are unchanged (#1260).
+* **TLS clients and the MITM relay**: the ECH switch moved from
+  `BoringClientConfigExt` to `TlsClientConfig::with_encrypted_client_hello`
+  (`TlsEncryptedClientHello`); left unset, a capable client now offers real ECH
+  when a configuration is known, and `false` keeps the 0.4 default of no ECH.
+  `Ja3`/`Ja4::compute_from_client_hello` and `TlsProfile::compute_ja3`/
+  `compute_ja4` no longer take a negotiated version; values now follow the JA3
+  and JA4 specifications and can differ from 0.4 for the same hello.
+  `TlsMitmRelay` now fails the egress handshake when the upstream asks for a
+  client certificate and no client-auth policy is set, applies a 30 s handshake
+  deadline (`without_handshake_timeout()` to opt out), and
+  `TlsMitmRelayErrorKind` gained `ClientAuth` and `Timeout`.
+  `parse_client_hello_handshake` rejects trailing bytes (#1209, #1234, #1303,
+  #1313).
+* **DNS and connector targets**: `DnsResolver` now also requires
+  `DnsCnameResolver` and `DnsServiceBindingResolver`; custom resolvers
+  implement both (an empty stream is fine when unsupported). TXT lookups yield
+  one `rama_dns::wire::Txt` per record instead of raw `Bytes`.
+  `ConnectorTargetStream::new` also takes the target it belongs to (#1146,
+  #1350).
+* **Upgrades and prefixed IO**: HTTP/2 upgraded streams no longer carry the
+  handshake message's extensions, and `HttpUpgradeMitmRelay` only transfers
+  values placed in `HttpUpgradeMitmRelayExtensions`. Upgrade `Parts` gained a
+  `read_err` field that callers of `Upgraded::downcast` should check, and
+  `Rewind`/`PrefixedIo` may return replayed and inner bytes in one read. The
+  `IoBufMut::as_uninit` method was replaced by `as_mut_slice` and `spare_mut`
+  (#1169, #1216, #1291).
+* **Strict and case-sensitive values**: closed-set enums built with
+  `enum_builder!` can now be strict. `CrossOriginEmbedderPolicyValue`,
+  `CrossOriginOpenerPolicyValue`, `CrossOriginResourcePolicy`,
+  `PerMessageDeflateIdentifier` and the SOCKS5 `ProtocolVersion`,
+  `UsernamePasswordSubnegotiationVersion` and `AddressType` lost their
+  `Unknown` variant and convert with `TryFrom`/`FromStr`; the COEP, COOP and
+  CORP tokens match case-sensitively. WebSocket subprotocols must be RFC 6455
+  tokens and match case-sensitively (#1143, #1290).
+* **Files and forms**: `ServeDir` no longer serves dot-prefixed or hidden
+  entries, except `.well-known`; restore them with `with_allowed_hidden_kinds`.
+  Multipart forms are limited to 1000 parts by default (`with_max_parts`),
+  `Field::headers()` returns `&HeaderMap`, and `Multipart::from_body` takes the
+  boundary as bytes. `HeaderFromStrConfigLayer` selects its repeat mode with a
+  type parameter (`Single` or `Repeated<C>`) instead of `with_repeat` (#1314,
+  #1321, #1328).
+* **HTTP service details**: a tuple response such as `(StatusCode, X)` now keeps
+  the error status when `X` fails to convert (use `ForceStatusCode` to force the
+  outer status); body extractors answer `413` when a body limit is hit and `408`
+  when reading the body times out; `ReadSignals` reads the `datastar` query
+  parameter for `DELETE` and treats a missing parameter as `null`; `localhost`
+  and `*.localhost` resolve to loopback without consulting a custom resolver
+  unless a request-level resolver override is set; `RetryBody::into_bytes`
+  returns a `Result`; the HTML tokenizer returns `TokenizerError`, and the
+  rewriter fails a body when a single construct exceeds 4 MiB
+  (`with_max_buffered_bytes`, `MemoryLimitPolicy`); SOCKS5 `write_to_buf` and
+  the OpenTelemetry exporter's `HeaderBag::merge` return a `Result` (#1132,
+  #1140, #1143, #1301, #1304, #1321, #1355).
+* **`TlsTunnel`** gained `application_protocol` and `alpn`, so the TLS spoken
+  with an intermediary is configured apart from the final origin's TLS. Add
+  `application_protocol: None, alpn: None` to existing literals to keep the
+  tunnel connector's base policy, or set the intermediary's protocol and ALPN
+  explicitly. Custom tunnel connectors should read `TlsTunnel::from_extensions`,
+  so settings chosen by routing (`TlsTunnelRoute`) override request settings
+  (#1142, #1158).
+* **Struct literals and exhaustive matches**: several public structs gained
+  fields, such as `ProxyAddress` (`template`, for MASQUE URI templates),
+  `NegotiatedTlsParameters`, the Boring and Rustls connector and acceptor
+  configs, `SocketOptions`, `H2ClientContextParams`, `H2ServerContextParams`,
+  Datastar `PatchElements` and the RSS feed and item extensions. Enums such as
+  `HttpMatcherKind`, `HttpProxyError`, `WebSocketRelayEvent`,
+  `ClientHelloExtension`, `Ja4ComputeError` and `XpcError` gained variants. Use
+  `..Default::default()` and wildcard arms where possible (#1132, #1133, #1142,
+  #1143, #1172, #1228, #1232, #1234, #1258, #1274, #1355).
+* **Apple Network Extension**: `NwEgressParameters::allow_system_proxy` (and its
+  C field) is now `allow_proxy`; blocking a system or PAC proxy as strongly as
+  possible needs the opt-in SwiftPM trait `PrivateNetworkProxyControl`, which
+  uses private Apple API and is not suitable for App Store builds. Provider-side
+  refusals now default to `FlowRefusalAction::Passthrough` (configure `Block` to
+  fail closed), a 500 live-flow cap and writer and UDP memory budgets are on by
+  default, the `transparent_proxy_ffi!` `init` callback receives an owned
+  `TransparentProxyInitConfig`, handler hooks, `TransparentProxyServiceContext`
+  and `TcpFlow` expose a `WeakScope` instead of an `Executor`, the C UDP
+  read-demand callback takes a `probe_id`, `BytesOwnedView` fields are private,
+  and the Swift package needs Swift tools 6.1. Rebuild the Rust static library
+  and the Swift package from the same Rama revision (#1153, #1159, #1166, #1243,
+  #1291, #1312, #1317, #1345).
+* **Other platform APIs**: `XpcMessage::Fd` owns its descriptor
+  (`Arc<OwnedFd>`). `MmdbReader::open_mmap` is now `unsafe` because a mapped
+  file modified underneath is undefined behaviour, and `IpGeoDb::from_env` and
+  `parse_spec` read the database into memory; use the new positional reader
+  (`from_env_positional`) or the explicit `unsafe` mmap constructors.
+  `process::pid_path` and `pid_arguments` are no longer `unsafe` (#1291).
+* **Dependencies re-exported by Rama**: `rama::graceful` no longer re-exports
+  `tokio-graceful`. dial9 moved from `dial9-tokio-telemetry` 0.3 to `dial9`
+  0.5; `with_dial9_config` became `with_dial9_recorder` plus
+  `with_dial9_attach_options`, and `--cfg tokio_unstable` is optional (#1147, by
+  Julián Montes de Oca). The OpenTelemetry re-exports moved to `opentelemetry`
+  0.33 and `tracing-opentelemetry` 0.34, and `rama::tls::boring::core`
+  re-exports rama-boring 0.7, a breaking release with soundness fixes.
+* **Network and CLI defaults**: `TCP_NODELAY` is on for TCP sockets Rama
+  creates (set `tcp_no_delay` in `SocketOptions` to change it). The proxy
+  started by `rama serve proxy` serves HTTP and SOCKS5 on `--bind` by default
+  and no longer limits a connection's lifetime (`--timeout` defaults to `0`,
+  was 8 s); pass `--protocol http` and `--timeout 8` for behaviour close to
+  0.4. On every `rama serve` command `--timeout` now starts a drain at that age
+  and drops the connection `--timeout-grace` later (5 s by default).
+  `--http-version auto` on `rama serve echo|fp|http-test|ip` adds HTTP/3 when
+  TLS is on. `rama send` uses discovery by default and `--http3` requires
+  HTTP/3 with no fallback.
+  `rama send` and `rama probe tls` verify with the platform verifier by
+  default; use `--cacert`, `--proxy-cacert` or `SSL_CERT_EXTRA_FILE` for private
+  CAs. No 0.4 subcommand or flag was removed (#1135, #1143, #1198, #1232, #1276,
+  #1317, #1318, #1350).
+
+### Migrating from User-Agent Emulation to Profiles
+
+In 0.4 it was one row per user agent: one HTTP/1.1 header order, one
+HTTP/2 configuration and one ClientHello, inserted as `HttpProfile` and
+`TlsProfile` request extensions and replayed by separate layers. Real user
+agents such as (web) browsers do not behave like that. One browser version sends
+two or three header orders for the same kind of request, permutes or varies its
+TLS extensions, and speaks QUIC and HTTP/3 with their own transport parameters,
+SETTINGS and QPACK behaviour. Some clients never use HTTP/1.1 or HTTP/2 at all.
+A fixed row either replays one variant forever, which is itself a fingerprint,
+or has to be filled with Rama defaults where the capture had nothing.
+
+0.5 therefore keeps profiles as counted evidence. A captured profile retains
+counted observations and bounded samples of the connection and request variants
+a browser sent for each transport it used, and selection weighs them by how
+often they were seen. Selection is capability-aware: no protocol layer is
+mandatory, and a missing layer is never filled with Rama defaults. Variants are
+drawn per connection and per request, optionally seeded for reproducibility.
+Replay goes through backend compilers for TLS over TCP (BoringSSL), QUIC with
+TLS over QUIC, HTTP/2 and HTTP/3. Anything the stack cannot reproduce is lowered
+to native behaviour and listed in a `ProfilePreservationReport` instead of
+failing the request. The embedded set is analysed when it is exported and ships
+as a compiled, compressed binary, so loading it only decodes.
+
+* **Layers** (under `rama::ua::layer::emulate`): `UserAgentEmulateLayer` is now
+  `ProfileEmulateLayer`, `UserAgentEmulateService` is `ProfileEmulateService`
+  (built by the layer), `UserAgentEmulateHttpConnectModifier[Layer]` is
+  `ProfileEmulateHttpConnectModifier[Layer]`, and
+  `UserAgentEmulateHttpRequestModifier[Layer]` is
+  `ProfileEmulateHttpRequestModifier[Layer]`. `PreserveHeaderUserAgent` moved
+  here from `profile`, next to the new `PreserveClientHints`.
+* **Sources and fallback**: `UserAgentProvider` is now `ProfileSource`,
+  implemented for `UserAgentDatabase`, `Arc`, `Box` and `Either*`.
+  `UserAgentSelectFallback::{Abort, Random}` is now
+  `ProfileSelectFallback::{Abort, SameClient, Any}`; `Random` maps to `Any`, or
+  to `SameClient` to stay on the same browser.
+* **Database and profiles**: `profile::UserAgentDatabase` moved to
+  `profile::selection::database::UserAgentDatabase` (`try_embedded`,
+  `try_from_json_slice`, `select`, `candidates`). `UserAgentProfile` moved to
+  `profile::model::ua` and holds captured, analysed data instead of `http` and
+  `tls` fields; build rows with `profile::format::input::UserAgentProfileInput`.
+  `HttpProfile`, `Http1Profile`, `Http2Profile`, `HttpHeadersProfile` and
+  `RequestClientHints` were removed; `Http1Settings` and `Http2Settings` live in
+  `profile::model::http`, `RequestInitiator` in `profile::model::runtime_hints`,
+  and `try_load_embedded_profiles` in `profile::format::input`.
+* **TLS replay**: `EmulateTlsProfileLayer` was removed; the profile layer does
+  not insert a `TlsProfile` for it to act on. Register
+  `rama::tls::boring::client::profile::compiler::ConnectionProfileCompiler` on
+  the connect modifier instead, built from the same base `TlsClientConfig` as
+  the TLS connector:
+  `ProfileEmulateHttpConnectModifier::new(connector).with_connection_compiler(..)`,
+  placed with `map_connector` right after `with_tls_support_using_boringssl`.
+  Keep `ProfileEmulateHttpRequestModifierLayer` as a just-in-time layer on the
+  client, as before. To send one known ClientHello without a profile, write
+  `TlsClientConfig::new_from_client_hello(&hello)` onto the request.
+* **HTTP/3 replay**: wrap an `Http3Connector` (built with
+  `BoringTlsProvider::new()` as TLS provider) in the same connect modifier, with
+  `rama::quic::profile::replay::ConnectionProfileCompiler` as compiler, and
+  install it with its DNS layer through `with_http3_connector`;
+  `with_http3_support` only accepts the unwrapped built-in connector. The `ua`
+  feature enables both compilers.
+* **Relays and proxies**: on a relay that forwards requests over connections it
+  did not open through the profile connector, use
+  `ProfileEmulateRelayRequestModifierLayer`. The `http_mitm_proxy_emulate_boring`
+  example shows a MITM proxy that re-sends through an emulating client and
+  picks the profile from proxy-auth labels (`ProfileSelectorUsernameParser`).
+* **Behaviour to know about**: without a user agent and without a fallback, 0.5
+  draws any profile weighted by observations, where 0.4 selected nothing. A
+  request whose kind the profile never captured replays the nearest captured
+  flow and keeps the caller's `Sec-Fetch-*` headers. An invalid input header
+  order is ignored instead of failing the request. `is_optional(true)` also
+  covers connection preparation, which then connects natively.
+* **CLI and your own profiles**: `rama send --emulate` takes an optional
+  profile file (`--emulate=profiles.json`), defaults to the embedded set and
+  falls back to the same browser (`SameClient`) instead of a random one.
+  0.4-style JSON rows load with `UserAgentDatabase::try_from_json_slice`; use
+  `rama ua export` and `rama ua compact` to build your own sets, as described
+  in [capturing your own profiles](https://ramaproxy.org/book/intro/user_agent_capture.html).
+  `rama send`'s client in `rama-cli` is a complete example of the TCP and
+  HTTP/3 wiring.
+
+### Added
+
+* **QUIC** (`rama-quic`, `rama-quic-proto`, feature `quic`):
+  * Added a native QUIC transport for clients and servers: QUIC v1 and v2 with
+    compatible version negotiation, streams and RFC 9221 datagrams, session
+    resumption, 0-RTT, connection migration, path MTU discovery, graceful
+    shutdown, qlog, OpenTelemetry metrics and dial9 coverage. `Endpoint::serve`
+    serves accepted connections through a Rama `Service` (#1172, #1191, #1249,
+    #1287, #1288, #1299, #1337).
+  * It runs on BoringSSL or Rustls (`ring` or `aws-lc`), with injectable TLS
+    providers for other backends. Every backend runs the QUIC interop-runner
+    cases as client and server, and in the benchmark matrix
+    (`just rama-quic/bench-matrix`) the BoringSSL backend matches or beats
+    quic-go in the measured cases (#1182, #1281).
+  * Added the engine-free `rama-quic-proto` crate with the wire codec, version
+    and transport parameter types, first-flight capture and typed
+    `QuicProfile`s (#1191).
+  * Added proxy building blocks in `rama::quic::proxy`: ClientHello peeking,
+    admission, transparent relays, and a BoringSSL MITM relay that follows a
+    client's connection across UDP and platform flows, with an explicit policy
+    for how ingress and egress react to network changes. Like the TLS relay, it
+    publishes the client's ClientHello on the connection it accepts, together
+    with the QUIC first flight (#1258, #1303, #1345, #1355).
+  * QUIC connections publish `SocketInfo` (updated after migration),
+    `NegotiatedTlsParameters` and `QuicConnectionInfo` in their extensions,
+    like the TCP TLS connectors do (#1260, #1265, #1271, #1280, by Brecht
+    Stamper).
+* **HTTP/3 and HTTP datagrams**:
+  * Added an HTTP/3 client and server (RFC 9114) with a stateful QPACK codec
+    (RFC 9204), priorities (RFC 9218), two-phase GOAWAY shutdown, trailers and
+    connection coalescing: `HttpServer::new_http3`, `Http3Connector` and
+    `EasyHttpConnectorBuilder::with_http3_support`, sharing the multiplex pool
+    with HTTP/2. The engine is generic over its QUIC transport (#1192, #1198,
+    #1258, #1264, #1340; #1283 and #1293 by Brecht Stamper).
+  * Added service discovery for HTTP clients: `Alt-Svc` (typed headers, HTTP/2
+    `ALTSVC` frames, `AltSvcLayer`, `AltSvcCache`) and DNS HTTPS records
+    (`HttpsServiceLayer`), which supply HTTP/3 endpoints, address hints and ECH
+    configurations. Both are on in the default web client, with per-attempt
+    timeouts, backoff and origin fallback; `Alt-Used` is only sent on request
+    (#1146, #1198, #1294, #1350, #1355).
+  * Added Extended CONNECT over HTTP/2 (RFC 8441) and HTTP/3 (RFC 9220),
+    WebSockets over HTTP/3 through the normal `rama-ws` APIs, and HTTP Datagrams
+    with the Capsule Protocol (RFC 9297) on HTTP/1.1, HTTP/2 and HTTP/3
+    (`rama::http::datagram`); a relay can move capsules onto the next hop's
+    native datagrams (#1228, #1231; #1339 by Brecht Stamper).
+  * Added HTTP early data with `425 Too Early` recovery: per-request
+    `EarlyDataPermit`/`ForbidEarlyData`, client retry helpers, server and
+    gateway gates, a typed `Early-Data` header, and exposure preserved across
+    HTTP versions and ICAP. Everything stays handshake-first unless enabled
+    (#1304).
+  * Added HTTP/1.1, HTTP/2 and HTTP/3 conversion in proxies, with WebSockets
+    relayed across versions (#1263).
+* **MASQUE** (`rama-masque`, feature `masque`, `rama::proxy::masque`):
+  * Added CONNECT-UDP (RFC 9298) over HTTP/1.1, HTTP/2 and HTTP/3, with native
+    QUIC datagrams or capsules: `ConnectUdpService`, `ConnectUdpConnector`, URI
+    templates, `masque://` proxy addresses, the typed `Proxy-Status` header, and
+    `DefaultHttpWebClient::default_masque_with_scope` to run HTTP/3 through a
+    tunnel. The proxy denies private and special-purpose destinations by
+    default (NAT64-aware) and has tunnel and per-principal limits, traffic
+    budgets, audit events that never log identities, and OpenTelemetry metrics
+    (#1274, #1287, #1340).
+  * Added CONNECT-IP (RFC 9484): scopes, address and route capsules, IP
+    datagrams, a deny-by-default `ConnectIpPolicy`, and
+    `ConnectIpService`/`ConnectIpConnector`/`ConnectIpSession`, backed by a new
+    `rama::net::ip` packet API (#1295).
+  * Added a MITM relay for a client's own CONNECT-UDP sessions on every HTTP
+    version (`connect_udp::mitm`) (#1277).
+  * Added `rama serve proxy --protocol masque` with its `--masque-*` options,
+    MASQUE upstream chaining, and `rama send -x masque://...` (#1274).
+* **UDP and networking** (`rama-udp`, `rama-net`, `rama-tcp`):
+  * Added packet-oriented datagram sockets (`DatagramSocket`,
+    `UdpPacketSocket`) with ECN, packet info, batching and segmentation,
+    adapted from quinn-udp, plus forwarding, demultiplexing, peeking and bounded
+    socket-group building blocks and an in-memory test backend (#1152, #1258,
+    #1345).
+  * Added network availability tracking (`rama::net::availability`) and opt-in
+    recovery of UDP forwarding after a network change (`DatagramRecovery`)
+    (#1345, #1355).
+  * Added binding a socket to an interface by index
+    (`SocketOptions::interface_index`) (#1355).
+  * Added `PostedRecv` (`rama_tcp::posted_recv`) to keep data a peer sent right
+    before a TCP reset on Windows, and bounded lingering close for HTTP/1
+    servers and `IoForwardService` (#1212).
+* **TLS, ECH and trust**:
+  * Added Encrypted Client Hello on BoringSSL, over TCP and QUIC. Clients take
+    configurations from HTTPS discovery, `TargetEchConfigLayer` or
+    preknowledge, choose opportunistic or required use with `EchRequirement`,
+    report the outcome as `TlsEchAccepted`, and retry once after an
+    authenticated rejection. Servers install reloadable keys
+    (`ReloadableEchServerKeys`, `with_ech_keys`), and the TLS MITM relay offers
+    ECH upstream when it has a configuration (#1350, #1354).
+  * Added the operating system's certificate verifier for BoringSSL and Rustls
+    clients (`TlsClientConfig::with_platform_verifier`), extra roots through
+    `SSL_CERT_EXTRA_FILE` and `SSL_CERT_EXTRA_DIR`, and reject-only chain
+    policies such as `DistrustedServerKeys` (SPKI deny lists) (#1276).
+  * Added staged client authentication to the BoringSSL `TlsMitmRelay`: a
+    per-connection `TlsMitmClientAuthPolicy` verifies the ingress client and then
+    selects the upstream credential (#1209, superseding #1202, co-authored by
+    Ivan Porto Carrero).
+  * Added bounded reassembly of ClientHellos fragmented across TLS records, with
+    a `MalformedTlsPolicy` for TCP and QUIC peeking (#1303).
+  * Added BoringSSL ClientHello controls for key shares, signature-scheme
+    GREASE, per-handshake extension permutation, requested trust anchors and
+    TLS 1.2 tickets, and opt-in TLS session resumption for clients and servers
+    (#1234, building on #1196 by Yann).
+* **Profiles, emulation and fingerprinting** (`rama-ua`, `rama-fp`):
+  * Added the profile system: capture, counted evidence, analysis, variant
+    selection with seeds and pins, and replay for TLS over TCP and QUIC, QUIC
+    transport parameters, ECH, HTTP/1.1, HTTP/2 and HTTP/3. Requests of a kind a
+    profile never captured replay the nearest captured flow, and a
+    `ProfilePreservationReport` lists what could not be reproduced (#1258,
+    #1313, #1320, #1354).
+  * Added a compiled embedded profile set and the `rama ua` command (`parse`,
+    `export`, `compact`, `view`, `compare`) (#1258, #1282, #1329).
+  * Added `rama send --emulate[=FILE]` with initiator, seed and variant
+    options, `rama send --next` to send several curl-style requests over one
+    client, and `ProfileSelectorUsernameParser` to pick a profile from
+    proxy-auth labels (#1135, #1258, #1313).
+  * Added profile capture from desktop Safari, iOS simulators and Firefox on
+    Android, same-site and cross-site captures in fp, and a guide to capturing
+    your own profiles (#1282, #1286, #1320).
+  * The echo and fp services report HTTP/3 SETTINGS, QPACK and pseudo-header
+    order, the QUIC first flight and transport parameters, TLS over QUIC, ECH
+    acceptance, and how JA3, JA4 and PeetPrint compare with the recorded
+    profile for that user agent (#1258, #1281, #1286, #1354).
+  * Added typed `Sec-Fetch-Dest`, `Sec-Fetch-Mode`, `Sec-Fetch-User`,
+    `Sec-Purpose` and `X-Requested-With` headers and a `FetchMetadata`
+    extractor (#1289, #1290).
+* **Proxying, MITM and inspection**:
+  * Added MITM and a live web inspector to `rama serve proxy` (`--mitm`):
+    encrypted, bounded captures of HTTP(S) and WebSocket traffic, including
+    HTTP/3 tunnelled through MASQUE, HAR and profile export, curl export, replay
+    over TCP or QUIC with the captured ClientHello, interception with approval,
+    edits, local responses and rules (`--intercept`), and host discovery without
+    decryption (`--mitm-scope`). The proxy is multi-protocol
+    (`--protocol http,https,socks5`) with upstream and system proxy support
+    (#1135, #1160).
+  * Added the `rama-inspect` crate (`rama::inspect`): inspection sessions,
+    typed interception waits, subscriptions, streaming memory and file stores,
+    search and timelines, with adapters in the HTTP, WebSocket, TLS, UA and
+    crypto crates, and `--inspect-json` plus a bearer-token HTTP API to script
+    the CLI inspector (#1163; storage conformance harness #1206 by Abdelkader
+    Boudih).
+  * Added `rama inspect` to view HAR and qlog files in a terminal (#1175,
+    #1177).
+  * Added route-aware forward-proxy handling (`EstablishedProxyRoute`,
+    `HttpForwardProxyLayer`, plaintext HTTP through CONNECT, isolated upstream
+    `407` responses) and context-aware hop-by-hop handling
+    (`rama::http::header::hop_by_hop`) (#1150, #1158).
+  * Added peeking on both sides of a bridge (`PeekEgressPredicate`), so a
+    proxy that dials before classifying no longer stalls on a server-first
+    protocol, and `PeekPolicy` to choose between fallback and failure (#1324,
+    #1331).
+  * Proxy databases return MASQUE proxies for UDP (and TCP) lookups, and the
+    in-memory database gained runtime exclude and require columns
+    (`ProxyRuntimeColumn`, #1355).
+* **ICAP** (`rama-icap`, feature `icap`):
+  * Added an ICAP (RFC 3507) codec usable without `std`, a streaming client and
+    server, and an HTTP adaptation layer with REQMOD, RESPMOD, OPTIONS caching,
+    Preview, `204` and `206`, `icaps://` direct TLS and protocol-separated
+    connection pooling (#1136, #1142).
+  * Added `rama serve icap` and ICAP adaptation in `rama serve proxy`
+    (`--icap` and its options) (#1136, #1143).
+* **DNS** (`rama-dns`):
+  * Added typed CNAME, SVCB and HTTPS lookups to the Apple, Windows, Linux and
+    Hickory resolvers, `rama resolve -t CNAME|SVCB|HTTPS`, and a DNS message
+    parser in `rama_dns::wire`. The portable Tokio (`getaddrinfo`) resolver
+    supports address lookups only (#1146, #1186, #1350).
+  * Added sharing of concurrent identical lookups, bounds on concurrent and
+    burst queries per native resolver, and `BoundedDnsResolver` to cap the
+    answers per lookup (#1221, #1295).
+  * The Windows resolver answers its own computer name locally, like
+    `getaddrinfo` does (#1291).
+* **HTTP, web and content formats**:
+  * Added JSON-LD (`JsonLd`, `JsonLdScript`, extraction from HTML) (#1134),
+    typed DCMI relationships for RSS and Atom (#1133), and current Datastar
+    protocol support with the typed `Datastar-Request` header and embedded
+    client 1.0.4 (#1132, #1199; embedded client updates #1164 and #1214 by
+    Abdelkader Boudih).
+  * Added a push-driven SSE `EventDecoder` with line and event limits and a
+    lenient resync mode, usable by proxies that inspect a stream while
+    forwarding it (#1184, #1190).
+  * Added `JsonArrayReadStream`, which reads a top-level JSON array one element
+    at a time with a per-element limit of 32 KiB by default
+    (`ArrayParseConfig`), through `Body::into_json_array_stream`,
+    `Response::into_json_array_stream` or the `JsonArrayItems<T>` extractor.
+  * Added a sans-IO `multipart/form-data` codec
+    (`rama::http::protocols::multipart`) that replaces `multer` and lets a proxy
+    rewrite a form in flight without buffering it (#1328, #1336).
+  * Added gRPC services on HTTP web routers (`RouterExt::with_grpc_service`)
+    (#1138).
+  * Added `HttpClientExt::query` and `WebService::with_query` for the HTTP
+    `QUERY` method (#1214), `Option<Authority>` and `Option<Host>` extractors
+    (#1245, by Abdelkader Boudih), `ForceStatusCode`, fallible
+    `Redirect::try_*` constructors (#1143), and configurable path matching with
+    `PathMatchPolicy` (#1144).
+  * Added draining of HTTP bodies: reuse of HTTP/1 client connections after a
+    response body is dropped early (`Http1BodyDrainConfig`), and
+    `DrainRequestBodyLayer` with an opt-in HTTP/1 server `request_body_drain`
+    for handlers that ignore an upload (#1254, #1347).
+  * Added `max_decoded_size` to the decompression layers,
+    `CorsLayer::with_forward_disallowed_preflights`, `ServeDir` options
+    (`redirect_to_trailing_slash`, `ignore_multi_range_requests`,
+    `with_enforce_not_acceptable`) and a Rama-owned HTTP-date formatter and
+    parser (`rama::http::utils::http_date`) (#1139, #1321, #1355).
+  * Added the encode-only `DateNow` typed header, which writes the current
+    `Date` from bytes shared per second per thread, and `Server::default()`.
+* **Core, errors and utilities**:
+  * Added graceful scopes (`rama::graceful::{Scope, WeakScope}`), `ScopeLayer`
+    for per-input scopes with a maximum age and grace, `AbortableIo`, and
+    `rama::rt::spawn`. HTTP/1.1, HTTP/2, HTTP/3 and ttRPC drain in the graceful
+    phase, relays run until the hard phase, and pooled connections are drained
+    rather than reused once their scope is cancelled (#1317).
+  * Added connection-scoped extensions and nested connections
+    (`#[extension(scope(connection))]`, `Extensions::fork_nested_connection`,
+    `outer_connection`, `NestedConnectionTransfer`) (#1351, by Brecht Stamper;
+    #1355).
+  * Added `CauseExt` (typed cause lookup, root cause, context fields),
+    `ErrorList`, `CollectErrors`, caller locations on error context, and a
+    runtime-independent `TimeoutError`; address races and DNS chains now keep
+    every failure (#1305, #1347).
+  * Added `#[derive(ExtensionsRef)]`, applied across Rama's wrapper types, and
+    `ExtensionsRef` for `RequestWriterService` and `ResponseWriterService` (#1307,
+    by Maarten Deprez).
+  * Added a `no_std` hex module (`rama::utils::hex`) replacing the `hex` crate
+    (#1171), and strict and case-sensitive `enum_builder!` modes (#1290).
+  * Added positional file reads with a sharded block cache
+    (`rama::io::{ReadAt, ReadAtFiles, BlockCache}`) and an MMDB reader that
+    follows file replacements without loading the database into memory
+    (`MmdbFileReader`, `IpGeoDb::from_env_positional`) (#1291).
+* **Platforms and diagnostics**:
+  * Added Linux GNU cross-builds from macOS and Windows with `cargo-zigbuild`
+    (#1149).
+  * Added dial9 correlation across tasks, FFI, queues and pools, local trace
+    exports and `Dial9Layer` for HTTP/1, HTTP/2 and HTTP/3 (#1249).
+  * Added the `js-interpreter` feature to run PAC scripts through Wasmtime's
+    Pulley interpreter on hosts without executable memory, selected explicitly
+    with `JsBackend::Interpreter` (#1253, #1261).
+  * Added an `http.cancellations.total` OpenTelemetry counter and
+    `RequestMetricsLayer::custom_with_meter` (#1194, by Brecht Stamper).
+  * Apple Network Extension: added network path notifications for handlers,
+    the interface an app bound its flow to (`bound_interface_index()`), and a
+    configurable TCP payload view size (#1312, #1323, #1345).
+  * Restructured the book and added chapters on QUIC, HTTP/3, TLS, graceful
+    shutdown, feature flags, JavaScript, JSON, inspection and ttRPC (#1316).
+
+### Changed
+
+* Graceful shutdown runs on Rama's own scopes instead of `tokio-graceful`
+  (#1317, #1330, #1335).
+* Reworked the HTTP client connection pool: connections are grouped by reuse
+  key, waiters are served in order, bursts dial only what they need,
+  connections report capacity and health changes to the pool, and idle or
+  broken connections are trimmed lazily. The pull request measured up to five
+  times faster multi-origin load than the previous pool with far fewer
+  connections. `Extensions` clone and fork are now constant time (#1239, folding
+  in work from closed PRs by Attila Nagy, Brecht Stamper and Abdelkader Boudih;
+  #1349).
+* HTTP servers apply shared header-read and idle deadlines on HTTP/1.1, HTTP/2
+  and HTTP/3; HTTP/2 answers abuse with `GOAWAY ENHANCE_YOUR_CALM` and HTTP/3
+  with `H3_REQUEST_REJECTED` (#1241, #1297).
+* A body sent with a `Content-Length` that disagrees with its known length has
+  the header corrected; a streamed body that runs longer or shorter than
+  declared is never sent past its length nor ended cleanly: HTTP/1 closes the
+  connection and HTTP/2 resets the stream (#1355).
+* HTTP/1.1, HTTP/2 and HTTP/3 share one trailer policy (`ForbiddenTrailers`).
+  By default only fields whose definitions allow trailers are sent;
+  `ForbiddenTrailers` can allow more, as the MITM relays do by default, while
+  framing, routing and connection fields are never sent (#1232).
+* Peeking no longer depends on timers: scopes and the other side of a bridge
+  end a waiting peek, and `SniRouter`, the TLS, HTTP and SOCKS5 peek routers and
+  the HAProxy layer accept a bridge as input (#1324, #1331, #1355).
+* HTTP/1 relays keep EOF-delimited response framing instead of re-chunking, and
+  repeated `Content-Length` values must agree (#1170).
+* With GREASE enabled, a custom TLS extension order that names no GREASE
+  codepoint keeps BoringSSL's native GREASE slots (the first and last of the
+  prefix) instead of turning GREASE off; an order that names GREASE codepoints
+  places them itself (#1258).
+* The embedded user-agent profiles are a compiled, compressed set that is
+  analysed at export time, so loading only decodes it. The set was refreshed
+  throughout the cycle (#1258, #1282, #1286, #1310, #1329, #1355).
+* The BoringSSL acceptor only issues session tickets with
+  `with_session_resumption(true)` (#1234).
+* Apple Network Extension: provider-side refusals fail open by default, egress
+  proxy policy is explicit and logged per flow, and the provider bounds writer
+  and UDP ingress memory, admits at most 500 live flows by default and drops
+  excess UDP datagrams instead of blocking (#1153, #1155, #1159, #1243).
+* Apple Network Extension: one 15 s per-flow path-recovery allowance, restarted
+  by wake, replaces the separate post-wake, viability and `.waiting` timers, so
+  a path that returns in time keeps its flows and a still-dead path is reset.
+  Synthetic teardowns report `ECONNRESET`, `ECONNABORTED` or `ETIMEDOUT` instead
+  of `-1`, which apps saw as errno 65535 (#1309, following the report and
+  proposal in #1308 by Tudor Timcu).
+* Native DNS resolvers on Linux walk search domains themselves, fit retries
+  inside the timeout and stop retrying on SERVFAIL and REFUSED. The native
+  resolver no longer needs `bindgen` or libclang, and C warnings no longer fail
+  downstream builds (#1221, #1257; #1193 by Brecht Stamper).
+* dial9 moved to 0.5 and no longer requires `tokio_unstable` (#1147, by Julián
+  Montes de Oca).
+* Reduced copies and allocations across the stack: large HTTP/1 bodies are no
+  longer copied, gRPC messages decode without copying, WebSocket payloads are
+  written without a copy, small files are served from one blocking call, SSE
+  decoding and encoding were rewritten, the HTML rewriter streams text-mode
+  element bodies, MITM certificates are issued off the runtime, and the
+  in-memory proxy database filters by transport without scanning every match
+  (#1140, #1176, #1184, #1301, #1325, #1328, #1336, #1348; #1240 by Abdelkader
+  Boudih; #1268 by Brecht Stamper).
+* `try_into_json_streaming` parses bodies up to 16 KiB in the calling task.
+  Larger bodies are parsed on a blocking thread fed through a bounded channel,
+  which stops once the future is dropped.
+* Endpoint diagnostics explain the `From<Rejection>` requirement, and
+  streaming-body plumbing is shared across the rewrite and capture layers
+  (#1189, #1244, by Abdelkader Boudih).
+* Synced the maintained forks with upstream in four rounds: hyper, h2, http,
+  http-body-util, hyper-util, headers, h3, tower-http, axum, tonic,
+  tungstenite, lol-html, quinn, quinn-udp and rustls-native-certs (#1139,
+  #1239, #1241, #1298, #1318).
+* Raised `rama-boring` to 0.7 and OpenTelemetry to 0.33, unpinned `time`
+  (#1220, by Abdelkader Boudih), and refreshed all dependencies (#1310 and the
+  other update rounds).
+* Release workflows separate build and test jobs from privileged signing and
+  publishing, with deny-by-default permissions and no persisted checkout
+  credentials (#1197).
+
+### Fixed
+
+* Fixed undefined behaviour found by a workspace-wide audit, which also gave
+  every `unsafe` block a documented safety proof enforced by lints: a
+  use-after-free in the `Debug` output of partially consumed `HeaderMap`
+  iterators, unsound ordered iteration after a panicking `HeaderMap::clear`,
+  invalid UTF-8 accepted by URI path editing, `IoBufMut::as_uninit` exposing
+  initialised bytes, a double free and an out-of-bounds read in Windows DNS, an
+  unchecked `nscount` in Linux `res_nsearch`, XPC calls that make libxpc trap,
+  and SOCKS5 UDP client panics and buffer overwrites (#1291).
+* Fixed panics in typed header decoding, which no longer panics on any input,
+  including malformed `If-Match`/`If-None-Match` values reachable through
+  `ServeDir` and permessage-deflate parameters that made the WebSocket MITM
+  relay panic (#1217).
+* Hardened HTTP servers against slow or abusive clients with adaptive
+  header-read and idle deadlines, and fixed `Content-Length`/`Transfer-Encoding`
+  and CONNECT framing per RFC 9112 (#1241).
+* Hardened HTTP parsing and framing: invalid field names and values are
+  malformed on every version, bare LF in chunked framing is rejected, an HPACK
+  table can no longer desynchronise on a self-dependent stream, `100 Continue`
+  no longer stalls a pipelined response, and oversized field counts, gRPC
+  metadata, HAR headers and FastCGI records fail instead of panicking (#1321,
+  #1355).
+* Hardened body handling: decompression caps zstd windows and total decoded
+  size, nested body limits keep the strictest one, multipart forms are bounded,
+  gRPC streams that end inside a message are rejected, and WebSocket refuses
+  interleaved data frames and stray RSV bits (#1321, #1340, #1355).
+* `ServeDir` no longer serves dot-prefixed and hidden entries by default, and
+  its `HEAD` answers match `GET` (#1321, #1355).
+* Fixed TCP and Unix listeners spinning on accept errors such as `EMFILE`:
+  they now back off, and binding a Unix socket only replaces stale socket files
+  (#1321).
+* Fixed forward-proxy credentials reaching an origin after route fallback or
+  connection reuse onto a direct or tunnelled connection (#1158).
+* Fixed ClientHellos fragmented across TLS records evading inspection: they are
+  reassembled, so a client can no longer dodge strict SNI routing that way
+  (#1303).
+* Fixed unbounded memory in the HTML rewriter: one construct is bounded and the
+  rewriter fails closed by default (#1301).
+* Fixed HTTP client pool reuse: abandoned HTTP/1 bodies no longer hand out the
+  connection again, parked waiters are woken when a slot frees, and upgraded
+  tunnels no longer inherit the HTTP connection's health (#1141).
+* Fixed an HTTP/2 deadlock where a stream waited on write readiness with no
+  early frame to send, and a close-delimited HTTP/1 client response being
+  treated as keep-alive (#1254).
+* Fixed MITM relays: an ingress connection is closed gracefully when the
+  HTTP/2 egress dies, raced requests get `REFUSED_STREAM` instead of `502`, and
+  HTTP/2 header lists fall back to a 256 KiB budget when a peer omits its limit
+  instead of answering `431` (#1205, #1210, #1284).
+* Fixed WebSocket upgrades over HTTP/2 retaining their own upgrade handle
+  through the handshake message's extensions (#1169), and bounded a WebSocket
+  client's wait for the server to end its transport after the close handshake
+  (`close_drain_timeout`, default 2 s).
+* Fixed empty frames resetting streaming compression and gRPC-Web responses
+  losing trailers (#1165).
+* Fixed the SOCKS5 peek router rejecting valid greetings (#1144), and the
+  SOCKS5 UDP relay forwarding oversized datagrams truncated (#1355).
+* Fixed proxy address formatting for Basic credentials containing reserved
+  characters (#1296), and an unbracketed IPv6 authority such as `::1` now
+  parses as a host without a port (#1355).
+* Fixed Apple Network Extension upload corruption: Network.framework can read
+  send buffers after the send completion fires, so payloads now stay alive until
+  it releases them. Also fixed close and FIN ordering, stranded UDP read demand,
+  IPv6 zone handling, stalled promoted writes, and TCP egress leaving the
+  interface an app bound its socket to (#1166, #1272, #1291, #1296, #1312,
+  #1323).
+* Fixed `localhost` and `*.localhost` lookups depending on the resolver: they
+  now resolve to loopback as RFC 6761 asks (#1140).
+* Fixed OpenTelemetry HTTP metrics leaking the active-request gauge on cancelled
+  requests (#1194, by Brecht Stamper).
+* Updated wasmtime for RUSTSEC-2026-0325..0327, and rustls-webpki and
+  webpki-roots for RUSTSEC-2026-0381, among other advisory updates; cargo-deny
+  advisories now run daily.
+
+### Removed
+
+* Removed `rama::rt::Executor`, the `tokio-graceful` re-exports
+  (`Shutdown`, `ShutdownGuard`), `GracefulIo` and `CancelIo` in favour of
+  graceful scopes and `AbortableIo` (#1317).
+* Removed `PeekTimeoutPolicy`, the `with_peek_timeout*` builders and the
+  `peek_input_until*` helpers in favour of `PeekPolicy` and scopes (#1331,
+  #1355).
+* Removed `UserAgentEmulateLayer` and the rest of the `UserAgentEmulate*`
+  family, `UserAgentProvider`, the `HttpProfile` family, `RequestClientHints`,
+  and `EmulateTlsProfileLayer` with its service, in favour of the profile
+  system (#1258).
+* Removed `SetProxyAuthHttpHeaderLayer` and `SetProxyAuthHttpHeaderService` in
+  favour of route-aware forward-proxy credentials (#1158).
+* Removed `HttpPooledConnectorConfig::{build_default_connector,
+  try_build_connector}`, `EasyHttpConnectorBuilder::try_with_connection_pool` and
+  the `max_total`/`max_concurrent_streams` pool fields (#1239).
+* Removed `auto_date_header` and `max_local_error_reset_streams` from the HTTP
+  builders (#1340, #1355).
+* Removed `IoBufMut::as_uninit` (#1291), the `rama-net` `http` and `venndb`
+  features (#1146, #1348), and the `tokio-graceful`, `multer`, `httpdate` and
+  `hex` dependencies (#1171, #1317, #1328, #1355).
+* Removed the Python profile generator in `rama-fp` in favour of `rama ua export`
+  and `rama ua compact` (#1258).
+
 # 0.4.0
 
 > Release date: `2026-08-19`

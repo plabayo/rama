@@ -2,7 +2,7 @@
 
 use core::net::{Ipv4Addr, Ipv6Addr};
 
-use rama_core::bytes::{Buf, BufMut};
+use rama_core::bytes::{Buf, BufMut, TryGetError};
 
 use crate::VarInt;
 
@@ -16,6 +16,11 @@ rama_utils::macros::error::static_str_error! {
 
 /// Coding result type
 pub type Result<T> = core::result::Result<T, UnexpectedEnd>;
+
+/// A read past the end of a buffer, whatever it was short by.
+pub(crate) fn unexpected_end(_short: TryGetError) -> UnexpectedEnd {
+    UnexpectedEnd::new()
+}
 
 pub(crate) fn bounded_len(len: u64, available: usize) -> Result<usize> {
     usize::try_from(len)
@@ -34,10 +39,7 @@ pub trait Codec: Sized {
 
 impl Codec for u8 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 1 {
-            return Err(UnexpectedEnd::new());
-        }
-        Ok(buf.get_u8())
+        buf.try_get_u8().map_err(unexpected_end)
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_u8(*self);
@@ -46,10 +48,7 @@ impl Codec for u8 {
 
 impl Codec for u16 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 2 {
-            return Err(UnexpectedEnd::new());
-        }
-        Ok(buf.get_u16())
+        buf.try_get_u16().map_err(unexpected_end)
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_u16(*self);
@@ -58,10 +57,7 @@ impl Codec for u16 {
 
 impl Codec for u32 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 4 {
-            return Err(UnexpectedEnd::new());
-        }
-        Ok(buf.get_u32())
+        buf.try_get_u32().map_err(unexpected_end)
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_u32(*self);
@@ -70,10 +66,7 @@ impl Codec for u32 {
 
 impl Codec for u64 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 8 {
-            return Err(UnexpectedEnd::new());
-        }
-        Ok(buf.get_u64())
+        buf.try_get_u64().map_err(unexpected_end)
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_u64(*self);
@@ -82,11 +75,8 @@ impl Codec for u64 {
 
 impl Codec for Ipv4Addr {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 4 {
-            return Err(UnexpectedEnd::new());
-        }
         let mut octets = [0; 4];
-        buf.copy_to_slice(&mut octets);
+        buf.try_copy_to_slice(&mut octets).map_err(unexpected_end)?;
         Ok(octets.into())
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
@@ -96,11 +86,8 @@ impl Codec for Ipv4Addr {
 
 impl Codec for Ipv6Addr {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 16 {
-            return Err(UnexpectedEnd::new());
-        }
         let mut octets = [0; 16];
-        buf.copy_to_slice(&mut octets);
+        buf.try_copy_to_slice(&mut octets).map_err(unexpected_end)?;
         Ok(octets.into())
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {

@@ -575,7 +575,7 @@ fn quic_server_config() -> ServerConfig {
     let mut config = ServerConfig::try_from_rama_tls_with_provider(
         &server_tls([ApplicationProtocol::HTTP_3]),
         TlsOptions::default(),
-        &BoringTlsProvider,
+        &BoringTlsProvider::new(),
     )
     .unwrap();
     config.set_transport_config(Arc::new(transport));

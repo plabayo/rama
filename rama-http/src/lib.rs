@@ -26,9 +26,17 @@ pub use ::rama_http_types::{
     BodyLimitLayer, BodyLimitService, BufferedBodyCapture, CaptureBody, CaptureCanceled,
     CaptureHandle, CaptureLimit, CaptureOutcome, CapturedBody, Error as HttpError, HeaderMap,
     HeaderName, HeaderValue, InfiniteReader, Method, Request, Response, Result as HttpResult,
-    StatusCode, StreamingBody, Version, conn, fingerprint, header, method, mime, opentelemetry,
-    proto, proxy, request, response, sse, status, version,
+    StatusCode, StreamingBody, Version, conn, fingerprint, method, mime, opentelemetry, proto,
+    proxy, request, response, sse, status, version,
 };
+
+/// HTTP header names, values, and application identity.
+pub mod header {
+    pub use rama_http_headers::{
+        SetIdentityError, identity, identity_header, identity_header_str, set_identity,
+    };
+    pub use rama_http_types::header::*;
+}
 
 pub mod body;
 

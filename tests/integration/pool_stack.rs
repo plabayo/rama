@@ -179,13 +179,13 @@ async fn exercise(version: Version, pooled: bool) {
         builder.without_connection_pool().build_client().boxed()
     };
     for _ in 0..2 {
-        let scheme = if version == Version::HTTP_3 {
-            "https"
+        let uri = if version == Version::HTTP_3 {
+            "https://127.0.0.1/"
         } else {
-            "http"
+            "http://127.0.0.1/"
         };
         let request = Request::builder()
-            .uri(format!("{scheme}://example.test/"))
+            .uri(uri)
             .version(version)
             .body(Body::empty())
             .unwrap();
@@ -209,7 +209,7 @@ async fn control_request(
     let response = control
         .serve(
             Request::builder()
-                .uri("http://control.test/connect")
+                .uri("http://127.0.0.1/connect")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -230,7 +230,7 @@ fn quic_server_config() -> ServerConfig {
             .with_server_auth(auth)
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect()),
         TlsOptions::default(),
-        &BoringTlsProvider,
+        &BoringTlsProvider::new(),
     )
     .unwrap();
     config.set_transport_config(Arc::new(transport));

@@ -73,6 +73,11 @@ impl<W: std::io::Write> std::io::Write for LinePrefixWriter<'_, W> {
         Ok(buf.len())
     }
 
+    // `write` consumes the whole buffer or fails.
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        self.write(buf).map(drop)
+    }
+
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
     }

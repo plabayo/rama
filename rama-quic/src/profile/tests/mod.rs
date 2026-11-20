@@ -510,7 +510,7 @@ fn boring_client(identity: &rama_tls::server::ServerAuthData) -> ClientConfig {
     ClientConfig::try_from_rama_tls_with_provider(
         &tls,
         crate::tls::TlsOptions::default(),
-        &crate::tls::BoringTlsProvider,
+        &crate::tls::BoringTlsProvider::new(),
     )
     .unwrap()
 }
@@ -673,7 +673,7 @@ fn verify_passive_provider(keys: &impl KeyProvider) {
 #[cfg(feature = "boring")]
 #[test]
 fn passive_initial_keys_need_no_boring_server_identity() {
-    verify_passive_provider(&crate::tls::BoringTlsProvider);
+    verify_passive_provider(&crate::tls::BoringTlsProvider::new());
 }
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
@@ -1350,7 +1350,7 @@ fn a_captured_browser_client_hello_is_reproduced_over_quic() {
         let config = ClientConfig::try_from_rama_tls_with_provider(
             &tls,
             crate::tls::TlsOptions::default(),
-            &crate::tls::BoringTlsProvider,
+            &crate::tls::BoringTlsProvider::new(),
         )
         .unwrap();
         let (_, _, emitted) = rama_first_flight_with(&profile, config, &server_name);
@@ -1379,7 +1379,7 @@ fn a_permuting_browser_draws_its_extension_order_per_connection() {
     let config = ClientConfig::try_from_rama_tls_with_provider(
         &tls,
         crate::tls::TlsOptions::default(),
-        &crate::tls::BoringTlsProvider,
+        &crate::tls::BoringTlsProvider::new(),
     )
     .unwrap();
     let sorted = |hello: &ClientHello| {

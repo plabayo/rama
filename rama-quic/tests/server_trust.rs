@@ -185,7 +185,7 @@ async fn assert_trust_matrix(
 #[tokio::test]
 async fn boring_enforces_platform_trust_and_chain_policies() {
     use rama_quic::tls::BoringTlsProvider;
-    assert_trust_matrix(&BoringTlsProvider, &BoringTlsProvider).await;
+    assert_trust_matrix(&BoringTlsProvider::new(), &BoringTlsProvider::new()).await;
 }
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]

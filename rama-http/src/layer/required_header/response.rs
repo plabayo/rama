@@ -1,39 +1,48 @@
-//! Set required headers on the response, if they are missing.
+//! Add the `Server` and `Date` headers to a response, if they are missing.
 //!
-//! For now this only sets `Server` and `Date` heades.
+//! See [`AddRequiredResponseHeaders`] for the exact behaviour.
 
 use crate::{
-    HeaderValue, Request, Response,
-    header::{self, DATE, RAMA_ID_HEADER_VALUE, SERVER},
+    Request, Response,
+    header::{DATE, SERVER},
+    headers::{DateNow, HeaderMapExt, Server},
 };
 use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
-/// Layer that applies [`AddRequiredResponseHeaders`] which adds a request header.
+/// [`Layer`] that wraps a service in [`AddRequiredResponseHeaders`].
 ///
-/// See [`AddRequiredResponseHeaders`] for more details.
-#[derive(Debug, Clone, Default)]
+/// See [`AddRequiredResponseHeaders`] for the headers it adds.
+#[derive(Debug, Clone)]
 pub struct AddRequiredResponseHeadersLayer {
     overwrite: bool,
-    server_header_value: Option<HeaderValue>,
+    server: Option<Server>,
+}
+
+impl Default for AddRequiredResponseHeadersLayer {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AddRequiredResponseHeadersLayer {
-    /// Create a new [`AddRequiredResponseHeadersLayer`].
+    /// Create a new [`AddRequiredResponseHeadersLayer`]
+    /// which only adds missing headers and uses the default `Server`.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             overwrite: false,
-            server_header_value: None,
+            server: None,
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set whether to overwrite the existing headers.
-        /// If set to `true`, the headers will be overwritten.
+        /// Set whether the `Server` and `Date` headers
+        /// replace values already present on the response.
         ///
-        /// Default is `false`.
+        /// When `false` (the default) only missing headers are added.
         pub fn overwrite(mut self, overwrite: bool) -> Self {
             self.overwrite = overwrite;
             self
@@ -41,11 +50,11 @@ impl AddRequiredResponseHeadersLayer {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define the custom [`SERVER`] header value.
+        /// Set the [`Server`] header to add.
         ///
-        /// By default a versioned `rama` value is used.
-        pub fn server_header_value(mut self, value: Option<HeaderValue>) -> Self {
-            self.server_header_value = value;
+        /// Defaults to the [application identity](crate::header::identity).
+        pub fn server(mut self, server: Server) -> Self {
+            self.server = Some(server);
             self
         }
     }
@@ -58,7 +67,7 @@ impl<S> Layer<S> for AddRequiredResponseHeadersLayer {
         AddRequiredResponseHeaders {
             inner,
             overwrite: self.overwrite,
-            server_header_value: self.server_header_value.clone(),
+            server: self.server.clone(),
         }
     }
 
@@ -66,34 +75,44 @@ impl<S> Layer<S> for AddRequiredResponseHeadersLayer {
         AddRequiredResponseHeaders {
             inner,
             overwrite: self.overwrite,
-            server_header_value: self.server_header_value,
+            server: self.server,
         }
     }
 }
 
-/// Middleware that sets a header on the request.
+/// Middleware that adds the `Server` and `Date` headers to the response
+/// returned by the inner service.
+///
+/// - `Server`: the configured value, or the [application identity](crate::header::identity) by default.
+/// - `Date`: the current time, formatted as an HTTP-date.
+///
+/// Existing headers are kept unless overwriting is enabled,
+/// see [`AddRequiredResponseHeaders::set_overwrite`].
+/// The request is passed through unchanged and errors
+/// of the inner service are returned as-is.
 #[derive(Clone, ExtensionsRef)]
 pub struct AddRequiredResponseHeaders<S> {
     inner: S,
     overwrite: bool,
-    server_header_value: Option<HeaderValue>,
+    server: Option<Server>,
 }
 
 impl<S> AddRequiredResponseHeaders<S> {
-    /// Create a new [`AddRequiredResponseHeaders`].
+    /// Wrap `inner` in a new [`AddRequiredResponseHeaders`]
+    /// which only adds missing headers and uses the default `Server`.
     pub const fn new(inner: S) -> Self {
         Self {
             inner,
             overwrite: false,
-            server_header_value: None,
+            server: None,
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set whether to overwrite the existing headers.
-        /// If set to `true`, the headers will be overwritten.
+        /// Set whether the `Server` and `Date` headers
+        /// replace values already present on the response.
         ///
-        /// Default is `false`.
+        /// When `false` (the default) only missing headers are added.
         pub fn overwrite(mut self, overwrite: bool) -> Self {
             self.overwrite = overwrite;
             self
@@ -101,11 +120,11 @@ impl<S> AddRequiredResponseHeaders<S> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define the custom [`SERVER`] header value.
+        /// Set the [`Server`] header to add.
         ///
-        /// By default a versioned `rama` value is used.
-        pub fn server_header_value(mut self, value: Option<HeaderValue>) -> Self {
-            self.server_header_value = value;
+        /// Defaults to the [application identity](crate::header::identity).
+        pub fn server(mut self, server: Server) -> Self {
+            self.server = Some(server);
             self
         }
     }
@@ -120,7 +139,8 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AddRequiredResponseHeaders")
             .field("inner", &self.inner)
-            .field("server_header_value", &self.server_header_value)
+            .field("overwrite", &self.overwrite)
+            .field("server", &self.server)
             .finish()
     }
 }
@@ -137,26 +157,13 @@ where
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let mut resp = self.inner.serve(req).await?;
 
-        if self.overwrite {
-            resp.headers_mut().insert(
-                SERVER,
-                self.server_header_value
-                    .as_ref()
-                    .unwrap_or(&RAMA_ID_HEADER_VALUE)
-                    .clone(),
-            );
-        } else if let header::Entry::Vacant(header) = resp.headers_mut().entry(SERVER) {
-            header.insert(
-                self.server_header_value
-                    .as_ref()
-                    .unwrap_or(&RAMA_ID_HEADER_VALUE)
-                    .clone(),
-            );
+        let headers = resp.headers_mut();
+        let insert_both = self.overwrite || headers.is_empty();
+        if insert_both || !headers.contains_key(SERVER) {
+            headers.typed_insert(self.server.clone().unwrap_or_default());
         }
-
-        if self.overwrite || !resp.headers().contains_key(DATE) {
-            resp.headers_mut()
-                .insert(DATE, HeaderValue::http_date_now());
+        if insert_both || !headers.contains_key(DATE) {
+            headers.typed_insert(DateNow::new());
         }
 
         Ok(resp)
@@ -166,7 +173,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Body;
+    use crate::{Body, HeaderValue, headers::Date};
     use rama_core::{Layer, service::service_fn};
     use std::convert::Infallible;
 
@@ -184,16 +191,16 @@ mod tests {
         let resp = svc.serve(req).await.unwrap();
 
         assert_eq!(
-            resp.headers().get(SERVER).unwrap(),
-            RAMA_ID_HEADER_VALUE.as_ref()
+            resp.headers().typed_get::<Server>(),
+            Some(Server::default())
         );
-        assert!(resp.headers().contains_key(DATE));
+        assert!(resp.headers().typed_get::<Date>().is_some());
     }
 
     #[tokio::test]
     async fn add_required_response_headers_custom_server() {
         let svc = AddRequiredResponseHeadersLayer::default()
-            .with_server_header_value(HeaderValue::from_static("foo"))
+            .with_server(Server::from_static("foo"))
             .into_layer(service_fn(async |req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
@@ -230,17 +237,17 @@ mod tests {
         let resp = svc.serve(req).await.unwrap();
 
         assert_eq!(
-            resp.headers().get(SERVER).unwrap(),
-            RAMA_ID_HEADER_VALUE.to_str().unwrap()
+            resp.headers().typed_get::<Server>(),
+            Some(Server::default())
         );
-        assert_ne!(resp.headers().get(DATE).unwrap(), "bar");
+        assert!(resp.headers().typed_get::<Date>().is_some());
     }
 
     #[tokio::test]
     async fn add_required_response_headers_overwrite_custom_ua() {
         let svc = AddRequiredResponseHeadersLayer::new()
             .with_overwrite(true)
-            .with_server_header_value(HeaderValue::from_static("foo"))
+            .with_server(Server::from_static("foo"))
             .into_layer(service_fn(async |req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
@@ -260,6 +267,45 @@ mod tests {
             resp.headers().get(SERVER).and_then(|v| v.to_str().ok()),
             Some("foo")
         );
-        assert_ne!(resp.headers().get(DATE).unwrap(), "bar");
+        assert!(resp.headers().typed_get::<Date>().is_some());
+    }
+
+    #[tokio::test]
+    async fn add_required_response_headers_keeps_existing() {
+        let svc =
+            AddRequiredResponseHeadersLayer::new().into_layer(service_fn(async |_req: Request| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header(SERVER, "foo")
+                        .header(DATE, "bar")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }));
+
+        let resp = svc.serve(Request::new(Body::empty())).await.unwrap();
+
+        assert_eq!(
+            resp.headers().get(SERVER),
+            Some(&HeaderValue::from_static("foo"))
+        );
+        assert_eq!(
+            resp.headers().get(DATE),
+            Some(&HeaderValue::from_static("bar"))
+        );
+    }
+
+    #[tokio::test]
+    async fn add_required_response_headers_dynamic_server() {
+        let server: Server = format!("srv/{}", 42).parse().unwrap();
+        let svc = AddRequiredResponseHeadersLayer::new()
+            .with_server(server.clone())
+            .into_layer(service_fn(async |_req: Request| {
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+
+        let resp = svc.serve(Request::new(Body::empty())).await.unwrap();
+
+        assert_eq!(resp.headers().typed_get::<Server>(), Some(server));
     }
 }

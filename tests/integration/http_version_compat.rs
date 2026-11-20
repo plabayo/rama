@@ -622,7 +622,7 @@ async fn endpoint_with_connect_support(
     let mut config = ServerConfig::try_from_rama_tls_with_provider(
         &tls,
         TlsOptions::default(),
-        &BoringTlsProvider,
+        &BoringTlsProvider::new(),
     )
     .unwrap();
     config.set_transport_config(Arc::new(transport));

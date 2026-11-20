@@ -27,7 +27,6 @@ tls = ["dep:rama-tls", "rama-tls/http"]
 
 [dependencies]
 bytes = { workspace = true, features = ["std"] }
-const_format = { workspace = true }
 fnv = { workspace = true }
 futures-core = { workspace = true }
 httparse = { workspace = true }

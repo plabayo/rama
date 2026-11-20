@@ -52,6 +52,10 @@ The `http_mitm_*` examples above accept HTTP/1.1 and HTTP/2 over TCP. A client t
 through CONNECT cannot carry HTTP/3 to its target, so none of them speak QUIC. To intercept
 HTTP/3 see [/examples/src/quic_h3_mitm_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/quic_h3_mitm_proxy.rs), which listens on
 UDP, peeks the QUIC ClientHello and terminates HTTP/3 for the server names you choose.
+Its `QuicMitmRelay` publishes the peeked ClientHello and QUIC first flight on the terminated
+client connection, as the TLS relay publishes the ClientHello it peeked, so HTTP/3 requests
+carry the same TLS facts as requests over TCP. `rama serve proxy --mitm` uses them to capture,
+export and replay HTTP/3 that clients tunnel through its MASQUE (CONNECT-UDP) ingress.
 For proxying UDP through an HTTP proxy see
 [/examples/src/masque_connect_udp_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/masque_connect_udp_proxy.rs), which serves
 CONNECT-UDP (RFC 9298, one of the MASQUE protocols) next to ordinary CONNECT on one port.

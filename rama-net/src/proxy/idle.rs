@@ -127,8 +127,12 @@ impl IdleActivity {
     /// Record activity now.
     #[inline]
     pub fn record(&self) {
-        let now = Instant::now();
-        *self.last.lock() = now;
+        self.record_at(Instant::now());
+    }
+
+    fn record_at(&self, now: Instant) {
+        let mut last = self.last.lock();
+        *last = (*last).max(now);
     }
 
     /// `timeout` after the last recorded activity, saturating far in the future.
@@ -180,6 +184,21 @@ mod tests {
         // Advance past the reset deadline.
         tokio::time::advance(Duration::from_millis(30)).await;
         guard.tick().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn delayed_record_keeps_the_most_recent_activity() {
+        let timeout = Duration::from_secs(10);
+        let activity = IdleActivity::new();
+        let mut guard = IdleGuard::for_activity(timeout, &activity);
+        let earlier = Instant::now();
+        tokio::time::advance(Duration::from_secs(5)).await;
+        activity.record();
+        let latest = Instant::now();
+        // The first recorder resumes after the second one released the lock.
+        activity.record_at(earlier);
+        guard.expired(&activity).await;
+        assert_eq!(latest.elapsed(), timeout);
     }
 
     #[tokio::test(start_paused = true)]

@@ -24,42 +24,38 @@ use crate::service::web::response::Html;
 pub(super) async fn consume_open_file_result<ReqBody, ResBody, F>(
     open_file_result: Result<OpenFileOutput, std::io::Error>,
     fallback_and_request: Option<(&F, Request<ReqBody>)>,
+    vary_accept_encoding: bool,
 ) -> Result<Response, std::io::Error>
 where
     F: Service<Request<ReqBody>, Output = Response<ResBody>, Error = Infallible> + Clone,
     ResBody: StreamingBody<Data = Bytes> + Send + Sync + 'static,
     ResBody::Error: Into<BoxError>,
 {
-    match open_file_result {
-        Ok(OpenFileOutput::FileOpened(file_output)) => Ok(build_response(*file_output)),
+    let mut response = match open_file_result {
+        Ok(OpenFileOutput::FileOpened(file_output)) => build_response(*file_output),
 
         Ok(OpenFileOutput::Redirect { location }) => {
             let mut res = response_with_status(StatusCode::TEMPORARY_REDIRECT);
             res.headers_mut()
                 .insert(rama_http_types::header::LOCATION, location);
-            Ok(res)
+            return Ok(res);
         }
 
         #[cfg(feature = "html")]
-        Ok(OpenFileOutput::Html(payload)) => Ok(Html(payload).into_response()),
+        Ok(OpenFileOutput::Html(payload)) => return Ok(Html(payload).into_response()),
 
         Ok(OpenFileOutput::FileNotFound | OpenFileOutput::InvalidFilename) => {
-            if let Some((fallback, request)) = fallback_and_request {
+            return if let Some((fallback, request)) = fallback_and_request {
                 serve_fallback(fallback, request).await
             } else {
                 Ok(not_found())
-            }
+            };
         }
 
-        Ok(OpenFileOutput::NotAcceptable) => {
-            let mut res = response_with_status(StatusCode::NOT_ACCEPTABLE);
-            res.headers_mut()
-                .insert(header::VARY, HeaderValue::from_static("accept-encoding"));
-            Ok(res)
-        }
+        Ok(OpenFileOutput::NotAcceptable) => response_with_status(StatusCode::NOT_ACCEPTABLE),
 
         Ok(OpenFileOutput::PreconditionFailed) => {
-            Ok(response_with_status(StatusCode::PRECONDITION_FAILED))
+            response_with_status(StatusCode::PRECONDITION_FAILED)
         }
 
         // RFC 9110 §15.4.5: a 304 response must carry the validators (ETag / Last-Modified)
@@ -75,11 +71,11 @@ where
             if let Some(last_modified) = last_modified {
                 res.headers_mut().typed_insert(last_modified);
             }
-            Ok(res)
+            res
         }
 
         Err(err) => {
-            if should_return_not_found(&err) {
+            return if should_return_not_found(&err) {
                 if let Some((fallback, request)) = fallback_and_request {
                     serve_fallback(fallback, request).await
                 } else {
@@ -87,9 +83,15 @@ where
                 }
             } else {
                 Err(err)
-            }
+            };
         }
+    };
+    if vary_accept_encoding {
+        response
+            .headers_mut()
+            .insert(header::VARY, HeaderValue::from_static("accept-encoding"));
     }
+    Ok(response)
 }
 
 #[inline(always)]
@@ -145,16 +147,6 @@ fn build_response(output: FileOpened) -> Response {
         .filter(|encoding| *encoding != Encoding::Identity)
     {
         builder = builder.header(header::CONTENT_ENCODING, HeaderValue::from(encoding));
-    }
-
-    // Per RFC 9110 §12.5.3: when the response *could have* been selected by
-    // `Accept-Encoding` — i.e. ServeDir was configured with precompressed
-    // variants — caches need `Vary: Accept-Encoding` to avoid serving a
-    // compressed response to a client that only asked for identity (or
-    // vice-versa). This must be emitted even for uncompressed responses,
-    // because the negotiation outcome is still request-dependent.
-    if output.precompression_configured {
-        builder = builder.header(header::VARY, HeaderValue::from_static("accept-encoding"));
     }
 
     if let Some(last_modified) = output.last_modified {

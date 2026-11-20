@@ -54,12 +54,12 @@ fn prepared_ssl_is_consumed_once_and_retries_keep_fresh_native_state() {
                     finished.fetch_add(1, Ordering::SeqCst);
                 })
             })));
-        let client = BoringTlsProvider
+        let client = BoringTlsProvider::new()
             .prepare_fresh_client_config(&client, Host::try_from("localhost").unwrap())
             .unwrap()
             .crypto;
         assert_eq!(initializations.load(Ordering::SeqCst), 1);
-        let server = BoringTlsProvider
+        let server = BoringTlsProvider::new()
             .server_config(&server, TlsOptions::default())
             .unwrap()
             .crypto
@@ -130,7 +130,7 @@ fn prepared_ssl_is_consumed_once_and_retries_keep_fresh_native_state() {
 fn wrong_peer_does_not_consume_the_prepared_ssl() {
     let (client, server) = configs();
     let count = count_initializations(&client);
-    let client = BoringTlsProvider
+    let client = BoringTlsProvider::new()
         .prepare_fresh_client_config(
             &client,
             rama_net::address::Host::try_from("localhost").unwrap(),
@@ -148,7 +148,7 @@ fn wrong_peer_does_not_consume_the_prepared_ssl() {
         .start_session(Version::V1, "localhost", &params(Side::Client))
         .unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
-    let mut s = BoringTlsProvider
+    let mut s = BoringTlsProvider::new()
         .server_config(&server, TlsOptions::default())
         .unwrap()
         .crypto
@@ -162,7 +162,7 @@ fn wrong_peer_does_not_consume_the_prepared_ssl() {
 fn racing_attempts_own_distinct_sessions_and_initialize_each_once() {
     let (client, server) = configs();
     let count = count_initializations(&client);
-    let client = BoringTlsProvider
+    let client = BoringTlsProvider::new()
         .prepare_fresh_client_config(
             &client,
             rama_net::address::Host::try_from("localhost").unwrap(),
@@ -170,7 +170,7 @@ fn racing_attempts_own_distinct_sessions_and_initialize_each_once() {
         .unwrap()
         .crypto;
     assert_eq!(count.load(Ordering::SeqCst), 1);
-    let server = BoringTlsProvider
+    let server = BoringTlsProvider::new()
         .server_config(&server, TlsOptions::default())
         .unwrap()
         .crypto
@@ -212,8 +212,9 @@ fn racing_attempts_own_distinct_sessions_and_initialize_each_once() {
 fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
     for version in [Version::V1, Version::V2] {
         let (policy, server) = configs();
-        let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
-        let server = BoringTlsProvider
+        let cache =
+            ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default());
+        let server = BoringTlsProvider::new()
             .server_config(&server, TlsOptions::default())
             .unwrap()
             .crypto
@@ -277,7 +278,7 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
         check_session(&mut *client, &mut *peer, true);
 
         let fresh = ClientConfigCache::new(
-            Arc::new(BoringTlsProvider),
+            Arc::new(BoringTlsProvider::new()),
             TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),
         );
         fresh
@@ -297,15 +298,15 @@ fn shared_handshake_settings_apply_without_peer_preparation() {
         let (policy, server) = configs();
         policy
             .as_extensions()
-            .extend(&BoringTlsProvider.session_defaults().unwrap());
-        let server = BoringTlsProvider
+            .extend(&BoringTlsProvider::new().session_defaults().unwrap());
+        let server = BoringTlsProvider::new()
             .server_config(&server, TlsOptions::default())
             .unwrap()
             .crypto
             .into_fixed();
 
         policy.as_extensions().insert(ClientHandshake::Resumed);
-        let missing = BoringTlsProvider
+        let missing = BoringTlsProvider::new()
             .client_config(&policy, TlsOptions::default())
             .unwrap();
         assert!(
@@ -317,7 +318,7 @@ fn shared_handshake_settings_apply_without_peer_preparation() {
 
         for _ in 0..2 {
             policy.as_extensions().insert(ClientHandshake::Full);
-            let full = BoringTlsProvider
+            let full = BoringTlsProvider::new()
                 .client_config(&policy, TlsOptions::default())
                 .unwrap();
             let mut client = full
@@ -332,7 +333,7 @@ fn shared_handshake_settings_apply_without_peer_preparation() {
         }
 
         policy.as_extensions().insert(ClientHandshake::Resumed);
-        let resumed = BoringTlsProvider
+        let resumed = BoringTlsProvider::new()
             .client_config(&policy, TlsOptions::default())
             .unwrap();
         let mut client = resumed
@@ -343,7 +344,7 @@ fn shared_handshake_settings_apply_without_peer_preparation() {
             .start_session(version, &params(Side::Server))
             .unwrap();
         check_session(&mut *client, &mut *peer, true);
-        BoringTlsProvider
+        BoringTlsProvider::new()
             .client_config(
                 &policy,
                 TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),

@@ -84,6 +84,7 @@ impl<'a> ServerClientHellos<'a> {
 mod tests {
     use super::*;
     use crate::{CipherSuite, CompressionAlgorithm, ProtocolVersion};
+    use rama_core::extensions::NoExtensionsTransfer;
 
     fn hello(suite: u16) -> ClientHello {
         ClientHello::new(
@@ -109,6 +110,21 @@ mod tests {
         assert_eq!(suite(hellos.ech_inner()), Some(CipherSuite::from(1)));
         assert_eq!(suite(hellos.effective()), Some(CipherSuite::from(1)));
         assert_eq!(hellos.ech_accepted(), Some(true));
+    }
+
+    #[test]
+    fn nested_handshake_does_not_inherit_outer_ech_observations() {
+        let proxy = Extensions::new();
+        proxy.insert(ServerEchAccepted::new(true));
+        proxy.insert(EchServerObservation::new(hello(2)));
+        let origin = proxy.fork_connection(&NoExtensionsTransfer);
+        origin.insert(SecureTransport::with_client_hello(hello(3)));
+
+        let hellos = ServerClientHellos::from_extensions(&origin);
+        assert_eq!(hellos.ech_accepted(), None);
+        assert!(origin.get_ref::<EchServerObservation>().is_none());
+        assert!(hellos.ech_inner().is_none());
+        assert_eq!(suite(hellos.wire()), Some(CipherSuite::from(3)));
     }
 
     #[test]

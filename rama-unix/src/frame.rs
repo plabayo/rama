@@ -57,8 +57,6 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
 
-        pin.rd.reserve(INITIAL_RD_CAPACITY);
-
         loop {
             // Are there still bytes left in the read buffer to decode?
             if let Some(current_addr) = pin.current_addr.clone() {
@@ -73,13 +71,8 @@ where
 
             // We're out of data. Try and fetch more data to decode
             let addr = {
-                // SAFETY: `as_uninit_slice_mut` requires that we neither read
-                // the memory nor write uninitialized bytes to it. The slice
-                // only backs `read`, a tokio `ReadBuf`, which writes received
-                // (initialized) bytes and, through its safe API, never
-                // de-initializes; we read only its `filled()` part.
-                let buf = unsafe { pin.rd.chunk_mut().as_uninit_slice_mut() };
-                let mut read = ReadBuf::uninit(buf);
+                pin.rd.reserve(INITIAL_RD_CAPACITY);
+                let mut read = ReadBuf::uninit(pin.rd.spare_capacity_mut());
                 let ptr = read.filled().as_ptr();
                 let res = ready!(pin.socket.borrow().poll_recv_from(cx, &mut read));
 
@@ -87,10 +80,10 @@ where
                 let addr = res?;
 
                 let filled = read.filled().len();
-                // SAFETY: `advance_mut` requires the next `filled` bytes of
-                // `chunk_mut()` to be initialized. `ReadBuf::filled` is the
-                // initialized prefix of the buffer `read` wraps, and the
-                // assert above shows that buffer still starts at `rd`'s chunk.
+                // SAFETY: `advance_mut` requires the next `filled` bytes of the
+                // spare capacity to be initialized. `ReadBuf::filled` is the
+                // initialized prefix of the buffer `read` wraps, and the assert
+                // above shows that buffer still starts at `rd`'s spare capacity.
                 unsafe { pin.rd.advance_mut(filled) };
 
                 addr

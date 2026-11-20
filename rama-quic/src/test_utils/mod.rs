@@ -21,8 +21,8 @@ pub fn tls_providers() -> Result<
     #[cfg(feature = "boring")]
     {
         Ok((
-            Arc::new(crate::tls::BoringTlsProvider),
-            Arc::new(crate::tls::BoringTlsProvider),
+            Arc::new(crate::tls::BoringTlsProvider::new()),
+            Arc::new(crate::tls::BoringTlsProvider::new()),
         ))
     }
     #[cfg(not(feature = "boring"))]

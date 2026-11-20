@@ -8,16 +8,6 @@
 //! behavior escalated a stream-scoped reset into `close_ingress.cancel()`,
 //! which sends a connection-level `GOAWAY` and tears down all siblings.
 //!
-//! The fix lives in `serve_http2_request`'s error arm (return a `502`
-//! instead of cancelling the ingress). That arm is only reached when the
-//! egress client error actually propagates as an `Err`, which is exactly
-//! the production wiring
-//! (`http_relay_middleware` has `Error = BoxError` and no top-level
-//! `ConsumeErrLayer` over the egress client). This test reproduces that by
-//! using an error-propagating middleware (NOT the `DefaultMiddleware`'s
-//! `ConsumeErrLayer`, which would swallow the reset into a `502` *before*
-//! the fix's code path and so would pass even on the buggy code).
-//!
 //! Wiring (all in-memory, no sockets):
 //!
 //!   client ──duplex──▶ relay(ingress h2) ──relay──▶ egress h2 ──duplex──▶ upstream
@@ -115,11 +105,6 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
         }
     });
 
-    // ── Relay: MITM relay with an ERROR-PROPAGATING middleware. ──
-    // Deliberately omit `ConsumeErrLayer` so a reset reaches
-    // `serve_http2_request`'s `Err` arm, the fix's code path. `ArcLayer`
-    // boxes the egress client to `Error = BoxError` (still `Into<BoxError>`)
-    // without consuming errors, mirroring the production relay middleware.
     let guard = graceful.clone();
     graceful.spawn_task(async move {
         HttpMitmRelay::new(WeakScope::from(guard))
@@ -169,10 +154,13 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
                 StatusCode::BAD_GATEWAY,
                 "the RST_STREAM'd stream must surface as a per-stream 502"
             );
+            use rama_http::headers::{Date, HeaderMapExt as _};
+            assert!(response.headers().typed_get::<Date>().is_some());
             // The 502 is the relay's synthesized DefaultErrorResponse, not a
             // transport failure leaking through.
             assert!(
-                response.headers().contains_key("x-proxy-framework-name"),
+                response.headers().get("x-proxy-framework")
+                    == Some(rama_http::header::identity_header()),
                 "the per-stream failure must be the relay's DefaultErrorResponse"
             );
         } else {

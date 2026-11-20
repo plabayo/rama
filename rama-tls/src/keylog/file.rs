@@ -9,7 +9,7 @@ use ahash::HashMap;
 use parking_lot::RwLock;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
-use rama_utils::fs::{CreatedFilePermissions, OpenOptionsSync};
+use rama_utils::fs::{CreatedFilePermissions, OpenOptions};
 
 use super::sink::KeyLogSink;
 
@@ -70,11 +70,11 @@ impl FileKeyLogSink {
 
     fn open_uncached(path: PathBuf) -> Result<Self, BoxError> {
         tracing::trace!(file.path = ?path, "FileKeyLogSink: opening");
-        let mut file = OpenOptionsSync::new()
+        let mut file = OpenOptions::new()
             .append(true)
             .create(true)
             .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
-            .open(&path)
+            .open_sync(&path)
             .context("open keylog file")
             .with_context_debug_field("path", || path.clone())?;
 

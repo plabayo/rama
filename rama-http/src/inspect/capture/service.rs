@@ -10,19 +10,51 @@ struct CaptureBodySink {
     store: CaptureStore,
     exchange_id: u64,
     direction: BodyDirection,
+    /// Set once the body's outcome is being recorded, which then supersedes an abort.
+    ended: Arc<AtomicBool>,
+}
+
+impl CaptureBodySink {
+    fn new(store: CaptureStore, exchange_id: u64, direction: BodyDirection) -> Self {
+        Self {
+            store,
+            exchange_id,
+            direction,
+            ended: Arc::default(),
+        }
+    }
 }
 
 impl BodyCaptureSink for CaptureBodySink {
     fn capture(&self, event: BodyCaptureEvent) -> impl Future<Output = ()> + Send + 'static {
         let this = self.clone();
-        async move {
+        let ending = matches!(event, BodyCaptureEvent::End(_));
+        let recording = async move {
             this.store
                 .body_event(this.exchange_id, this.direction, event)
                 .await;
+        };
+        // The body has ended: its outcome is recorded even if the reader drops it now.
+        let (inline, detached) = if ending {
+            self.ended.store(true, Ordering::Release);
+            (None, Some(rama_core::rt::spawn(recording)))
+        } else {
+            (Some(recording), None)
+        };
+        async move {
+            if let Some(recording) = inline {
+                recording.await;
+            }
+            if let Some(recording) = detached {
+                _ = recording.await;
+            }
         }
     }
 
     fn aborted(&self) {
+        if self.ended.load(Ordering::Acquire) {
+            return;
+        }
         let this = self.clone();
         rama_core::rt::spawn(async move {
             this.store
@@ -218,11 +250,7 @@ where
             let body = if let Some(id) = id {
                 Body::new(CaptureBody::new(
                     body,
-                    CaptureBodySink {
-                        store: store.clone(),
-                        exchange_id: id,
-                        direction: BodyDirection::Request,
-                    },
+                    CaptureBodySink::new(store.clone(), id, BodyDirection::Request),
                 ))
             } else {
                 body
@@ -324,11 +352,7 @@ where
                 parts,
                 Body::new(CaptureBody::new(
                     body,
-                    CaptureBodySink {
-                        store: store.clone(),
-                        exchange_id: id,
-                        direction: BodyDirection::Response,
-                    },
+                    CaptureBodySink::new(store.clone(), id, BodyDirection::Response),
                 )),
             );
         }

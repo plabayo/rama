@@ -30,7 +30,7 @@ pub(super) fn connect_request<B: Default>(
         // host (e.g. `127.0.0.1`) as an invalid scheme.
         .uri(Uri::from_authority_form(authority.clone().into()))
         .typed_header(Host::from(authority))
-        .typed_header(UserAgent::rama())
+        .typed_header(UserAgent::default())
         .body(B::default())
         .context("build CONNECT request")?;
 

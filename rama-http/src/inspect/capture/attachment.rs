@@ -64,6 +64,11 @@ impl Write for MetadataWriter {
         Ok(bytes.len())
     }
 
+    // `write` consumes the whole buffer or fails.
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.write(bytes).map(drop)
+    }
+
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }

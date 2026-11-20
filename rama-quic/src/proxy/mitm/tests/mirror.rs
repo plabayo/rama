@@ -1,5 +1,5 @@
 use rama_core::service::RejectService;
-use rama_crypto::dep::boring::ssl::SslContentType;
+use rama_crypto::dep::boring::ssl::{SslContentType, UnknownValues};
 use rama_quic_proto::{
     capture::{
         CaptureLimits, FirstFlight, QuicObservation, RawParameter, transport_parameters_from_hello,
@@ -124,7 +124,7 @@ async fn through_relay(
             ServerConfig::try_from_rama_tls_with_provider(
                 &origin_tls,
                 TlsOptions::default(),
-                &BoringTlsProvider,
+                &BoringTlsProvider::new(),
             )
             .unwrap()
             .maybe_with_capture(Some(CaptureLimits::default())),
@@ -162,7 +162,7 @@ async fn through_relay(
         },
     ));
     let peek = PeekQuicClientHelloService::new(
-        BoringTlsProvider,
+        BoringTlsProvider::new(),
         service_fn(async |input: InputWithQuicClientHello<_>| Ok::<_, BoxError>(input)),
     )
     .with_fallback(RejectService::new(NoQuicRejectError))
@@ -221,7 +221,7 @@ async fn through_relay(
     let mut config = ClientConfig::try_from_rama_tls_with_provider(
         &client_tls,
         TlsOptions::default(),
-        &BoringTlsProvider,
+        &BoringTlsProvider::new(),
     )
     .unwrap();
     config.apply_quic_profile(&profile).unwrap();

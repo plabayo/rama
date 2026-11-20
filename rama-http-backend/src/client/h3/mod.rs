@@ -813,7 +813,7 @@ mod concrete_transport_tests {
     #[tokio::test]
     async fn boring_rejects_unsupported_alpnless_http3_configuration() {
         let connector = Http3Connector::builder(WeakScope::detached())
-            .with_tls_provider(Arc::new(rama_quic::tls::BoringTlsProvider))
+            .with_tls_provider(Arc::new(rama_quic::tls::BoringTlsProvider::new()))
             .with_tls_config(
                 TlsClientConfig::new()
                     .with_alpn_policy(AlpnPolicy::OutOfBandAgreement)

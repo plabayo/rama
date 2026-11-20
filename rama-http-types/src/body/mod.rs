@@ -171,6 +171,17 @@ impl Body {
         Self(BodyInner::Full(body))
     }
 
+    /// Share the remaining payload if this body holds a single inline chunk.
+    ///
+    /// Streaming bodies and empty bodies return `None`. This never polls the
+    /// body or strips trailers from a wrapped stream.
+    pub fn full_bytes(&self) -> Option<Bytes> {
+        match &self.0 {
+            BodyInner::Full(full) => full.clone().into_inner(),
+            BodyInner::Boxed(_) => None,
+        }
+    }
+
     /// Create a new `Body` with a maximum size limit.
     pub fn with_limit<B>(body: B, limit: usize) -> Self
     where
@@ -290,6 +301,21 @@ impl Body {
     /// [`http_body_util::BodyStream`]: https://docs.rs/http-body-util/latest/http_body_util/struct.BodyStream.html
     pub fn into_data_stream(self) -> BodyDataStream {
         BodyDataStream { inner: self }
+    }
+
+    /// Stream the elements of a top-level JSON array.
+    pub fn into_json_array_stream<T: DeserializeOwned>(
+        self,
+    ) -> json::JsonArrayReadStream<T, BodyDataStream> {
+        json::JsonArrayReadStream::new(self.into_data_stream())
+    }
+
+    /// Stream the elements of a top-level JSON array with a custom byte limit.
+    pub fn into_json_array_stream_with_config<T: DeserializeOwned>(
+        self,
+        config: json::ArrayParseConfig,
+    ) -> json::JsonArrayReadStream<T, BodyDataStream> {
+        json::JsonArrayReadStream::new_with_config(self.into_data_stream(), config)
     }
 
     /// Convert the body into a [`Stream`] of [`sse::Event`]s.

@@ -142,7 +142,7 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
     }
 
     /// Sends data relayed via the socks5 udp associate proxy.
-    /// On success, returns the number of bytes written.
+    /// On success, returns the number of payload bytes written.
     pub async fn send_to<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
         &mut self,
         b: &[u8],
@@ -159,7 +159,8 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
         header.write_to_buf(&mut self.write_buffer)?;
         self.write_buffer.extend_from_slice(b);
 
-        Ok(self.socket.send(&self.write_buffer[..]).await?)
+        let n = self.socket.send(&self.write_buffer[..]).await?;
+        Ok(n.saturating_sub(header.serialized_len()))
     }
 
     /// Same as [`Self::send_to`] but polled.
@@ -183,7 +184,7 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
         self.socket
             .poll_send(cx, &self.write_buffer[..])
             .map_err(Into::into)
-            .map_ok(|n| n - header.serialized_len())
+            .map_ok(|n| n.saturating_sub(header.serialized_len()))
     }
 
     /// Receives a single datagram message from the socks5 udp associate proxy.
@@ -380,8 +381,6 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
 
-        pin.rd.reserve(INITIAL_RD_CAPACITY);
-
         loop {
             // Are there still bytes left in the read buffer to decode?
             if let Some(current_addr) = pin.current_addr {
@@ -396,11 +395,8 @@ where
 
             // We're out of data. Try and fetch more data to decode
             let addr = {
-                // SAFETY: `as_uninit_slice_mut` requires that the returned slice is neither read
-                // nor written with uninitialized bytes. It is only lent to `ReadBuf`, whose safe
-                // API writes initialized bytes alone and reads only the part it filled.
-                let buf = unsafe { pin.rd.chunk_mut().as_uninit_slice_mut() };
-                let mut read = ReadBuf::uninit(buf);
+                pin.rd.reserve(INITIAL_RD_CAPACITY);
+                let mut read = ReadBuf::uninit(pin.rd.spare_capacity_mut());
                 let ptr = read.filled().as_ptr();
                 let res = ready!(pin.relay_socket.poll_recv_from(cx, &mut read));
 
@@ -410,7 +406,7 @@ where
                 let filled = read.filled().len();
                 // SAFETY: `advance_mut` requires the next `filled` bytes of the spare capacity to
                 // be initialized. `ReadBuf` keeps its filled part initialized, and the assertion
-                // above shows that part still starts at `chunk_mut()`, the spare capacity.
+                // above shows that part still starts at the spare capacity.
                 unsafe { pin.rd.advance_mut(filled) };
 
                 addr

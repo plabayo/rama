@@ -362,7 +362,7 @@ pub(super) fn fastcgi_response_to_http(resp: FastCgiClientResponse) -> Response 
     }
 
     builder
-        .body(Body::from(Bytes::copy_from_slice(body_bytes)))
+        .body(Body::from(stdout.slice_ref(body_bytes)))
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 

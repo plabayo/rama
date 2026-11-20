@@ -1,6 +1,6 @@
 use std::io::{Seek as _, SeekFrom};
 
-use rama_utils::fs::{CreatedFilePermissions, OpenOptionsSync, TempDir, TempPath, TempPathCleanup};
+use rama_utils::fs::{CreatedFilePermissions, OpenOptions, TempDir, TempPath, TempPathCleanup};
 use tokio::{
     fs::File,
     io::{AsyncSeekExt, AsyncWriteExt},
@@ -35,7 +35,7 @@ struct Factory {
 
 impl FileStore {
     pub fn temporary(limits: StorageLimits) -> Result<Self, BoxError> {
-        let directory = TempDir::with_prefix("rama-inspect-")?;
+        let directory = TempDir::with_prefix_sync("rama-inspect-")?;
         let (cleanup, worker) = TempPathCleanup::new();
         rama_core::rt::spawn(worker.run());
         Ok(Self {
@@ -67,13 +67,13 @@ impl Service<CreateCollection> for FileStore {
         let factory = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let name = format!("collection-{}.capture", input.id);
-            let file = OpenOptionsSync::new()
+            let file = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create_new(true)
                 .jail(factory.directory.path())
                 .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
-                .open(&name)?;
+                .open_sync(&name)?;
             drop(file);
             let path = TempPath::new(factory.directory.path().join(name), factory.cleanup.clone());
             Ok::<_, BoxError>(Collection::new(FileCollection(Arc::new(FileInner {
@@ -138,11 +138,11 @@ impl FileInner {
     ) -> Result<OpenedFile<G>, BoxError> {
         let owner = self.clone();
         tokio::task::spawn_blocking(move || {
-            let mut file = OpenOptionsSync::new()
+            let mut file = OpenOptions::new()
                 .read(true)
                 .write(write)
                 .jail(owner.factory.directory.path())
-                .open(
+                .open_sync(
                     owner
                         .path
                         .as_ref()

@@ -416,7 +416,7 @@ mod boring {
         let ca =
             Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
         let issuer = RecordingIssuer::new(&ca);
-        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let server = server(&tls(&issuer), &BoringTlsProvider::new()).await;
         let addr = server.local_addr().unwrap();
         let served = serve(&server);
 
@@ -424,7 +424,7 @@ mod boring {
         for name in ["a.test", "b.test", "a.test"] {
             let connection = connect(
                 &client,
-                client_config(&ca, alpn(), &BoringTlsProvider),
+                client_config(&ca, alpn(), &BoringTlsProvider::new()),
                 addr,
                 name,
             )
@@ -446,12 +446,12 @@ mod boring {
         let ca =
             Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
         let issuer = RecordingIssuer::new(&ca);
-        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let server = server(&tls(&issuer), &BoringTlsProvider::new()).await;
         let addr = server.local_addr().unwrap();
         let served = serve_echo(&server);
 
         let client = client().await;
-        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, alpn(), &BoringTlsProvider::new());
         let mut resumed = Vec::new();
         for _ in 0..2 {
             let connection = exchange(&client, config.clone(), addr, "a.test").await;
@@ -477,17 +477,17 @@ mod boring {
         let ca =
             Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
         let issuer = RecordingIssuer::new(&ca);
-        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let server = server(&tls(&issuer), &BoringTlsProvider::new()).await;
         let relay = relay(server.local_addr().unwrap(), Relaying::All).await;
         let served = serve_echo(&server);
 
-        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, alpn(), &BoringTlsProvider::new());
         exchange(&client().await, config.clone(), relay.addr, "a.test")
             .await
             .close(VarInt::from(0u32), b"done");
         assert_eq!(relay.retries(), 1, "a certificate still to issue");
         // Another client, without a token from the first: the certificate is cached by now.
-        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, alpn(), &BoringTlsProvider::new());
         exchange(&client().await, config, relay.addr, "a.test")
             .await
             .close(VarInt::from(0u32), b"done");
@@ -505,10 +505,10 @@ mod boring {
         let ca =
             Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
         let issuer = RecordingIssuer::new(&ca);
-        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let server = server(&tls(&issuer), &BoringTlsProvider::new()).await;
         let served = serve_echo(&server);
 
-        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, alpn(), &BoringTlsProvider::new());
         let relay = exchange_retransmitting_before_the_retry(&server, config).await;
         assert_eq!(relay.retries(), 1);
         assert_eq!(issuer.seen(), [dns("a.test")]);
@@ -526,12 +526,12 @@ mod boring {
         let tls = tls(&issuer).with_cert_issuer(
             ServerCertIssuerData::new(issuer.clone()).with_cache_kind(CacheKind::Disabled),
         );
-        let server = server(&tls, &BoringTlsProvider).await;
+        let server = server(&tls, &BoringTlsProvider::new()).await;
         let relay = relay(server.local_addr().unwrap(), Relaying::All).await;
         let served = serve_echo(&server);
 
         let client = client().await;
-        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, alpn(), &BoringTlsProvider::new());
         for _ in 0..2 {
             exchange(&client, config.clone(), relay.addr, "a.test")
                 .await
@@ -550,12 +550,12 @@ mod boring {
         let ca =
             Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
         let issuer = RecordingIssuer::new(&ca);
-        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let server = server(&tls(&issuer), &BoringTlsProvider::new()).await;
         let relay = relay(server.local_addr().unwrap(), Relaying::NoRetries).await;
         let served = serve(&server);
 
         let client = client().await;
-        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, alpn(), &BoringTlsProvider::new());
         let connecting = tokio::spawn({
             let (client, addr) = (client.clone(), relay.addr);
             async move { client.connect_with(config, addr, "a.test").unwrap().await }
@@ -578,7 +578,7 @@ mod boring {
         let config = ServerConfig::try_from_rama_tls_with_provider(
             &tls(&issuer),
             TlsOptions::default(),
-            &BoringTlsProvider,
+            &BoringTlsProvider::new(),
         )
         .unwrap()
         // A token lifetime past any representable instant cannot be sealed into a Retry.
@@ -592,7 +592,7 @@ mod boring {
         let served = serve(&server);
 
         let client = client().await;
-        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, alpn(), &BoringTlsProvider::new());
         let connecting = tokio::spawn({
             let client = client.clone();
             async move { client.connect_with(config, addr, "a.test").unwrap().await }
@@ -614,7 +614,7 @@ mod boring {
         let tls = tls(&issuer).with_cert_issuer(
             ServerCertIssuerData::new(issuer.clone()).with_cache_kind(CacheKind::Disabled),
         );
-        let server = server(&tls, &BoringTlsProvider).await;
+        let server = server(&tls, &BoringTlsProvider::new()).await;
         let relay = delaying_relay(server.local_addr().unwrap(), Duration::from_millis(250)).await;
         let served = serve(&server);
 
@@ -622,7 +622,7 @@ mod boring {
         let started = tokio::time::Instant::now();
         let connection = connect(
             &client,
-            client_config(&ca, padded_alpn(), &BoringTlsProvider),
+            client_config(&ca, padded_alpn(), &BoringTlsProvider::new()),
             relay,
             "split.test",
         )
@@ -641,14 +641,14 @@ mod boring {
         let ca =
             Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
         let issuer = RecordingIssuer::new(&ca);
-        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let server = server(&tls(&issuer), &BoringTlsProvider::new()).await;
         let addr = server.local_addr().unwrap();
         let served = serve(&server);
 
         let client = client().await;
         let connection = connect(
             &client,
-            client_config(&ca, large_alpn(), &BoringTlsProvider),
+            client_config(&ca, large_alpn(), &BoringTlsProvider::new()),
             addr,
             "large.test",
         )
@@ -677,7 +677,7 @@ mod boring {
                         leaf: LeafCertConfig::default(),
                     },
                 ));
-        let server = server(&tls, &BoringTlsProvider).await;
+        let server = server(&tls, &BoringTlsProvider::new()).await;
         let addr = server.local_addr().unwrap();
         let served = serve(&server);
 
@@ -685,7 +685,7 @@ mod boring {
         for name in ["a.test", "b.test"] {
             let connection = connect(
                 &client,
-                client_config(&ca, alpn(), &BoringTlsProvider),
+                client_config(&ca, alpn(), &BoringTlsProvider::new()),
                 addr,
                 name,
             )
@@ -714,7 +714,7 @@ mod boring {
                 ServerConfig::try_from_rama_tls_with_provider(
                     &tls(&issuer),
                     TlsOptions::default(),
-                    &BoringTlsProvider,
+                    &BoringTlsProvider::new(),
                 )
                 .unwrap(),
             )
@@ -724,7 +724,7 @@ mod boring {
         let relay = truncating_relay(server.local_addr().unwrap()).await;
 
         let client = client().await;
-        let config = client_config(&ca, padded_alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, padded_alpn(), &BoringTlsProvider::new());
         tokio::spawn({
             let client = client.clone();
             async move {
@@ -750,11 +750,11 @@ mod boring {
         let ca =
             Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
         let issuer = RecordingIssuer::new(&ca);
-        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let server = server(&tls(&issuer), &BoringTlsProvider::new()).await;
         let relay = truncating_relay(server.local_addr().unwrap()).await;
 
         let client = client().await;
-        let config = client_config(&ca, padded_alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, padded_alpn(), &BoringTlsProvider::new());
         tokio::spawn({
             let client = client.clone();
             async move {
@@ -783,14 +783,14 @@ mod boring {
             Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
         let mut issuer = RecordingIssuer::new(&ca);
         issuer.fail = true;
-        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let server = server(&tls(&issuer), &BoringTlsProvider::new()).await;
         let addr = server.local_addr().unwrap();
         let served = serve(&server);
 
         let client = client().await;
         let error = connect(
             &client,
-            client_config(&ca, alpn(), &BoringTlsProvider),
+            client_config(&ca, alpn(), &BoringTlsProvider::new()),
             addr,
             "a.test",
         )
@@ -808,11 +808,11 @@ mod boring {
         let ca =
             Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
         let issuer = RecordingIssuer::new(&ca);
-        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let server = server(&tls(&issuer), &BoringTlsProvider::new()).await;
         let addr = server.local_addr().unwrap();
 
         let client = client().await;
-        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, alpn(), &BoringTlsProvider::new());
         let connecting = tokio::spawn({
             let client = client.clone();
             async move { connect(&client, config, addr, "early.test").await }
@@ -844,11 +844,11 @@ mod boring {
         let ca =
             Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
         let issuer = RecordingIssuer::new(&ca);
-        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let server = server(&tls(&issuer), &BoringTlsProvider::new()).await;
         let addr = server.local_addr().unwrap();
 
         let client = client().await;
-        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, alpn(), &BoringTlsProvider::new());
         let connecting = tokio::spawn({
             let client = client.clone();
             async move { connect(&client, config, addr, "a.test").await }
@@ -906,7 +906,7 @@ mod boring {
                 ServerConfig::try_from_rama_tls_with_provider(
                     &stalled_tls(&issuer),
                     TlsOptions::default(),
-                    &BoringTlsProvider,
+                    &BoringTlsProvider::new(),
                 )
                 .unwrap(),
             )
@@ -916,7 +916,7 @@ mod boring {
         let addr = server.local_addr().unwrap();
 
         let client = client().await;
-        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, alpn(), &BoringTlsProvider::new());
         tokio::spawn({
             let client = client.clone();
             async move { client.connect_with(config, addr, "a.test").unwrap().await }
@@ -936,12 +936,12 @@ mod boring {
         let ca =
             Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
         let issuer = Stalled::default();
-        let server = server(&stalled_tls(&issuer), &BoringTlsProvider).await;
+        let server = server(&stalled_tls(&issuer), &BoringTlsProvider::new()).await;
         let addr = server.local_addr().unwrap();
         let served = serve(&server);
 
         let client = client().await;
-        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let config = client_config(&ca, alpn(), &BoringTlsProvider::new());
         tokio::spawn({
             let client = client.clone();
             async move { client.connect_with(config, addr, "a.test").unwrap().await }

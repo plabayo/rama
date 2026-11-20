@@ -5,7 +5,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_http_types::{
     header::HeaderValue,
-    utils::http_date::{MAX_HTTP_DATE_UNIX_SECS, format_http_date, parse_http_date},
+    utils::http_date::{
+        MAX_HTTP_DATE_UNIX_SECS, format_http_date, format_http_date_bytes_maybe_now,
+        parse_http_date,
+    },
 };
 
 use super::IterExt;
@@ -55,14 +58,16 @@ impl super::TryFromValues for HttpDate {
 }
 
 impl From<HttpDate> for HeaderValue {
+    #[inline(always)]
     fn from(date: HttpDate) -> Self {
-        Self::from_http_date(date.0)
+        Self::from(&date)
     }
 }
 
 impl From<&HttpDate> for HeaderValue {
     fn from(date: &HttpDate) -> Self {
-        Self::from_http_date(date.0)
+        // SAFETY: an IMF-fixdate is visible ASCII only.
+        unsafe { Self::from_maybe_shared_unchecked(format_http_date_bytes_maybe_now(date.0)) }
     }
 }
 
@@ -128,6 +133,15 @@ mod tests {
     // See https://github.com/pyfisch/httpdate/pull/6#issuecomment-846881001
     fn nov_07() -> HttpDate {
         HttpDate(784_198_117)
+    }
+
+    #[test]
+    fn header_value_clamps_past_9999() {
+        let last = UNIX_EPOCH + Duration::from_secs(253_402_300_799);
+        assert_eq!(
+            HeaderValue::from(HttpDate::from(last + Duration::from_secs(1))),
+            "Fri, 31 Dec 9999 23:59:59 GMT"
+        );
     }
 
     #[test]

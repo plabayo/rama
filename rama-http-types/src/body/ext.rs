@@ -1,11 +1,21 @@
+use std::{io, pin::pin};
+
 use super::StreamingBody;
-use super::util::{BodyExt, CollectError, CollectOptions};
-use rama_core::bytes::{Buf, Bytes};
-use rama_core::error::{BoxError, ErrorContext};
+use super::util::{BodyDataStream, BodyExt, BufList, CollectError, CollectOptions};
+use rama_core::{
+    bytes::{Buf, Bytes},
+    error::{BoxError, ErrorContext},
+    futures::{
+        FutureExt, Stream, StreamExt, TryStreamExt,
+        future::{Either, select},
+    },
+};
 use rama_json::capture::{
     CaptureHandler, CaptureResult, CapturedValue, JsonCapturer, OwnedCapturedValue,
 };
 use rama_json::path::JsonPath;
+use rama_utils::octets::kib;
+use tokio::sync::mpsc;
 
 /// An extension trait for [`StreamingBody`] that provides methods to extract data from it.
 pub trait BodyExtractExt: private::Sealed {
@@ -17,25 +27,13 @@ pub trait BodyExtractExt: private::Sealed {
         self,
     ) -> impl Future<Output = Result<T, BoxError>> + Send;
 
-    /// Try to deserialize the (contained) body as a JSON object, streaming bytes
-    /// from the body directly into the JSON parser instead of buffering the whole
-    /// body first.
+    /// Try to deserialize the (contained) body as a JSON value without first
+    /// buffering a large body.
     ///
-    /// Preferable to [`BodyExtractExt::try_into_json`] for large bodies where peak
-    /// memory matters.
-    ///
-    /// # Note
-    ///
-    /// Internally this runs `serde_json::from_reader` inside a
-    /// [`tokio::task::spawn_blocking`] task using [`SyncIoBridge`] to bridge the
-    /// async body to serde's synchronous `io::Read` interface. The thread hop is
-    /// unavoidable today because [`serde::Deserialize`] is a pull-based,
-    /// synchronous trait and no production-ready async-first JSON crate currently
-    /// ships a drop-in `serde::Deserialize` integration. Contributions that
-    /// remove this hop — e.g. by building a `serde::Deserializer` on top of an
-    /// async event-based JSON parser — are welcome.
-    ///
-    /// [`SyncIoBridge`]: rama_core::stream::io::SyncIoBridge
+    /// Bodies up to 16 KiB are parsed in the calling task. Larger bodies are
+    /// parsed on a blocking thread while the calling task feeds it frames, so
+    /// peak memory stays a few frames. Dropping the returned future stops the
+    /// blocking parser at its next read.
     fn try_into_json_streaming<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
     ) -> impl Future<Output = Result<T, BoxError>> + Send;
@@ -241,8 +239,6 @@ async fn body_capture_json<B>(
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
-    use rama_core::futures::TryStreamExt;
-
     let data_stream = crate::body::util::BodyDataStream::new(body);
     let mut data_stream = std::pin::pin!(data_stream);
     while let Some(mut data) = data_stream
@@ -262,29 +258,121 @@ where
     Ok(capturer.into_handler().values)
 }
 
-/// Drive a body's data frames through an `AsyncRead` and into
-/// `serde_json::from_reader`, running the sync deserializer on a blocking
-/// task. See [`BodyExtractExt::try_into_json_streaming`] for rationale.
+const JSON_STREAMING_PROBE_LIMIT: usize = kib(16);
+const JSON_STREAMING_QUEUED_BATCHES: usize = 2;
+const JSON_STREAMING_BATCH_BYTES: usize = kib(64);
+const JSON_STREAMING_READ_BUFFER: usize = kib(16);
+
 async fn body_into_json_streaming<B, T>(body: B) -> Result<T, BoxError>
 where
-    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
+    B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + 'static,
     T: serde::de::DeserializeOwned + Send + 'static,
 {
-    use rama_core::futures::TryStreamExt;
-    use rama_core::stream::io::{StreamReader, SyncIoBridge};
+    let mut frames = pin!(BodyDataStream::new(body).map_err(|e| io::Error::other(e.into())));
+    let mut prefix = BufList::new();
+    let mut size = 0usize;
+    while size <= JSON_STREAMING_PROBE_LIMIT {
+        let Some(frame) = frames.try_next().await.map_err(serde_json::Error::io)? else {
+            return Ok(serde_json::from_slice(&prefix.copy_to_bytes(size))?);
+        };
+        size = size.saturating_add(frame.len());
+        prefix.push(frame);
+    }
+    parse_on_blocking_thread(prefix, frames).await
+}
 
-    // `http_body::Body::Data: Buf` is a supertrait bound, so the data-frame
-    // stream items implement `Buf` and can feed `StreamReader` directly.
-    let data_stream =
-        crate::body::util::BodyDataStream::new(body).map_err(|e| std::io::Error::other(e.into()));
-    let async_reader = StreamReader::new(Box::pin(data_stream));
+/// Parse on a blocking thread fed by this task, so dropping the future ends the parse.
+async fn parse_on_blocking_thread<T>(
+    prefix: BufList<Bytes>,
+    mut frames: impl Stream<Item = io::Result<Bytes>> + Unpin,
+) -> Result<T, BoxError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel(JSON_STREAMING_QUEUED_BATCHES);
+    let parser = tokio::task::spawn_blocking(move || {
+        let frames = FrameReader {
+            batches: receiver,
+            batch: BufList::new(),
+        };
+        // serde_json reads byte by byte, and std only has a fast path for that on a BufReader.
+        let reader = io::BufReader::with_capacity(JSON_STREAMING_READ_BUFFER, frames);
+        serde_json::from_reader::<_, T>(reader)
+    });
+    // Dropping `forward` drops the sender, so the parser reads end of input and returns.
+    let forward = async move {
+        let mut batch = prefix;
+        let mut batched = batch.remaining();
+        loop {
+            // Frames already available share one batch, so small frames cost one thread wake.
+            let mut end = None;
+            while batched < JSON_STREAMING_BATCH_BYTES && end.is_none() {
+                match frames.next().now_or_never() {
+                    Some(Some(Ok(frame))) => {
+                        batched += frame.len();
+                        batch.push(frame);
+                    }
+                    Some(Some(Err(err))) => end = Some(Err(err)),
+                    Some(None) => end = Some(Ok(())),
+                    None => break,
+                }
+            }
+            if batched == 0 && end.is_none() {
+                match frames.next().await {
+                    Some(Ok(frame)) => {
+                        batched = frame.len();
+                        batch.push(frame);
+                        continue;
+                    }
+                    Some(Err(err)) => end = Some(Err(err)),
+                    None => return,
+                }
+            }
+            if batched > 0 {
+                let full = std::mem::replace(&mut batch, BufList::new());
+                batched = 0;
+                if sender.send(Ok(full)).await.is_err() {
+                    return;
+                }
+            }
+            match end {
+                Some(Err(err)) => {
+                    _ = sender.send(Err(err)).await;
+                    return;
+                }
+                Some(Ok(())) => return,
+                None => (),
+            }
+        }
+    };
+    // The parser can finish before the body ends, e.g. on a syntax error.
+    let joined = match select(pin!(forward), parser).await {
+        Either::Left(((), parser)) => parser.await,
+        Either::Right((joined, _)) => joined,
+    };
+    joined
+        .context("join blocking JSON parser")?
+        .map_err(BoxError::from)
+}
 
-    tokio::task::spawn_blocking(move || {
-        let reader = SyncIoBridge::new(async_reader);
-        serde_json::from_reader::<_, T>(reader).map_err(BoxError::from)
-    })
-    .await
-    .map_err(BoxError::from)?
+/// Blocking reader over frame batches sent by the task that polls the body.
+struct FrameReader {
+    batches: mpsc::Receiver<io::Result<BufList<Bytes>>>,
+    batch: BufList<Bytes>,
+}
+
+impl io::Read for FrameReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        while !self.batch.has_remaining() {
+            match self.batches.blocking_recv() {
+                Some(batch) => self.batch = batch?,
+                None => return Ok(0),
+            }
+        }
+        let len = buf.len().min(self.batch.remaining());
+        self.batch.copy_to_slice(&mut buf[..len]);
+        Ok(len)
+    }
 }
 
 /// Collect `body` within `opts`, then JSON-decode the buffered bytes. A decode
@@ -334,12 +422,232 @@ mod tests {
         age: u8,
     }
 
-    /// Build a body from multiple `Bytes` chunks so we actually exercise the
-    /// streaming path (split-across-frames JSON).
-    ///
-    /// Uses the multi_thread flavor because `SyncIoBridge` calls
-    /// `Handle::block_on` on the blocking task — that needs runtime workers
-    /// to be available on another thread.
+    fn streamed(frames: Vec<std::io::Result<Bytes>>) -> Body {
+        Body::from_stream(stream::iter(frames))
+    }
+
+    #[test]
+    fn streaming_json_threshold_with_occupied_blocking_pool() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (release, wait) = std::sync::mpsc::channel::<()>();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let occupied = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                wait.recv().unwrap_err();
+            });
+            ready.await.unwrap();
+            let mut prefix = vec![b' '; JSON_STREAMING_PROBE_LIMIT - 1];
+            prefix.push(b'1');
+            let prefix = Bytes::from(prefix);
+            let timeout = std::time::Duration::from_secs(1);
+            let small = streamed(vec![Ok(prefix.clone())]).try_into_json_streaming::<u8>();
+            assert_eq!(
+                tokio::time::timeout(timeout, small).await.unwrap().unwrap(),
+                1
+            );
+            let mut items =
+                crate::Response::new(Body::from("[1,2]")).into_json_array_stream::<u8>();
+            let read = async {
+                assert_eq!(items.next().await.unwrap().unwrap(), 1);
+                assert_eq!(items.next().await.unwrap().unwrap(), 2);
+                assert!(items.next().await.is_none());
+            };
+            tokio::time::timeout(timeout, read).await.unwrap();
+            let large = streamed(vec![Ok(prefix), Ok(Bytes::from_static(b"2"))])
+                .try_into_json_streaming::<u8>();
+            let mut large = std::pin::pin!(large);
+            tokio::time::timeout(timeout, &mut large).await.unwrap_err();
+            drop(release);
+            assert_eq!(large.await.unwrap(), 12);
+            occupied.await.unwrap();
+        });
+    }
+
+    #[tokio::test]
+    async fn streaming_json_small_frames_preserve_order_on_both_paths() {
+        for (len, frame) in [(128, 1), (20_000, 7)] {
+            let expected = (0..len).collect::<Vec<u16>>();
+            let bytes = Bytes::from(serde_json::to_vec(&expected).unwrap());
+            let frames = (0..bytes.len())
+                .step_by(frame)
+                .map(|i| Ok(bytes.slice(i..(i + frame).min(bytes.len()))))
+                .collect();
+            assert_eq!(
+                streamed(frames)
+                    .try_into_json_streaming::<Vec<u16>>()
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_json_reads_a_bounded_amount_ahead_of_a_waiting_parser() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // Occupy the only blocking thread so the parser stays queued.
+            let (release, wait) = std::sync::mpsc::channel::<()>();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let occupied = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                wait.recv().unwrap_err();
+            });
+            ready.await.unwrap();
+
+            let frame_len = kib(1);
+            let frames = 1000;
+            let yielded = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = yielded.clone();
+            let mut doc = vec![b' '; frames * frame_len - 2];
+            doc.extend_from_slice(b"42");
+            let doc = Bytes::from(doc);
+            let body = Body::from_stream(stream::iter(0..frames).map(move |index| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok::<_, std::io::Error>(doc.slice(index * frame_len..(index + 1) * frame_len))
+            }));
+            let read = tokio::spawn(body.try_into_json_streaming::<u8>());
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            // Probe prefix, two queued batches and one batch waiting to be sent.
+            let ahead = yielded.load(std::sync::atomic::Ordering::Relaxed) * frame_len;
+            let bound = JSON_STREAMING_PROBE_LIMIT
+                + (JSON_STREAMING_QUEUED_BATCHES + 1) * (JSON_STREAMING_BATCH_BYTES + frame_len);
+            assert!(ahead <= bound, "read {ahead} bytes ahead, bound {bound}");
+            assert!(
+                ahead > JSON_STREAMING_PROBE_LIMIT + JSON_STREAMING_BATCH_BYTES,
+                "read only {ahead} bytes ahead, so frames were not batched"
+            );
+
+            drop(release);
+            occupied.await.unwrap();
+            assert_eq!(read.await.unwrap().unwrap(), 42);
+        });
+    }
+
+    #[tokio::test]
+    async fn streaming_json_large_body_with_pauses_between_frames() {
+        // Every third frame is pending first, so batches mix ready and awaited frames.
+        let expected = (0..20_000).collect::<Vec<u16>>();
+        let bytes = Bytes::from(serde_json::to_vec(&expected).unwrap());
+        let frames = (0..bytes.len())
+            .step_by(500)
+            .enumerate()
+            .map(move |(n, i)| {
+                let frame = bytes.slice(i..(i + 500).min(bytes.len()));
+                (n, frame)
+            });
+        let paced = stream::iter(frames).then(|(n, frame)| async move {
+            if n % 3 == 0 {
+                tokio::task::yield_now().await;
+            }
+            Ok::<_, std::io::Error>(frame)
+        });
+        let decoded = Body::from_stream(paced)
+            .try_into_json_streaming::<Vec<u16>>()
+            .await
+            .unwrap();
+        assert_eq!(decoded, expected);
+    }
+
+    fn stalled_after(frames: Vec<Bytes>) -> Body {
+        Body::from_stream(
+            stream::iter(frames.into_iter().map(Ok::<_, std::io::Error>)).chain(stream::pending()),
+        )
+    }
+
+    #[test]
+    fn streaming_json_dropped_large_read_releases_blocking_thread() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_time()
+            .build()
+            .unwrap();
+        let released = runtime.block_on(async {
+            let large = vec![b' '; JSON_STREAMING_PROBE_LIMIT + 1];
+            let read = stalled_after(vec![Bytes::from(large)]).try_into_json_streaming::<u8>();
+            let short = std::time::Duration::from_millis(50);
+            tokio::time::timeout(short, read).await.unwrap_err();
+            let next = tokio::task::spawn_blocking(|| 7);
+            let timeout = std::time::Duration::from_secs(5);
+            matches!(tokio::time::timeout(timeout, next).await, Ok(Ok(7)))
+        });
+        // A parser still pinned to the thread would make a normal drop wait forever.
+        runtime.shutdown_background();
+        assert!(released, "dropped read kept the only blocking thread");
+    }
+
+    #[tokio::test]
+    async fn streaming_json_stops_polling_body_after_error() {
+        let frames = stream::iter([
+            Ok(Bytes::from(vec![b' '; JSON_STREAMING_PROBE_LIMIT + 1])),
+            Err(std::io::Error::other("body interrupted")),
+        ])
+        .chain(stream::poll_fn(|_| -> std::task::Poll<Option<_>> {
+            panic!("body polled after its error")
+        }));
+        let err = Body::from_stream(frames)
+            .try_into_json_streaming::<u8>()
+            .await
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("body interrupted"));
+    }
+
+    #[tokio::test]
+    async fn streaming_json_parse_error_does_not_wait_for_stalled_body() {
+        let frames = vec![
+            Bytes::from(vec![b' '; JSON_STREAMING_PROBE_LIMIT + 1]),
+            Bytes::from_static(b"?"),
+        ];
+        let read = stalled_after(frames).try_into_json_streaming::<u8>();
+        let timeout = std::time::Duration::from_secs(5);
+        tokio::time::timeout(timeout, read)
+            .await
+            .unwrap()
+            .unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn streaming_json_large_first_frame() {
+        let frames = vec![
+            Ok(Bytes::from(vec![b' '; JSON_STREAMING_PROBE_LIMIT + 1])),
+            Ok(Bytes::from_static(b"42")),
+        ];
+        assert_eq!(
+            streamed(frames)
+                .try_into_json_streaming::<u8>()
+                .await
+                .unwrap(),
+            42
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_json_errors_on_both_paths() {
+        for padding in [0, JSON_STREAMING_PROBE_LIMIT + 1] {
+            let prefix = Bytes::from(vec![b' '; padding]);
+            for invalid in [b"".as_slice(), b"?", b"1 x"] {
+                let body = streamed(vec![Ok(prefix.clone()), Ok(Bytes::from_static(invalid))]);
+                body.try_into_json_streaming::<u8>().await.unwrap_err();
+            }
+            let body = streamed(vec![
+                Ok(prefix),
+                Err(std::io::Error::other("body interrupted")),
+            ]);
+            let err = body.try_into_json_streaming::<u8>().await.unwrap_err();
+            assert!(format!("{err:?}").contains("body interrupted"));
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn streaming_json_across_frames() {
         let chunks: Vec<Result<Bytes, std::io::Error>> = vec![

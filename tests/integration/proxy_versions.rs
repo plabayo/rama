@@ -149,6 +149,38 @@ async fn connect_to_plaintext_origin(proxy_version: Version) {
     .unwrap();
 }
 
+#[tokio::test]
+async fn plaintext_requests_are_forwarded_only_in_the_version_spoken_to_the_proxy() {
+    timeout(DEADLINE, async {
+        let (origin, _origin) = plaintext_origin().await;
+        let mut wrong = Vec::new();
+        for proxy_version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for requested in [Version::HTTP_11, Version::HTTP_2] {
+                let proxy = Proxy::start().await;
+                let request = get(&format!("http://{origin}/"), proxy.https(proxy_version));
+                request.extensions().insert(TargetHttpVersion(requested));
+                let body = body(client().serve(request).await.unwrap()).await;
+
+                let (expected_seen, expected_body) = if requested == proxy_version {
+                    (Method::GET, format!("forwarded http://{origin}/"))
+                } else {
+                    (Method::CONNECT, format!("{requested:?} origin"))
+                };
+                let seen = proxy.seen();
+                if seen != [(expected_seen.clone(), proxy_version)] || body != expected_body {
+                    wrong.push(format!(
+                        "proxy {proxy_version:?}, requested {requested:?}: \
+                         expected {expected_seen} {expected_body:?}, got {seen:?} {body:?}"
+                    ));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    })
+    .await
+    .unwrap();
+}
+
 async fn forward(proxy_version: Version) {
     timeout(DEADLINE, async {
         let proxy = Proxy::start().await;
@@ -528,8 +560,12 @@ struct Seen {
 }
 
 fn quic_server_config(tls: &TlsServerConfig) -> ServerConfig {
-    ServerConfig::try_from_rama_tls_with_provider(tls, TlsOptions::default(), &BoringTlsProvider)
-        .unwrap()
+    ServerConfig::try_from_rama_tls_with_provider(
+        tls,
+        TlsOptions::default(),
+        &BoringTlsProvider::new(),
+    )
+    .unwrap()
 }
 
 async fn origin_response(request: Request) -> Result<Response, Infallible> {
@@ -563,7 +599,7 @@ async fn tls_origin(version: Version) -> (SocketAddress, Tasks) {
 
 async fn plaintext_origin() -> (SocketAddress, Tasks) {
     let scope = WeakScope::detached();
-    let http = HttpServer::new_http1(scope.clone()).service(service_fn(origin_response));
+    let http = HttpServer::auto(scope.clone()).service(service_fn(origin_response));
     let listener = TcpListener::bind_address("127.0.0.1:0", scope)
         .await
         .unwrap();

@@ -8,13 +8,13 @@ require (
 	github.com/quic-go/masque-go v0.6.1-0.20261103032005-bb2f118a5733
 	github.com/quic-go/quic-go v0.65.0
 	github.com/yosida95/uritemplate/v3 v3.0.2
-	golang.org/x/net v0.62.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/net v0.63.0
+	golang.org/x/sys v0.50.0
 )
 
 require (
 	github.com/dunglas/httpsfv v1.1.2 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 )

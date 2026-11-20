@@ -1102,6 +1102,27 @@ fn run_until_aborted_keeps_running_through_the_graceful_phase() {
 }
 
 #[test]
+fn completed_run_until_releases_work_and_stop_registration() {
+    let scope = Scope::new();
+    let mut completed = Box::pin(scope.run_until_aborted(std::future::ready(())));
+    assert_eq!(poll_noop(&mut completed), Poll::Ready(Some(())));
+    assert_eq!(waiter_count(&scope), 0);
+
+    let child = scope.child();
+    let mut stopped = Box::pin(scope.run_until_cancelled(async move {
+        std::future::pending::<()>().await;
+        drop(child);
+    }));
+    assert!(poll_noop(&mut stopped).is_pending());
+    scope.cancel(Cause::Owner);
+    assert_eq!(poll_noop(&mut stopped), Poll::Ready(None));
+    assert!(matches!(
+        poll_noop(&mut Box::pin(scope.join())),
+        Poll::Ready(Ok(_))
+    ));
+}
+
+#[test]
 fn run_until_never_polls_a_future_of_a_finished_phase() {
     let polls = Arc::new(AtomicUsize::new(0));
     let counted = || {

@@ -56,14 +56,6 @@ pub use connector_data::{
 #[cfg(feature = "ua")]
 pub mod profile;
 
-#[cfg(feature = "ua")]
-mod emulate_ua;
-
-#[cfg(feature = "ua")]
-#[doc(inline)]
-#[cfg_attr(docsrs, doc(cfg(feature = "ua")))]
-pub use emulate_ua::{EmulateTlsProfileLayer, EmulateTlsProfileService};
-
 pub use config::BoringTlsClientConfigProvider;
 
 #[cfg(test)]

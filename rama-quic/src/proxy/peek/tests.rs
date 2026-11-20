@@ -24,7 +24,7 @@ use super::*;
 
 #[cfg(feature = "boring")]
 fn keys() -> impl KeyProvider + Clone {
-    crate::tls::BoringTlsProvider
+    crate::tls::BoringTlsProvider::new()
 }
 
 #[cfg(not(feature = "boring"))]

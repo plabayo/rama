@@ -288,7 +288,7 @@ impl Row {
         let freshness = match &profile.captured {
             Some(captured) => {
                 let through = Timestamp::from_second(i64::from(captured.current_day) * 86_400)?
-                    .to_zoned(TimeZone::UTC)
+                    .to_zoned_datetime(TimeZone::UTC)
                     .date();
                 Some(format!(
                     "{} UTC days through {through} · revision {}",

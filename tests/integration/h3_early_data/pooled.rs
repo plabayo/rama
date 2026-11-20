@@ -38,7 +38,7 @@ use tokio::sync::{Notify, mpsc};
 fn client_provider(provider: Provider) -> Arc<dyn rama_quic::tls::QuicClientConfigProvider> {
     match provider {
         #[cfg(feature = "boring")]
-        Provider::Boring => Arc::new(BoringTlsProvider),
+        Provider::Boring => Arc::new(BoringTlsProvider::new()),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
         Provider::Rustls => Arc::new(RustlsTlsProvider::new(Arc::new(
             rustls_crypto::default_provider(),

@@ -3,6 +3,7 @@ use std::fmt;
 use rama::{
     extensions::Extension,
     http::{
+        Version,
         client::{
             BindBodyToConnLayer, EasyHttpWebClient, HttpConnId, HttpConnIdentifier,
             HttpConnectRequestAdapter, HttpPooledConnectorConfig,
@@ -16,8 +17,16 @@ use rama::{
             pool::{ConnID, ReqToConnID},
         },
     },
+    quic::{
+        ClientConfig as QuicClientConfig,
+        tls::{BoringTlsProvider, TlsOptions},
+    },
     tcp::client::service::TcpConnector,
-    tls::client::{ClientHello, TlsClientConfig},
+    telemetry::tracing,
+    tls::{
+        boring::client::BoringClientConfigExt as _,
+        client::{ClientHello, TlsClientConfig},
+    },
 };
 use tokio::io::AsyncReadExt as _;
 
@@ -52,17 +61,22 @@ fn replay_pool_id(input: &ConnectRequest) -> Result<ReplayPoolId, BoxError> {
     })
 }
 
+/// The client replaying captured requests, verifying origins with `tls_config`.
+///
+/// HTTP/3 captures replay over QUIC: directly, or in a CONNECT-UDP tunnel through a MASQUE
+/// upstream proxy. Any other upstream proxy refuses them, so it is never bypassed.
 pub(super) fn replay_client(
     capture: CaptureStore,
     tcp_options: Arc<SocketOptions>,
     upstream: &UpstreamProxyConfig,
+    tls_config: TlsClientConfig,
 ) -> Result<BoxService<Request, Response, BoxError>, BoxError> {
-    let tls_config = TlsClientConfig::default_http();
     let transport = TcpConnector::new().with_connector(tcp_options.clone());
     let config = HttpPooledConnectorConfig::default();
     let pool = config.build_pool();
     let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_custom_tcp_connector(transport)
+        .with_default_quic_connector()
         .with_default_dns_connector()
         .with_proxy_support(upstream_proxies(
             upstream,
@@ -70,6 +84,7 @@ pub(super) fn replay_client(
             tcp_options,
         )?)
         .with_tls_support_using_boringssl(tls_config)
+        .with_quic_tls_provider(Arc::new(BoringTlsProvider::new()))
         .with_default_http_connector()
         .with_custom_connection_pool(pool, replay_pool_id, config.wait_for_pool_timeout)
         .map_connector(|connector| {
@@ -82,7 +97,6 @@ pub(super) fn replay_client(
         .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http());
     let client = upstream.http_service(client);
     let client = RemoveRequestHeaderLayer::hop_by_hop().into_layer(client);
-    let client = EmulateTlsProfileLayer::new().into_layer(client);
     let client = CaptureHttpLayer::new(Some(capture)).into_layer(client);
     Ok(client.boxed())
 }
@@ -101,7 +115,7 @@ pub(super) async fn request_curl(
             "WebSocket handshakes cannot be represented as a replayable cURL command",
         );
     }
-    let (request, body, _) = match build_captured_request(captured, false) {
+    let (request, body) = match build_captured_request(captured, false) {
         Ok(request) => request,
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     };
@@ -187,17 +201,24 @@ pub(super) async fn replay_captured(
         ReplaySource::Connection(connection_id)
     };
     let captured = state.capture.replay_request(id).await?;
-    let (request, body, tls_client_hello) = build_captured_request(captured, true)?;
+    let (request, body) = build_captured_request(captured, true)?;
     let (parts, ()) = request.into_parts();
     let mut request = Request::from_parts(parts, Body::from_stream(body.stream(None)));
     request.extensions().insert(source);
-    if let Some(client_hello) = tls_client_hello {
-        request.extensions().insert_arc(Arc::new(TlsProfile {
-            client_hello,
-            // Replay the captured connection, including its extension order.
-            permute_extensions: false,
-            ws_client_config_overwrites: None,
-        }));
+    let connection = &exchange.metadata().connection;
+    if let Some(client_hello) = connection
+        .get_ref::<TlsObservation>()
+        .and_then(|tls| tls.client_hello.as_ref())
+    {
+        // Replay the captured connection's offer, including its extension order.
+        if request.version() == Version::HTTP_3 {
+            let offer = connection.get_or_insert(|| CapturedQuicOffer(quic_offer(client_hello)));
+            if let Some(config) = &offer.0 {
+                config.write_to(request.extensions());
+            }
+        } else {
+            TlsClientConfig::new_from_client_hello(client_hello).write_to(request.extensions());
+        }
     }
     let replay_connection = state.capture.begin_connection_if_enabled(
         None,
@@ -212,8 +233,7 @@ pub(super) async fn replay_captured(
     }
     let _connection_guard = replay_connection
         .map(|replay_connection| state.capture.connection_guard(replay_connection));
-    // Scrub the original hop metadata before emulation can normalize the
-    // `Connection` field while retaining a header it named.
+    // Scrub the original hop metadata, including the headers its `Connection` field names.
     remove_hop_by_hop_request_headers(request.headers_mut());
     let response = state
         .replay_client
@@ -228,10 +248,31 @@ pub(super) async fn replay_captured(
     Ok(status)
 }
 
+/// The result of checking the captured connection's QUIC offer, shared by all its exchanges.
+#[derive(Debug)]
+pub(super) struct CapturedQuicOffer(Option<TlsClientConfig>);
+
+/// A captured QUIC ClientHello as the QUIC MITM relay mirrors it to an origin, or `None`
+/// when the native engine cannot reproduce it and the replay client's own offer is used.
+fn quic_offer(client_hello: &ClientHello) -> Option<TlsClientConfig> {
+    let offer = BoringTlsProvider::new().mirror_client_hello(client_hello);
+    match QuicClientConfig::try_from_rama_tls_with_provider(
+        &offer,
+        TlsOptions::default(),
+        &BoringTlsProvider::new(),
+    ) {
+        Ok(_) => Some(offer),
+        Err(error) => {
+            tracing::debug!(%error, "replay uses its own QUIC ClientHello: the captured one is not reproducible");
+            None
+        }
+    }
+}
+
 pub(super) fn build_captured_request<B>(
     captured: ReplayRequest<B>,
     strip_transport_headers: bool,
-) -> Result<(Request<()>, B, Option<ClientHello>), BoxError> {
+) -> Result<(Request<()>, B), BoxError> {
     let mut request = Request::builder()
         .method(captured.method)
         .version(captured.version)
@@ -243,12 +284,7 @@ pub(super) fn build_captured_request<B>(
             request.headers_mut().remove(name);
         }
     }
-    let hello = captured
-        .metadata
-        .connection
-        .get_ref::<TlsObservation>()
-        .and_then(|tls| tls.client_hello.clone());
-    Ok((request, captured.body, hello))
+    Ok((request, captured.body))
 }
 
 pub(super) fn error_response(status: StatusCode, error: impl fmt::Display) -> Response {

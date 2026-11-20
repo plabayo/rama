@@ -263,7 +263,7 @@ fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
 fn format_system_time_utc(system_time: SystemTime) -> String {
     Timestamp::try_from(system_time)
         .map(|ts| {
-            ts.to_zoned(TimeZone::UTC)
+            ts.to_zoned_datetime(TimeZone::UTC)
                 .strftime("%Y-%m-%d %H:%M:%S %:z")
                 .to_string()
         })

@@ -24,7 +24,9 @@ use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 ///
 /// Forwarding is for plaintext HTTP only, it is the request's to refuse with
 /// [`PlaintextHttpProxyMode::Tunnel`], and an explicitly selected endpoint rules it out:
-/// a forwarded request names its origin, it does not reach a chosen address.
+/// a forwarded request names its origin, it does not reach a chosen address. A request
+/// demanding another HTTP version than the one its proxy address names is tunneled,
+/// since a forwarded request travels in the version spoken to the proxy.
 pub fn forwarding_proxy<Input>(input: &Input) -> Option<&ProxyAddress>
 where
     Input: ProtocolInputExt + ExtensionsRef + ?Sized,
@@ -34,7 +36,16 @@ where
         .get_ref::<ProxyRoute>()
         .and_then(ProxyRoute::proxy_address)
         .filter(|proxy| proxy.protocol.is_http())?;
-    let forward = !input.extensions().contains::<ConnectorTarget>()
+    let demanded = input
+        .extensions()
+        .get_ref::<TargetHttpVersion>()
+        .map(|target| target.0);
+    let version_fits = match (demanded, proxy.protocol.http_version()) {
+        (Some(demanded), Some(spoken)) => demanded == spoken,
+        _ => true,
+    };
+    let forward = version_fits
+        && !input.extensions().contains::<ConnectorTarget>()
         && input
             .extensions()
             .get_ref::<PlaintextHttpProxyMode>()
@@ -143,9 +154,6 @@ where
             .extensions()
             .get_ref::<TargetHttpVersion>()
             .map(|target| target.0);
-        if let Some(version) = proxy.protocol.http_version() {
-            check_forwarded_version(demanded, version)?;
-        }
 
         let conn = self
             .inner
@@ -509,7 +517,7 @@ mod tests {
     #[tokio::test]
     async fn a_version_the_proxy_cannot_speak_is_refused() {
         let connector = proxy_connector(StatusCode::OK, Arc::default());
-        let input = forwarded("http://proxy.example:8080");
+        let input = forwarded("https://proxy.example:8443");
         input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
         let error = connector.serve(input).await.unwrap_err();
 
@@ -518,6 +526,15 @@ mod tests {
             format!("{error:?}").contains("cannot carry the requested HTTP version"),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn a_version_the_forward_proxy_cannot_speak_is_tunneled() {
+        let input = forwarded("http://proxy.example:8080");
+        assert!(forwarding_proxy(&input).is_some());
+
+        input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
+        assert!(forwarding_proxy(&input).is_none());
     }
 
     #[tokio::test]

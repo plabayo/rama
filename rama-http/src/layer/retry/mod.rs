@@ -27,25 +27,38 @@
 //! _inside_, it is consulted per attempt.
 //!
 //! Retrying requires a replayable body. [`Policy::prepare_body`] decides before
-//! reading whether to collect data and trailers into [`RetryBody`]. Declined
-//! requests stream once; size/time-limited collection also falls back to the
-//! complete original stream. The default policy still collects without bounds.
+//! reading whether to capture data and trailers as the first attempt consumes
+//! them. By default, [`ManagedPolicy`] keeps up to and including 64 KiB of
+//! payload in memory per request. Larger bodies stream on the first attempt
+//! without a retry or disk spill. Replay is also skipped if capture takes
+//! longer than 30 seconds or storage fails. Source errors reach the first reader.
+//!
+//! If the first attempt drops an unfinished body and the policy requests a
+//! retry, this layer drains the remaining frames before the next attempt.
+//! A read error, capture failure, or expired deadline during this handoff
+//! returns the first attempt's policy-supplied result. If the inner service
+//! retains the unfinished reader, the layer returns its result immediately
+//! and skips the retry decision so that reader can continue streaming.
 //!
 //! [`follow_redirect`](crate::layer::follow_redirect) follows the same rules for redirect hops. Keep
 //! that middleware outside this one, so a retry replays one hop instead of the entire chain.
 
 use crate::{
     Body, Request, StreamingBody,
-    body::util::{BodyExt, BodyStream},
+    body::util::{BodyExt as _, Full, combinators::UnsyncBoxBody},
 };
-use rama_core::Service;
-use rama_core::bytes::Buf as _;
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
+use rama_core::{
+    Service,
+    bytes::{Buf as _, Bytes},
+};
 use rama_utils::macros::define_inner_service_accessors;
 
 mod layer;
 mod policy;
+pub mod storage;
+mod tee;
 
 mod body;
 #[doc(inline)]
@@ -89,36 +102,18 @@ impl<P, S> Retry<P, S> {
 #[derive(Debug)]
 /// Error type for [`Retry`]
 pub struct RetryError {
-    kind: RetryErrorKind,
-    inner: Option<BoxError>,
-}
-
-#[derive(Debug)]
-enum RetryErrorKind {
-    BodyConsume,
-    Service,
+    inner: BoxError,
 }
 
 impl std::fmt::Display for RetryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.kind.fmt(f)
-    }
-}
-
-impl std::fmt::Display for RetryErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::BodyConsume => write!(f, "failed to consume body"),
-            Self::Service => write!(f, "service error"),
-        }
+        f.write_str("service error")
     }
 }
 
 impl std::error::Error for RetryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.inner
-            .as_ref()
-            .map(|error| error.as_ref() as &(dyn std::error::Error + 'static))
+        Some(self.inner.as_ref())
     }
 }
 
@@ -135,85 +130,139 @@ where
         let (parts, body) = request.into_parts();
         let is_end_stream = body.is_end_stream();
         let size_hint = body.size_hint();
-        let options = self.policy.prepare_body(&parts, is_end_stream, &size_hint);
-        let body = match options {
-            Some(_) if is_end_stream => RetryBody::empty(),
-            None if is_end_stream => RetryBody::streaming(Body::empty(), size_hint),
-            options => {
-                // The frame-stream adapter keeps Send-only bodies supported;
-                // Bytes chunks remain zero-copy and trailers remain frames.
-                let body = Body::from_frame_stream(BodyStream::new(body.map_frame(|frame| {
-                    frame.map_data(|mut data| data.copy_to_bytes(data.remaining()))
-                })));
-                match options {
-                    None => RetryBody::streaming(body, size_hint),
-                    Some(options) => match body.collect_with(options).await {
-                        Ok(body) => RetryBody::collected(body),
-                        Err(error) if error.is_cap_reached() || error.is_timed_out() => {
-                            RetryBody::streaming(
-                                error.into_full_body().ok_or(RetryError {
-                                    kind: RetryErrorKind::BodyConsume,
-                                    inner: None,
-                                })?,
-                                size_hint,
-                            )
-                        }
-                        Err(error) => {
-                            return Err(RetryError {
-                                kind: RetryErrorKind::BodyConsume,
-                                inner: Some(error.into()),
-                            });
-                        }
-                    },
-                }
+        let (body, mut capture) = match self.policy.prepare_body(&parts, is_end_stream, &size_hint)
+        {
+            Some(_) if is_end_stream => (RetryBody::empty(), None),
+            Some(options) => {
+                prepare_capture(body, size_hint, &options, self.policy.replay_store(&parts))
+            }
+            None => {
+                let source = (!is_end_stream).then(|| box_source(body));
+                (RetryBody::streaming(source, size_hint), None)
             }
         };
+
         let mut request = Request::from_parts(parts, body);
-        let mut cloned = request
-            .body()
-            .is_replayable()
-            .then(|| self.policy.clone_input(&request))
-            .flatten();
-
-        // Fork per attempt, so an attempt's inserts reach neither the next attempt nor the caller —
-        // unconditionally, as whether a request can be retried is no business of who owns its
-        // extensions. Clones are taken before the fork so a retry forks from the caller's store,
-        // not from the failed attempt's.
+        // Clone request metadata against the caller's extension store, before
+        // forking the first attempt. Give the policy a candidate body backed
+        // by the capture; the live reader remains exclusive to attempt one.
+        let mut candidate = if let Some(capture) = &capture {
+            let live = std::mem::replace(request.body_mut(), capture.pending_body());
+            let candidate = self.policy.clone_input(&request);
+            *request.body_mut() = live;
+            candidate
+        } else if request.body().is_replayable() {
+            self.policy.clone_input(&request)
+        } else {
+            None
+        };
+        if candidate.is_none() {
+            drop(capture.take());
+        }
         let parent_ext = request.fork_extensions_in_place();
-        loop {
-            let resp = self.inner.serve(request).await;
-            match cloned.take() {
-                Some(cloned_req) => {
-                    let cloned_req = match self.policy.retry(cloned_req, resp).await {
-                        PolicyResult::Abort(result) => {
-                            return result.map_err(|e| RetryError {
-                                kind: RetryErrorKind::Service,
-                                inner: Some(e.into()),
-                            });
-                        }
-                        PolicyResult::Retry { req } => req,
-                    };
-
-                    request = cloned_req;
-                    // A policy may return a freshly built request. Restore the
-                    // caller store before cloning the next policy view, then
-                    // fork the request actually sent to the service.
-                    request.set_extensions(parent_ext.clone());
-                    cloned = request
-                        .body()
-                        .is_replayable()
-                        .then(|| self.policy.clone_input(&request))
-                        .flatten();
-                    request.set_extensions(parent_ext.fork());
-                }
-                // no clone was made, so no possibility to retry
-                None => {
-                    return resp.map_err(|e| RetryError {
-                        kind: RetryErrorKind::Service,
-                        inner: Some(e.into()),
-                    });
-                }
+        let outcome = loop {
+            let result = self.inner.serve(request).await;
+            let Some(cloned) = candidate.take() else {
+                break result;
+            };
+            if let Some(capture) = &capture
+                && !capture.allow_replay_after_attempt()
+            {
+                break result;
             }
+            let (mut next, fallback) = match self.policy.retry(cloned, result).await {
+                PolicyResult::Abort(result) => break result,
+                PolicyResult::Retry { req, result } => (req, result),
+            };
+            if !ready_for_retry(capture.take(), next.body_mut()).await
+                || !self.policy.next_attempt().await
+            {
+                break fallback;
+            }
+            // A policy may return a freshly built request. Each attempt forks
+            // from the caller's store, including changes made by the policy.
+            next.set_extensions(parent_ext.clone());
+            candidate = next
+                .body()
+                .is_replayable()
+                .then(|| self.policy.clone_input(&next))
+                .flatten();
+            next.set_extensions(parent_ext.fork());
+            request = next;
+        };
+        outcome.map_err(|error| RetryError {
+            inner: error.into(),
+        })
+    }
+}
+
+fn prepare_capture<B>(
+    body: B,
+    hint: crate::body::SizeHint,
+    options: &crate::body::CollectOptions,
+    store: &dyn storage::ReplayStore,
+) -> (RetryBody, Option<tee::Capture>)
+where
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
+{
+    let max_bytes = store
+        .max_bytes()
+        .min(options.max_size().map_or(u64::MAX, |n| n as u64));
+    let timeout = store
+        .timeout()
+        .min(options.timeout().unwrap_or(std::time::Duration::MAX));
+    if hint.lower() > max_bytes || timeout.is_zero() {
+        return (RetryBody::streaming(Some(box_source(body)), hint), None);
+    }
+    if store.reuse_buffered_bytes() {
+        // These concrete types already own the entire payload. Every other
+        // source, including one that reports an exact length, uses the tee.
+        let any = &body as &dyn std::any::Any;
+        let bytes = any
+            .downcast_ref::<Body>()
+            .and_then(Body::full_bytes)
+            .or_else(|| {
+                any.downcast_ref::<Full<Bytes>>()
+                    .and_then(|full| full.clone().into_inner())
+            });
+        if let Some(bytes) = bytes {
+            return (RetryBody::new(bytes), None);
+        }
+    }
+    let (live, capture) = tee::capture(box_source(body), hint, store.start(), max_bytes, timeout);
+    (live, Some(capture))
+}
+
+// Mapping frames preserves the source's end-of-stream assertion, including
+// when the consumer stops polling immediately after the final data or trailers.
+type SourceBody = UnsyncBoxBody<Bytes, BoxError>;
+
+fn box_source<B>(body: B) -> SourceBody
+where
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
+{
+    body.map_frame(|frame| frame.map_data(|mut buf| buf.copy_to_bytes(buf.remaining())))
+        .map_err(Into::into)
+        .boxed_unsync()
+}
+
+async fn ready_for_retry(capture: Option<tee::Capture>, next: &mut RetryBody) -> bool {
+    // A policy can supply a different request or consume part of its candidate
+    // body. Finish the original capture and preserve the candidate's position.
+    let ready = async {
+        if let Some(capture) = capture
+            && !capture.finish().await?
+        {
+            return Ok(false);
+        }
+        next.resolve_pending().await
+    }
+    .await;
+    match ready {
+        Ok(ready) => ready,
+        Err(error) => {
+            rama_core::telemetry::tracing::debug!(%error, "could not finish request body capture for retry");
+            false
         }
     }
 }
@@ -235,7 +284,13 @@ mod test {
         service::service_fn,
     };
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
-    use std::{sync::atomic::AtomicUsize, time::Duration};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
     #[tokio::test]
     async fn test_service_with_managed_retry() {
@@ -423,9 +478,6 @@ mod test {
 
     #[tokio::test]
     async fn inner_layer_do_not_retry_insert_does_not_stop_retries() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
         async fn retry_on_server_error<Body, E>(
             req: Request<Body>,
             result: Result<Response, E>,
@@ -474,9 +526,6 @@ mod test {
 
     #[tokio::test]
     async fn fresh_policy_requests_keep_the_caller_extension_view() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
         #[derive(Debug, Extension)]
         struct CallerState(AtomicUsize);
         #[derive(Debug, Extension)]
@@ -505,6 +554,7 @@ mod test {
                 if call < 2 {
                     PolicyResult::Retry {
                         req: Request::new(RetryBody::empty()),
+                        result,
                     }
                 } else {
                     PolicyResult::Abort(result)

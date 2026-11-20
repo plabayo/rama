@@ -368,8 +368,9 @@ async fn new_inner_client(
     // Otherwise constructing their combined future can exhaust a worker stack.
     // This boundary is only crossed for a new connection; pool hits bypass it.
     let builder = if uses_quic(cfg, &uri) {
-        let compiler = captured
-            .then(|| QuicProfileCompiler::new(tls_config.clone(), Arc::new(BoringTlsProvider)));
+        let compiler = captured.then(|| {
+            QuicProfileCompiler::new(tls_config.clone(), Arc::new(BoringTlsProvider::new()))
+        });
         EasyHttpWebClient::connector_builder(scope.clone())
             .with_default_transport_connector()
             .with_default_dns_connector()

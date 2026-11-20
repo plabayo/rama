@@ -84,7 +84,7 @@ fn an_explicit_format_overrides_detection() -> TestResult {
 
 #[test]
 fn an_unrecognized_file_is_reported_instead_of_guessed() -> TestResult {
-    let dir = rama::utils::fs::TempDir::with_prefix("rama-inspect-test-")?;
+    let dir = rama::utils::fs::TempDir::with_prefix_sync("rama-inspect-test-")?;
     let path = dir.path().join("capture.bin");
     std::fs::write(&path, b"GET / HTTP/1.1\r\nhost: example.test\r\n\r\n")?;
 

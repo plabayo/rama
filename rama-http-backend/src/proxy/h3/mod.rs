@@ -9,7 +9,10 @@ use rama_core::{
     futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered},
     graceful::WeakScope,
     io::BridgeIo,
-    layer::{ArcLayer, ConsumeErrLayer},
+    layer::{
+        ArcLayer, ConsumeErrLayer,
+        consume_err::{StaticOutput, Trace},
+    },
     matcher::Matcher,
     service::service_fn,
     telemetry::tracing,
@@ -36,17 +39,23 @@ use rama_http_core::{
     },
     service::RamaHttpService,
 };
-use rama_http_types::proto::h3::{Code, SettingId, Settings};
+use rama_http_types::proto::h3::{Code, SettingId, Settings, observation::ObservationLimits};
 use rama_net::proxy::IoForwardService;
 use rama_quic_proto::{Side, VarInt};
 use rama_utils::{guard::DropGuard, time::deadline_after};
 use tokio::time::Instant;
 
-use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse, DefaultMiddleware};
+use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse};
 use crate::{
     client::{ResponseLimits, SendAttempts},
     h3::{clean_close, completed, drain, drained_within},
 };
+
+/// Default middleware used by [`Http3MitmRelay`].
+pub type DefaultMiddleware = (
+    ConsumeErrLayer<Trace, StaticOutput<DefaultErrorResponse>>,
+    ArcLayer,
+);
 
 mod egress;
 pub use egress::Http3EgressService;
@@ -187,6 +196,15 @@ impl<M, P, D> Http3MitmRelay<M, P, D> {
         /// HTTP/3 settings of the ingress (server) side.
         pub fn ingress_config(mut self, config: Config) -> Self {
             self.ingress = config;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Bounded wire observation of the ingress connection and its requests, such as an
+        /// inspector exports as an HTTP/3 profile. Disabled by default.
+        pub fn ingress_observation(mut self, limits: Option<ObservationLimits>) -> Self {
+            self.ingress.observation = limits.map(Box::new);
             self
         }
     }

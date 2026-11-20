@@ -476,52 +476,24 @@ fn internal_error(e: impl std::fmt::Display) -> Status {
     Status::internal(format!("rama-grpc-web: {e}"))
 }
 
-// Key-value pairs encoded as a HTTP/1 headers block (without the terminating newline)
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "trailers is consumed by the iterator regardless; taking by value clarifies the move semantics"
-)]
-fn encode_trailers(trailers: HeaderMap) -> Vec<u8> {
-    trailers.iter().fold(Vec::new(), |mut acc, (key, value)| {
-        acc.put_slice(key.as_ref());
-        acc.push(b':');
-        acc.put_slice(value.as_bytes());
-        acc.put_slice(b"\r\n");
-        acc
-    })
-}
+/// Bytes one trailer takes besides its name and value: `:` and `\r\n`.
+const TRAILER_OVERHEAD: usize = 3;
 
 fn decode_trailers_frame(mut buf: Bytes) -> Result<Option<HeaderMap>, Status> {
     if buf.remaining() < GRPC_HEADER_SIZE {
         return Ok(None);
     }
 
-    buf.get_u8();
-    buf.get_u32();
+    buf.advance(GRPC_HEADER_SIZE);
 
     let mut map = HeaderMap::new();
-    let mut temp_buf = buf.clone();
+    let mut rest = &buf[..];
 
-    let mut trailers = Vec::new();
-    let mut cursor_pos = 0;
+    // every trailer ends in `\r\n`; bytes after the last delimiter are not one
+    while let Some(end) = rest.windows(2).position(|pair| pair == b"\r\n") {
+        let trailer = &rest[..end];
+        rest = &rest[end + 2..];
 
-    for (i, b) in buf.iter().enumerate() {
-        // if we are at a trailer delimiter (\r\n)
-        if b == &b'\r' && buf.get(i + 1) == Some(&b'\n') {
-            // read the bytes of the trailer passed so far
-            let trailer = temp_buf.copy_to_bytes(i - cursor_pos);
-            // increment cursor beyond the delimiter
-            cursor_pos = i + 2;
-            trailers.push(trailer);
-            if temp_buf.has_remaining() {
-                // advance buf beyond the delimiters
-                temp_buf.get_u8();
-                temp_buf.get_u8();
-            }
-        }
-    }
-
-    for trailer in trailers {
         // only the first `:` separates name from value; the value may hold more
         let (key, value) = trailer
             .iter()
@@ -533,7 +505,7 @@ fn decode_trailers_frame(mut buf: Bytes) -> Result<Option<HeaderMap>, Status> {
 
         let header_key = HeaderName::try_from(key)
             .map_err(|e| Status::internal(format!("Unable to parse HeaderName: {e}")))?;
-        let header_value = HeaderValue::try_from(value)
+        let header_value = HeaderValue::from_maybe_shared(buf.slice_ref(value))
             .map_err(|e| Status::internal(format!("Unable to parse HeaderValue: {e}")))?;
         map.try_append(header_key, header_value).map_err(|err| {
             let mut status = Status::internal("rama-grpc-web: too many trailers");
@@ -545,15 +517,28 @@ fn decode_trailers_frame(mut buf: Bytes) -> Result<Option<HeaderMap>, Status> {
     Ok(Some(map))
 }
 
+// Key-value pairs encoded as a HTTP/1 headers block (without the terminating newline)
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "trailers is consumed by the iterator regardless; taking by value clarifies the move semantics"
+)]
 fn make_trailers_frame(trailers: HeaderMap) -> Bytes {
-    let trailers = encode_trailers(trailers);
-    let len = trailers.len();
+    let len: usize = trailers
+        .iter()
+        .map(|(key, value)| key.as_str().len() + value.len() + TRAILER_OVERHEAD)
+        .sum();
     assert!(len <= u32::MAX as usize);
 
     let mut frame = BytesMut::with_capacity(len + FRAME_HEADER_SIZE);
     frame.put_u8(GRPC_WEB_TRAILERS_BIT);
     frame.put_u32(len as u32);
-    frame.put_slice(&trailers);
+    for (key, value) in &trailers {
+        frame.put_slice(key.as_ref());
+        frame.put_u8(b':');
+        frame.put_slice(value.as_bytes());
+        frame.put_slice(b"\r\n");
+    }
+    debug_assert_eq!(frame.len(), len + FRAME_HEADER_SIZE, "sized exactly");
 
     frame.freeze()
 }

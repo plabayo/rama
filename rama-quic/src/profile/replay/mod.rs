@@ -102,7 +102,7 @@ where
     fn ech_ready(&self, input: &Input) -> bool {
         #[cfg(feature = "boring")]
         {
-            if self.provider.pool_classifier() != BoringTlsProvider.pool_classifier()
+            if self.provider.pool_classifier() != BoringTlsProvider::new().pool_classifier()
                 || input
                     .target_protocol()
                     .is_none_or(|protocol| !protocol.is_secure())
@@ -252,7 +252,7 @@ impl ConnectionProfileCompiler {
         if components.tls.is_none() && caller_keeps_tls(input.extensions()) {
             return caller_tls_transport(input.extensions(), components);
         }
-        if self.provider.pool_classifier() != BoringTlsProvider.pool_classifier() {
+        if self.provider.pool_classifier() != BoringTlsProvider::new().pool_classifier() {
             return Ok(unsupported());
         }
         let Some(capture) = components.tls.take() else {

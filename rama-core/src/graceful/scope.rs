@@ -29,23 +29,32 @@ pin_project_lite::pin_project! {
     ///
     /// A plain future rather than an async block around `select!`:
     /// that one keeps `future` twice, doubling every spawned task.
-    struct RunUntil<S, F> {
-        #[pin]
-        stop: S,
-        #[pin]
-        future: F,
+    #[project = RunUntilProj]
+    enum RunUntil<S, F> {
+        Running {
+            #[pin]
+            stop: S,
+            #[pin]
+            future: F,
+        },
+        Done,
     }
 }
 
 impl<S: Future<Output = ()>, F: Future> Future for RunUntil<S, F> {
     type Output = Option<F::Output>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        if this.stop.poll(cx).is_ready() {
-            return Poll::Ready(None);
-        }
-        this.future.poll(cx).map(Some)
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let RunUntilProj::Running { stop, future } = self.as_mut().project() else {
+            return Poll::Pending;
+        };
+        let output = if stop.poll(cx).is_ready() {
+            None
+        } else {
+            Some(std::task::ready!(future.poll(cx)))
+        };
+        self.set(Self::Done);
+        Poll::Ready(output)
     }
 }
 
@@ -325,7 +334,7 @@ impl Scope {
         &self,
         future: F,
     ) -> impl Future<Output = Option<F::Output>> + use<F> {
-        RunUntil {
+        RunUntil::Running {
             stop: self.cancelled(),
             future,
         }
@@ -338,7 +347,7 @@ impl Scope {
         &self,
         future: F,
     ) -> impl Future<Output = Option<F::Output>> + use<F> {
-        RunUntil {
+        RunUntil::Running {
             stop: self.aborted(),
             future,
         }

@@ -251,6 +251,14 @@ async fn send_trailers_rejects_connection_specific_headers() {
         let err = stream.send_trailers(te_bad).expect_err("te: chunked");
         assert_eq!(err.to_string(), "user error: malformed headers");
 
+        // HTTP/2 field values cannot carry leading or trailing whitespace.
+        let mut whitespace = HeaderMap::new();
+        whitespace.insert("x-trailer", " trailing".parse().unwrap());
+        let err = stream
+            .send_trailers(whitespace)
+            .expect_err("outer whitespace");
+        assert_eq!(err.to_string(), "user error: malformed headers");
+
         // The rejections above must not have corrupted stream state: a clean trailer
         // still sends and the exchange completes normally.
         let mut good = HeaderMap::new();

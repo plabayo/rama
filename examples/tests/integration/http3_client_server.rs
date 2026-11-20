@@ -420,7 +420,7 @@ async fn http_client_preserves_explicit_tls_provider() -> Result<(), BoxError> {
         .with_default_dns_connector()
         .with_default_proxy_support()
         .with_tls_support_using_rustls(tls)
-        .with_quic_tls_provider(Arc::new(BoringTlsProvider))
+        .with_quic_tls_provider(Arc::new(BoringTlsProvider::new()))
         .with_default_http_connector::<Body>()
         .with_default_connection_pool()
         .build_client()

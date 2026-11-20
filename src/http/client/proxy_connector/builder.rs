@@ -1,6 +1,4 @@
 use super::{ProxyConnector, ProxyMethodNotEnabled};
-#[cfg(feature = "quic")]
-use crate::Service;
 use crate::{
     Layer,
     dns::client::{
@@ -51,8 +49,7 @@ use crate::tls::rustls::client as rustls_client;
 use crate::http::client::masque_quic_transport;
 #[cfg(feature = "quic")]
 use crate::{
-    http::client::{Http3Transport, HttpTransportConnector, builder::NoTcpConnector},
-    net::client::{ConnectionError, EstablishedClientConnection},
+    http::client::builder::NoTcpConnector,
     quic::{
         TransportConfig,
         client::{ClientEndpoint, SharedQuicEndpoint},
@@ -68,7 +65,11 @@ use crate::{
 ))]
 use {
     crate::{
-        http::client::{Http3Connector, default_http3_builder},
+        Service,
+        http::client::{
+            Http3Connector, Http3Transport, HttpTransportConnector, default_http3_builder,
+        },
+        net::client::{ConnectionError, EstablishedClientConnection},
         quic::tls::QuicClientConfigProvider,
     },
     std::sync::Arc,

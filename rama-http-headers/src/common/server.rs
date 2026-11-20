@@ -37,6 +37,13 @@ derive_header! {
     name: SERVER
 }
 
+/// Uses the application's [default identity](crate::identity()).
+impl Default for Server {
+    fn default() -> Self {
+        Self(crate::identity_header_str().clone())
+    }
+}
+
 impl Server {
     /// Construct a `Server` from a static string.
     ///

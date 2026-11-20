@@ -152,11 +152,11 @@ impl Display for DirectiveDateTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let formatted = match self.parsed_format {
             Some(ParsedFormat::RFC2822) | None => {
-                rfc2822::to_string(&self.value.to_zoned(TimeZone::UTC)).ok()
+                rfc2822::to_string(&self.value.to_zoned_datetime(TimeZone::UTC)).ok()
             }
             Some(ParsedFormat::RFC850) => strtime::format(
                 "%A, %d-%b-%y %H:%M:%S GMT",
-                &self.value.to_zoned(TimeZone::UTC),
+                &self.value.to_zoned_datetime(TimeZone::UTC),
             )
             .ok(),
             Some(ParsedFormat::RFC3339) => None,
