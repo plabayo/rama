@@ -130,7 +130,7 @@ fn both_modes_keep_the_chain_policy_and_only_opt_in_uses_the_platform() {
                     .get_ref::<TlsServerTrust>()
                     .unwrap()
                     .source(),
-                ServerTrustSource::Platform
+                ServerTrustSource::Platform(_)
             ));
         }
         auth.tcp();

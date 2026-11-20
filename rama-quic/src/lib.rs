@@ -76,7 +76,7 @@ pub use proto::{
 /// or use the convenience constructors to select the feature-default provider.
 pub mod tls {
     mod cache;
-    pub use cache::ClientConfigCache;
+    pub use cache::{ClientConfigCache, ClientConfigRequest};
 
     mod factory;
     pub use factory::*;

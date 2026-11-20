@@ -53,16 +53,29 @@ pub use ech::{
     target_ech_required,
 };
 
+#[cfg(feature = "native-certs")]
+mod native_trust;
+#[cfg(all(feature = "native-certs", unix))]
+pub use native_trust::UnixSignalTrigger;
+#[cfg(feature = "native-certs")]
+pub use native_trust::{
+    ChannelReloadClosed, ChannelReloadSender, ChannelReloadTrigger, IntoNativeTrustReloadTrigger,
+    NativeTrustRefreshError, NativeTrustStoreChanges,
+};
+#[cfg(feature = "native-certs")]
+pub use server_trust::{server_trust_anchors, server_trust_anchors_async};
+
 mod config;
 #[cfg(feature = "http")]
 mod http;
 mod pool;
+mod server_trust;
 #[doc(inline)]
 pub use config::{
-    ClientAuth, ClientAuthData, ServerTrustSource, ServerVerifyMode, TlsClientAuth,
-    TlsClientConfig, TlsEncryptedClientHello, TlsServerCertPin, TlsServerCertPinCheck,
-    TlsServerCertPinSet, TlsServerCertPins, TlsServerIdentity, TlsServerName, TlsServerTrust,
-    TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain, TlsStoreServerHello,
+    ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
+    TlsEncryptedClientHello, TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet,
+    TlsServerCertPins, TlsServerIdentity, TlsServerName, TlsServerVerify, TlsStoreServerCertChain,
+    TlsStoreServerHello,
 };
 #[cfg(feature = "http")]
 pub use http::{http_alpn_override, negotiated_http_version};
@@ -71,6 +84,11 @@ pub use pool::{
     TlsPoolIdBuilder,
 };
 use rama_crypto::pki_types::CertificateDer;
+#[doc(inline)]
+pub use server_trust::{
+    NativeTrustPolicy, PlatformTrustPolicy, ServerTrustSource, TlsServerTrust,
+    TlsServerTrustAnchors,
+};
 
 use super::{
     CertificateCompressionAlgorithm, CipherSuite, ProtocolVersion, SignatureScheme, SupportedGroup,

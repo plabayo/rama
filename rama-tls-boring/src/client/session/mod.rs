@@ -31,7 +31,8 @@ use rama_net::address::Host;
 use rama_tls::client::{TlsPoolComponent, TlsPoolId};
 
 use super::{
-    BoringTlsConnectorConfig, TlsConnectorContext, TlsConnectorContextBuilder, TlsConnectorData,
+    BoringServerVerification, BoringTlsConnectorConfig, TlsConnectorContext,
+    TlsConnectorContextBuilder, TlsConnectorData,
 };
 
 /// Process-unique owner of a set of compatible client session configurations.
@@ -406,25 +407,32 @@ impl ConnectorSessions {
     /// an isolated native context and session domain.
     pub(super) fn connector_data<'a>(
         &'a self,
-        mut config: BoringTlsConnectorConfig<'a>,
+        config: BoringTlsConnectorConfig<'a>,
+        prepared: Option<&BoringServerVerification>,
     ) -> Result<TlsConnectorData, BoxError> {
-        config.session_domain = Some(&self.domain);
-        let scope = config.context_scope();
+        let config = BoringTlsConnectorConfig {
+            session_domain: Some(&self.domain),
+            ..config
+        };
+        let verification = config.acquire_verification(prepared)?;
+        let prepared = verification.as_ref();
+        let mut config = config;
+        let scope = config.context_scope_with_verification(prepared);
         if scope.as_ref().is_some_and(|id| !id.is_reusable()) {
             config.session_domain = None;
-            return TlsConnectorData::try_from(config);
+            return TlsConnectorData::from_config(&config, prepared, None);
         }
         let context = if let Some(context) = self.contexts.get(&scope) {
             context
         } else {
-            let mut builder = TlsConnectorContextBuilder::try_from(config.clone())?;
+            let mut builder = TlsConnectorContextBuilder::from_config(&config, prepared)?;
             builder.set_session_store(self.store.clone());
             self.contexts
                 .entry(scope)
                 .or_insert(builder.build())
                 .into_value()
         };
-        context.configure_variant(&config)
+        context.configure_variant(&config, prepared)
     }
 }
 

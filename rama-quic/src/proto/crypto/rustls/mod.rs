@@ -4,6 +4,7 @@ use ahash::HashMap;
 use parking_lot::Mutex;
 use rama_core::{
     bytes::BytesMut,
+    combinators::Either,
     conversion::RamaFrom as _,
     error::{BoxError, BoxErrorExt as _},
 };
@@ -11,6 +12,7 @@ use rama_core::{
 use rama_crypto::dep::aws_lc_rs::aead;
 #[cfg(feature = "ring")]
 use rama_crypto::dep::ring::aead;
+use rama_crypto::platform_verifier::PlatformVerifier;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, TransportErrorCode,
@@ -26,7 +28,7 @@ use rama_tls_rustls::dep::rustls::{
 };
 use rama_tls_rustls::{
     dep::rustls::{
-        self, CipherSuite, HandshakeKind,
+        self, CipherSuite, HandshakeKind, RootCertStore,
         pki_types::ServerName,
         quic::{Connection, HeaderProtectionKey, KeyChange, PacketKey, Secrets, Suite, Version},
     },
@@ -58,6 +60,8 @@ fn received_server_name(name: &str) -> Result<Domain, TransportError> {
         TransportError::INTERNAL_ERROR("received server name is not a domain").with_cause(error)
     })
 }
+
+pub(crate) type ServerVerification = Either<Arc<RootCertStore>, Arc<PlatformVerifier>>;
 
 mod config;
 #[cfg(test)]

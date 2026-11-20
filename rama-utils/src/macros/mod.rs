@@ -410,19 +410,19 @@ macro_rules! __generate_set_and_with {
     };
     (
         $(#[$outer_doc:meta])*
-        $vis:vis fn $fn_name:ident(mut $self_token:ident, $($param_name:ident: $param_ty:ty),+ $(,)?) -> Self {
+        $vis:vis fn $fn_name:ident $(<$($generic:ident),+>)?(mut $self_token:ident, $($param_name:ident: $param_ty:ty),+ $(,)?) -> Self {
             $($body:tt)*
         }
     ) => {
         $crate::macros::paste! {
             $(#[$outer_doc])*
             #[must_use]
-            $vis fn [<with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
+            $vis fn [<with_ $fn_name>] $(<$($generic),+>)?(mut $self_token, $($param_name: $param_ty),+) -> Self {
                 $($body)*
             }
 
             $(#[$outer_doc])*
-            $vis fn [<set_ $fn_name>](&mut $self_token, $($param_name: $param_ty),+) -> &mut Self {
+            $vis fn [<set_ $fn_name>] $(<$($generic),+>)?(&mut $self_token, $($param_name: $param_ty),+) -> &mut Self {
                 $($body)*
             }
         }

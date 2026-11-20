@@ -46,6 +46,12 @@ mod server_answer;
 pub use server_answer::{AnswerMirror, ServerAnswerRecorder};
 
 mod connector_data;
+mod verification;
+pub use verification::BoringServerTrustCache;
+pub(crate) type BoringServerVerification = rama_core::combinators::Either<
+    std::sync::Arc<rama_boring::x509::store::X509Store>,
+    std::sync::Arc<rama_crypto::platform_verifier::PlatformVerifier>,
+>;
 
 mod verify;
 #[doc(inline)]

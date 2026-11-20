@@ -1,7 +1,7 @@
 use schannel::cert_context::ValidUses;
 use schannel::cert_store::CertStore;
 
-use super::CertificateResult;
+use super::{CertificateResult, sort_and_deduplicate};
 use crate::pki_types::CertificateDer;
 
 static PKIX_SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";
@@ -24,7 +24,7 @@ pub(super) fn load_native_certs() -> CertificateResult {
             let store = match open(store_name) {
                 Ok(store) => store,
                 Err(err) => {
-                    result.os_error(err.into(), "failed to open windows certificate store");
+                    result.os_source_error(err.into(), "failed to open windows certificate store");
                     continue;
                 }
             };
@@ -42,8 +42,7 @@ pub(super) fn load_native_certs() -> CertificateResult {
     }
 
     // Dedup certs that appear in more than one store (e.g. user and machine).
-    result.certs.sort_unstable_by(|a, b| a.cmp(b));
-    result.certs.dedup();
+    sort_and_deduplicate(&mut result.certs);
 
     result
 }

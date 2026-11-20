@@ -24,6 +24,8 @@
 //! Both listeners bind loopback by default. Bodies remain streaming; only
 //! connection establishment has a deadline. Ingress sets `X-Forwarded-Host`
 //! to the incoming authority and rewrites `Host` for the configured origin.
+//! In MITM mode, new upstream handshakes use native trust roots checked within the last hour.
+//! Pass `--upstream-ca` to use a fixed CA bundle instead.
 //! CONNECT assumes TLS inside the tunnel. Both modes relay WebSockets across
 //! HTTP/1.1, HTTP/2 and HTTP/3; other HTTP/1 upgrade protocols return 501.
 
@@ -79,7 +81,7 @@ use rama::{
     tcp::server::TcpListener,
     tls::{
         boring::server::{BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer},
-        client::TlsClientConfig,
+        client::{NativeTrustPolicy, NativeTrustStoreChanges, TlsClientConfig},
         server::{ServerAuthData, TlsServerConfig},
     },
     udp::{DatagramError, UdpSocketConfig, UdpSocketFactory},
@@ -438,6 +440,12 @@ async fn main() -> Result<(), BoxError> {
                 tls = tls.try_with_server_trust_anchors(
                     CertificateDer::pem_file_iter(ca)?.collect::<Result<Vec<_>, _>>()?,
                 )?;
+            } else {
+                tls.set_server_trust(
+                    NativeTrustPolicy::new()
+                        .with_reload_trigger(NativeTrustStoreChanges::default())
+                        .with_max_age(Duration::from_hours(1)),
+                );
             }
 
             let (web, preflight) = client(weak_scope.clone(), tls)?;

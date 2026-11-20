@@ -2449,6 +2449,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "time",
+ "tokio",
  "webpki-root-certs",
  "windows-sys 0.61.2",
  "x509-parser",
@@ -2918,6 +2919,7 @@ name = "rama-tls"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "arc-swap",
  "base64",
  "bytes",
  "dial9-trace-format",
