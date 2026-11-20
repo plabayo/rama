@@ -82,7 +82,7 @@ fn extra_reload_ignores_replacement_paths_and_deduplicates_extra_roots() {
     const CHILD: &str = "RAMA_TEST_RELOAD_EXTRA_CERTS";
     let roots = bundled_root_certs();
     if env::var_os(CHILD).is_some() {
-        let loaded = load_reloadable_extra_certs().unwrap();
+        let loaded = load_validated_extra_certs().unwrap();
         assert_eq!(loaded.len(), 2);
         assert!(loaded.contains(&roots[0]));
         assert!(loaded.contains(&roots[1]));
@@ -101,7 +101,7 @@ fn extra_reload_ignores_replacement_paths_and_deduplicates_extra_roots() {
     let status = Command::new(env::current_exe().unwrap())
         .args([
             "--exact",
-            "native_certs::reload::tests::extra_reload_ignores_replacement_paths_and_deduplicates_extra_roots",
+            "native_certs::load::tests::extra_reload_ignores_replacement_paths_and_deduplicates_extra_roots",
         ])
         .env(CHILD, "1")
         .env("SSL_CERT_FILE", dir.0.join("missing-native.pem"))

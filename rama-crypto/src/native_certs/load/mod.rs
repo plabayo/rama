@@ -1,5 +1,10 @@
+//! One-shot trust loading with certificate validation and source error checks.
+//!
+//! Callers decide when to read again and how long to keep a previous result.
+
 use super::{
     CertPaths, CertificateDer, CertificateResult, ENV_EXTRA_CERT_DIR, ENV_EXTRA_CERT_FILE,
+    sort_and_deduplicate,
 };
 use crate::pki_types::pem::{self, PemObject as _};
 use rama_core::{
@@ -12,14 +17,14 @@ use std::{
     path::Path,
 };
 
-/// Read the native roots and environment-supplied extra roots for a fresh snapshot.
+/// Read and validate the native roots and environment-supplied extra roots once.
 ///
 /// Returns the deduplicated anchors and whether bundled roots supplied the base
 /// store. Set `allow_bundled_fallback` on initial load if bundled roots are
 /// acceptable on an empty system. Passing the returned flag on subsequent
 /// reads prevents an empty system store from expanding an existing trust policy.
 /// Explicit replacement paths always take precedence. This operation may block.
-pub fn load_reloadable_native_certs(
+pub fn load_validated_native_certs(
     allow_bundled_fallback: bool,
 ) -> Result<(Vec<CertificateDer<'static>>, bool), BoxError> {
     let base_paths = CertPaths::from_env();
@@ -33,12 +38,14 @@ pub fn load_reloadable_native_certs(
 }
 
 /// Read, validate, and deduplicate the roots configured by `SSL_CERT_EXTRA_FILE`
-/// and `SSL_CERT_EXTRA_DIR`. These roots supplement the live platform verifier.
+/// and `SSL_CERT_EXTRA_DIR` in one pass. These roots supplement the live platform verifier.
 ///
 /// This read may block. It only consults the extra-root paths.
-pub fn load_reloadable_extra_certs() -> Result<Vec<CertificateDer<'static>>, BoxError> {
+pub fn load_validated_extra_certs() -> Result<Vec<CertificateDer<'static>>, BoxError> {
     let extra_paths = CertPaths::from_env_vars(ENV_EXTRA_CERT_FILE, ENV_EXTRA_CERT_DIR);
-    checked_load_paths(&extra_paths).map(deduplicate)
+    let mut certs = checked_load_paths(&extra_paths)?;
+    sort_and_deduplicate(&mut certs);
+    Ok(certs)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -48,7 +55,7 @@ fn load_system_roots() -> Result<Vec<CertificateDer<'static>>, BoxError> {
 
 #[cfg(target_os = "macos")]
 fn load_system_roots() -> Result<Vec<CertificateDer<'static>>, BoxError> {
-    checked_system_load(super::macos::load_reloadable_native_certs())
+    checked_system_load(super::macos::load_native_certs_for_validation())
 }
 
 #[cfg(windows)]
@@ -74,13 +81,8 @@ fn load_from_sources(
     }
 
     certs.extend(checked_load_paths(extra)?);
-    Ok((deduplicate(certs), used_bundled_fallback))
-}
-
-fn deduplicate(mut anchors: Vec<CertificateDer<'static>>) -> Vec<CertificateDer<'static>> {
-    anchors.sort_unstable_by(|a, b| a.cmp(b));
-    anchors.dedup();
-    anchors
+    sort_and_deduplicate(&mut certs);
+    Ok((certs, used_bundled_fallback))
 }
 
 fn checked_load_paths(paths: &CertPaths) -> Result<Vec<CertificateDer<'static>>, BoxError> {
@@ -100,8 +102,8 @@ fn load_system_paths(paths: &CertPaths) -> Result<Vec<CertificateDer<'static>>, 
     checked_system_load(result)
 }
 
-// For a reload, an empty bundle can intentionally withdraw all trust. Reject a
-// nonempty file with no certificates so a malformed update keeps the last snapshot.
+// An empty bundle can intentionally withdraw all trust. Nonempty text must
+// contain certificates for a validated read to succeed.
 fn load_bundle(path: &Path, result: &mut CertificateResult) {
     load_bundle_with_source_errors(path, result, false);
 }

@@ -59,11 +59,11 @@ use macos as platform;
 mod notifications;
 
 mod changes;
-mod reload;
+mod load;
 #[doc(inline)]
 pub use changes::NativeCertsChanges;
 #[doc(inline)]
-pub use reload::{load_reloadable_extra_certs, load_reloadable_native_certs};
+pub use load::{load_validated_extra_certs, load_validated_native_certs};
 
 /// Returns the cached, process-wide default trust anchors used by rama tls
 /// clients (both the `rustls` and `boring` backends consume these).
@@ -305,9 +305,13 @@ fn load_certs_from_paths_internal(
         |path, out| load_pem_certs(path, out, false),
         |path, out| load_pem_certs(path, out, true),
     );
-    out.certs.sort_unstable_by(|a, b| a.cmp(b));
-    out.certs.dedup();
+    sort_and_deduplicate(&mut out.certs);
     out
+}
+
+fn sort_and_deduplicate(certs: &mut Vec<CertificateDer<'static>>) {
+    certs.sort_unstable_by(|a, b| a.cmp(b));
+    certs.dedup();
 }
 
 fn read_cert_paths(

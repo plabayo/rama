@@ -2,7 +2,7 @@ use arc_swap::ArcSwap;
 use parking_lot::Mutex;
 use rama_core::{error::BoxError, futures::stream::BoxStream, telemetry::tracing::warn};
 use rama_crypto::{
-    native_certs::{load_reloadable_extra_certs, load_reloadable_native_certs},
+    native_certs::{load_validated_extra_certs, load_validated_native_certs},
     pki_types::CertificateDer,
 };
 use std::{
@@ -311,9 +311,9 @@ impl NativeTrustReload {
 
     fn loader(&self) -> fn(bool) -> LoadNativeTrust {
         match self.0.scope {
-            NativeTrustScope::Full => load_reloadable_native_certs,
+            NativeTrustScope::Full => load_validated_native_certs,
             NativeTrustScope::PlatformExtras => {
-                |_| load_reloadable_extra_certs().map(|anchors| (anchors, false))
+                |_| load_validated_extra_certs().map(|anchors| (anchors, false))
             }
         }
     }

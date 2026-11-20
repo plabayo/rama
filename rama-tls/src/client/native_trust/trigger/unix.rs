@@ -11,18 +11,7 @@ impl UnixSignalTrigger {
     /// Register for SIGHUP on the current Tokio runtime. As with other Tokio
     /// signal listeners, registering replaces the process's default behavior
     /// for this signal, even after the listener is dropped.
-    ///
-    /// ```
-    /// # async fn configure() -> std::io::Result<()> {
-    /// use rama_tls::client::{NativeTrustPolicy, TlsClientConfig, UnixSignalTrigger};
-    ///
-    /// let mut tls = TlsClientConfig::new();
-    /// tls.set_server_trust(
-    ///     NativeTrustPolicy::new().with_reload_trigger(UnixSignalTrigger::sighup()?),
-    /// );
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// Pass the resulting trigger to the trust policy’s reload configuration.
     pub fn sighup() -> std::io::Result<Self> {
         Self::new(tokio::signal::unix::SignalKind::hangup())
     }

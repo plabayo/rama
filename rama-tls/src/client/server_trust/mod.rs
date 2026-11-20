@@ -23,6 +23,7 @@ mod native;
 /// Rama’s rustls and BoringSSL connectors, including their QUIC providers,
 /// apply this policy. A custom verifier controls its own trust decisions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct NativeTrustPolicy {
     #[cfg(feature = "native-certs")]
     state: native::NativeTrustState,

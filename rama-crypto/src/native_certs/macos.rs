@@ -17,7 +17,7 @@ pub(super) fn load_native_certs() -> CertificateResult {
     load(LookupMode::Static)
 }
 
-pub(super) fn load_reloadable_native_certs() -> CertificateResult {
+pub(super) fn load_native_certs_for_validation() -> CertificateResult {
     load(LookupMode::Reload)
 }
 
