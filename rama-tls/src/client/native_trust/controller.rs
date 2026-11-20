@@ -5,7 +5,10 @@ use rama_core::{
     futures::stream::BoxStream,
     telemetry::tracing::warn,
 };
-use rama_crypto::{native_certs::load_reloadable_native_certs, pki_types::CertificateDer};
+use rama_crypto::{
+    native_certs::{load_reloadable_extra_certs, load_reloadable_native_certs},
+    pki_types::CertificateDer,
+};
 use std::{
     convert::Infallible,
     error::Error,
@@ -19,55 +22,23 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Immutable native trust anchors selected for a particular handshake.
-#[derive(Clone)]
-pub(in crate::client) struct NativeTrustSnapshot {
-    generation: u64,
-    anchors: Arc<[CertificateDer<'static>]>,
-}
+use super::snapshot::NativeTrustSnapshot;
 
-impl NativeTrustSnapshot {
-    fn new(anchors: Vec<CertificateDer<'static>>) -> Self {
-        static GENERATION: AtomicU64 = AtomicU64::new(1);
-        Self {
-            generation: GENERATION.fetch_add(1, Ordering::Relaxed),
-            anchors: anchors.into(),
-        }
-    }
-
-    pub(in crate::client) fn anchors(&self) -> &[CertificateDer<'static>] {
-        &self.anchors
-    }
-}
-
-impl fmt::Debug for NativeTrustSnapshot {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NativeTrustSnapshot")
-            .field("generation", &self.generation)
-            .field("anchor_count", &self.anchors.len())
-            .finish()
-    }
-}
-
-impl PartialEq for NativeTrustSnapshot {
-    fn eq(&self, other: &Self) -> bool {
-        self.generation == other.generation
-    }
-}
-
-impl Eq for NativeTrustSnapshot {}
-
-impl Hash for NativeTrustSnapshot {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.generation.hash(state);
-    }
+/// The controller's trust material and refresh scope never change.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::client) enum NativeTrustScope {
+    Full,
+    PlatformExtras,
 }
 
 #[derive(Clone)]
 pub(in crate::client) struct NativeTrustReload(Arc<ReloadController>);
 
 struct ReloadController {
+    // A pool key can outlive this controller. Its identity must survive
+    // reuse of the allocation's address.
     identity: u64,
+    scope: NativeTrustScope,
     wake: Arc<TriggerWake>,
     has_trigger: bool,
     failed: AtomicBool,
@@ -163,16 +134,16 @@ impl RefreshJob {
     ) -> Result<NativeTrustSnapshot, BoxError> {
         // Read the store and compare anchors before taking the controller lock.
         let loaded = load(self.allow_bundled_fallback)
-            .inspect_err(|error| warn!(%error, "could not refresh native TLS trust anchors"))
             .map(|(anchors, used_bundled_fallback)| {
                 let snapshot = match &self.current {
-                    Some(current) if current.snapshot.anchors() == anchors => {
+                    Some(current) if current.snapshot.matches_anchors(&anchors) => {
                         current.snapshot.clone()
                     }
-                    _ => NativeTrustSnapshot::new(anchors),
+                    _ => NativeTrustSnapshot::new(self.reload.0.scope, anchors),
                 };
                 (snapshot, used_bundled_fallback)
-            });
+            })
+            .inspect_err(|error| warn!(%error, "could not refresh native TLS trust anchors"));
         self.publish(loaded, max_age)
     }
 
@@ -223,10 +194,14 @@ impl Drop for RefreshJob {
 }
 
 impl NativeTrustReload {
-    pub(in crate::client) fn new(trigger: Option<BoxStream<'static, ()>>) -> Self {
+    pub(in crate::client) fn new(
+        scope: NativeTrustScope,
+        trigger: Option<BoxStream<'static, ()>>,
+    ) -> Self {
         static IDENTITY: AtomicU64 = AtomicU64::new(1);
         Self(Arc::new(ReloadController {
             identity: IDENTITY.fetch_add(1, Ordering::Relaxed),
+            scope,
             wake: Arc::new(TriggerWake(AtomicBool::new(trigger.is_some()))),
             has_trigger: trigger.is_some(),
             failed: AtomicBool::new(false),
@@ -249,7 +224,7 @@ impl NativeTrustReload {
         &self,
         max_age: Option<Duration>,
     ) -> Result<NativeTrustSnapshot, BoxError> {
-        self.pin_with(max_age, load_reloadable_native_certs)
+        self.pin_with(max_age, self.loader())
     }
 
     fn pin_with(
@@ -275,8 +250,7 @@ impl NativeTrustReload {
         &self,
         max_age: Option<Duration>,
     ) -> Result<NativeTrustSnapshot, BoxError> {
-        self.pin_async_with(max_age, load_reloadable_native_certs)
-            .await
+        self.pin_async_with(max_age, self.loader()).await
     }
 
     async fn pin_async_with(
@@ -296,6 +270,15 @@ impl NativeTrustReload {
                 PinAction::Refresh(job) => {
                     return tokio::task::spawn_blocking(move || job.run(max_age, load)).await?;
                 }
+            }
+        }
+    }
+
+    fn loader(&self) -> fn(bool) -> LoadNativeTrust {
+        match self.0.scope {
+            NativeTrustScope::Full => load_reloadable_native_certs,
+            NativeTrustScope::PlatformExtras => {
+                |_| load_reloadable_extra_certs().map(|anchors| (anchors, false))
             }
         }
     }

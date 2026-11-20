@@ -15,7 +15,7 @@ mod native;
 /// Settings for the native root store used by [`ServerTrustSource::Native`].
 ///
 /// The default uses a static snapshot. With the `native-certs` feature,
-/// [`TlsServerTrust`] can configure refresh triggers and an age limit.
+/// this policy supports refresh triggers and an age limit.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NativeTrustPolicy {
     #[cfg(feature = "native-certs")]
@@ -41,19 +41,16 @@ impl Default for NativeTrustPolicy {
 
 /// Settings for the platform verifier used by [`ServerTrustSource::Platform`].
 ///
-/// On targets with an OS verifier, the verifier evaluates system trust and
-/// prepares any additional anchors supplied through [`TlsServerTrust`].
-/// If the platform has no operating system verifier, the policy uses native
-/// roots. With the `native-certs` feature, [`TlsServerTrust`] can configure
-/// refresh triggers and an age limit for that fallback.
+/// The operating system verifier determines system trust. With the
+/// `native-certs` feature, a reload policy on supported targets refreshes
+/// only extra anchors supplied through `SSL_CERT_EXTRA_FILE` and
+/// `SSL_CERT_EXTRA_DIR`. On other targets a reload policy refreshes the full
+/// native root store, including its environment configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct PlatformTrustPolicy {
-    #[cfg(all(
-        feature = "native-certs",
-        not(any(target_vendor = "apple", windows, target_os = "android"))
-    ))]
-    native_fallback: NativeTrustPolicy,
+    #[cfg(feature = "native-certs")]
+    state: native::NativeTrustState,
 }
 
 impl PlatformTrustPolicy {
@@ -61,11 +58,8 @@ impl PlatformTrustPolicy {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            #[cfg(all(
-                feature = "native-certs",
-                not(any(target_vendor = "apple", windows, target_os = "android"))
-            ))]
-            native_fallback: NativeTrustPolicy::new(),
+            #[cfg(feature = "native-certs")]
+            state: native::NativeTrustState::STATIC,
         }
     }
 }
@@ -274,5 +268,17 @@ impl TlsServerTrust {
 impl Default for TlsServerTrust {
     fn default() -> Self {
         Self::native_roots()
+    }
+}
+
+impl From<NativeTrustPolicy> for TlsServerTrust {
+    fn from(policy: NativeTrustPolicy) -> Self {
+        Self::new(ServerTrustSource::Native(policy))
+    }
+}
+
+impl From<PlatformTrustPolicy> for TlsServerTrust {
+    fn from(policy: PlatformTrustPolicy) -> Self {
+        Self::new(ServerTrustSource::Platform(policy))
     }
 }

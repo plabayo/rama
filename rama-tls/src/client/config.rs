@@ -200,8 +200,8 @@ impl TlsClientConfig {
 
     generate_set_and_with! {
         /// Set the complete server trust policy.
-        pub fn server_trust(mut self, trust: TlsServerTrust) -> Self {
-            self.0.insert(trust);
+        pub fn server_trust(mut self, trust: impl Into<TlsServerTrust>) -> Self {
+            self.0.insert(trust.into());
             self
         }
     }

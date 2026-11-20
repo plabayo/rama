@@ -18,6 +18,7 @@ use std::{
 /// SSL_CERT_EXTRA_* settings, are checked using file metadata.
 pub struct NativeTrustStoreChanges {
     interval: Duration,
+    extra_only: bool,
     worker: Option<NativeChangesWorker>,
 }
 
@@ -30,6 +31,22 @@ impl NativeTrustStoreChanges {
     pub const fn new(interval: Duration) -> Self {
         Self {
             interval,
+            extra_only: false,
+            worker: None,
+        }
+    }
+
+    /// Monitor only the file and directory named by `SSL_CERT_EXTRA_FILE`
+    /// and `SSL_CERT_EXTRA_DIR`, using a polling interval of at least 10 ms.
+    ///
+    /// Use this when refreshing extra roots for an active platform verifier.
+    /// The monitor does not register for OS trust store notifications or
+    /// discover replacement root paths. Its events request a refresh, while
+    /// the configured TLS trust source determines which roots to read.
+    pub const fn extra_roots(interval: Duration) -> Self {
+        Self {
+            interval,
+            extra_only: true,
             worker: None,
         }
     }
@@ -46,9 +63,10 @@ impl Stream for NativeTrustStoreChanges {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<()>> {
         let interval = self.interval;
+        let extra_only = self.extra_only;
         let worker = self
             .worker
-            .get_or_insert_with(|| NativeChangesWorker::new(interval));
+            .get_or_insert_with(|| NativeChangesWorker::new(interval, extra_only));
         Pin::new(&mut worker.events).poll_next(cx)
     }
 }
@@ -60,14 +78,14 @@ struct NativeChangesWorker {
 }
 
 impl NativeChangesWorker {
-    fn new(interval: Duration) -> Self {
+    fn new(interval: Duration, extra_only: bool) -> Self {
         // One queued event is enough to tell the next handshake to read trust.
         let (changes, events) = flume::bounded(1);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let thread = thread::Builder::new()
             .name("rama-native-trust-probe".into())
-            .spawn(move || monitor_changes(interval, &changes, &worker_stop))
+            .spawn(move || monitor_changes(interval, extra_only, &changes, &worker_stop))
             .inspect_err(|error| warn!(%error, "could not start native trust store monitor"))
             .ok();
         Self {
@@ -87,11 +105,20 @@ impl Drop for NativeChangesWorker {
     }
 }
 
-fn monitor_changes(interval: Duration, events: &flume::Sender<()>, stop: &AtomicBool) {
+fn monitor_changes(
+    interval: Duration,
+    extra_only: bool,
+    events: &flume::Sender<()>,
+    stop: &AtomicBool,
+) {
     let file_interval = interval.max(Duration::from_millis(10));
-    let mut changes = NativeCertsChanges::new(file_interval);
+    let mut changes = if extra_only {
+        NativeCertsChanges::extra_only(file_interval)
+    } else {
+        NativeCertsChanges::new(file_interval)
+    };
     // macOS and Windows can report store notifications between file probes.
-    let probe_interval = if cfg!(any(target_os = "macos", windows)) {
+    let probe_interval = if !extra_only && cfg!(any(target_os = "macos", windows)) {
         file_interval.min(Duration::from_millis(250))
     } else {
         file_interval

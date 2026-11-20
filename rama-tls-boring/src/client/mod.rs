@@ -46,6 +46,8 @@ mod server_answer;
 pub use server_answer::{AnswerMirror, ServerAnswerRecorder};
 
 mod connector_data;
+mod platform_verifier;
+pub(crate) use platform_verifier::PreparedPlatformVerifier;
 
 mod verify;
 #[doc(inline)]

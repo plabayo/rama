@@ -35,8 +35,8 @@ use rama_tls::{
 };
 use rama_tls_boring::{
     client::{
-        BoringTlsConnectorConfig, TlsClientSession, TlsClientSessionCache, TlsClientSessionDomain,
-        TlsClientSessionKey, TlsConnectorContext, TlsConnectorContextBuilder,
+        TlsClientSession, TlsClientSessionCache, TlsClientSessionDomain, TlsClientSessionKey,
+        TlsConnectorContext, TlsConnectorContextBuilder,
     },
     server::{BoringTlsAcceptorConfig, IssuedCertificate, TlsAcceptorData},
 };
@@ -263,10 +263,12 @@ impl QuicClientConfig {
             None
         };
         debug_assert!(intent || ech.is_none());
-        let pieces = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
-        validate_versions(pieces.versions)?;
-        validate_alpn(pieces.alpn, options)?;
-        let handshake = pieces.client_handshake.copied().unwrap_or_default();
+        validate_versions(extensions.get_ref::<TlsSupportedVersions>())?;
+        validate_alpn(extensions.get_ref::<TlsAlpn>(), options)?;
+        let handshake = extensions
+            .get_ref::<ClientHandshake>()
+            .copied()
+            .unwrap_or_default();
         if handshake == ClientHandshake::Resumed
             && options.client_sessions == ClientSessionPolicy::Fresh
         {
@@ -274,7 +276,7 @@ impl QuicClientConfig {
                 BoxError::from_static_str("resumed TLS conflicts with the fresh client policy"),
             ));
         }
-        let mut builder = TlsConnectorContextBuilder::try_from(pieces)?;
+        let mut builder = TlsConnectorContextBuilder::try_from(config)?;
         if builder
             .max_proto_version()
             .is_some_and(|version| version != SslVersion::TLS1_3)

@@ -47,6 +47,10 @@ pub use chain_policy::{
 #[cfg(feature = "dns")]
 pub mod ech_discovery;
 
+#[cfg(feature = "native-certs")]
+#[cfg_attr(docsrs, doc(cfg(feature = "native-certs")))]
+pub mod platform_verifier;
+
 mod ech;
 pub use ech::{
     EchRequirement, EchRetryConfig, TargetEchResolution, TlsEchAccepted, resolve_target_ech,

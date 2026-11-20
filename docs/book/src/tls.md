@@ -52,7 +52,10 @@ Clients verify servers against a `ServerTrustSource`:
 - `Custom`: only the trust anchors you supply.
 - `Platform`: the operating system's verifier decides (Apple platforms, Windows and Android).
   This follows enterprise trust settings and the platform's distrust and revocation policy.
-  On targets without an OS verifier, the fallback uses native roots and supports the same reload options.
+  With reloading enabled, Rama refreshes only the application’s extra roots from
+  `SSL_CERT_EXTRA_FILE` and `SSL_CERT_EXTRA_DIR`. The OS continues to evaluate its own trust store.
+  On targets without an OS verifier, `Platform` falls back to the full native snapshot.
+  See the [platform trust policy](https://ramaproxy.org/docs/rama/tls/client/struct.PlatformTrustPolicy.html).
 
 The root crate’s `native-certs` feature exposes trust policy and root loading
 independently of the TLS backend. Both `rustls` and `boring` enable it.

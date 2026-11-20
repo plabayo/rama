@@ -11,6 +11,7 @@ use std::{
 /// Each instance maintains its own cursor over store notifications and file metadata.
 pub struct NativeCertsChanges {
     interval: Duration,
+    include_native: bool,
     probed_at: Option<Instant>,
     files: Vec<(PathBuf, FileState)>,
     #[cfg(any(target_os = "macos", windows))]
@@ -20,8 +21,19 @@ pub struct NativeCertsChanges {
 impl NativeCertsChanges {
     /// Set the minimum interval between filesystem checks.
     pub const fn new(interval: Duration) -> Self {
+        Self::with_scope(interval, true)
+    }
+
+    /// Track only the files and directories configured by `SSL_CERT_EXTRA_FILE`
+    /// and `SSL_CERT_EXTRA_DIR`, checked at most once per interval.
+    pub const fn extra_only(interval: Duration) -> Self {
+        Self::with_scope(interval, false)
+    }
+
+    const fn with_scope(interval: Duration, include_native: bool) -> Self {
         Self {
             interval,
+            include_native,
             probed_at: None,
             files: Vec::new(),
             #[cfg(any(target_os = "macos", windows))]
@@ -46,7 +58,20 @@ impl NativeCertsChanges {
             #[cfg(not(any(target_os = "macos", windows)))]
             return false;
         }
-        let base = CertPaths::from_env();
+        let extra = CertPaths::from_env_vars(ENV_EXTRA_CERT_FILE, ENV_EXTRA_CERT_DIR);
+        self.probe_sources(&extra, CertPaths::from_env, Instant::now())
+    }
+
+    fn probe_sources(
+        &mut self,
+        extra: &CertPaths,
+        native_paths: impl FnOnce() -> CertPaths,
+        now: Instant,
+    ) -> bool {
+        if !self.include_native {
+            return self.probe_files(None, extra, now);
+        }
+        let base = native_paths();
         #[cfg(any(target_os = "macos", windows))]
         let notified = self.check_store(&base);
         #[cfg(not(any(target_os = "macos", windows)))]
@@ -58,8 +83,7 @@ impl NativeCertsChanges {
         } else {
             super::unix::system_paths()
         };
-        let extra = CertPaths::from_env_vars(ENV_EXTRA_CERT_FILE, ENV_EXTRA_CERT_DIR);
-        self.probe_files(&base, &extra, Instant::now()) || notified
+        self.probe_files(Some(&base), extra, now) || notified
     }
 
     #[cfg(any(target_os = "macos", windows))]
@@ -76,9 +100,11 @@ impl NativeCertsChanges {
             .unwrap_or(true)
     }
 
-    fn probe_files(&mut self, base: &CertPaths, extra: &CertPaths, now: Instant) -> bool {
+    fn probe_files(&mut self, base: Option<&CertPaths>, extra: &CertPaths, now: Instant) -> bool {
         let mut files = Vec::new();
-        record_paths(base, &mut files);
+        if let Some(base) = base {
+            record_paths(base, &mut files);
+        }
         record_paths(extra, &mut files);
 
         let changed = self.probed_at.is_some() && files != self.files;

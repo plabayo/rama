@@ -202,20 +202,13 @@ where
                 self.keylog_intent.clone(),
                 auth,
             );
-            let pinned_trust =
-                client::BoringTlsConnectorConfig::pin_native_server_trust_from_extensions(
-                    config.as_extensions(),
-                )
+            client::BoringTlsConnectorConfig::prepare_server_trust(config.as_extensions())
                 .await
                 .context("tls mitm relay: pin direct egress trust policy")
                 .map_err(TlsMitmRelayError::config)?;
-            let view = client::BoringTlsConnectorConfig::from_extensions(config.as_extensions());
-            client::TlsConnectorData::try_from(client::BoringTlsConnectorConfig {
-                server_trust: pinned_trust.as_ref().or(view.server_trust),
-                ..view
-            })
-            .context("tls mitm relay: build direct egress connector data")
-            .map_err(TlsMitmRelayError::config)?
+            client::TlsConnectorData::try_from(&config)
+                .context("tls mitm relay: build direct egress connector data")
+                .map_err(TlsMitmRelayError::config)?
         };
         if data.ech_required
             || data.has_target_ech()

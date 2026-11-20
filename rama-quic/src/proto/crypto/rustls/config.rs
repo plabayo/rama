@@ -56,7 +56,8 @@ impl QuicClientConfig {
         pieces.versions = Some(&versions);
         let modify = pieces.modify.take();
         let handshake = pieces.client_handshake.copied().unwrap_or_default();
-        let mut native = pieces.try_into_client_config_with_provider(provider)?;
+        let mut native =
+            pieces.try_into_client_config_with_prepared_trust(provider, config.as_extensions())?;
         native.enable_early_data = options.early_data;
         if let Some(modify) = modify {
             native = (modify.0)(native)?;

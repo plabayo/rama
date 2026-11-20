@@ -1,6 +1,6 @@
 use crate::{
     TlsStream,
-    client::{BoringTlsConnectorConfig, TlsConnectorData},
+    client::{BoringTlsConnectorConfig, PreparedPlatformVerifier, TlsConnectorData},
     proxy::{TlsMitmRelay, TlsMitmRelayError},
 };
 use rama_core::{
@@ -13,7 +13,7 @@ use rama_core::{
 use rama_net::{address::Domain, client::ConnectorTarget};
 use rama_tls::{
     SecureTransport,
-    client::{ClientHello, TlsClientConfig, TlsServerName},
+    client::{ClientHello, TlsClientConfig, TlsServerName, TlsServerTrust},
     server::InputWithClientHello,
 };
 
@@ -164,14 +164,9 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
                 .maybe_with_connector_target(connector_target.clone())
                 .maybe_with_sni(effective_sni.clone())
         };
-        let pinned_trust = BoringTlsConnectorConfig::pin_native_server_trust_from_extensions(
-            config.as_extensions(),
-        )
-        .await
-        .map_err(config_error)?;
-        if let Some(trust) = &pinned_trust {
-            config.as_extensions().insert(trust.clone());
-        }
+        BoringTlsConnectorConfig::prepare_server_trust(config.as_extensions())
+            .await
+            .map_err(config_error)?;
 
         let connector_data = match TlsConnectorData::try_from(&config) {
             Ok(data) => Ok(data),
@@ -192,8 +187,11 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
                 }
                 #[cfg(feature = "http")]
                 apply_target_http_version(client_hello, flow_extensions, &fallback);
-                if let Some(trust) = pinned_trust {
-                    fallback.set_server_trust(trust);
+                if let Some(trust) = config.as_extensions().get_ref::<TlsServerTrust>() {
+                    fallback.set_server_trust(trust.clone());
+                }
+                if let Some(prepared) = config.as_extensions().get_ref::<PreparedPlatformVerifier>() {
+                    fallback.insert(prepared.clone());
                 }
                 TlsConnectorData::try_from(&fallback)
             }

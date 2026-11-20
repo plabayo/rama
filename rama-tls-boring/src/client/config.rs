@@ -85,43 +85,34 @@ pub struct BoringTlsConnectorConfig<'a> {
 }
 
 impl<'config> BoringTlsConnectorConfig<'config> {
-    /// Pin the native trust generation if this backend will use reloaded roots.
-    pub(crate) fn pin_native_server_trust(&self) -> Result<Option<TlsServerTrust>, BoxError> {
-        match self.reloadable_native_trust() {
-            Some(trust) => trust.pin_native_roots(),
-            None => Ok(None),
+    pub(crate) fn pin_server_trust(&self) -> Result<Option<TlsServerTrust>, BoxError> {
+        if !Self::uses_common_server_trust(self.verify, self.verify_cert_store.is_some()) {
+            return Ok(None);
         }
-    }
-
-    /// Pin native trust before constructing the full configuration view.
-    pub(crate) async fn pin_native_server_trust_from_extensions(
-        extensions: &Extensions,
-    ) -> Result<Option<TlsServerTrust>, BoxError> {
-        let Some(trust) = extensions
-            .get_ref::<TlsServerTrust>()
-            .filter(|trust| trust.uses_reloadable_native_roots())
-        else {
+        let Some(trust) = self.server_trust else {
             return Ok(None);
         };
-        if Self::uses_common_server_trust(
+        Ok(trust
+            .source()
+            .snapshot()?
+            .map(|source| trust.clone().with_source(source)))
+    }
+
+    /// Prepare server trust for one connection on a Tokio runtime.
+    ///
+    /// Pass the connection's own effective configuration. The preparation can
+    /// install a pinned trust source and a prepared platform verifier there.
+    pub async fn prepare_server_trust(extensions: &Extensions) -> Result<(), BoxError> {
+        let Some(trust) = extensions.get_ref::<TlsServerTrust>() else {
+            return Ok(());
+        };
+        if !Self::uses_common_server_trust(
             extensions.get_ref::<TlsServerVerify>(),
             extensions.contains::<BoringServerVerifyCertStore>(),
         ) {
-            trust.pin_native_roots_async().await
-        } else {
-            Ok(None)
+            return Ok(());
         }
-    }
-
-    /// The native trust policy that should be resolved for a new handshake.
-    /// Returns `None` when verification is disabled, a backend-specific verifier
-    /// or root store takes precedence, or the selected roots are static.
-    fn reloadable_native_trust(&self) -> Option<&'config TlsServerTrust> {
-        if !Self::uses_common_server_trust(self.verify, self.verify_cert_store.is_some()) {
-            return None;
-        }
-        self.server_trust
-            .filter(|trust| trust.uses_reloadable_native_roots())
+        super::platform_verifier::prepare_server_trust(extensions, trust).await
     }
 
     fn uses_common_server_trust(verify: Option<&TlsServerVerify>, custom_store: bool) -> bool {

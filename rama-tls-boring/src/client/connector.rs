@@ -34,8 +34,8 @@ use std::{fmt, sync::Arc};
 #[cfg(feature = "http")]
 use super::set_alpn_with_coupled_alps;
 use super::{
-    AutoTlsStream, BoringTlsClientConfigProvider, BoringTlsConnectorConfig, ServerAnswerRecorder,
-    TlsClientSessionStore, TlsConnectorData,
+    AutoTlsStream, BoringTlsClientConfigProvider, BoringTlsConnectorConfig,
+    PreparedPlatformVerifier, ServerAnswerRecorder, TlsClientSessionStore, TlsConnectorData,
     session::{ConnectorSessions, SessionStore},
     set_alpn_list_with_coupled_alps,
 };
@@ -591,16 +591,12 @@ impl<S, K> TlsConnector<S, K> {
         &self,
         extensions: &Extensions,
     ) -> Result<TlsConnectorData, BoxError> {
-        let pinned =
-            BoringTlsConnectorConfig::pin_native_server_trust_from_extensions(extensions).await?;
+        BoringTlsConnectorConfig::prepare_server_trust(extensions).await?;
         let config = BoringTlsConnectorConfig::from_extensions(extensions);
-        let config = BoringTlsConnectorConfig {
-            server_trust: pinned.as_ref().or(config.server_trust),
-            ..config
-        };
+        let prepared = extensions.get_ref::<PreparedPlatformVerifier>();
         match &self.sessions {
-            Some(sessions) => sessions.connector_data(config),
-            None => TlsConnectorData::try_from(config),
+            Some(sessions) => sessions.connector_data(config, prepared),
+            None => TlsConnectorData::from_config(config, prepared),
         }
     }
 

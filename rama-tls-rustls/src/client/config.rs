@@ -47,38 +47,40 @@ pub struct RustlsTlsConnectorConfig<'a> {
     pub modify: Option<Arc<ModifyRustlsClientConfig>>,
 }
 
-impl<'config> RustlsTlsConnectorConfig<'config> {
-    /// Pin the native trust generation if this backend will use reloaded roots.
-    pub(crate) fn pin_native_server_trust(&self) -> Result<Option<TlsServerTrust>, BoxError> {
-        match self.reloadable_native_trust() {
-            Some(trust) => trust.pin_native_roots(),
-            None => Ok(None),
-        }
-    }
-
-    /// Pin native trust roots with blocking I/O moved off the async runtime.
-    pub(crate) async fn pin_native_server_trust_async(
-        &self,
-    ) -> Result<Option<TlsServerTrust>, BoxError> {
-        match self.reloadable_native_trust() {
-            Some(trust) => trust.pin_native_roots_async().await,
-            None => Ok(None),
-        }
-    }
-
-    /// The native trust policy that should be resolved for a new handshake.
-    /// Returns `None` when verification is disabled, a backend-specific verifier
-    /// or root store takes precedence, or the selected roots are static.
-    fn reloadable_native_trust(&self) -> Option<&'config TlsServerTrust> {
+impl RustlsTlsConnectorConfig<'_> {
+    pub(crate) fn pin_server_trust(&self) -> Result<Option<TlsServerTrust>, BoxError> {
         if self.verifier.is_some()
             || self
                 .verify
                 .is_some_and(|verify| verify.0 == rama_tls::client::ServerVerifyMode::Disable)
         {
-            return None;
+            return Ok(None);
         }
-        self.server_trust
-            .filter(|trust| trust.uses_reloadable_native_roots())
+        let Some(trust) = self.server_trust else {
+            return Ok(None);
+        };
+        Ok(trust
+            .source()
+            .snapshot()?
+            .map(|source| trust.clone().with_source(source)))
+    }
+
+    /// Prepare server trust for one connection on a Tokio runtime.
+    ///
+    /// Pass the connection's own effective configuration. The preparation can
+    /// install a pinned trust source and a prepared platform verifier there.
+    pub async fn prepare_server_trust(extensions: &Extensions) -> Result<(), BoxError> {
+        let Some(trust) = extensions.get_ref::<TlsServerTrust>() else {
+            return Ok(());
+        };
+        if extensions.contains::<RustlsServerCertVerifier>()
+            || extensions
+                .get_ref::<TlsServerVerify>()
+                .is_some_and(|verify| verify.0 == rama_tls::client::ServerVerifyMode::Disable)
+        {
+            return Ok(());
+        }
+        super::platform_verifier::prepare_server_trust(extensions, trust).await
     }
 
     /// Compact identity of request-level overrides, or `None` for the baseline.
@@ -203,7 +205,24 @@ impl<'config> RustlsTlsConnectorConfig<'config> {
         self,
         provider: Arc<crate::dep::rustls::crypto::CryptoProvider>,
     ) -> Result<ClientConfig, BoxError> {
-        super::connector_data::build_client_config(&self, Some(provider))
+        super::connector_data::build_client_config(&self, Some(provider), None)
+    }
+
+    /// Build a native configuration with the same backend state prepared in
+    /// `extensions` by [`Self::prepare_server_trust`].
+    ///
+    /// A prepared verifier is only reused if it matches this configuration's
+    /// trust source and explicit additional anchors.
+    pub fn try_into_client_config_with_prepared_trust(
+        self,
+        provider: Arc<crate::dep::rustls::crypto::CryptoProvider>,
+        extensions: &Extensions,
+    ) -> Result<ClientConfig, BoxError> {
+        super::connector_data::build_client_config(
+            &self,
+            Some(provider),
+            extensions.get_ref::<super::platform_verifier::PreparedPlatformVerifier>(),
+        )
     }
 }
 

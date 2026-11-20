@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn native_reload_rotates_cached_quic_configs() {
         use rama_crypto::{native_certs::bundled_root_certs, pem::PemEncode as _};
-        use rama_tls::client::ChannelReloadTrigger;
+        use rama_tls::client::{ChannelReloadTrigger, NativeTrustPolicy, PlatformTrustPolicy};
         use std::{env, fs, path::PathBuf, process::Command};
 
         // Give the test its own SSL_CERT_FILE without mutating the test runner's environment.
@@ -465,7 +465,7 @@ mod tests {
                 .env(CHILD, dir.path())
                 .env("SSL_CERT_FILE", dir.path().join("roots.pem"))
                 .env_remove("SSL_CERT_DIR")
-                .env_remove("SSL_CERT_EXTRA_FILE")
+                .env("SSL_CERT_EXTRA_FILE", dir.path().join("extras.pem"))
                 .env_remove("SSL_CERT_EXTRA_DIR")
                 .status()
                 .unwrap();
@@ -473,17 +473,14 @@ mod tests {
             return;
         };
 
-        let bundle = PathBuf::from(dir).join("roots.pem");
+        let dir = PathBuf::from(dir);
+        let bundle = dir.join("roots.pem");
+        let extras = dir.join("extras.pem");
         assert_eq!(
             env::var_os("SSL_CERT_FILE").as_deref(),
             Some(bundle.as_os_str())
         );
         let roots = bundled_root_certs();
-        fs::write(&bundle, roots[0].to_pem()).unwrap();
-        let (sender, trigger) = ChannelReloadTrigger::new();
-        let config = TlsClientConfig::new()
-            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
-            .with_server_trust(TlsServerTrust::native_roots().with_reload_trigger(trigger));
         let caches = [
             ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default()),
             ClientConfigCache::new(
@@ -492,21 +489,45 @@ mod tests {
             ),
         ];
         let request = Extensions::new();
-        let initial = caches
-            .each_ref()
-            .map(|cache| cache.client_config(&config, &request).unwrap());
-        for (cache, old) in caches.iter().zip(&initial) {
-            let repeated = cache.client_config(&config, &request).unwrap();
-            assert!(Arc::ptr_eq(&old.crypto, &repeated.crypto));
-        }
+        let (native_sender, native_trigger) = ChannelReloadTrigger::new();
+        let (platform_sender, platform_trigger) = ChannelReloadTrigger::new();
+        for (trust, sender, changed_file) in [
+            (
+                TlsServerTrust::from(NativeTrustPolicy::new().with_reload_trigger(native_trigger)),
+                native_sender,
+                &bundle,
+            ),
+            (
+                TlsServerTrust::from(
+                    PlatformTrustPolicy::new().with_reload_trigger(platform_trigger),
+                ),
+                platform_sender,
+                &extras,
+            ),
+        ] {
+            fs::write(&bundle, roots[0].to_pem()).unwrap();
+            fs::write(&extras, b"").unwrap();
+            let config = TlsClientConfig::new()
+                .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
+                .with_server_trust(trust);
+            let initial = caches
+                .each_ref()
+                .map(|cache| cache.client_config(&config, &request).unwrap());
+            // An explicit reread of identical roots preserves the backend configuration.
+            sender.request_reload().unwrap();
+            for (cache, old) in caches.iter().zip(&initial) {
+                let repeated = cache.client_config(&config, &request).unwrap();
+                assert!(Arc::ptr_eq(&old.crypto, &repeated.crypto));
+            }
 
-        fs::write(&bundle, roots[1].to_pem()).unwrap();
-        sender.request_reload().unwrap();
-        for (cache, old) in caches.iter().zip(&initial) {
-            let current = cache.client_config(&config, &request).unwrap();
-            assert!(!Arc::ptr_eq(&old.crypto, &current.crypto));
-            let repeated = cache.client_config(&config, &request).unwrap();
-            assert!(Arc::ptr_eq(&current.crypto, &repeated.crypto));
+            fs::write(changed_file, roots[1].to_pem()).unwrap();
+            sender.request_reload().unwrap();
+            for (cache, old) in caches.iter().zip(&initial) {
+                let current = cache.client_config(&config, &request).unwrap();
+                assert!(!Arc::ptr_eq(&old.crypto, &current.crypto));
+                let repeated = cache.client_config(&config, &request).unwrap();
+                assert!(Arc::ptr_eq(&current.crypto, &repeated.crypto));
+            }
         }
     }
 
@@ -523,9 +544,10 @@ mod tests {
                 TlsOptions::default(),
             ),
         ];
-        let policy = TlsServerTrust::native_roots().with_reload_trigger(stream::poll_fn(|_| {
-            panic!("native verifier overrides should bypass common trust")
-        }));
+        let policy =
+            rama_tls::client::NativeTrustPolicy::new().with_reload_trigger(stream::poll_fn(|_| {
+                panic!("native verifier overrides should bypass common trust")
+            }));
         let base = || {
             TlsClientConfig::new()
                 .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())

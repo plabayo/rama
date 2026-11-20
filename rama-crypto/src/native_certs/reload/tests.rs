@@ -73,3 +73,42 @@ fn a_successful_empty_system_store_clears_live_roots() {
             if inner.kind() == io::ErrorKind::NotFound
     ));
 }
+
+#[test]
+fn extra_reload_ignores_replacement_paths_and_deduplicates_extra_roots() {
+    use crate::{native_certs::bundled_root_certs, pem::PemEncode as _};
+    use std::{env, process::Command};
+
+    const CHILD: &str = "RAMA_TEST_RELOAD_EXTRA_CERTS";
+    let roots = bundled_root_certs();
+    if env::var_os(CHILD).is_some() {
+        let loaded = load_reloadable_extra_certs().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded.contains(&roots[0]));
+        assert!(loaded.contains(&roots[1]));
+        assert!(loaded[0].cmp(&loaded[1]).is_lt());
+        return;
+    }
+
+    let dir = TestDir::new("reload-extra-env");
+    let extra_dir = dir.0.join("extras");
+    let extra_file = dir.0.join("extra.pem");
+    fs::create_dir(&extra_dir).unwrap();
+    fs::write(&extra_file, roots[1].to_pem()).unwrap();
+    fs::write(extra_dir.join("duplicate.pem"), roots[1].to_pem()).unwrap();
+    fs::write(extra_dir.join("another.pem"), roots[0].to_pem()).unwrap();
+
+    let status = Command::new(env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "native_certs::reload::tests::extra_reload_ignores_replacement_paths_and_deduplicates_extra_roots",
+        ])
+        .env(CHILD, "1")
+        .env("SSL_CERT_FILE", dir.0.join("missing-native.pem"))
+        .env("SSL_CERT_DIR", dir.0.join("missing-native-dir"))
+        .env(ENV_EXTRA_CERT_FILE, &extra_file)
+        .env(ENV_EXTRA_CERT_DIR, &extra_dir)
+        .status()
+        .unwrap();
+    assert!(status.success());
+}

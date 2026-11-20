@@ -6,10 +6,12 @@ use rama_net::{
     address::{Domain, Host, HostWithPort},
     client::{ConnectRequest, ConnectionError, EstablishedClientConnection},
 };
+#[cfg(not(target_os = "android"))]
+use rama_tls::client::PlatformTrustPolicy;
 use rama_tls::{
     client::{
-        ChannelReloadTrigger, ClientHandshake, NativeTrustStoreChanges, NegotiatedTlsParameters,
-        TlsClientConfig, TlsServerTrust, parse_client_hello_handshake,
+        ChannelReloadTrigger, ClientHandshake, NativeTrustPolicy, NativeTrustStoreChanges,
+        NegotiatedTlsParameters, TlsClientConfig, TlsServerTrust, parse_client_hello_handshake,
     },
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData,
@@ -43,7 +45,9 @@ const CHILD: &str = "RAMA_NATIVE_TRUST_RELOAD_TEST_DIR";
 #[test]
 fn native_roots_cut_over_for_new_handshakes() {
     isolated_case("native_roots_cut_over_for_new_handshakes", |dir| {
-        run(dir, TlsServerTrust::native_roots())
+        run(dir, |trigger| {
+            NativeTrustPolicy::new().with_reload_trigger(trigger).into()
+        })
     });
 }
 
@@ -51,8 +55,21 @@ fn native_roots_cut_over_for_new_handshakes() {
 #[test]
 fn platform_fallback_cuts_over_for_new_handshakes() {
     isolated_case("platform_fallback_cuts_over_for_new_handshakes", |dir| {
-        run(dir, TlsServerTrust::platform_verifier())
+        run(dir, |trigger| {
+            PlatformTrustPolicy::new()
+                .with_reload_trigger(trigger)
+                .into()
+        })
     });
+}
+
+#[cfg(any(target_vendor = "apple", windows))]
+#[test]
+fn platform_reload_replaces_only_environment_extra_anchors() {
+    isolated_case(
+        "platform_reload_replaces_only_environment_extra_anchors",
+        run_platform_extras,
+    );
 }
 
 fn isolated_case<F>(name: &str, run: impl FnOnce(PathBuf) -> F)
@@ -76,14 +93,16 @@ where
 
     let dir = std::env::temp_dir().join(format!("rama-{name}-{}", std::process::id()));
     fs::create_dir(&dir).unwrap();
+    fs::create_dir(dir.join("roots")).unwrap();
+    fs::create_dir(dir.join("extras")).unwrap();
     let case = format!("native_trust_reload::{name}");
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", &case, "--nocapture"])
         .env(CHILD, &dir)
         .env("SSL_CERT_FILE", dir.join("bundle.pem"))
         .env("SSL_CERT_EXTRA_FILE", dir.join("extra.pem"))
-        .env_remove("SSL_CERT_DIR")
-        .env_remove("SSL_CERT_EXTRA_DIR")
+        .env("SSL_CERT_DIR", dir.join("roots"))
+        .env("SSL_CERT_EXTRA_DIR", dir.join("extras"))
         .spawn()
         .unwrap();
     // Keep a wall-clock deadline outside the runtime under test. Its own
@@ -104,7 +123,7 @@ where
     assert!(succeeded, "{name} subprocess failed or timed out");
 }
 
-async fn run(dir: PathBuf, trust: TlsServerTrust) {
+async fn run(dir: PathBuf, trust: impl FnOnce(ChannelReloadTrigger) -> TlsServerTrust) {
     let bundle = dir.join("bundle.pem");
     let extra = dir.join("extra.pem");
     let (a, anchor_a) = certified_peer();
@@ -120,7 +139,7 @@ async fn run(dir: PathBuf, trust: TlsServerTrust) {
         pause: Arc::default(),
     };
     let (reload, trigger) = ChannelReloadTrigger::new();
-    let policy = trust.clone().with_reload_trigger(trigger);
+    let policy = trust(trigger);
     let boring = Arc::new(
         BoringConnector::secure(dial.clone())
             .with_base_config(TlsClientConfig::new().with_server_trust(policy.clone()))
@@ -134,13 +153,13 @@ async fn run(dir: PathBuf, trust: TlsServerTrust) {
     let rustls_snapshot = RustlsConnector::secure(dial.clone());
     let auto_rustls = RustlsConnector::secure(dial.clone()).with_base_config(
         TlsClientConfig::new().with_server_trust(
-            trust
-                .clone()
+            NativeTrustPolicy::new()
                 .with_reload_trigger(NativeTrustStoreChanges::new(Duration::from_millis(20))),
         ),
     );
     let strict_rustls = RustlsConnector::secure(dial.clone()).with_base_config(
-        TlsClientConfig::new().with_server_trust(trust.with_max_age(Duration::ZERO)),
+        TlsClientConfig::new()
+            .with_server_trust(NativeTrustPolicy::new().with_max_age(Duration::ZERO)),
     );
 
     let mut existing = rustls.serve(request()).await.unwrap().conn;
@@ -225,6 +244,84 @@ async fn run(dir: PathBuf, trust: TlsServerTrust) {
     drop(boring_snapshot.serve(request()).await.unwrap_err());
 }
 
+#[cfg(any(target_vendor = "apple", windows))]
+async fn run_platform_extras(dir: PathBuf) {
+    let (a, anchor_a) = certified_peer();
+    let (b, anchor_b) = certified_peer();
+    let use_b = Arc::new(AtomicBool::new(false));
+    let dial = Dial {
+        a,
+        b,
+        use_b: use_b.clone(),
+        pause: Arc::default(),
+    };
+
+    // Both replacement paths contain A. An OS verifier must ignore both.
+    write_bundle(&dir.join("bundle.pem"), &anchor_a);
+    write_bundle(&dir.join("roots/a.pem"), &anchor_a);
+    let extra_file = dir.join("extra.pem");
+    fs::write(&extra_file, b"").unwrap();
+
+    let (reload, trigger) = ChannelReloadTrigger::new();
+    let policy: TlsServerTrust = PlatformTrustPolicy::new()
+        .with_reload_trigger(trigger)
+        .into();
+    let explicit_a = RustlsConnector::secure(dial.clone()).with_base_config(
+        TlsClientConfig::new().with_server_trust(
+            policy
+                .clone()
+                .try_with_additional_anchors([anchor_a.clone()])
+                .unwrap(),
+        ),
+    );
+    let strict = RustlsConnector::secure(dial.clone()).with_base_config(
+        TlsClientConfig::new()
+            .with_server_trust(PlatformTrustPolicy::new().with_max_age(Duration::ZERO)),
+    );
+    let config = TlsClientConfig::new().with_server_trust(policy);
+    let boring = BoringConnector::secure(dial.clone())
+        .with_base_config(config.clone())
+        .with_session_store(Arc::new(TlsClientSessionCache::default()));
+    let rustls = RustlsConnector::secure(dial).with_base_config(config);
+    drop(rustls.serve(request()).await.unwrap_err());
+    drop(boring.serve(request()).await.unwrap_err());
+    read_server_byte(&mut explicit_a.serve(request()).await.unwrap().conn).await;
+
+    write_bundle(&extra_file, &anchor_a);
+    reload.request_reload().unwrap();
+    let mut existing = rustls.serve(request()).await.unwrap().conn;
+    read_server_byte(&mut existing).await;
+    read_server_byte(&mut boring.serve(request()).await.unwrap().conn).await;
+    let mut repeat = boring.serve(request()).await.unwrap().conn;
+    read_server_byte(&mut repeat).await;
+    assert!(resumed(&repeat));
+    read_server_byte(&mut strict.serve(request()).await.unwrap().conn).await;
+
+    // A malformed extra file keeps the last good verifier until its age limit.
+    fs::write(&extra_file, b"broken certificate bundle").unwrap();
+    reload.request_reload().unwrap();
+    read_server_byte(&mut rustls.serve(request()).await.unwrap().conn).await;
+    drop(strict.serve(request()).await.unwrap_err());
+
+    // Move trust from the extra file to the extra directory. The old CA
+    // remains in SSL_CERT_DIR, and the replacement bundle is now unreadable.
+    fs::remove_file(dir.join("bundle.pem")).unwrap();
+    fs::write(&extra_file, b"").unwrap();
+    write_bundle(&dir.join("extras/b.pem"), &anchor_b);
+    reload.request_reload().unwrap();
+    drop(boring.serve(request()).await.unwrap_err());
+    drop(rustls.serve(request()).await.unwrap_err());
+    read_server_byte(&mut explicit_a.serve(request()).await.unwrap().conn).await;
+
+    existing.write_all(b"x").await.unwrap();
+    assert_eq!(existing.read_u8().await.unwrap(), b'x');
+    use_b.store(true, Ordering::Relaxed);
+    read_server_byte(&mut rustls.serve(request()).await.unwrap().conn).await;
+    let mut replacement = boring.serve(request()).await.unwrap().conn;
+    read_server_byte(&mut replacement).await;
+    assert!(!resumed(&replacement));
+}
+
 #[cfg(unix)]
 #[test]
 fn trust_file_reload_leaves_the_async_runtime_free() {
@@ -245,15 +342,15 @@ fn trust_file_reload_leaves_the_async_runtime_free() {
                 pause: Arc::default(),
             };
             let (rustls_reload, trigger) = ChannelReloadTrigger::new();
-            let rustls = RustlsConnector::secure(dial.clone())
-                .with_base_config(TlsClientConfig::new().with_server_trust(
-                    TlsServerTrust::native_roots().with_reload_trigger(trigger),
-                ));
+            let rustls = RustlsConnector::secure(dial.clone()).with_base_config(
+                TlsClientConfig::new()
+                    .with_server_trust(NativeTrustPolicy::new().with_reload_trigger(trigger)),
+            );
             let (boring_reload, trigger) = ChannelReloadTrigger::new();
-            let boring = BoringConnector::secure(dial)
-                .with_base_config(TlsClientConfig::new().with_server_trust(
-                    TlsServerTrust::native_roots().with_reload_trigger(trigger),
-                ));
+            let boring = BoringConnector::secure(dial).with_base_config(
+                TlsClientConfig::new()
+                    .with_server_trust(NativeTrustPolicy::new().with_reload_trigger(trigger)),
+            );
 
             read_server_byte(&mut rustls.serve(request()).await.unwrap().conn).await;
             read_server_byte(&mut boring.serve(request()).await.unwrap().conn).await;

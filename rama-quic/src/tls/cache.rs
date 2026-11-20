@@ -134,13 +134,8 @@ impl ClientConfigCache {
         feature = "boring",
         all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
     ))]
-    fn reloadable_native_trust<'a>(
-        &self,
-        extensions: &'a Extensions,
-    ) -> Option<&'a TlsServerTrust> {
-        let trust = extensions
-            .get_ref::<TlsServerTrust>()
-            .filter(|trust| trust.uses_reloadable_native_roots())?;
+    fn common_server_trust<'a>(&self, extensions: &'a Extensions) -> Option<&'a TlsServerTrust> {
+        let trust = extensions.get_ref::<TlsServerTrust>()?;
         if extensions
             .get_ref::<TlsServerVerify>()
             .is_some_and(|verify| verify.0 == ServerVerifyMode::Disable)
@@ -284,10 +279,19 @@ impl ClientConfigCache {
             feature = "boring",
             all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
         ))]
-        if let Some(trust) = self.reloadable_native_trust(config.as_extensions())
-            && let Some(pinned) = trust.pin_native_roots_async().await?
         {
-            config.as_extensions().insert(pinned);
+            let extensions = config.as_extensions();
+            if extensions.contains::<TlsServerTrust>() {
+                let classifier = self.provider.pool_classifier();
+                #[cfg(feature = "boring")]
+                if classifier == ReuseKey::of::<BoringTlsConnectorConfig>() {
+                    BoringTlsConnectorConfig::prepare_server_trust(extensions).await?;
+                }
+                #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+                if classifier == ReuseKey::of::<RustlsTlsConnectorConfig>() {
+                    RustlsTlsConnectorConfig::prepare_server_trust(extensions).await?;
+                }
+            }
         }
 
         self.client_config_for_peer(&config, overrides, peer)
@@ -309,10 +313,12 @@ impl ClientConfigCache {
             feature = "boring",
             all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
         ))]
-        let config = if let Some(trust) = self.reloadable_native_trust(config.as_extensions())
-            && let Some(trust) = trust.pin_native_roots()?
+        let config = if let Some(trust) = self.common_server_trust(config.as_extensions())
+            && let Some(source) = trust.source().snapshot()?
         {
-            pinned = config.clone().with_server_trust(trust);
+            pinned = config
+                .clone()
+                .with_server_trust(trust.clone().with_source(source));
             &pinned
         } else {
             config
@@ -564,10 +570,11 @@ mod tests {
 
         let provider = Arc::new(TestProvider::default());
         let cache = ClientConfigCache::new(provider.clone(), TlsOptions::default());
-        let config =
-            named(0).with_server_trust(TlsServerTrust::native_roots().with_reload_trigger(
-                stream::poll_fn(|_| panic!("custom provider must own its trust policy")),
-            ));
+        let config = named(0).with_server_trust(
+            rama_tls::client::NativeTrustPolicy::new().with_reload_trigger(stream::poll_fn(|_| {
+                panic!("custom provider must own its trust policy")
+            })),
+        );
         let peer = Host::from_static("host-0.example");
         let overrides = Extensions::new();
         let first = cache

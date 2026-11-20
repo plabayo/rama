@@ -19,7 +19,7 @@ fn a_user_stream_is_polled_only_after_its_waker_fires() {
             Pin::new(&mut events).poll_next(cx)
         }
     });
-    let reload = NativeTrustReload::new(Some(Box::pin(stream)));
+    let reload = NativeTrustReload::new(NativeTrustScope::Full, Some(Box::pin(stream)));
     let anchors = bundled_root_certs();
     let original = reload
         .pin_with(None, |_| Ok((anchors[..1].to_vec(), false)))
@@ -40,13 +40,13 @@ fn a_user_stream_is_polled_only_after_its_waker_fires() {
         .run(None, |_| Ok((anchors[1..2].to_vec(), false)))
         .unwrap();
     assert_ne!(original, updated);
-    assert_eq!(updated.anchors(), &anchors[1..2]);
+    assert_eq!(updated.native_roots().unwrap(), &anchors[1..2]);
 }
 
 #[test]
 fn refresh_retries_without_another_request_and_preserves_equal_generations() {
     let (sender, trigger) = ChannelReloadTrigger::new();
-    let reload = NativeTrustReload::new(Some(Box::pin(trigger)));
+    let reload = NativeTrustReload::new(NativeTrustScope::Full, Some(Box::pin(trigger)));
     let anchors = bundled_root_certs()[..1].to_vec();
     let load = |_| Ok((anchors.clone(), false));
     let original = reload.pin_with(None, load).unwrap();
@@ -80,7 +80,7 @@ fn async_refresh_waiters_share_one_blocking_worker_after_leader_cancellation() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let reload = NativeTrustReload::new(None);
+        let reload = NativeTrustReload::new(NativeTrustScope::Full, None);
         let max_age = Some(Duration::ZERO);
         let (entered, started) = flume::bounded(1);
         let (resume, paused) = flume::bounded(1);
@@ -110,7 +110,10 @@ fn async_refresh_waiters_share_one_blocking_worker_after_leader_cancellation() {
         resume.send(()).unwrap();
         let snapshots = waiters.await;
         for snapshot in snapshots {
-            assert_eq!(snapshot.unwrap().anchors(), &bundled_root_certs()[..1]);
+            assert_eq!(
+                snapshot.unwrap().native_roots().unwrap(),
+                &bundled_root_certs()[..1]
+            );
         }
 
         let next = reload
@@ -119,14 +122,14 @@ fn async_refresh_waiters_share_one_blocking_worker_after_leader_cancellation() {
             })
             .await
             .unwrap();
-        assert_eq!(next.anchors(), &bundled_root_certs()[1..2]);
+        assert_eq!(next.native_roots().unwrap(), &bundled_root_certs()[1..2]);
     });
 }
 
 #[test]
 fn concurrent_handshakes_keep_a_fresh_pinned_snapshot_until_publication() {
     let (sender, trigger) = ChannelReloadTrigger::new();
-    let reload = NativeTrustReload::new(Some(Box::pin(trigger)));
+    let reload = NativeTrustReload::new(NativeTrustScope::Full, Some(Box::pin(trigger)));
     let anchors = bundled_root_certs();
     let initial = reload
         .pin_with(None, |_| Ok((anchors[..1].to_vec(), false)))
@@ -157,9 +160,9 @@ fn concurrent_handshakes_keep_a_fresh_pinned_snapshot_until_publication() {
         };
         assert!(matches!(strict, PinAction::Wait(..)));
         assert_eq!(initial, concurrent);
-        assert_eq!(concurrent.anchors(), &anchors[..1]);
+        assert_eq!(concurrent.native_roots().unwrap(), &anchors[..1]);
         assert_ne!(initial, updated);
-        assert_eq!(updated.anchors(), &anchors[1..2]);
+        assert_eq!(updated.native_roots().unwrap(), &anchors[1..2]);
         let PinAction::Ready(Ok(next)) = reload.prepare_pin(None) else {
             panic!("expected newly published trust anchors");
         };

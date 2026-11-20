@@ -31,7 +31,8 @@ use rama_net::address::Host;
 use rama_tls::client::{TlsPoolComponent, TlsPoolId};
 
 use super::{
-    BoringTlsConnectorConfig, TlsConnectorContext, TlsConnectorContextBuilder, TlsConnectorData,
+    BoringTlsConnectorConfig, PreparedPlatformVerifier, TlsConnectorContext,
+    TlsConnectorContextBuilder, TlsConnectorData,
 };
 
 /// Process-unique owner of a set of compatible client session configurations.
@@ -407,8 +408,9 @@ impl ConnectorSessions {
     pub(super) fn connector_data<'a>(
         &'a self,
         config: BoringTlsConnectorConfig<'a>,
+        prepared: Option<&PreparedPlatformVerifier>,
     ) -> Result<TlsConnectorData, BoxError> {
-        let pinned = config.pin_native_server_trust()?;
+        let pinned = config.pin_server_trust()?;
         let mut config = BoringTlsConnectorConfig {
             server_trust: pinned.as_ref().or(config.server_trust),
             session_domain: Some(&self.domain),
@@ -417,19 +419,19 @@ impl ConnectorSessions {
         let scope = config.context_scope();
         if scope.as_ref().is_some_and(|id| !id.is_reusable()) {
             config.session_domain = None;
-            return TlsConnectorData::try_from(config);
+            return TlsConnectorData::from_config(config, prepared);
         }
         let context = if let Some(context) = self.contexts.get(&scope) {
             context
         } else {
-            let mut builder = TlsConnectorContextBuilder::try_from(config.clone())?;
+            let mut builder = TlsConnectorContextBuilder::from_config(config.clone(), prepared)?;
             builder.set_session_store(self.store.clone());
             self.contexts
                 .entry(scope)
                 .or_insert(builder.build())
                 .into_value()
         };
-        context.configure_variant(&config)
+        context.configure_variant(&config, prepared)
     }
 }
 

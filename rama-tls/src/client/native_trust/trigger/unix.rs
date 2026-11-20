@@ -14,11 +14,12 @@ impl UnixSignalTrigger {
     ///
     /// ```
     /// # async fn configure() -> std::io::Result<()> {
-    /// use rama_tls::client::{TlsServerTrust, UnixSignalTrigger};
+    /// use rama_tls::client::{NativeTrustPolicy, TlsClientConfig, UnixSignalTrigger};
     ///
-    /// let trust = TlsServerTrust::native_roots()
-    ///     .with_reload_trigger(UnixSignalTrigger::sighup()?);
-    /// # drop(trust);
+    /// let mut tls = TlsClientConfig::new();
+    /// tls.set_server_trust(
+    ///     NativeTrustPolicy::new().with_reload_trigger(UnixSignalTrigger::sighup()?),
+    /// );
     /// # Ok(())
     /// # }
     /// ```

@@ -63,7 +63,7 @@ mod reload;
 #[doc(inline)]
 pub use changes::NativeCertsChanges;
 #[doc(inline)]
-pub use reload::load_reloadable_native_certs;
+pub use reload::{load_reloadable_extra_certs, load_reloadable_native_certs};
 
 /// Returns the cached, process-wide default trust anchors used by rama tls
 /// clients (both the `rustls` and `boring` backends consume these).

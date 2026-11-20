@@ -18,6 +18,7 @@ pub use config::{
 };
 
 mod connector_data;
+mod platform_verifier;
 pub(super) use connector_data::TlsConnectorData;
 
 #[doc(inline)]

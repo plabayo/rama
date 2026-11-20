@@ -81,7 +81,7 @@ use rama::{
     tcp::server::TcpListener,
     tls::{
         boring::server::{BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer},
-        client::{NativeTrustStoreChanges, TlsClientConfig, TlsServerTrust},
+        client::{NativeTrustPolicy, NativeTrustStoreChanges, TlsClientConfig},
         server::{ServerAuthData, TlsServerConfig},
     },
     udp::{DatagramError, UdpSocketConfig, UdpSocketFactory},
@@ -442,7 +442,7 @@ async fn main() -> Result<(), BoxError> {
                 )?;
             } else {
                 tls.set_server_trust(
-                    TlsServerTrust::native_roots()
+                    NativeTrustPolicy::new()
                         .with_reload_trigger(NativeTrustStoreChanges::default())
                         .with_max_age(Duration::from_hours(1)),
                 );

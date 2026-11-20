@@ -29,6 +29,15 @@ pub fn load_reloadable_native_certs(
     )
 }
 
+/// Read, validate, and deduplicate the roots configured by `SSL_CERT_EXTRA_FILE`
+/// and `SSL_CERT_EXTRA_DIR`. These roots supplement the live platform verifier.
+///
+/// This read may block. It only consults the extra-root paths.
+pub fn load_reloadable_extra_certs() -> Result<Vec<CertificateDer<'static>>, BoxError> {
+    let extra_paths = CertPaths::from_env_vars(ENV_EXTRA_CERT_FILE, ENV_EXTRA_CERT_DIR);
+    checked_load_paths(&extra_paths).map(deduplicate)
+}
+
 #[cfg(all(unix, not(target_os = "macos")))]
 fn load_system_roots() -> Result<Vec<CertificateDer<'static>>, BoxError> {
     checked_load_paths(&super::unix::system_paths())
@@ -57,9 +66,13 @@ fn load_from_sources(
     }
 
     certs.extend(checked_load_paths(extra)?);
-    certs.sort_unstable_by(|a, b| a.cmp(b));
-    certs.dedup();
-    Ok((certs, used_bundled_fallback))
+    Ok((deduplicate(certs), used_bundled_fallback))
+}
+
+fn deduplicate(mut anchors: Vec<CertificateDer<'static>>) -> Vec<CertificateDer<'static>> {
+    anchors.sort_unstable_by(|a, b| a.cmp(b));
+    anchors.dedup();
+    anchors
 }
 
 fn checked_load_paths(paths: &CertPaths) -> Result<Vec<CertificateDer<'static>>, BoxError> {
