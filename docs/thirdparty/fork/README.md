@@ -220,13 +220,13 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/quinn-rs/quinn/blob/765abecf7b5e18e5eeb8aa46e30e2174c54547d7/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/quinn-udp](./licenses/quinn-udp)
-- <https://github.com/tokio-rs/axum/tree/4cc51a96df444592ec8276738d4ccd1202e6150d>
+- <https://github.com/tokio-rs/axum/tree/8d60d69eb195dad2f983926ab11fc91a79b98e06>
   - IntoResponse Code
   - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError
   - web::extract inspiration + Path (param) deserializion code
   - License:
-    - Original: <https://github.com/tokio-rs/axum/blob/4cc51a96df444592ec8276738d4ccd1202e6150d/LICENSE>
+    - Original: <https://github.com/tokio-rs/axum/blob/8d60d69eb195dad2f983926ab11fc91a79b98e06/LICENSE>
     - Type: MIT
     - Copy: [./licenses/axum](./licenses/axum)
 - <https://github.com/dtolnay/paste/tree/6a302522990cbfd9de4e0c61d91854622f7b2999>
