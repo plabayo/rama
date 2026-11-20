@@ -596,7 +596,7 @@ unsafe extern "C" fn query_record_callback<T, P>(
         return;
     }
     if rrtype != state.rrtype {
-        // a CNAME followed on the way, or its absence
+        // a CNAME followed on the way
         state.more_coming.store(more_coming, Ordering::SeqCst);
         if !more_coming && !state.queue.lock().is_empty() {
             state.done.store(true, Ordering::SeqCst);
@@ -1466,10 +1466,10 @@ mod tests {
 
     #[test]
     fn callback_errors_ignore_undefined_record_fields() {
-        for error in [
-            ffi::K_DNS_SERVICE_ERR_NO_SUCH_NAME,
-            ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD,
-            -1,
+        for (error, empty) in [
+            (ffi::K_DNS_SERVICE_ERR_NO_SUCH_NAME, true),
+            (ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD, true),
+            (-1, false),
         ] {
             let mut state = a_query();
             // On error dns_sd.h defines only `error_code` and `context`.
@@ -1494,11 +1494,15 @@ mod tests {
             assert!(state.done.load(Ordering::SeqCst));
             assert!(!state.more_coming.load(Ordering::SeqCst));
             let results = drain_completed_batch(&state);
-            if is_empty_result_error(error) {
+            if empty {
                 assert!(results.is_empty());
             } else {
                 assert_eq!(results.len(), 1);
-                assert!(results[0].is_err());
+                let err = results[0].as_ref().expect_err("expected DNSService error");
+                assert_eq!(
+                    err.to_string(),
+                    format!("query callback failed with DNSService error code {error}")
+                );
             }
         }
     }
@@ -1506,7 +1510,7 @@ mod tests {
     #[test]
     fn callback_rejects_unexpected_record_class() {
         let mut state = a_query();
-        let rdata = [127, 0, 0, 1];
+        let rdata = [127_u8, 0, 0, 1];
         // SAFETY: all pointers refer to live values for the callback call.
         unsafe {
             query_record_callback::<Ipv4Addr, AParser>(
@@ -1526,7 +1530,13 @@ mod tests {
         assert!(state.done.load(Ordering::SeqCst));
         let results = drain_completed_batch(&state);
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_err());
+        let err = results[0]
+            .as_ref()
+            .expect_err("expected record class error");
+        assert_eq!(
+            err.to_string(),
+            "query callback received unexpected record class"
+        );
     }
 
     #[test]
