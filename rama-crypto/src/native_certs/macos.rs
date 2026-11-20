@@ -14,6 +14,10 @@ pub(super) fn load_native_certs() -> CertificateResult {
     // encoding to what we'll do with them. We don't overwrite existing
     // elements, which means User settings trump Admin trump System, as desired.
 
+    // SecTrustSettingsCopyTrustSettings returns this status when an item has
+    // no settings in the requested domain, including a concurrent removal.
+    const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
     let mut result = CertificateResult::default();
     let mut all_certs = HashMap::default();
     for domain in &[Domain::User, Domain::Admin, Domain::System] {
@@ -21,7 +25,7 @@ pub(super) fn load_native_certs() -> CertificateResult {
         let iter = match ts.iter() {
             Ok(iter) => iter,
             Err(err) => {
-                result.os_error(
+                result.os_source_error(
                     err.into(),
                     match domain {
                         Domain::User => "failed to load user trust settings",
@@ -44,9 +48,12 @@ pub(super) fn load_native_certs() -> CertificateResult {
             //  kSecTrustSettingsResultTrustRoot'."
             let trusted = match ts.tls_trust_settings_for_certificate(&cert) {
                 Ok(trusted) => trusted.unwrap_or(TrustSettingsForCertificate::TrustRoot),
+                Err(err) if err.code() == ERR_SEC_ITEM_NOT_FOUND => continue,
                 Err(err) => {
-                    result.os_error(err.into(), "certificate not trusted");
-                    continue;
+                    result.os_error(err.into(), "failed to read certificate trust settings");
+                    // Avoid accepting this certificate via a later domain when
+                    // its higher-priority settings could not be determined.
+                    TrustSettingsForCertificate::Deny
                 }
             };
 

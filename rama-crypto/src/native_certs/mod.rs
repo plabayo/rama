@@ -183,6 +183,7 @@ pub struct CertificateResult {
     pub certs: Vec<CertificateDer<'static>>,
     /// Any errors encountered while loading certificates.
     pub errors: Vec<Error>,
+    source_error: Option<usize>,
 }
 
 impl CertificateResult {
@@ -207,6 +208,21 @@ impl CertificateResult {
                 path: path.to_owned(),
             },
         });
+    }
+
+    fn source_io_error(&mut self, err: io::Error, path: &Path, context: &'static str) {
+        self.source_error.get_or_insert(self.errors.len());
+        self.io_error(err, path, context);
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    fn os_source_error(
+        &mut self,
+        err: Box<dyn StdError + Send + Sync + 'static>,
+        context: &'static str,
+    ) {
+        self.source_error.get_or_insert(self.errors.len());
+        self.os_error(err, context);
     }
 
     #[cfg(any(windows, target_os = "macos"))]
@@ -283,7 +299,12 @@ fn load_certs_from_paths_internal(
     file: Option<&Path>,
     dir: &[impl AsRef<Path>],
 ) -> CertificateResult {
-    let mut out = read_cert_paths(file, dir, |path, out| load_pem_certs(path, out, false));
+    let mut out = read_cert_paths(
+        file,
+        dir,
+        |path, out| load_pem_certs(path, out, false),
+        |path, out| load_pem_certs(path, out, true),
+    );
     out.certs.sort_unstable_by(|a, b| a.cmp(b));
     out.certs.dedup();
     out
@@ -293,6 +314,7 @@ fn read_cert_paths(
     file: Option<&Path>,
     dirs: &[impl AsRef<Path>],
     read_bundle: impl FnOnce(&Path, &mut CertificateResult),
+    read_entry: impl Fn(&Path, &mut CertificateResult),
 ) -> CertificateResult {
     let mut out = CertificateResult::default();
     let mut seen = SeenFiles::default();
@@ -305,7 +327,7 @@ fn read_cert_paths(
     }
 
     for dir in dirs {
-        load_pem_certs_from_dir(dir.as_ref(), &mut out, &mut seen);
+        load_pem_certs_from_dir(dir.as_ref(), &mut out, &mut seen, &read_entry);
     }
     out
 }
@@ -345,11 +367,16 @@ impl SeenFiles {
 }
 
 /// Load certificates from a certificate directory (what OpenSSL calls CAdir).
-fn load_pem_certs_from_dir(dir: &Path, out: &mut CertificateResult, seen: &mut SeenFiles) {
+fn load_pem_certs_from_dir(
+    dir: &Path,
+    out: &mut CertificateResult,
+    seen: &mut SeenFiles,
+    read_entry: impl Fn(&Path, &mut CertificateResult),
+) {
     let dir_reader = match fs::read_dir(dir) {
         Ok(reader) => reader,
         Err(err) => {
-            out.io_error(err, dir, "opening directory");
+            out.source_io_error(err, dir, "opening directory");
             return;
         }
     };
@@ -358,7 +385,7 @@ fn load_pem_certs_from_dir(dir: &Path, out: &mut CertificateResult, seen: &mut S
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
-                out.io_error(err, dir, "reading directory entries");
+                out.source_io_error(err, dir, "reading directory entries");
                 continue;
             }
         };
@@ -380,10 +407,7 @@ fn load_pem_certs_from_dir(dir: &Path, out: &mut CertificateResult, seen: &mut S
         };
 
         if metadata.is_file() && seen.first_visit(&metadata) {
-            // When scanning a directory, skip over files that are not readable
-            // (usually `chown root` or `chmod -r`), rather than failing the
-            // whole load. See <https://github.com/rustls/rustls-native-certs/pull/228>.
-            load_pem_certs(&path, out, true);
+            read_entry(&path, out);
         }
     }
 }
@@ -561,6 +585,7 @@ mod tests {
             Path::new("no/such/directory"),
             &mut result,
             &mut SeenFiles::default(),
+            |path, out| load_pem_certs(path, out, true),
         );
         match &result.errors.first().unwrap().kind {
             ErrorKind::Io { inner, .. } => assert_eq!(inner.kind(), io::ErrorKind::NotFound),

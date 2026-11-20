@@ -93,11 +93,20 @@ impl NativeCertsChanges {
             return false;
         }
 
-        // If native notifications are unavailable, refresh once per probe interval.
-        self.notifications
-            .get_or_insert_with(StoreNotifications::new)
-            .poll()
-            .unwrap_or(true)
+        if let Some(changed) = self
+            .notifications
+            .as_mut()
+            .and_then(StoreNotifications::poll)
+        {
+            return changed;
+        }
+
+        // Retry incomplete watches once per interval. Refresh across any gap
+        // even when registration succeeds, since intervening events were lost.
+        let mut watch = StoreNotifications::new();
+        let changed = watch.poll().unwrap_or(true) || self.probed_at.is_some();
+        self.notifications = Some(watch);
+        changed
     }
 
     fn probe_files(&mut self, base: Option<&CertPaths>, extra: &CertPaths, now: Instant) -> bool {

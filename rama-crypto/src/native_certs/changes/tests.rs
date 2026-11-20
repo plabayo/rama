@@ -59,3 +59,22 @@ fn extra_only_probes_file_and_directory_without_resolving_native_paths() {
     #[cfg(target_os = "macos")]
     assert!(changes.notifications.is_none());
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn resuming_native_notifications_refreshes_once_across_the_gap() {
+    let system = CertPaths {
+        file: None,
+        dirs: Vec::new(),
+    };
+    let mut changes = NativeCertsChanges::new(Duration::ZERO);
+    assert!(!changes.check_store(&system));
+    changes.probed_at = Some(Instant::now());
+    changes
+        .notifications
+        .as_mut()
+        .unwrap()
+        .invalidate_token_for_test();
+    assert!(changes.check_store(&system));
+    assert!(!changes.check_store(&system));
+}

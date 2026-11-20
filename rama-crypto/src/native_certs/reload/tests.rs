@@ -112,3 +112,62 @@ fn extra_reload_ignores_replacement_paths_and_deduplicates_extra_roots() {
         .unwrap();
     assert!(status.success());
 }
+
+#[test]
+fn system_entries_can_be_skipped_but_explicit_directories_stay_strict() {
+    use crate::{native_certs::bundled_root_certs, pem::PemEncode as _};
+
+    let dir = TestDir::new("reload-system-entries");
+    let valid = bundled_root_certs()[0].clone();
+    fs::write(dir.0.join("valid.pem"), valid.to_pem()).unwrap();
+    fs::write(
+        dir.0.join("bad.pem"),
+        b"-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.0.join("bad-der.pem"),
+        CertificateDer::from(vec![1, 2, 3]).to_pem(),
+    )
+    .unwrap();
+
+    let paths = CertPaths {
+        file: None,
+        dirs: vec![dir.0.clone()],
+    };
+    assert_eq!(load_system_paths(&paths).unwrap(), [valid]);
+    drop(checked_load_paths(&paths).unwrap_err());
+}
+
+#[test]
+fn unreadable_system_sources_prevent_fallback_even_when_other_roots_exist() {
+    use crate::{native_certs::bundled_root_certs, pem::PemEncode as _};
+
+    let dir = TestDir::new("reload-system-source-failure");
+    let root = bundled_root_certs()[0].clone();
+    fs::write(dir.0.join("valid.pem"), root.to_pem()).unwrap();
+    let unset = CertPaths {
+        file: None,
+        dirs: Vec::new(),
+    };
+    let system = CertPaths {
+        file: None,
+        dirs: vec![dir.0.clone(), dir.0.join("missing")],
+    };
+    let read = || load_system_paths(&system);
+    drop(load_from_sources(&unset, &unset, true, read).unwrap_err());
+}
+
+#[test]
+fn all_malformed_system_entries_do_not_enable_bundled_fallback() {
+    let unset = CertPaths {
+        file: None,
+        dirs: Vec::new(),
+    };
+    let result = load_from_sources(&unset, &unset, true, || {
+        let mut system = CertificateResult::default();
+        system.certs.push(CertificateDer::from(vec![1, 2, 3]));
+        checked_system_load(system)
+    });
+    drop(result.unwrap_err());
+}

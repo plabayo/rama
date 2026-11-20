@@ -13,9 +13,16 @@ use std::{
 
 /// Requests a refresh after the operating system's native trust store changes.
 ///
-/// On macOS and Windows this uses system change notifications. File-backed
-/// stores, including SSL_CERT_FILE, SSL_CERT_DIR and the corresponding
-/// SSL_CERT_EXTRA_* settings, are checked using file metadata.
+/// macOS watches the certificate-trust notification posted by securityd.
+/// Windows watches the current-user and local-machine ROOT stores. File-backed
+/// stores, including `SSL_CERT_FILE`, `SSL_CERT_DIR` and the corresponding
+/// `SSL_CERT_EXTRA_*` settings, are checked using file metadata.
+///
+/// A reported notification failure requests a refresh and retries the watch at
+/// the file probe interval. A missed notification on an apparently healthy
+/// watch can leave a snapshot stale. Set
+/// [`NativeTrustPolicy::with_max_age`](crate::client::NativeTrustPolicy::with_max_age)
+/// to require a fresh native trust read on the first handshake at the age limit.
 pub struct NativeTrustStoreChanges {
     interval: Duration,
     extra_only: bool,

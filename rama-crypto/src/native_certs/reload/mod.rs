@@ -1,8 +1,11 @@
 use super::{
     CertPaths, CertificateDer, CertificateResult, ENV_EXTRA_CERT_DIR, ENV_EXTRA_CERT_FILE,
 };
-use crate::pki_types::pem::PemObject as _;
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _};
+use crate::pki_types::pem::{self, PemObject as _};
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    telemetry::tracing::debug,
+};
 use std::{
     fs::File,
     io::{self, Read},
@@ -40,12 +43,12 @@ pub fn load_reloadable_extra_certs() -> Result<Vec<CertificateDer<'static>>, Box
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn load_system_roots() -> Result<Vec<CertificateDer<'static>>, BoxError> {
-    checked_load_paths(&super::unix::system_paths())
+    load_system_paths(&super::unix::system_paths())
 }
 
 #[cfg(any(target_os = "macos", windows))]
 fn load_system_roots() -> Result<Vec<CertificateDer<'static>>, BoxError> {
-    checked_load(super::platform::load_native_certs())
+    checked_system_load(super::platform::load_native_certs())
 }
 
 fn load_from_sources(
@@ -76,17 +79,41 @@ fn deduplicate(mut anchors: Vec<CertificateDer<'static>>) -> Vec<CertificateDer<
 }
 
 fn checked_load_paths(paths: &CertPaths) -> Result<Vec<CertificateDer<'static>>, BoxError> {
-    let result = super::read_cert_paths(paths.file.as_deref(), &paths.dirs, load_bundle);
+    let result =
+        super::read_cert_paths(paths.file.as_deref(), &paths.dirs, load_bundle, load_bundle);
     checked_load(result)
+}
+
+#[cfg(all(unix, any(test, not(target_os = "macos"))))]
+fn load_system_paths(paths: &CertPaths) -> Result<Vec<CertificateDer<'static>>, BoxError> {
+    let result = super::read_cert_paths(
+        paths.file.as_deref(),
+        &paths.dirs,
+        |path, out| load_bundle_with_source_errors(path, out, true),
+        |path, out| super::load_pem_certs(path, out, false),
+    );
+    checked_system_load(result)
 }
 
 // For a reload, an empty bundle can intentionally withdraw all trust. Reject a
 // nonempty file with no certificates so a malformed update keeps the last snapshot.
 fn load_bundle(path: &Path, result: &mut CertificateResult) {
+    load_bundle_with_source_errors(path, result, false);
+}
+
+fn load_bundle_with_source_errors(
+    path: &Path,
+    result: &mut CertificateResult,
+    authoritative: bool,
+) {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) => {
-            result.io_error(error, path, "opening native trust bundle");
+            if authoritative {
+                result.source_io_error(error, path, "opening native trust bundle");
+            } else {
+                result.io_error(error, path, "opening native trust bundle");
+            }
             return;
         }
     };
@@ -99,6 +126,9 @@ fn load_bundle(path: &Path, result: &mut CertificateResult) {
         found_entry = true;
         match entry {
             Ok(cert) => result.certs.push(cert),
+            Err(pem::Error::Io(error)) if authoritative => {
+                result.source_io_error(error, path, "reading native trust bundle");
+            }
             Err(error) => result.pem_error(error, path),
         }
     }
@@ -135,15 +165,48 @@ fn checked_load(result: CertificateResult) -> Result<Vec<CertificateDer<'static>
         return Err(error.into());
     }
     for cert in &result.certs {
-        let (rest, _) =
-            x509_parser::parse_x509_certificate(cert).context("parse native trust certificate")?;
-        if !rest.is_empty() {
-            return Err(BoxError::from_static_str(
-                "unexpected trailing bytes in native trust certificate",
-            ));
-        }
+        validate_anchor(cert)?;
     }
     Ok(result.certs)
+}
+
+fn checked_system_load(
+    mut result: CertificateResult,
+) -> Result<Vec<CertificateDer<'static>>, BoxError> {
+    if let Some(index) = result.source_error {
+        return Err(result.errors.swap_remove(index).into());
+    }
+
+    let mut first_error = None;
+    for error in result.errors {
+        debug!(%error, "skipping invalid native trust entry");
+        first_error.get_or_insert_with(|| error.into());
+    }
+    result.certs.retain(|cert| match validate_anchor(cert) {
+        Ok(()) => true,
+        Err(error) => {
+            debug!(%error, "skipping invalid native trust certificate");
+            first_error.get_or_insert(error);
+            false
+        }
+    });
+    if result.certs.is_empty()
+        && let Some(error) = first_error
+    {
+        return Err(error);
+    }
+    Ok(result.certs)
+}
+
+fn validate_anchor(cert: &CertificateDer<'static>) -> Result<(), BoxError> {
+    let (rest, _) =
+        x509_parser::parse_x509_certificate(cert).context("parse native trust certificate")?;
+    if !rest.is_empty() {
+        return Err(BoxError::from_static_str(
+            "unexpected trailing bytes in native trust certificate",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(all(test, unix))]

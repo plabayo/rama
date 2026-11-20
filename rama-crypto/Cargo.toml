@@ -26,7 +26,6 @@ aws-lc = ["dep:aws-lc-rs", "rcgen/aws_lc_rs", "x509-parser/verify-aws"]
 ring = ["dep:ring", "rcgen/ring", "x509-parser/verify"]
 boring = ["dep:rama-boring"]
 native-certs = [
-    "dep:parking_lot",
     "dep:webpki-root-certs",
     "dep:security-framework",
     "dep:core-foundation",

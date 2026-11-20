@@ -24,7 +24,7 @@ pub(super) fn load_native_certs() -> CertificateResult {
             let store = match open(store_name) {
                 Ok(store) => store,
                 Err(err) => {
-                    result.os_error(err.into(), "failed to open windows certificate store");
+                    result.os_source_error(err.into(), "failed to open windows certificate store");
                     continue;
                 }
             };
