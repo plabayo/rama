@@ -12,6 +12,14 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(feature = "native-certs")]
+use super::{
+    IntoNativeTrustReloadTrigger,
+    native_trust::{NativeTrustReload, NativeTrustSnapshot},
+};
+#[cfg(feature = "native-certs")]
+use std::time::Duration;
+
 use super::{ClientHandshake, DynTlsServerCertChainPolicy, TlsSessionProfileScope};
 use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions};
 use rama_net::{
@@ -712,6 +720,7 @@ pub enum ServerTrustSource {
     /// `SSL_CERT_DIR`, which replace them. Bundled WebPKI roots are the
     /// fallback only without such an override. Roots in `SSL_CERT_EXTRA_FILE`
     /// and `SSL_CERT_EXTRA_DIR` are always added.
+    /// A native trust policy can opt into refreshing its snapshot.
     #[default]
     Native,
     /// Rama's bundled Mozilla (CCADB) roots, independent of the host OS.
@@ -753,6 +762,12 @@ pub enum ServerTrustSource {
 pub struct TlsServerTrust {
     source: ServerTrustSource,
     additional_anchors: Option<TlsServerTrustAnchors>,
+    #[cfg(feature = "native-certs")]
+    reload: Option<NativeTrustReload>,
+    #[cfg(feature = "native-certs")]
+    max_age: Option<Duration>,
+    #[cfg(feature = "native-certs")]
+    snapshot: Option<NativeTrustSnapshot>,
 }
 
 impl TlsServerTrust {
@@ -790,6 +805,12 @@ impl TlsServerTrust {
         Self {
             source,
             additional_anchors: None,
+            #[cfg(feature = "native-certs")]
+            reload: None,
+            #[cfg(feature = "native-certs")]
+            max_age: None,
+            #[cfg(feature = "native-certs")]
+            snapshot: None,
         }
     }
 
@@ -803,9 +824,129 @@ impl TlsServerTrust {
         self.additional_anchors.as_ref()
     }
 
+    #[cfg(feature = "native-certs")]
+    generate_set_and_with! {
+        /// Refresh native roots when the trigger fires. This also applies where
+        /// platform verification falls back to native roots.
+        ///
+        /// Pass a stream of unit events or a tuple of streams. A handshake
+        /// processes pending events and pins one trust generation.
+        ///
+        /// A failed refresh keeps the most recent successful snapshot until its
+        /// configured maximum age is reached. Established connections retain their original verification.
+        ///
+        /// Combine native store changes with a request from the application.
+        ///
+        /// ```
+        /// use rama_tls::client::{ChannelReloadTrigger, NativeTrustStoreChanges, TlsServerTrust};
+        ///
+        /// let (reload, channel) = ChannelReloadTrigger::new();
+        /// let trust = TlsServerTrust::native_roots()
+        ///     .with_reload_trigger((NativeTrustStoreChanges::default(), channel));
+        /// // Install trust on the client connector. A config update can then request a read.
+        /// reload.request_reload()?;
+        /// # drop(trust);
+        /// # Ok::<(), Box<dyn std::error::Error>>(())
+        /// ```
+        pub fn reload_trigger<T>(mut self, trigger: impl IntoNativeTrustReloadTrigger<T>) -> Self {
+            self.reload = Some(NativeTrustReload::new(Some(Box::pin(trigger.into_reload_stream()))));
+            self.snapshot = None;
+            self
+        }
+    }
+
+    #[cfg(feature = "native-certs")]
+    generate_set_and_with! {
+        /// Limit how long a handshake may rely on its native trust snapshot.
+        ///
+        /// At the age limit, a fresh read is required even if no trigger has fired.
+        /// If the read fails, the handshake fails. With a limit of zero, every
+        /// handshake requires a successful read.
+        pub fn max_age(mut self, max_age: Option<Duration>) -> Self {
+            self.max_age = max_age;
+            if max_age.is_some() && self.reload.is_none() {
+                self.reload = Some(NativeTrustReload::new(None));
+            } else if max_age.is_none() && self.reload.as_ref().is_some_and(|reload| !reload.has_trigger()) {
+                self.reload = None;
+            }
+            self.snapshot = None;
+            self
+        }
+    }
+
+    #[cfg(feature = "native-certs")]
+    /// Whether this policy will consult reloadable native roots at handshake start.
+    /// Includes the native fallback for a platform verifier unavailable on this target.
+    pub fn uses_reloadable_native_roots(&self) -> bool {
+        self.native_reload().is_some()
+    }
+
+    #[cfg(feature = "native-certs")]
+    /// Resolve this policy to one immutable snapshot for a new handshake.
+    /// Returns `None` when the current policy already has fixed roots or uses
+    /// another verifier. May block on filesystem or system store access.
+    /// Async connectors should use [`Self::pin_native_roots_async`].
+    pub fn pin_native_roots(&self) -> Result<Option<Self>, BoxError> {
+        let Some(reload) = self.native_reload() else {
+            return Ok(None);
+        };
+        let snapshot = reload.pin(self.max_age)?;
+        Ok(Some(self.with_native_snapshot(snapshot)))
+    }
+
+    #[cfg(feature = "native-certs")]
+    /// Resolve one snapshot for a new handshake on a Tokio runtime. Trust store
+    /// reads and waits for an expired snapshot run on a blocking worker.
+    /// Returns `None` under the same conditions as [`Self::pin_native_roots`].
+    pub async fn pin_native_roots_async(&self) -> Result<Option<Self>, BoxError> {
+        let Some(reload) = self.native_reload() else {
+            return Ok(None);
+        };
+        let snapshot = reload.pin_async(self.max_age).await?;
+        Ok(Some(self.with_native_snapshot(snapshot)))
+    }
+
+    #[cfg(feature = "native-certs")]
+    fn native_reload(&self) -> Option<&NativeTrustReload> {
+        // A live platform verifier owns its trust decisions. Only Native
+        // and the Platform fallback consult a Rama-owned snapshot.
+        match self.source {
+            ServerTrustSource::Native => self.reload.as_ref(),
+            ServerTrustSource::Platform
+                if !rama_crypto::platform_verifier::PlatformVerifier::IS_AVAILABLE =>
+            {
+                self.reload.as_ref()
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "native-certs")]
+    fn with_native_snapshot(&self, snapshot: NativeTrustSnapshot) -> Self {
+        Self {
+            source: self.source.clone(),
+            additional_anchors: self.additional_anchors.clone(),
+            reload: None,
+            max_age: self.max_age,
+            snapshot: Some(snapshot),
+        }
+    }
+
+    #[cfg(feature = "native-certs")]
+    /// Native roots selected by [`Self::pin_native_roots`] or [`Self::pin_native_roots_async`].
+    /// Includes environment-supplied extra roots. Consult [`Self::additional_anchors`]
+    /// for anchors supplied directly by the application.
+    pub fn pinned_native_roots(&self) -> Option<&[CertificateDer<'static>]> {
+        self.snapshot.as_ref().map(NativeTrustSnapshot::anchors)
+    }
+
     generate_set_and_with! {
         /// Set the source of trust while retaining additional anchors.
         pub fn source(mut self, source: ServerTrustSource) -> Self {
+            #[cfg(feature = "native-certs")]
+            if self.source != source {
+                self.snapshot = None;
+            }
             self.source = source;
             self
         }

@@ -114,7 +114,8 @@ pub(super) fn build_client_config(
                 );
                 ResolvedTrust::Roots(client_root_certs())
             } else {
-                resolve_trust(trust)?
+                let pinned_trust = value.pin_native_server_trust()?;
+                resolve_trust(pinned_trust.as_ref().unwrap_or(trust))?
             }
         }
         _ => ResolvedTrust::Roots(client_root_certs()),
@@ -296,12 +297,14 @@ fn cached_platform_verifier(
 }
 
 fn rustls_root_certs(trust: &TlsServerTrust) -> Result<Arc<RootCertStore>, BoxError> {
-    match (trust.source(), trust.additional_anchors()) {
-        (ServerTrustSource::Native | ServerTrustSource::Platform, None) => {
-            return Ok(client_root_certs());
+    if trust.pinned_native_roots().is_none() {
+        match (trust.source(), trust.additional_anchors()) {
+            (ServerTrustSource::Native | ServerTrustSource::Platform, None) => {
+                return Ok(client_root_certs());
+            }
+            (ServerTrustSource::WebPki, None) => return Ok(webpki_root_certs()),
+            _ => {}
         }
-        (ServerTrustSource::WebPki, None) => return Ok(webpki_root_certs()),
-        _ => {}
     }
 
     const MAX_CACHED_TRUST_POLICIES: u64 = 64;
@@ -324,7 +327,14 @@ fn rustls_root_certs(trust: &TlsServerTrust) -> Result<Arc<RootCertStore>, BoxEr
 fn build_rustls_root_certs(trust: &TlsServerTrust) -> Result<RootCertStore, BoxError> {
     let mut roots = match trust.source() {
         ServerTrustSource::Native | ServerTrustSource::Platform => {
-            client_root_certs().as_ref().clone()
+            match trust.pinned_native_roots() {
+                Some(anchors) => {
+                    let mut roots = RootCertStore::empty();
+                    roots.add_parsable_certificates(anchors.iter().cloned());
+                    roots
+                }
+                None => client_root_certs().as_ref().clone(),
+            }
         }
         ServerTrustSource::WebPki => webpki_root_certs().as_ref().clone(),
         ServerTrustSource::Custom(anchors) => {

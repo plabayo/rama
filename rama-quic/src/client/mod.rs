@@ -227,7 +227,7 @@ impl<E> QuicConnector<E> {
             .filter(|offer| !offer.0.is_empty())
     }
 
-    fn prepare(&self, input: &ConnectRequest) -> Result<Prepared, ConnectionError> {
+    async fn prepare(&self, input: &ConnectRequest) -> Result<Prepared, ConnectionError> {
         let profile = input.extensions().get_arc::<QuicProfile>();
         let tls = self.tls_config_for(input);
         let target = input.connector_target().ok_or_else(|| {
@@ -289,7 +289,8 @@ impl<E> QuicConnector<E> {
             && !input.extensions().contains::<ForbidEarlyData>();
         let mut config = self
             .tls_configs
-            .client_config_for_peer(&tls, input.extensions(), &server_identity)
+            .client_config_for_peer_async(tls, input.extensions(), &server_identity)
+            .await
             .map_err(|error| ConnectionError::local(error, InvalidInput))?;
         if let Some(profile) = &profile {
             config
@@ -584,7 +585,7 @@ where
     async fn establish(&self, input: &ConnectRequest) -> Result<Connection, ConnectionError> {
         let route = input.extensions().get_ref::<ProxyRoute>().cloned();
         let proxy = route.as_ref().and_then(ProxyRoute::proxy_address).cloned();
-        let prepared = self.prepare(input)?;
+        let prepared = self.prepare(input).await?;
         // Keep QUIC address-race and handshake state out of enclosing pool and
         // service-selection futures.
         let (connection, established) = match (&route, proxy) {

@@ -5,6 +5,7 @@ use rama_boring::{
 };
 use rama_core::bytes::Bytes;
 use rama_core::conversion::RamaFrom;
+use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, Extensions, FromExtensions};
 use rama_crypto::pki_types::CertificateDer;
 use rama_net::{
@@ -83,7 +84,50 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub max_version: Option<&'a BoringMaxVersion>,
 }
 
-impl BoringTlsConnectorConfig<'_> {
+impl<'config> BoringTlsConnectorConfig<'config> {
+    /// Pin the native trust generation if this backend will use reloaded roots.
+    pub(crate) fn pin_native_server_trust(&self) -> Result<Option<TlsServerTrust>, BoxError> {
+        match self.reloadable_native_trust() {
+            Some(trust) => trust.pin_native_roots(),
+            None => Ok(None),
+        }
+    }
+
+    /// Pin native trust before constructing the full configuration view.
+    pub(crate) async fn pin_native_server_trust_from_extensions(
+        extensions: &Extensions,
+    ) -> Result<Option<TlsServerTrust>, BoxError> {
+        let Some(trust) = extensions
+            .get_ref::<TlsServerTrust>()
+            .filter(|trust| trust.uses_reloadable_native_roots())
+        else {
+            return Ok(None);
+        };
+        if Self::uses_common_server_trust(
+            extensions.get_ref::<TlsServerVerify>(),
+            extensions.contains::<BoringServerVerifyCertStore>(),
+        ) {
+            trust.pin_native_roots_async().await
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// The native trust policy that should be resolved for a new handshake.
+    /// Returns `None` when verification is disabled, a backend-specific verifier
+    /// or root store takes precedence, or the selected roots are static.
+    fn reloadable_native_trust(&self) -> Option<&'config TlsServerTrust> {
+        if !Self::uses_common_server_trust(self.verify, self.verify_cert_store.is_some()) {
+            return None;
+        }
+        self.server_trust
+            .filter(|trust| trust.uses_reloadable_native_roots())
+    }
+
+    fn uses_common_server_trust(verify: Option<&TlsServerVerify>, custom_store: bool) -> bool {
+        !custom_store && verify.is_none_or(|verify| verify.0 != ServerVerifyMode::Disable)
+    }
+
     /// Compact identity of request-level overrides, or `None` for the baseline.
     ///
     /// Explicit defaults remain distinct from absence. Equivalent settings compare

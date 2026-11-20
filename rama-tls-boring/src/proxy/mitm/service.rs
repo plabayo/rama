@@ -1,12 +1,12 @@
 use crate::{
     TlsStream,
-    client::TlsConnectorData,
+    client::{BoringTlsConnectorConfig, TlsConnectorData},
     proxy::{TlsMitmRelay, TlsMitmRelayError},
 };
 use rama_core::{
     Service,
     error::{BoxError, ErrorExt},
-    extensions::{self, ExtensionsRef},
+    extensions::{self, Extensions, ExtensionsRef},
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
@@ -20,7 +20,6 @@ use rama_tls::{
 #[cfg(feature = "http")]
 use {
     crate::client::{AlpsCoupling, set_alpn_with_coupled_alps},
-    rama_core::extensions::Extensions,
     rama_net::http::{FallbackHttpVersion, TargetHttpVersion},
     rama_net::tls::ApplicationProtocol,
 };
@@ -139,16 +138,13 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
         Self { relay, inner }
     }
 
-    fn prepare_egress<Ingress, Egress>(
+    async fn prepare_egress(
         &self,
-        input: &BridgeIo<Ingress, Egress>,
+        flow_extensions: &Extensions,
         client_hello: Option<&ClientHello>,
-    ) -> Result<PreparedEgress, TlsMitmRelayError>
-    where
-        Ingress: extensions::ExtensionsRef,
-    {
+    ) -> Result<PreparedEgress, TlsMitmRelayError> {
         let maybe_sni = client_hello.and_then(ClientHello::ext_server_name).cloned();
-        let connector_target = connector_target(input);
+        let connector_target = connector_target(flow_extensions);
         let server_auth = self.relay.egress_server_auth_ref();
         let server_name =
             relay_server_name(maybe_sni.as_ref(), connector_target.as_ref(), server_auth);
@@ -161,8 +157,21 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
             server_auth,
         );
         #[cfg(feature = "http")]
-        apply_target_http_version(client_hello, input.extensions(), &config);
+        apply_target_http_version(client_hello, flow_extensions, &config);
         let effective_sni = config_sni(&config);
+        let config_error = |error: BoxError| {
+            TlsMitmRelayError::config(error.context("tls mitm relay: build egress connector data"))
+                .maybe_with_connector_target(connector_target.clone())
+                .maybe_with_sni(effective_sni.clone())
+        };
+        let pinned_trust = BoringTlsConnectorConfig::pin_native_server_trust_from_extensions(
+            config.as_extensions(),
+        )
+        .await
+        .map_err(config_error)?;
+        if let Some(trust) = &pinned_trust {
+            config.as_extensions().insert(trust.clone());
+        }
 
         let connector_data = match TlsConnectorData::try_from(&config) {
             Ok(data) => Ok(data),
@@ -182,18 +191,15 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
                     fallback.set_encrypted_client_hello(hello.has_encrypted_client_hello());
                 }
                 #[cfg(feature = "http")]
-                apply_target_http_version(client_hello, input.extensions(), &fallback);
+                apply_target_http_version(client_hello, flow_extensions, &fallback);
+                if let Some(trust) = pinned_trust {
+                    fallback.set_server_trust(trust);
+                }
                 TlsConnectorData::try_from(&fallback)
             }
             Err(error) => Err(error),
         }
-        .map_err(|error| {
-            TlsMitmRelayError::config(
-                error.context("tls mitm relay: build egress connector data"),
-            )
-            .maybe_with_connector_target(connector_target.clone())
-            .maybe_with_sni(effective_sni.clone())
-        })?;
+        .map_err(config_error)?;
 
         Ok(PreparedEgress {
             connector_data,
@@ -223,7 +229,9 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
             connector_data,
             connector_target,
             effective_sni,
-        } = self.prepare_egress(&input, client_hello)?;
+        } = self
+            .prepare_egress(input.extensions(), client_hello)
+            .await?;
 
         let tls_input = self
             .relay
@@ -340,7 +348,6 @@ mod tests {
     #[cfg(feature = "http")]
     use {
         crate::client::BoringAlps,
-        rama_core::extensions::Extensions,
         rama_net::http::{TargetHttpVersion, Version},
         rama_tls::server::peek_client_hello_from_input,
     };

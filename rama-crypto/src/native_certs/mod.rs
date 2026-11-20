@@ -55,6 +55,13 @@ mod macos;
 #[cfg(target_os = "macos")]
 use macos as platform;
 
+#[cfg(any(target_os = "macos", windows))]
+mod notifications;
+
+mod reload;
+#[doc(inline)]
+pub use reload::{NativeCertsChanges, load_reloadable_native_certs};
+
 /// Returns the cached, process-wide default trust anchors used by rama tls
 /// clients (both the `rustls` and `boring` backends consume these).
 ///
@@ -478,11 +485,11 @@ mod tests {
 
     /// A fresh directory under the system temp dir, removed on drop.
     #[cfg(unix)]
-    struct TestDir(PathBuf);
+    pub(super) struct TestDir(pub(super) PathBuf);
 
     #[cfg(unix)]
     impl TestDir {
-        fn new(name: &str) -> Self {
+        pub(super) fn new(name: &str) -> Self {
             let path = env::temp_dir().join(format!(
                 "rama-crypto-native-certs-{}-{name}",
                 std::process::id()

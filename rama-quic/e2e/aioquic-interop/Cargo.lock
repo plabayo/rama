@@ -1497,6 +1497,7 @@ dependencies = [
  "jni",
  "ndk-context",
  "openssl-probe",
+ "parking_lot 0.13.0",
  "rama-boring",
  "rama-core",
  "rama-net",
@@ -1829,6 +1830,7 @@ name = "rama-tls"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "arc-swap",
  "base64",
  "bytes",
  "flume",

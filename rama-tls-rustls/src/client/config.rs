@@ -47,7 +47,40 @@ pub struct RustlsTlsConnectorConfig<'a> {
     pub modify: Option<Arc<ModifyRustlsClientConfig>>,
 }
 
-impl RustlsTlsConnectorConfig<'_> {
+impl<'config> RustlsTlsConnectorConfig<'config> {
+    /// Pin the native trust generation if this backend will use reloaded roots.
+    pub(crate) fn pin_native_server_trust(&self) -> Result<Option<TlsServerTrust>, BoxError> {
+        match self.reloadable_native_trust() {
+            Some(trust) => trust.pin_native_roots(),
+            None => Ok(None),
+        }
+    }
+
+    /// Pin native trust roots with blocking I/O moved off the async runtime.
+    pub(crate) async fn pin_native_server_trust_async(
+        &self,
+    ) -> Result<Option<TlsServerTrust>, BoxError> {
+        match self.reloadable_native_trust() {
+            Some(trust) => trust.pin_native_roots_async().await,
+            None => Ok(None),
+        }
+    }
+
+    /// The native trust policy that should be resolved for a new handshake.
+    /// Returns `None` when verification is disabled, a backend-specific verifier
+    /// or root store takes precedence, or the selected roots are static.
+    fn reloadable_native_trust(&self) -> Option<&'config TlsServerTrust> {
+        if self.verifier.is_some()
+            || self
+                .verify
+                .is_some_and(|verify| verify.0 == rama_tls::client::ServerVerifyMode::Disable)
+        {
+            return None;
+        }
+        self.server_trust
+            .filter(|trust| trust.uses_reloadable_native_roots())
+    }
+
     /// Compact identity of request-level overrides, or `None` for the baseline.
     ///
     /// Explicit defaults remain distinct from absence. Equivalent settings compare
@@ -159,6 +192,9 @@ impl RustlsTlsConnectorConfig<'_> {
     }
 
     /// Build a native TLS client configuration using the supplied cryptographic provider.
+    ///
+    /// The resulting native config is pinned to the selected trust generation.
+    /// Use [`super::TlsConnector`] to apply reloadable policies on every connection.
     ///
     /// This does not read or install the process-wide default provider. Certificate
     /// verification uses the same provider. The modify hook runs last and may replace

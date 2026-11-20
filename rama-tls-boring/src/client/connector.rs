@@ -430,6 +430,7 @@ where
             .and_then(|tunnel| tunnel.application_protocol.as_ref());
         let connector_data = self
             .tunnel_connector_data(tunnel.as_ref(), tunnel_protocol, maybe_server_host)
+            .await
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(tunnel): build connector configuration")
@@ -518,37 +519,41 @@ impl<S, K> TlsConnector<S, K> {
     {
         let mut retry_config: Option<EchRetryConfig> = None;
         loop {
-            let authority = input.target_authority().ok_or_else(|| {
-                ConnectionError::local(
-                    BoxError::from_static_str("TLS origin authority missing"),
-                    ConnectionErrorKind::InvalidInput,
-                )
-            })?;
-            let mut data = self
-                .connector_data(
-                    input.extensions(),
-                    input.target_protocol(),
-                    Some(&authority.host),
-                )
-                .map_err(|error| {
-                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+            let (data, scope) = {
+                let authority = input.target_authority().ok_or_else(|| {
+                    ConnectionError::local(
+                        BoxError::from_static_str("TLS origin authority missing"),
+                        ConnectionErrorKind::InvalidInput,
+                    )
                 })?;
-            let effective = self.effective_extensions(input.extensions());
-            if let Some(target) = &target {
-                if let Some(retry) = &retry_config {
-                    retry.apply(&effective, target.clone());
-                }
-                data.configure_target_ech(&effective, target)
+                let mut data = self
+                    .connector_data(
+                        input.extensions(),
+                        input.target_protocol(),
+                        Some(&authority.host),
+                    )
+                    .await
                     .map_err(|error| {
                         ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     })?;
-            }
-            let scope = Self::check_connection_identity(
-                &input,
-                data.server_verify_mode,
-                data.server_name.as_ref(),
-                &authority.host,
-            )?;
+                if let Some(target) = &target {
+                    let effective = self.effective_extensions(input.extensions());
+                    if let Some(retry) = &retry_config {
+                        retry.apply(&effective, target.clone());
+                    }
+                    data.configure_target_ech(&effective, target)
+                        .map_err(|error| {
+                            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                        })?;
+                }
+                let scope = Self::check_connection_identity(
+                    &input,
+                    data.server_verify_mode,
+                    data.server_name.as_ref(),
+                    &authority.host,
+                )?;
+                (data, scope)
+            };
             let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
             match handshake(data, conn).await {
                 Ok((stream, negotiated_params)) => {
@@ -582,17 +587,24 @@ impl<S, K> TlsConnector<S, K> {
         }
     }
 
-    fn build_connector_data(
+    async fn build_connector_data(
         &self,
-        config: BoringTlsConnectorConfig<'_>,
+        extensions: &Extensions,
     ) -> Result<TlsConnectorData, BoxError> {
+        let pinned =
+            BoringTlsConnectorConfig::pin_native_server_trust_from_extensions(extensions).await?;
+        let config = BoringTlsConnectorConfig::from_extensions(extensions);
+        let config = BoringTlsConnectorConfig {
+            server_trust: pinned.as_ref().or(config.server_trust),
+            ..config
+        };
         match &self.sessions {
             Some(sessions) => sessions.connector_data(config),
             None => TlsConnectorData::try_from(config),
         }
     }
 
-    fn tunnel_connector_data(
+    async fn tunnel_connector_data(
         &self,
         tunnel: Option<&TlsTunnel>,
         application_protocol: Option<&Protocol>,
@@ -600,8 +612,7 @@ impl<S, K> TlsConnector<S, K> {
     ) -> Result<TlsConnectorData, BoxError> {
         let effective = self.tunnel_config_extensions(tunnel, application_protocol);
 
-        let config = BoringTlsConnectorConfig::from_extensions(&effective);
-        let mut data = self.build_connector_data(config)?;
+        let mut data = self.build_connector_data(&effective).await?;
         if data.server_name.is_none() {
             data.server_name = maybe_server_host.cloned();
         }
@@ -722,7 +733,7 @@ impl<S, K> TlsConnector<S, K> {
         Ok(scope)
     }
 
-    fn connector_data(
+    async fn connector_data(
         &self,
         request_extensions: &Extensions,
         application_protocol: Option<&Protocol>,
@@ -741,8 +752,7 @@ impl<S, K> TlsConnector<S, K> {
             request_extensions.get_ref::<TlsAlpn>(),
         )?;
 
-        let config = BoringTlsConnectorConfig::from_extensions(&extensions);
-        let mut data = self.build_connector_data(config)?;
+        let mut data = self.build_connector_data(&extensions).await?;
 
         // A configured server identity overrides the transport host.
         if data.server_name.is_none() {
@@ -1375,21 +1385,22 @@ mod tests {
         server_identity_for(&host).unwrap_err();
     }
 
-    #[test]
-    fn connector_data_keeps_transport_ip_as_server_identity() {
+    #[tokio::test]
+    async fn connector_data_keeps_transport_ip_as_server_identity() {
         let connector = TlsConnector::secure(());
         let extensions = Extensions::new();
         let host = Host::from(std::net::Ipv4Addr::LOCALHOST);
 
         let data = connector
             .connector_data(&extensions, None, Some(&host))
+            .await
             .expect("connector data");
 
         assert_eq!(data.server_name, Some(host));
     }
 
-    #[test]
-    fn request_ech_intent_overrides_the_connector_default() {
+    #[tokio::test]
+    async fn request_ech_intent_overrides_the_connector_default() {
         let shape = EchGrease::Shape {
             kdf_id: 1,
             aead_id: 3,
@@ -1409,6 +1420,7 @@ mod tests {
                 let data = TlsConnector::secure(())
                     .with_base_config(base)
                     .connector_data(request.as_extensions(), None, None)
+                    .await
                     .expect("connector data");
                 let outer = hello_from_data(data)
                     .extensions()
@@ -1691,8 +1703,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tunnel_config_uses_only_base_and_explicit_tunnel_policy() {
+    #[tokio::test]
+    async fn tunnel_config_uses_only_base_and_explicit_tunnel_policy() {
         use rama_tls::client::{TlsServerName, TlsServerVerify};
 
         let base_name = Host::from_static("proxy-cert.example");
@@ -1729,12 +1741,13 @@ mod tests {
 
         let data = connector
             .tunnel_connector_data(Some(&tunnel), Some(&Protocol::HTTPS), None)
+            .await
             .expect("tunnel connector data");
         assert_eq!(data.server_name, Some(base_name));
     }
 
-    #[test]
-    fn tunnel_config_isolates_all_origin_tls_extensions() {
+    #[tokio::test]
+    async fn tunnel_config_isolates_all_origin_tls_extensions() {
         use crate::client::BoringClientConfigExt as _;
         use rama_crypto::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
         use rama_tls::{
@@ -1819,6 +1832,7 @@ mod tests {
 
         let data = connector
             .tunnel_connector_data(tunnel, Some(&Protocol::HTTPS), None)
+            .await
             .expect("resolved tunnel connector data");
         assert_eq!(data.server_name, Some(base_name));
         assert_eq!(data.server_verify_mode, ServerVerifyMode::Disable);

@@ -84,6 +84,9 @@ pub struct TlsConnectorContext {
 }
 
 /// Configures a reusable client TLS context before it is shared.
+///
+/// Conversion from Rama policy pins its native roots for this context.
+/// Use [`super::TlsConnector`] to apply reloadable policies on every connection.
 pub struct TlsConnectorContextBuilder {
     pub config: SslConnectorBuilder,
     options: ConnectorOptions,
@@ -533,6 +536,11 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
     type Error = BoxError;
 
     fn try_from(value: BoringTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
+        let pinned = value.pin_native_server_trust()?;
+        let value = BoringTlsConnectorConfig {
+            server_trust: pinned.as_ref().or(value.server_trust),
+            ..value
+        };
         TlsConnectorContext {
             connector: shared_security_context(&value)?,
             options: ConnectorOptions::try_from(&value)?,
@@ -571,6 +579,11 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
     type Error = BoxError;
 
     fn try_from(value: BoringTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
+        let pinned = value.pin_native_server_trust()?;
+        let value = BoringTlsConnectorConfig {
+            server_trust: pinned.as_ref().or(value.server_trust),
+            ..value
+        };
         Ok(Self {
             config: security_context(&value)?,
             options: ConnectorOptions::try_from(&value)?,
@@ -1066,6 +1079,9 @@ fn resolve_server_trust_store(
             "boring connector: no platform certificate verifier on this platform: verifying against native roots"
         );
     }
+    if trust.pinned_native_roots().is_some() {
+        return cached_server_verify_store(trust).map(ResolvedServerTrustStore::Derived);
+    }
     match (trust.source(), trust.additional_anchors()) {
         (ServerTrustSource::Native | ServerTrustSource::Platform, None) => {
             Ok(ResolvedServerTrustStore::Default)
@@ -1129,12 +1145,18 @@ fn build_server_verify_store(trust: &TlsServerTrust) -> Result<X509Store, BoxErr
     let mut added = HashSet::new();
 
     match trust.source() {
-        ServerTrustSource::Native | ServerTrustSource::Platform => add_builtin_trust_anchors(
-            &mut builder,
-            &mut added,
-            &rama_crypto::native_certs::shared_native_trust_anchors(),
-            "native",
-        ),
+        ServerTrustSource::Native | ServerTrustSource::Platform => {
+            if let Some(anchors) = trust.pinned_native_roots() {
+                add_builtin_trust_anchors(&mut builder, &mut added, anchors, "native");
+            } else {
+                add_builtin_trust_anchors(
+                    &mut builder,
+                    &mut added,
+                    &rama_crypto::native_certs::shared_native_trust_anchors(),
+                    "native",
+                );
+            }
+        }
         ServerTrustSource::WebPki => add_builtin_trust_anchors(
             &mut builder,
             &mut added,
@@ -1149,7 +1171,7 @@ fn build_server_verify_store(trust: &TlsServerTrust) -> Result<X509Store, BoxErr
         add_configured_trust_anchors(&mut builder, &mut added, anchors)?;
     }
 
-    if added.is_empty() {
+    if added.is_empty() && trust.pinned_native_roots().is_none() {
         return Err(BoxError::from_static_str(
             "no server trust anchors could be added to the boring x509 verify store",
         ));

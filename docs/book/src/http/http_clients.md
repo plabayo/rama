@@ -211,9 +211,16 @@ settings have the same semantics with rustls and BoringSSL. Normal chain,
 validity, usage, and server-name checks remain enabled, and certificate pins can
 be required in addition.
 
-The native store is read once, as a snapshot. To let the operating system judge
-each chain instead, including enterprise trust settings, its distrust decisions
-and revocation, select its verifier. It is available on Apple platforms, Windows
+By default Rama reads the native roots once per process. Long-running clients
+can opt into reloads when an operator rotates a private CA or the system
+trust store changes. New handshakes pick up the
+updated roots while established connections keep serving traffic. See the
+[TLS trust overview](../tls.md#trust-and-verification), the
+[trust policy API](https://ramaproxy.org/docs/rama/tls/client/struct.TlsServerTrust.html#method.with_reload_trigger),
+and the [HTTP version proxy example](https://github.com/plabayo/rama/blob/main/examples/src/http_version_proxy.rs).
+
+To let the operating system judge each chain, including enterprise trust settings,
+distrust and revocation, select its verifier. It is available on Apple platforms, Windows
 and Android; elsewhere it verifies against the native roots. Additional anchors
 are trusted next to what the operating system trusts. Select it with
 `TlsClientConfig::with_platform_verifier`; it composes with

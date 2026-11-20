@@ -53,6 +53,16 @@ pub use ech::{
     target_ech_required,
 };
 
+#[cfg(feature = "native-certs")]
+mod native_trust;
+#[cfg(all(feature = "native-certs", unix))]
+pub use native_trust::UnixSignalTrigger;
+#[cfg(feature = "native-certs")]
+pub use native_trust::{
+    ChannelReloadClosed, ChannelReloadSender, ChannelReloadTrigger, IntoNativeTrustReloadTrigger,
+    NativeTrustRefreshError, NativeTrustStoreChanges,
+};
+
 mod config;
 #[cfg(feature = "http")]
 mod http;

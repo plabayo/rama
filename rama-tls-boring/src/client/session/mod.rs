@@ -406,9 +406,14 @@ impl ConnectorSessions {
     /// an isolated native context and session domain.
     pub(super) fn connector_data<'a>(
         &'a self,
-        mut config: BoringTlsConnectorConfig<'a>,
+        config: BoringTlsConnectorConfig<'a>,
     ) -> Result<TlsConnectorData, BoxError> {
-        config.session_domain = Some(&self.domain);
+        let pinned = config.pin_native_server_trust()?;
+        let mut config = BoringTlsConnectorConfig {
+            server_trust: pinned.as_ref().or(config.server_trust),
+            session_domain: Some(&self.domain),
+            ..config
+        };
         let scope = config.context_scope();
         if scope.as_ref().is_some_and(|id| !id.is_reusable()) {
             config.session_domain = None;

@@ -242,6 +242,7 @@ where
 
         let connector_data = self
             .connector_data(input.extensions(), app_protocol)
+            .await
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(auto): build connector configuration")
@@ -327,6 +328,7 @@ where
         let app_protocol = input.target_protocol();
         let connector_data = self
             .connector_data(input.extensions(), app_protocol)
+            .await
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(secure): build connector configuration")
@@ -408,6 +410,7 @@ where
             .and_then(|tunnel| tunnel.application_protocol.as_ref());
         let connector_data = self
             .tunnel_connector_data(tunnel.as_ref(), tunnel_protocol)
+            .await
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(tunnel): build connector configuration")
@@ -433,7 +436,7 @@ where
 }
 
 impl<S, K> TlsConnector<S, K> {
-    fn tunnel_connector_data(
+    async fn tunnel_connector_data(
         &self,
         tunnel: Option<&TlsTunnel>,
         application_protocol: Option<&Protocol>,
@@ -441,7 +444,11 @@ impl<S, K> TlsConnector<S, K> {
         let effective = self.tunnel_config_extensions(tunnel, application_protocol);
 
         let config = RustlsTlsConnectorConfig::from_extensions(&effective);
-        TlsConnectorData::try_from(config)
+        let pinned = config.pin_native_server_trust_async().await?;
+        TlsConnectorData::try_from(RustlsTlsConnectorConfig {
+            server_trust: pinned.as_ref().or(config.server_trust),
+            ..config
+        })
     }
 
     /// Request extensions resolved over the connector base, local to the caller.
@@ -547,7 +554,7 @@ impl<S, K> TlsConnector<S, K> {
         Ok(scope)
     }
 
-    fn connector_data(
+    async fn connector_data(
         &self,
         request_extensions: &Extensions,
         application_protocol: Option<&Protocol>,
@@ -566,7 +573,11 @@ impl<S, K> TlsConnector<S, K> {
         )?;
 
         let config = RustlsTlsConnectorConfig::from_extensions(&extensions);
-        TlsConnectorData::try_from(config)
+        let pinned = config.pin_native_server_trust_async().await?;
+        TlsConnectorData::try_from(RustlsTlsConnectorConfig {
+            server_trust: pinned.as_ref().or(config.server_trust),
+            ..config
+        })
     }
 
     async fn handshake<T>(
@@ -1174,8 +1185,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tunnel_config_isolates_all_origin_tls_extensions() {
+    #[tokio::test]
+    async fn tunnel_config_isolates_all_origin_tls_extensions() {
         use crate::client::{ModifyRustlsClientConfig, RustlsClientConfigExt as _};
         use rama_crypto::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
         use rama_tls::{
@@ -1271,6 +1282,7 @@ mod tests {
 
         let data = connector
             .tunnel_connector_data(tunnel, Some(&Protocol::HTTPS))
+            .await
             .expect("resolved tunnel connector data");
         assert!(base_modifier_used.load(Ordering::SeqCst));
         assert_eq!(data.server_name, Some(base_name));

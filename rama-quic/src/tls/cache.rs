@@ -17,9 +17,18 @@ use super::{
 };
 use crate::ClientConfig;
 #[cfg(feature = "boring")]
+use rama_tls_boring::client::{
+    BoringExtensionOrder, BoringServerVerifyCertStore, BoringTlsConnectorConfig,
+};
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use rama_tls_rustls::client::{RustlsServerCertVerifier, RustlsTlsConnectorConfig};
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 use {
-    super::BoringTlsProvider, rama_tls::client::TlsClientConfigProvider as _,
-    rama_tls_boring::client::BoringExtensionOrder,
+    rama_net::client::pool::ReuseKey,
+    rama_tls::client::{ServerVerifyMode, TlsServerTrust, TlsServerVerify},
 };
 
 // Keep native override configurations bounded alongside the protected default context.
@@ -37,7 +46,8 @@ const MAX_CACHED_OVERRIDES: usize = 64;
 ///
 /// This does not pool connections or apply request overrides. Supply the final
 /// TLS configuration to [`Self::client_config`], then customize transport settings
-/// on the returned [`ClientConfig`] as needed; each result is an independent clone
+/// on the returned [`ClientConfig`] as needed. For reloadable trust, obtain a new
+/// result for each connection. Each result is an independent clone
 /// sharing the native TLS configuration and its session state. Providers can also
 /// share a bounded, policy-keyed ticket store across sibling native configurations.
 /// Fresh client policies still cache native configurations, but skip provider
@@ -81,7 +91,7 @@ impl ClientConfigCache {
             .map_or(options, |policy| options.with_alpn(*policy));
 
         #[cfg(feature = "boring")]
-        if self.provider.pool_classifier() == BoringTlsProvider::new().pool_classifier() {
+        if self.provider.pool_classifier() == ReuseKey::of::<BoringTlsConnectorConfig>() {
             if config.as_extensions().contains::<BoringExtensionOrder>() {
                 return options.with_early_data(false);
             }
@@ -118,6 +128,38 @@ impl ClientConfigCache {
     /// The provider used both to classify policies and to construct configurations.
     pub fn provider(&self) -> &Arc<dyn QuicClientConfigProvider> {
         &self.provider
+    }
+
+    #[cfg(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    ))]
+    fn reloadable_native_trust<'a>(
+        &self,
+        extensions: &'a Extensions,
+    ) -> Option<&'a TlsServerTrust> {
+        let trust = extensions
+            .get_ref::<TlsServerTrust>()
+            .filter(|trust| trust.uses_reloadable_native_roots())?;
+        if extensions
+            .get_ref::<TlsServerVerify>()
+            .is_some_and(|verify| verify.0 == ServerVerifyMode::Disable)
+        {
+            return None;
+        }
+
+        // Built-in TLS classifiers identify the native extensions in use.
+        // Leave the policy as supplied for other provider classifiers.
+        let classifier = self.provider.pool_classifier();
+        #[cfg(feature = "boring")]
+        if classifier == ReuseKey::of::<BoringTlsConnectorConfig>() {
+            return (!extensions.contains::<BoringServerVerifyCertStore>()).then_some(trust);
+        }
+        #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+        if classifier == ReuseKey::of::<RustlsTlsConnectorConfig>() {
+            return (!extensions.contains::<RustlsServerCertVerifier>()).then_some(trust);
+        }
+        None
     }
 
     /// Prepare a peer-bound handshake with this connector's ticket domain and
@@ -232,11 +274,49 @@ impl ClientConfigCache {
         self.cached_client_config(config, overrides)
     }
 
+    pub(crate) async fn client_config_for_peer_async(
+        &self,
+        config: TlsClientConfig,
+        overrides: &Extensions,
+        peer: &Host,
+    ) -> Result<ClientConfig, TlsConfigError> {
+        #[cfg(any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        ))]
+        if let Some(trust) = self.reloadable_native_trust(config.as_extensions())
+            && let Some(pinned) = trust.pin_native_roots_async().await?
+        {
+            config.as_extensions().insert(pinned);
+        }
+
+        self.client_config_for_peer(&config, overrides, peer)
+    }
+
     fn cached_client_config(
         &self,
         config: &TlsClientConfig,
         overrides: &Extensions,
     ) -> Result<ClientConfig, TlsConfigError> {
+        // Classify and build from the same snapshot, even if trust rotates during
+        // a cache miss. Async connectors have already pinned their configuration.
+        #[cfg(any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        ))]
+        let pinned;
+        #[cfg(any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        ))]
+        let config = if let Some(trust) = self.reloadable_native_trust(config.as_extensions())
+            && let Some(trust) = trust.pin_native_roots()?
+        {
+            pinned = config.clone().with_server_trust(trust);
+            &pinned
+        } else {
+            config
+        };
         let request_policy = self.provider.pool_id(overrides);
         let effective_policy = self.provider.pool_id(config.as_extensions());
         if request_policy.as_ref().is_some_and(|id| !id.is_reusable()) {
@@ -472,6 +552,33 @@ mod tests {
     fn named(index: usize) -> TlsClientConfig {
         TlsClientConfig::new()
             .with_server_name(Host::try_from(format!("host-{index}.example")).unwrap())
+    }
+
+    #[cfg(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    ))]
+    #[tokio::test]
+    async fn a_custom_provider_does_not_poll_common_trust_reload() {
+        use rama_core::futures::stream;
+
+        let provider = Arc::new(TestProvider::default());
+        let cache = ClientConfigCache::new(provider.clone(), TlsOptions::default());
+        let config =
+            named(0).with_server_trust(TlsServerTrust::native_roots().with_reload_trigger(
+                stream::poll_fn(|_| panic!("custom provider must own its trust policy")),
+            ));
+        let peer = Host::from_static("host-0.example");
+        let overrides = Extensions::new();
+        let first = cache
+            .client_config_for_peer(&config, &overrides, &peer)
+            .unwrap();
+        let second = cache
+            .client_config_for_peer_async(config, &overrides, &peer)
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&first.crypto, &second.crypto));
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -765,6 +872,8 @@ mod tests {
     #[cfg(feature = "boring")]
     #[test]
     fn early_options_are_explicit_and_pinned_client_hello_shapes_win() {
+        use crate::tls::BoringTlsProvider;
+
         let tls = TlsClientConfig::new();
         let ordinary =
             ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default());

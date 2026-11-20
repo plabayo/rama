@@ -47,7 +47,7 @@ rama-boring-tokio = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-crypto = { workspace = true, features = ["native-certs", "boring"] }
 rama-net = { workspace = true, features = ["std"] }
-rama-tls = { workspace = true }
+rama-tls = { workspace = true, features = ["native-certs"] }
 rama-ua = { workspace = true, optional = true, features = ["tls"] }
 rama-utils = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["derive"] }

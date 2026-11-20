@@ -399,6 +399,7 @@ mod tests {
 
     use rama_core::error::{BoxError, BoxErrorExt as _};
     use rama_net::tls::ApplicationProtocol;
+    use rama_tls::client::TlsServerTrust;
     use rama_tls_boring::client::BoringGrease;
     use rama_tls_rustls::client::ModifyRustlsClientConfig;
 
@@ -443,6 +444,108 @@ mod tests {
         boring
             .client_config(&config, TlsOptions::default())
             .unwrap();
+    }
+
+    #[test]
+    fn native_reload_rotates_cached_quic_configs() {
+        use rama_crypto::{native_certs::bundled_root_certs, pem::PemEncode as _};
+        use rama_tls::client::ChannelReloadTrigger;
+        use std::{env, fs, path::PathBuf, process::Command};
+
+        // Give the test its own SSL_CERT_FILE without mutating the test runner's environment.
+        const CHILD: &str = "RAMA_TEST_QUIC_NATIVE_RELOAD";
+        let Some(dir) = env::var_os(CHILD) else {
+            let dir = rama_utils::fs::TempDir::new_sync().unwrap();
+            let status = Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tls::factory::tests::native_reload_rotates_cached_quic_configs",
+                    "--nocapture",
+                ])
+                .env(CHILD, dir.path())
+                .env("SSL_CERT_FILE", dir.path().join("roots.pem"))
+                .env_remove("SSL_CERT_DIR")
+                .env_remove("SSL_CERT_EXTRA_FILE")
+                .env_remove("SSL_CERT_EXTRA_DIR")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        };
+
+        let bundle = PathBuf::from(dir).join("roots.pem");
+        assert_eq!(
+            env::var_os("SSL_CERT_FILE").as_deref(),
+            Some(bundle.as_os_str())
+        );
+        let roots = bundled_root_certs();
+        fs::write(&bundle, roots[0].to_pem()).unwrap();
+        let (sender, trigger) = ChannelReloadTrigger::new();
+        let config = TlsClientConfig::new()
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
+            .with_server_trust(TlsServerTrust::native_roots().with_reload_trigger(trigger));
+        let caches = [
+            ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default()),
+            ClientConfigCache::new(
+                Arc::new(RustlsTlsProvider::new(rustls_crypto::configured_provider())),
+                TlsOptions::default(),
+            ),
+        ];
+        let request = Extensions::new();
+        let initial = caches
+            .each_ref()
+            .map(|cache| cache.client_config(&config, &request).unwrap());
+        for (cache, old) in caches.iter().zip(&initial) {
+            let repeated = cache.client_config(&config, &request).unwrap();
+            assert!(Arc::ptr_eq(&old.crypto, &repeated.crypto));
+        }
+
+        fs::write(&bundle, roots[1].to_pem()).unwrap();
+        sender.request_reload().unwrap();
+        for (cache, old) in caches.iter().zip(&initial) {
+            let current = cache.client_config(&config, &request).unwrap();
+            assert!(!Arc::ptr_eq(&old.crypto, &current.crypto));
+            let repeated = cache.client_config(&config, &request).unwrap();
+            assert!(Arc::ptr_eq(&current.crypto, &repeated.crypto));
+        }
+    }
+
+    #[tokio::test]
+    async fn native_verifier_overrides_skip_common_trust_reload() {
+        use rama_core::futures::stream;
+        use rama_tls_boring::core::x509::store::X509StoreBuilder;
+        use rama_tls_rustls::{client::RustlsClientConfigExt as _, verify::NoServerCertVerifier};
+
+        let configs = [
+            ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default()),
+            ClientConfigCache::new(
+                Arc::new(RustlsTlsProvider::new(rustls_crypto::configured_provider())),
+                TlsOptions::default(),
+            ),
+        ];
+        let policy = TlsServerTrust::native_roots().with_reload_trigger(stream::poll_fn(|_| {
+            panic!("native verifier overrides should bypass common trust")
+        }));
+        let base = || {
+            TlsClientConfig::new()
+                .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
+                .with_server_trust(policy.clone())
+        };
+        let overrides = [
+            base()
+                .with_server_verify_cert_store(Arc::new(X509StoreBuilder::new().unwrap().build())),
+            base().with_cert_verifier(Arc::new(NoServerCertVerifier::new())),
+        ];
+        let request = Extensions::new();
+        let peer = Host::from_static("example.test");
+        for (cache, override_config) in configs.iter().zip(overrides) {
+            let first = cache.client_config(&override_config, &request).unwrap();
+            let next = cache
+                .client_config_for_peer_async(override_config, &request, &peer)
+                .await
+                .unwrap();
+            assert!(Arc::ptr_eq(&first.crypto, &next.crypto));
+        }
     }
 
     #[test]
