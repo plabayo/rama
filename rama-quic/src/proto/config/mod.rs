@@ -833,7 +833,7 @@ impl Default for ValidationTokenConfig {
     fn default() -> Self {
         let log = Arc::new(BloomTokenLog::default());
         Self {
-            lifetime: Duration::from_secs(2 * 7 * 24 * 60 * 60),
+            lifetime: Duration::from_hours(2 * 7 * 24),
             log,
             sent: 2,
         }

@@ -224,7 +224,7 @@ mod tests {
         );
 
         // A span longer than a u64 of nanoseconds: 600 years is about 1.9e19 ns.
-        let ancient = Duration::from_secs(600 * 365 * 24 * 60 * 60);
+        let ancient = Duration::from_hours(600 * 365 * 24);
         assert!(ancient.as_nanos() > u128::from(u64::MAX));
         assert_eq!(
             BandwidthEstimation::bw_from_delta(u64::MAX, ancient),

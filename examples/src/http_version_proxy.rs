@@ -444,7 +444,7 @@ async fn main() -> Result<(), BoxError> {
                 tls.set_server_trust(
                     TlsServerTrust::native_roots()
                         .with_reload_trigger(NativeTrustStoreChanges::default())
-                        .with_max_age(Duration::from_secs(60 * 60)),
+                        .with_max_age(Duration::from_hours(1)),
                 );
             }
 
