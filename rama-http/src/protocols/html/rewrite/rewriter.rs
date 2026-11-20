@@ -10,8 +10,8 @@ use super::tree::Origin;
 use super::{Pushed, ScopeMode, SelectorMatcher};
 use crate::protocols::html::selector::Selector;
 use crate::protocols::html::tokenizer::{
-    Cdata, Comment, ContextTracker, Doctype, EndTag, HtmlTag, LocalNameHash, ParseSink,
-    ParsingAmbiguityError, Span, StartTag, Stopped, Text, TextMode, Tokenizer, TokenizerError,
+    Cdata, Comment, ContextTracker, Doctype, EndTag, Halt, HtmlTag, LocalNameHash, ParseSink, Span,
+    StartTag, Stopped, Text, TextMode, Tokenizer, TokenizerError,
 };
 
 /// The UTF-8 byte order mark: browsers strip it while decoding, before any
@@ -81,22 +81,23 @@ impl<H: ElementContentHandler> ParseSink for RewriteSink<H> {
         }
     }
 
-    fn start_tag(&mut self, tag: &StartTag<'_>) -> Result<(), ParsingAmbiguityError> {
+    fn start_tag(&mut self, tag: &StartTag<'_>, limit: usize) -> Result<(), Halt> {
         if !self.browser() {
-            self.context.on_start_tag(tag)?;
+            self.context.on_start_tag(tag, limit)?;
         }
         self.handle_start_tag(tag);
         Ok(())
     }
 
     fn end_tag(&mut self, tag: &EndTag<'_>, closes_text: bool) {
-        if !self.browser() && !closes_text {
-            self.context.on_end_tag(tag);
+        if !self.browser() {
+            self.context.on_end_tag(tag, closes_text);
         }
         self.handle_end_tag(tag);
     }
 
     fn text(&mut self, text: &Text<'_>) {
+        self.context.on_text(text.raw());
         let (input, raw) = (text.input, text.raw);
         if self.error.is_some() {
             self.pass(input, raw);

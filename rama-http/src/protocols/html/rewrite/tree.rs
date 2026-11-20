@@ -877,6 +877,53 @@ pub(super) struct OpenElements {
     type_model: (Vec<HashMap<NameId, u32>>, Option<HashMap<NameId, u32>>),
 }
 
+/// Tokenization outside browser-mode rewriting needs tree construction only while a
+/// foreign element is open. Keep that state lazy for ordinary HTML.
+#[derive(Debug)]
+pub(in crate::protocols::html) struct ForeignContext(OpenElements);
+
+impl ForeignContext {
+    pub(in crate::protocols::html) fn new() -> Self {
+        Self(OpenElements::new())
+    }
+
+    pub(in crate::protocols::html) fn start(&mut self, tag: &StartTag<'_>) {
+        let plan = self.0.start_tag(tag);
+        if let Placement::Open(slot, element) = plan.placement {
+            let positions = self.0.place(slot, plan.name);
+            self.0.push(plan.name, element, positions);
+        }
+    }
+
+    pub(in crate::protocols::html) fn end(&mut self, tag: &EndTag<'_>) {
+        self.0.end_tag(tag);
+    }
+
+    pub(in crate::protocols::html) fn text(&mut self, raw: &[u8]) {
+        self.0.text(raw);
+    }
+
+    pub(in crate::protocols::html) fn is_finished(&self) -> bool {
+        self.0.foreign_top.is_empty()
+    }
+
+    pub(in crate::protocols::html) fn frame_bytes(&self) -> usize {
+        self.0.depth().saturating_mul(size_of::<Frame>())
+    }
+
+    pub(in crate::protocols::html) fn cdata_allowed(&self) -> bool {
+        self.0.cdata_allowed()
+    }
+
+    pub(in crate::protocols::html) fn text_mode(
+        &mut self,
+        hash: LocalNameHash,
+        name: &[u8],
+    ) -> Option<TextMode> {
+        self.0.text_mode(hash, name)
+    }
+}
+
 impl OpenElements {
     pub(super) fn new() -> Self {
         let keys = RandomState::new();

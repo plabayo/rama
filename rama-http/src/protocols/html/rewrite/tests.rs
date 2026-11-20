@@ -521,7 +521,10 @@ fn rewriting_time_is_linear_in_the_input() {
             el.append("!");
             Ok(())
         });
-        let mut rewriter = HtmlRewriter::from_handlers(handlers).with_scope_mode(mode);
+        // Measure every token even in the deepest foreign-content fixture.
+        let mut rewriter = HtmlRewriter::from_handlers(handlers)
+            .with_scope_mode(mode)
+            .with_max_buffered_bytes(rama_utils::octets::mib(32));
         rewriter.write(input).unwrap();
         rewriter.end().unwrap();
         assert!(!rewriter.take_output().is_empty());

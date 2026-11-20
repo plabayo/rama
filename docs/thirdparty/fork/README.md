@@ -157,7 +157,7 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/JonahLund/vy/blob/1280174f54774c24fa478475af17fd7f5814c91a/LICENSE>
     - Type: MIT
     - Copy: [./licenses/vy](./licenses/vy)
-- <https://github.com/cloudflare/lol-html/tree/1d5ee9e88f235cdab283ba0f0efd0561497d4d56>
+- <https://github.com/cloudflare/lol-html/tree/688644c3a38bf3a75ee0414860918c861938a363>
   - Forked into private modules under
     [`rama-http/src/protocols/html`](https://github.com/plabayo/rama/tree/main/rama-http/src/protocols/html)
     as the foundation for rama's native streaming HTML parsing and
@@ -173,11 +173,12 @@ not be kept in sync with upstream — they are now part of `rama`.
       for streaming responses, and rama's error and string utilities.
     - Fewer dependencies: the CSS selector parser is hand-rolled for the
       streaming-safe subset, dropping `cssparser` and Servo's `selectors`.
-  - Not taken over: lol-html's memory budget (`MemorySettings`). Instead rama's tokenizer
-    caps the bytes it buffers for one incomplete construct (4 MiB by default, set with
-    `max_buffered_bytes` on the tokenizer or rewriter); this is not a limit on the whole heap.
+  - Rama's `max_buffered_bytes` bounds each buffered construct (4 MiB by default).
+    Standalone tokenization and nearest-match rewriting also apply that budget independently
+    to open-element frames while tracking SVG and MathML. Browser-mode rewriting already
+    uses its selector tree for namespace decisions.
   - License:
-    - Original: <https://github.com/cloudflare/lol-html/blob/1d5ee9e88f235cdab283ba0f0efd0561497d4d56/LICENSE>
+    - Original: <https://github.com/cloudflare/lol-html/blob/688644c3a38bf3a75ee0414860918c861938a363/LICENSE>
     - Type: BSD-3-Clause
     - Copy: [./licenses/lol-html](./licenses/lol-html)
 - <https://github.com/jprendes/trapeze/tree/f0dfea7f49d133e10a2a0027de53ed931ba3d47f>
