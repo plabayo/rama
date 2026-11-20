@@ -56,12 +56,12 @@ as a distant relative.
     - Original: <https://github.com/hyperium/http-body/blob/1fcaaff2e2cb3bc2083b8b32a9001ca1c39b91e2/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body](./licenses/http-body)
-- http-body-util: <https://github.com/hyperium/http-body/tree/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c>
+- http-body-util: <https://github.com/hyperium/http-body/tree/1fcaaff2e2cb3bc2083b8b32a9001ca1c39b91e2>
   - forked into `rama-http-types` (`http_body_util`) alongside the forked `http-body`
   - `Chain` keeps a `BoxError` error so it can join bodies with unrelated error types,
     and `SizeHint` addition saturates instead of overflowing
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/1fcaaff2e2cb3bc2083b8b32a9001ca1c39b91e2/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body-util](./licenses/http-body-util)
 
