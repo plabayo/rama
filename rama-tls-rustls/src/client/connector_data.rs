@@ -261,7 +261,7 @@ enum ResolvedTrust {
 }
 
 fn resolve_trust(trust: &TlsServerTrust) -> Result<ResolvedTrust, BoxError> {
-    if *trust.source() == ServerTrustSource::Platform {
+    if matches!(trust.source(), ServerTrustSource::Platform(_)) {
         if PlatformVerifier::IS_AVAILABLE {
             return cached_platform_verifier(trust.additional_anchors())
                 .map(ResolvedTrust::Platform);
@@ -299,7 +299,7 @@ fn cached_platform_verifier(
 fn rustls_root_certs(trust: &TlsServerTrust) -> Result<Arc<RootCertStore>, BoxError> {
     if trust.pinned_native_roots().is_none() {
         match (trust.source(), trust.additional_anchors()) {
-            (ServerTrustSource::Native | ServerTrustSource::Platform, None) => {
+            (ServerTrustSource::Native(_) | ServerTrustSource::Platform(_), None) => {
                 return Ok(client_root_certs());
             }
             (ServerTrustSource::WebPki, None) => return Ok(webpki_root_certs()),
@@ -326,7 +326,7 @@ fn rustls_root_certs(trust: &TlsServerTrust) -> Result<Arc<RootCertStore>, BoxEr
 
 fn build_rustls_root_certs(trust: &TlsServerTrust) -> Result<RootCertStore, BoxError> {
     let mut roots = match trust.source() {
-        ServerTrustSource::Native | ServerTrustSource::Platform => {
+        ServerTrustSource::Native(_) | ServerTrustSource::Platform(_) => {
             match trust.pinned_native_roots() {
                 Some(anchors) => {
                     let mut roots = RootCertStore::empty();

@@ -1,38 +1,36 @@
 use std::time::Duration;
 
 use rama_core::error::BoxError;
-use rama_crypto::{pki_types::CertificateDer, platform_verifier::PlatformVerifier};
+use rama_crypto::pki_types::CertificateDer;
 use rama_utils::macros::generate_set_and_with;
 
-use super::{ConfiguredServerTrustSource, ServerTrustSource, TlsServerTrust};
+#[cfg(not(any(target_vendor = "apple", windows, target_os = "android")))]
+use super::PlatformTrustPolicy;
+use super::{NativeTrustPolicy, ServerTrustSource, TlsServerTrust};
 use crate::client::{
     IntoNativeTrustReloadTrigger,
     native_trust::{NativeTrustReload, NativeTrustSnapshot},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct NativeTrustPolicy {
+pub(super) struct NativeTrustState {
     reload: Option<NativeTrustReload>,
     max_age: Option<Duration>,
     snapshot: Option<NativeTrustSnapshot>,
 }
 
-impl NativeTrustPolicy {
-    pub(super) const EMPTY: Self = Self {
+impl NativeTrustState {
+    pub(super) const STATIC: Self = Self {
         reload: None,
         max_age: None,
         snapshot: None,
     };
 
-    pub(super) fn clear_snapshot(&mut self) {
-        self.snapshot = None;
-    }
-
     fn set_trigger<T>(&mut self, trigger: impl IntoNativeTrustReloadTrigger<T>) {
         self.reload = Some(NativeTrustReload::new(Some(Box::pin(
             trigger.into_reload_stream(),
         ))));
-        self.clear_snapshot();
+        self.snapshot = None;
     }
 
     fn set_max_age(&mut self, max_age: Option<Duration>) {
@@ -47,54 +45,87 @@ impl NativeTrustPolicy {
         {
             self.reload = None;
         }
-        self.clear_snapshot();
-    }
-}
-
-impl ConfiguredServerTrustSource {
-    fn native_reload(&self) -> Option<&NativeTrustReload> {
-        // Only Native and the Platform fallback consult a Rama-owned snapshot.
-        match self.kind {
-            ServerTrustSource::Native => self.native.reload.as_ref(),
-            ServerTrustSource::Platform if !PlatformVerifier::IS_AVAILABLE => {
-                self.native.reload.as_ref()
-            }
-            _ => None,
-        }
+        self.snapshot = None;
     }
 
     fn pin_native_roots(&self) -> Result<Option<Self>, BoxError> {
-        let Some(reload) = self.native_reload() else {
+        let Some(reload) = self.reload.as_ref() else {
             return Ok(None);
         };
-        let snapshot = reload.pin(self.native.max_age)?;
+        let snapshot = reload.pin(self.max_age)?;
         Ok(Some(self.with_native_snapshot(snapshot)))
     }
 
     async fn pin_native_roots_async(&self) -> Result<Option<Self>, BoxError> {
-        let Some(reload) = self.native_reload() else {
+        let Some(reload) = self.reload.as_ref() else {
             return Ok(None);
         };
-        let snapshot = reload.pin_async(self.native.max_age).await?;
+        let snapshot = reload.pin_async(self.max_age).await?;
         Ok(Some(self.with_native_snapshot(snapshot)))
     }
 
     fn with_native_snapshot(&self, snapshot: NativeTrustSnapshot) -> Self {
         Self {
-            kind: self.kind.clone(),
-            native: NativeTrustPolicy {
-                reload: None,
-                max_age: self.native.max_age,
-                snapshot: Some(snapshot),
-            },
+            snapshot: Some(snapshot),
+            max_age: self.max_age,
+            reload: None,
+        }
+    }
+}
+
+impl NativeTrustPolicy {
+    generate_set_and_with! {
+        /// Refresh native roots when the trigger fires.
+        ///
+        /// Pass a stream of unit events or a tuple of streams. A handshake
+        /// processes pending events and pins one trust generation.
+        pub fn reload_trigger<T>(mut self, trigger: impl IntoNativeTrustReloadTrigger<T>) -> Self {
+            self.state.set_trigger(trigger);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Limit how long a handshake may rely on its native trust snapshot.
+        ///
+        /// At the age limit, a fresh read is required even if no trigger has fired.
+        /// If the read fails, the handshake fails. A limit of zero requires a
+        /// successful read for every handshake.
+        pub fn max_age(mut self, max_age: Option<Duration>) -> Self {
+            self.state.set_max_age(max_age);
+            self
+        }
+    }
+}
+
+impl ServerTrustSource {
+    fn native_policy_mut(&mut self) -> Option<&mut NativeTrustPolicy> {
+        match self {
+            Self::Native(policy) => Some(policy),
+            #[cfg(not(any(target_vendor = "apple", windows, target_os = "android")))]
+            Self::Platform(policy) => Some(&mut policy.native_fallback),
+            _ => None,
+        }
+    }
+
+    fn native_policy(&self) -> Option<&NativeTrustPolicy> {
+        match self {
+            Self::Native(policy) => Some(policy),
+            #[cfg(not(any(target_vendor = "apple", windows, target_os = "android")))]
+            Self::Platform(policy) => Some(&policy.native_fallback),
+            _ => None,
         }
     }
 }
 
 impl TlsServerTrust {
     generate_set_and_with! {
-        /// Refresh native roots when the trigger fires. This also applies where
-        /// platform verification falls back to native roots.
+        /// Refresh native roots when the trigger fires.
+        ///
+        /// Select a source before setting a reload policy. This applies to
+        /// [`ServerTrustSource::Native`] and the native fallback of
+        /// [`ServerTrustSource::Platform`] on targets without an operating
+        /// system verifier. Replacing the source discards its reload settings.
         ///
         /// Pass a stream of unit events or a tuple of streams. A handshake
         /// processes pending events and pins one trust generation.
@@ -117,7 +148,9 @@ impl TlsServerTrust {
         /// # Ok::<(), Box<dyn std::error::Error>>(())
         /// ```
         pub fn reload_trigger<T>(mut self, trigger: impl IntoNativeTrustReloadTrigger<T>) -> Self {
-            self.source.native.set_trigger(trigger);
+            if let Some(native) = self.source.native_policy_mut() {
+                native.set_reload_trigger(trigger);
+            }
             self
         }
     }
@@ -128,16 +161,27 @@ impl TlsServerTrust {
         /// At the age limit, a fresh read is required even if no trigger has fired.
         /// If the read fails, the handshake fails. With a limit of zero, every
         /// handshake requires a successful read.
+        ///
+        /// Select a source before setting a reload policy. This applies to
+        /// [`ServerTrustSource::Native`] and the native fallback of
+        /// [`ServerTrustSource::Platform`] on targets without an operating
+        /// system verifier. Replacing the source discards its reload settings.
         pub fn max_age(mut self, max_age: Option<Duration>) -> Self {
-            self.source.native.set_max_age(max_age);
+            if let Some(native) = self.source.native_policy_mut() {
+                native.maybe_set_max_age(max_age);
+            }
             self
         }
     }
 
+    fn native_state(&self) -> Option<&NativeTrustState> {
+        self.source.native_policy().map(|policy| &policy.state)
+    }
+
     /// Whether this policy will consult reloadable native roots at handshake start.
-    /// Includes the native fallback for a platform verifier unavailable on this target.
     pub fn uses_reloadable_native_roots(&self) -> bool {
-        self.source.native_reload().is_some()
+        self.native_state()
+            .is_some_and(|state| state.reload.is_some())
     }
 
     /// Resolve this policy to one immutable snapshot for a new handshake.
@@ -145,24 +189,36 @@ impl TlsServerTrust {
     /// another verifier. May block on filesystem or system store access.
     /// Async connectors should use [`Self::pin_native_roots_async`].
     pub fn pin_native_roots(&self) -> Result<Option<Self>, BoxError> {
-        Ok(self
-            .source
+        let Some(native) = self.native_state() else {
+            return Ok(None);
+        };
+        Ok(native
             .pin_native_roots()?
-            .map(|source| self.with_pinned_source(source)))
+            .map(|state| self.with_pinned_state(state)))
     }
 
     /// Resolve one snapshot for a new handshake on a Tokio runtime. Trust store
     /// reads and waits for an expired snapshot run on a blocking worker.
     /// Returns `None` under the same conditions as [`Self::pin_native_roots`].
     pub async fn pin_native_roots_async(&self) -> Result<Option<Self>, BoxError> {
-        Ok(self
-            .source
+        let Some(native) = self.native_state() else {
+            return Ok(None);
+        };
+        Ok(native
             .pin_native_roots_async()
             .await?
-            .map(|source| self.with_pinned_source(source)))
+            .map(|state| self.with_pinned_state(state)))
     }
 
-    fn with_pinned_source(&self, source: ConfiguredServerTrustSource) -> Self {
+    fn with_pinned_state(&self, state: NativeTrustState) -> Self {
+        let policy = NativeTrustPolicy { state };
+        let source = match &self.source {
+            #[cfg(not(any(target_vendor = "apple", windows, target_os = "android")))]
+            ServerTrustSource::Platform(_) => ServerTrustSource::Platform(PlatformTrustPolicy {
+                native_fallback: policy,
+            }),
+            _ => ServerTrustSource::Native(policy),
+        };
         Self {
             source,
             additional_anchors: self.additional_anchors.clone(),
@@ -173,8 +229,7 @@ impl TlsServerTrust {
     /// Includes environment-supplied extra roots. Consult [`Self::additional_anchors`]
     /// for anchors supplied directly by the application.
     pub fn pinned_native_roots(&self) -> Option<&[CertificateDer<'static>]> {
-        self.source
-            .native
+        self.native_state()?
             .snapshot
             .as_ref()
             .map(NativeTrustSnapshot::anchors)
@@ -183,32 +238,72 @@ impl TlsServerTrust {
 
 #[cfg(test)]
 mod tests {
-    use super::{Duration, PlatformVerifier, ServerTrustSource, TlsServerTrust};
-    use crate::client::ChannelReloadTrigger;
+    use rama_crypto::platform_verifier::PlatformVerifier;
+
+    use super::{CertificateDer, Duration, NativeTrustPolicy, ServerTrustSource, TlsServerTrust};
+    use crate::client::{ChannelReloadTrigger, TlsServerTrustAnchors};
 
     #[test]
-    fn native_reload_settings_follow_the_effective_trust_source() {
+    fn replacing_native_source_discards_reload_policy() {
+        let anchors = [CertificateDer::from(vec![1])];
+        let custom = TlsServerTrustAnchors::try_new(anchors).unwrap();
         let (_sender, trigger) = ChannelReloadTrigger::new();
-        let trust = TlsServerTrust::webpki_roots()
-            .with_max_age(Duration::from_secs(60))
+        let native = TlsServerTrust::native_roots()
             .with_reload_trigger(trigger)
-            .without_max_age();
-
-        assert!(!trust.uses_reloadable_native_roots());
-
-        let platform = trust.with_source(ServerTrustSource::Platform);
-        assert_eq!(
-            platform.uses_reloadable_native_roots(),
-            !PlatformVerifier::IS_AVAILABLE
-        );
-
-        let native = platform.with_source(ServerTrustSource::Native);
+            .with_max_age(Duration::ZERO);
         assert!(native.uses_reloadable_native_roots());
         assert_eq!(native, native.clone());
-        assert_ne!(native, TlsServerTrust::native_roots());
 
-        let age_only = TlsServerTrust::native_roots().with_max_age(Duration::ZERO);
-        assert!(age_only.uses_reloadable_native_roots());
-        assert_eq!(age_only.without_max_age(), TlsServerTrust::native_roots());
+        for source in [ServerTrustSource::WebPki, ServerTrustSource::Custom(custom)] {
+            let (_sender, trigger) = ChannelReloadTrigger::new();
+            let switched = native
+                .clone()
+                .with_source(source.clone())
+                .with_reload_trigger(trigger)
+                .with_max_age(Duration::ZERO);
+            assert_eq!(switched, TlsServerTrust::new(source));
+            assert_eq!(
+                switched.with_source(ServerTrustSource::native_roots()),
+                TlsServerTrust::native_roots()
+            );
+        }
+    }
+
+    #[test]
+    fn platform_reload_targets_only_the_native_fallback() {
+        let age_only = TlsServerTrust::platform_verifier()
+            .without_max_age()
+            .with_max_age(Duration::ZERO);
+        let (_sender, trigger) = ChannelReloadTrigger::new();
+        let triggered = TlsServerTrust::platform_verifier().with_reload_trigger(trigger);
+
+        assert!(matches!(triggered.source(), ServerTrustSource::Platform(_)));
+        if PlatformVerifier::IS_AVAILABLE {
+            assert_eq!(age_only, TlsServerTrust::platform_verifier());
+            assert_eq!(triggered, TlsServerTrust::platform_verifier());
+        } else {
+            assert!(age_only.uses_reloadable_native_roots());
+            assert!(triggered.uses_reloadable_native_roots());
+            assert_eq!(
+                age_only.without_max_age(),
+                TlsServerTrust::platform_verifier()
+            );
+        }
+    }
+
+    #[test]
+    fn clearing_an_age_limit_retains_the_native_trigger() {
+        let (_sender, trigger) = ChannelReloadTrigger::new();
+        let native = NativeTrustPolicy::new().with_reload_trigger(trigger);
+        assert_eq!(
+            native
+                .clone()
+                .with_max_age(Duration::ZERO)
+                .without_max_age(),
+            native
+        );
+        assert!(
+            TlsServerTrust::new(ServerTrustSource::Native(native)).uses_reloadable_native_roots()
+        );
     }
 }

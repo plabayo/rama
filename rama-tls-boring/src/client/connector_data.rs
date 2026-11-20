@@ -1070,7 +1070,7 @@ enum ResolvedServerTrustStore {
 fn resolve_server_trust_store(
     trust: &TlsServerTrust,
 ) -> Result<ResolvedServerTrustStore, BoxError> {
-    if *trust.source() == ServerTrustSource::Platform {
+    if matches!(trust.source(), ServerTrustSource::Platform(_)) {
         if PlatformVerifier::IS_AVAILABLE {
             return cached_platform_verifier(trust.additional_anchors())
                 .map(ResolvedServerTrustStore::Platform);
@@ -1083,7 +1083,7 @@ fn resolve_server_trust_store(
         return cached_server_verify_store(trust).map(ResolvedServerTrustStore::Derived);
     }
     match (trust.source(), trust.additional_anchors()) {
-        (ServerTrustSource::Native | ServerTrustSource::Platform, None) => {
+        (ServerTrustSource::Native(_) | ServerTrustSource::Platform(_), None) => {
             Ok(ResolvedServerTrustStore::Default)
         }
         (ServerTrustSource::WebPki, None) => Ok(ResolvedServerTrustStore::WebPki),
@@ -1145,7 +1145,7 @@ fn build_server_verify_store(trust: &TlsServerTrust) -> Result<X509Store, BoxErr
     let mut added = HashSet::new();
 
     match trust.source() {
-        ServerTrustSource::Native | ServerTrustSource::Platform => {
+        ServerTrustSource::Native(_) | ServerTrustSource::Platform(_) => {
             if let Some(anchors) = trust.pinned_native_roots() {
                 add_builtin_trust_anchors(&mut builder, &mut added, anchors, "native");
             } else {

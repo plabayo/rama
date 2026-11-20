@@ -12,6 +12,67 @@ use std::{
 #[cfg(feature = "native-certs")]
 mod native;
 
+/// Settings for the native root store used by [`ServerTrustSource::Native`].
+///
+/// The default uses a static snapshot. With the `native-certs` feature,
+/// [`TlsServerTrust`] can configure refresh triggers and an age limit.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NativeTrustPolicy {
+    #[cfg(feature = "native-certs")]
+    state: native::NativeTrustState,
+}
+
+impl NativeTrustPolicy {
+    /// Use a static snapshot of native roots.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            #[cfg(feature = "native-certs")]
+            state: native::NativeTrustState::STATIC,
+        }
+    }
+}
+
+impl Default for NativeTrustPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Settings for the platform verifier used by [`ServerTrustSource::Platform`].
+///
+/// If the platform has no operating system verifier, the policy uses native
+/// roots. With the `native-certs` feature, [`TlsServerTrust`] can configure
+/// refresh triggers and an age limit for that fallback.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PlatformTrustPolicy {
+    #[cfg(all(
+        feature = "native-certs",
+        not(any(target_vendor = "apple", windows, target_os = "android"))
+    ))]
+    native_fallback: NativeTrustPolicy,
+}
+
+impl PlatformTrustPolicy {
+    /// Use the operating system verifier, or static native roots if unavailable.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            #[cfg(all(
+                feature = "native-certs",
+                not(any(target_vendor = "apple", windows, target_os = "android"))
+            ))]
+            native_fallback: NativeTrustPolicy::new(),
+        }
+    }
+}
+
+impl Default for PlatformTrustPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// DER-encoded certificates used as TLS client server trust anchors.
 ///
 /// Certificates are installed as explicit trust anchors. Backends may therefore
@@ -63,15 +124,18 @@ impl TlsServerTrustAnchors {
 }
 
 /// Source of trust for normal server-certificate verification.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+///
+/// Construct static sources with [`Self::native_roots`] and
+/// [`Self::platform_verifier`]. Match those sources with `Native(_)` and
+/// `Platform(_)`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ServerTrustSource {
     /// A snapshot of the native roots, or the roots in `SSL_CERT_FILE` and
     /// `SSL_CERT_DIR`, which replace them. Bundled WebPKI roots are the
     /// fallback only without such an override. Roots in `SSL_CERT_EXTRA_FILE`
     /// and `SSL_CERT_EXTRA_DIR` are always added.
     /// A native trust policy can opt into refreshing its snapshot.
-    #[default]
-    Native,
+    Native(NativeTrustPolicy),
     /// Rama's bundled Mozilla (CCADB) roots, independent of the host OS.
     WebPki,
     /// Only the supplied trust anchors.
@@ -99,7 +163,27 @@ pub enum ServerTrustSource {
     /// and can steer certificate AIA or OCSP fetches to slow endpoints.
     /// See the `rama_crypto::platform_verifier` module (available with
     /// `rama-crypto`'s `native-certs` feature) for revocation and Android limits.
-    Platform,
+    Platform(PlatformTrustPolicy),
+}
+
+impl ServerTrustSource {
+    /// Use a static snapshot of native roots.
+    #[must_use]
+    pub const fn native_roots() -> Self {
+        Self::Native(NativeTrustPolicy::new())
+    }
+
+    /// Use the operating system verifier, or static native roots if unavailable.
+    #[must_use]
+    pub const fn platform_verifier() -> Self {
+        Self::Platform(PlatformTrustPolicy::new())
+    }
+}
+
+impl Default for ServerTrustSource {
+    fn default() -> Self {
+        Self::native_roots()
+    }
 }
 
 /// Server trust policy used with [`ServerVerifyMode::Auto`](super::ServerVerifyMode::Auto).
@@ -109,33 +193,8 @@ pub enum ServerTrustSource {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
 pub struct TlsServerTrust {
-    source: ConfiguredServerTrustSource,
+    source: ServerTrustSource,
     additional_anchors: Option<TlsServerTrustAnchors>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ConfiguredServerTrustSource {
-    kind: ServerTrustSource,
-    #[cfg(feature = "native-certs")]
-    native: native::NativeTrustPolicy,
-}
-
-impl ConfiguredServerTrustSource {
-    const fn new(kind: ServerTrustSource) -> Self {
-        Self {
-            kind,
-            #[cfg(feature = "native-certs")]
-            native: native::NativeTrustPolicy::EMPTY,
-        }
-    }
-
-    fn set_kind(&mut self, kind: ServerTrustSource) {
-        #[cfg(feature = "native-certs")]
-        if self.kind != kind {
-            self.native.clear_snapshot();
-        }
-        self.kind = kind;
-    }
 }
 
 impl TlsServerTrust {
@@ -144,7 +203,7 @@ impl TlsServerTrust {
     /// override.
     #[must_use]
     pub const fn native_roots() -> Self {
-        Self::new(ServerTrustSource::Native)
+        Self::new(ServerTrustSource::native_roots())
     }
 
     /// Use Rama's bundled Mozilla (CCADB) roots.
@@ -164,21 +223,21 @@ impl TlsServerTrust {
     /// See [`ServerTrustSource::Platform`].
     #[must_use]
     pub const fn platform_verifier() -> Self {
-        Self::new(ServerTrustSource::Platform)
+        Self::new(ServerTrustSource::platform_verifier())
     }
 
     /// Use `source` without additional trust anchors.
     #[must_use]
     pub const fn new(source: ServerTrustSource) -> Self {
         Self {
-            source: ConfiguredServerTrustSource::new(source),
+            source,
             additional_anchors: None,
         }
     }
 
-    /// Return the configured source of trust.
+    /// Return the current source of trust.
     pub fn source(&self) -> &ServerTrustSource {
-        &self.source.kind
+        &self.source
     }
 
     /// Return trust anchors added to the source of trust.
@@ -189,7 +248,7 @@ impl TlsServerTrust {
     generate_set_and_with! {
         /// Set the source of trust while retaining additional anchors.
         pub fn source(mut self, source: ServerTrustSource) -> Self {
-            self.source.set_kind(source);
+            self.source = source;
             self
         }
     }

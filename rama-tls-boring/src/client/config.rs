@@ -416,7 +416,7 @@ impl<'config> BoringTlsConnectorConfig<'config> {
             || self.server_cert_chain_policy.is_some()
             || self
                 .server_trust
-                .is_some_and(|trust| *trust.source() == ServerTrustSource::Platform)
+                .is_some_and(|trust| matches!(trust.source(), ServerTrustSource::Platform(_)))
             || self.server_cert_pins.is_some_and(|pins| {
                 pins.check(Some(name), leaf) == TlsServerCertPinCheck::Mismatched
             })

@@ -83,7 +83,10 @@ pub use pool::{
 };
 use rama_crypto::pki_types::CertificateDer;
 #[doc(inline)]
-pub use server_trust::{ServerTrustSource, TlsServerTrust, TlsServerTrustAnchors};
+pub use server_trust::{
+    NativeTrustPolicy, PlatformTrustPolicy, ServerTrustSource, TlsServerTrust,
+    TlsServerTrustAnchors,
+};
 
 use super::{
     CertificateCompressionAlgorithm, CipherSuite, ProtocolVersion, SignatureScheme, SupportedGroup,

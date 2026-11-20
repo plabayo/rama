@@ -42,7 +42,17 @@ const CHILD: &str = "RAMA_NATIVE_TRUST_RELOAD_TEST_DIR";
 
 #[test]
 fn native_roots_cut_over_for_new_handshakes() {
-    isolated_case("native_roots_cut_over_for_new_handshakes", run);
+    isolated_case("native_roots_cut_over_for_new_handshakes", |dir| {
+        run(dir, TlsServerTrust::native_roots())
+    });
+}
+
+#[cfg(not(any(target_vendor = "apple", windows, target_os = "android")))]
+#[test]
+fn platform_fallback_cuts_over_for_new_handshakes() {
+    isolated_case("platform_fallback_cuts_over_for_new_handshakes", |dir| {
+        run(dir, TlsServerTrust::platform_verifier())
+    });
 }
 
 fn isolated_case<F>(name: &str, run: impl FnOnce(PathBuf) -> F)
@@ -94,7 +104,7 @@ where
     assert!(succeeded, "{name} subprocess failed or timed out");
 }
 
-async fn run(dir: PathBuf) {
+async fn run(dir: PathBuf, trust: TlsServerTrust) {
     let bundle = dir.join("bundle.pem");
     let extra = dir.join("extra.pem");
     let (a, anchor_a) = certified_peer();
@@ -110,7 +120,7 @@ async fn run(dir: PathBuf) {
         pause: Arc::default(),
     };
     let (reload, trigger) = ChannelReloadTrigger::new();
-    let policy = TlsServerTrust::native_roots().with_reload_trigger(trigger);
+    let policy = trust.clone().with_reload_trigger(trigger);
     let boring = Arc::new(
         BoringConnector::secure(dial.clone())
             .with_base_config(TlsClientConfig::new().with_server_trust(policy.clone()))
@@ -124,13 +134,13 @@ async fn run(dir: PathBuf) {
     let rustls_snapshot = RustlsConnector::secure(dial.clone());
     let auto_rustls = RustlsConnector::secure(dial.clone()).with_base_config(
         TlsClientConfig::new().with_server_trust(
-            TlsServerTrust::native_roots()
+            trust
+                .clone()
                 .with_reload_trigger(NativeTrustStoreChanges::new(Duration::from_millis(20))),
         ),
     );
     let strict_rustls = RustlsConnector::secure(dial.clone()).with_base_config(
-        TlsClientConfig::new()
-            .with_server_trust(TlsServerTrust::native_roots().with_max_age(Duration::ZERO)),
+        TlsClientConfig::new().with_server_trust(trust.with_max_age(Duration::ZERO)),
     );
 
     let mut existing = rustls.serve(request()).await.unwrap().conn;

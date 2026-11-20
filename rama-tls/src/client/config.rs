@@ -253,7 +253,7 @@ impl TlsClientConfig {
                 .get_ref::<TlsServerTrust>()
                 .cloned()
                 .unwrap_or_default()
-                .with_source(ServerTrustSource::Platform);
+                .with_source(ServerTrustSource::platform_verifier());
             self.0.insert(trust);
             self
         }
@@ -1123,7 +1123,7 @@ mod tests {
             .unwrap();
 
         let trust = config.as_extensions().get_ref::<TlsServerTrust>().unwrap();
-        assert_eq!(trust.source(), &ServerTrustSource::Native);
+        assert_eq!(trust.source(), &ServerTrustSource::native_roots());
         assert_eq!(
             trust.additional_anchors().unwrap().certificates(),
             std::slice::from_ref(&additional)

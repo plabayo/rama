@@ -47,11 +47,12 @@ Clients verify servers against a `ServerTrustSource`:
   `SSL_CERT_FILE` / `SSL_CERT_DIR` overrides. If no native roots are found, the bundled
   WebPKI roots are used when there are no replacement paths. Long-running clients
   can opt into reloads for new handshakes. See the
-  [trust policy API](https://ramaproxy.org/docs/rama/tls/client/struct.TlsServerTrust.html#method.with_reload_trigger).
+  [native trust policy API](https://ramaproxy.org/docs/rama/tls/client/struct.NativeTrustPolicy.html).
 - `WebPki`: the bundled Mozilla roots, independent of the host.
 - `Custom`: only the trust anchors you supply.
 - `Platform`: the operating system's verifier decides (Apple platforms, Windows and Android).
   This follows enterprise trust settings and the platform's distrust and revocation policy.
+  On targets without an OS verifier, the fallback uses native roots and supports the same reload options.
 
 The root crate’s `native-certs` feature exposes trust policy and root loading
 independently of the TLS backend. Both `rustls` and `boring` enable it.
