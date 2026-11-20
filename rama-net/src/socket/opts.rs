@@ -1052,11 +1052,8 @@ pub struct SocketOptions {
     /// to bind to it.
     pub freebind: Option<bool>,
 
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
-    )]
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "android", target_os = "linux"))))]
     /// Set value for the `IPV6_FREEBIND` option on this [`Socket`].
     ///
     /// This is an IPv6 counterpart of `IP_FREEBIND` [`Socket`] option on
@@ -1399,6 +1396,7 @@ impl SocketOptions {
             if let Some(freebind) = self.freebind {
                 socket.set_freebind_v4(freebind)?;
             }
+            #[cfg(any(target_os = "android", target_os = "linux"))]
             if domain == Domain::IPv6
                 && let Some(freebind_ipv6) = self.freebind_ipv6
             {

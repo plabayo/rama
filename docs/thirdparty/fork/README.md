@@ -67,16 +67,15 @@ as a distant relative.
 
 ### quinn-rs
 
-- <https://github.com/quinn-rs/quinn/tree/765abecf7b5e18e5eeb8aa46e30e2174c54547d7>
+- <https://github.com/quinn-rs/quinn/tree/0f9432f7c1cab0ea1469d02a935a89dae28693b7>
   - QUIC transport adapted into `rama-quic`, reusing Rama's UDP, TLS, runtime and
     utilities while preserving useful upstream structure.
-  - reviewed against upstream `main` (`765abec`, 2026-11-08): every quinn-proto security
-    advisory through that date (the latest being GHSA-53rm-773f-4q8c and GHSA-wppq-2f6r-wfvm)
-    and every behavioural fix are present or ported; not carried over are
+  - reviewed against upstream `main` (`0f9432f`, 2026-11-20): the client bounds Retry tokens and
+    rejects inbound 0-RTT before packet buffering or decryption. Rama holds early handshake
+    and 1-RTT packets within per-connection packet and byte limits. Not carried over are
     DATA_BLOCKED/STREAM_DATA_BLOCKED emission, the pending-incoming server-config snapshot, the
     DATAGRAM-instead-of-PING tail-loss probe, the assembler's sorted `VecDeque` storage,
-    lazily allocated remote stream slots, buffering 1-RTT packets that arrive before the
-    handshake completes, padding Initial datagrams to `min_mtu` (the profile decides the
+    lazily allocated remote stream slots, padding Initial datagrams to `min_mtu` (the profile decides the
     Initial size), and the batched `Connection::read_datagrams` (rama's per-datagram admission
     gates release the connection lock per datagram), which are functional or performance choices
     rather than fixes.
@@ -84,8 +83,8 @@ as a distant relative.
     including Initials that arrive before or during the accept (a ClientHello spanning
     several datagrams), so the handshake signature never holds the lock.
   - License:
-    - Original: <https://github.com/quinn-rs/quinn/blob/765abecf7b5e18e5eeb8aa46e30e2174c54547d7/LICENSE-MIT>
-      and <https://github.com/quinn-rs/quinn/blob/765abecf7b5e18e5eeb8aa46e30e2174c54547d7/LICENSE-APACHE>
+    - Original: <https://github.com/quinn-rs/quinn/blob/0f9432f7c1cab0ea1469d02a935a89dae28693b7/LICENSE-MIT>
+      and <https://github.com/quinn-rs/quinn/blob/0f9432f7c1cab0ea1469d02a935a89dae28693b7/LICENSE-APACHE>
     - Type: MIT OR Apache-2.0 (Copyright (c) 2018 The quinn Developers)
     - Copy: [./licenses/quinn/LICENSE-MIT](./licenses/quinn/LICENSE-MIT),
       [./licenses/quinn/LICENSE-APACHE](./licenses/quinn/LICENSE-APACHE)
@@ -210,14 +209,14 @@ not be kept in sync with upstream — they are now part of `rama`.
 
 ## Relative Forks
 
-- <https://github.com/quinn-rs/quinn/tree/765abecf7b5e18e5eeb8aa46e30e2174c54547d7/quinn-udp>
+- <https://github.com/quinn-rs/quinn/tree/0f9432f7c1cab0ea1469d02a935a89dae28693b7/quinn-udp>
   - Generic UDP socket code adapted for Rama.
-  - reviewed against upstream `main` (`765abec`, 2026-11-08): not carried over are the opt-in
+  - reviewed against upstream `main` (`0f9432f`, 2026-11-20): not carried over are the opt-in
     Linux transport-error queue (`IP_RECVERR` stays off), the WASI backend, and building the
     Windows socket state before `bind`; truncated control data marks the datagram truncated
     (so it is dropped) instead of failing the socket.
   - License:
-    - Original: <https://github.com/quinn-rs/quinn/blob/765abecf7b5e18e5eeb8aa46e30e2174c54547d7/LICENSE-MIT>
+    - Original: <https://github.com/quinn-rs/quinn/blob/0f9432f7c1cab0ea1469d02a935a89dae28693b7/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/quinn-udp](./licenses/quinn-udp)
 - <https://github.com/tokio-rs/axum/tree/8d60d69eb195dad2f983926ab11fc91a79b98e06>

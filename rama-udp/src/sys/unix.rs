@@ -12,6 +12,17 @@ use rama_net::socket::core::{SockAddr, SockRef};
 
 use super::{EcnCodepoint, RecvMeta, Transmit, UdpSockRef, cmsg};
 
+#[cfg(not(any(target_os = "redox", target_os = "fuchsia")))]
+use libc::IPV6_DONTFRAG;
+#[cfg(not(any(target_os = "redox", target_os = "hurd", target_os = "fuchsia")))]
+use libc::IPV6_PKTINFO;
+
+// Fuchsia's <netinet/in.h> defines these socket options, but libc omits their names.
+#[cfg(target_os = "fuchsia")]
+const IPV6_PKTINFO: libc::c_int = 50;
+#[cfg(target_os = "fuchsia")]
+const IPV6_DONTFRAG: libc::c_int = 62;
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use super::linux::gso;
 
@@ -103,6 +114,10 @@ impl UdpSocketState {
 
         let mut ecn_v4 = !supports_ipv4;
         let mut ecn_v6 = !supports_ipv6;
+        #[cfg_attr(
+            target_os = "fuchsia",
+            expect(unused_mut, reason = "no IPv4 packet-info backend")
+        )]
         let mut local_ip_v4 = !supports_ipv4;
         let mut local_ip_v6 = !supports_ipv6;
         let mut interface_v6 = !supports_ipv6;
@@ -222,12 +237,8 @@ impl UdpSocketState {
             // kernel's path MTU guess, but actually disabling fragmentation requires this too. See
             // __ip6_append_data in ip6_output.c.
             // Set `may_fragment` to `true` if this option is not supported on the platform.
-            may_fragment |= !set_socket_option_supported(
-                &*io,
-                libc::IPPROTO_IPV6,
-                libc::IPV6_DONTFRAG,
-                OPTION_ON,
-            );
+            may_fragment |=
+                !set_socket_option_supported(&*io, libc::IPPROTO_IPV6, IPV6_DONTFRAG, OPTION_ON);
         }
 
         // Enlarge SO_SNDBUF to a safe minimum.
@@ -315,6 +326,7 @@ impl UdpSocketState {
         target_os = "openbsd",
         target_os = "netbsd",
         target_os = "dragonfly",
+        target_os = "fuchsia",
         target_os = "redox",
         target_os = "hurd",
         target_os = "solaris",
@@ -334,6 +346,7 @@ impl UdpSocketState {
         target_os = "openbsd",
         target_os = "netbsd",
         target_os = "dragonfly",
+        target_os = "fuchsia",
         target_os = "redox",
         target_os = "hurd",
         target_os = "solaris",
@@ -548,6 +561,7 @@ pub(crate) fn send_single(
     target_os = "openbsd",
     target_os = "netbsd",
     target_os = "dragonfly",
+    target_os = "fuchsia",
     target_os = "redox",
     target_os = "hurd",
     target_os = "solaris",
@@ -589,6 +603,7 @@ fn recv_via_recvmmsg(
     target_os = "openbsd",
     target_os = "netbsd",
     target_os = "dragonfly",
+    target_os = "fuchsia",
     target_os = "redox",
     target_os = "hurd",
     target_os = "solaris",
@@ -664,6 +679,7 @@ unsafe fn recv_via_recvmmsg_with(
     target_os = "openbsd",
     target_os = "netbsd",
     target_os = "dragonfly",
+    target_os = "fuchsia",
     target_os = "redox",
     target_os = "hurd",
     target_os = "solaris",
@@ -695,6 +711,7 @@ pub(crate) fn recv_single(
     target_os = "openbsd",
     target_os = "netbsd",
     target_os = "dragonfly",
+    target_os = "fuchsia",
     target_os = "redox",
     target_os = "hurd",
     target_os = "solaris",
@@ -814,6 +831,9 @@ fn prepare_msg(
 
     if let Some(ip) = &transmit.src_ip {
         match ip {
+            #[cfg(target_os = "fuchsia")]
+            IpAddr::V4(_) => {}
+            #[cfg(not(target_os = "fuchsia"))]
             IpAddr::V4(v4) => {
                 // Darwin ignores `IP_RECVDSTADDR` as an outgoing source override.
                 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
@@ -861,7 +881,7 @@ fn prepare_msg(
                         s6_addr: v6.octets(),
                     },
                 };
-                encoder.push(libc::IPPROTO_IPV6, libc::IPV6_PKTINFO, pktinfo)?;
+                encoder.push(libc::IPPROTO_IPV6, IPV6_PKTINFO, pktinfo)?;
             }
         }
     }
@@ -1013,7 +1033,7 @@ impl ControlMetadata {
                 self.dst_ip = Some(IpAddr::V4(Ipv4Addr::from(in_addr.s_addr.to_ne_bytes())));
             }
             #[cfg(not(any(target_os = "redox", target_os = "hurd")))]
-            (libc::IPPROTO_IPV6, libc::IPV6_PKTINFO) => {
+            (libc::IPPROTO_IPV6, IPV6_PKTINFO) => {
                 // SAFETY: `in6_pktinfo` holds only integers, valid for any bit pattern.
                 let pktinfo = unsafe { cmsg.decode::<libc::in6_pktinfo>() }?;
                 self.dst_ip = Some(IpAddr::V6(Ipv6Addr::from(pktinfo.ipi6_addr.s6_addr)));
@@ -1792,7 +1812,7 @@ mod tests {
 
         let meta = decode_with(&mut control, loopback_name(), 1, 1, |encoder| {
             encoder
-                .push(libc::IPPROTO_IPV6, libc::IPV6_PKTINFO, pktinfo)
+                .push(libc::IPPROTO_IPV6, IPV6_PKTINFO, pktinfo)
                 .unwrap();
         })
         .unwrap();

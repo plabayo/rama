@@ -266,7 +266,12 @@ impl crypto::Session for TlsSession {
                 Connection::Client(_) => false,
                 Connection::Server(ref session) => session.server_name().is_some(),
             };
-            if self.inner.alpn_protocol().is_some() || have_server_name || !self.is_handshaking() {
+            if self.inner.alpn_protocol().is_some()
+                || (have_server_name
+                    && self.inner.handshake_kind()
+                        != Some(HandshakeKind::FullWithHelloRetryRequest))
+                || !self.is_handshaking()
+            {
                 if let Connection::Server(ref session) = self.inner
                     && let Some(name) = session.server_name()
                 {
