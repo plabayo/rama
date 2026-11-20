@@ -57,45 +57,49 @@ authoritative source of truth.
 Thank you to everyone who contributed code, reviews, documentation, testing,
 bug reports, ideas, and production feedback during the 0.5 cycle. This release
 includes work from Glen De Cauwsemaecker, Brecht Stamper, Abdelkader Boudih,
-Maarten Deprez, Julián Montes de Oca, Attila Nagy, Ivan Porto Carrero, and Yann
-(yfe404). Thank you also to Tudor Timcu for the field report and proposed fix
-behind the Apple Network Extension sleep/wake recovery work (#1308, #1309),
-Attila Nagy for reporting the DNS burst overflow (#1218), Ivan Porto Carrero
-for the mTLS use cases behind staged client authentication (#1200), Yann for
-reporting the missing `trust_anchors` extension (#1195), and Maarten Deprez for
-reporting the missing `ExtensionsRef` forwarding (#1306).
+Maarten Deprez, Julián Montes de Oca, Attila Nagy, Ivan Porto Carrero, Kai
+(axxop), and Yann (yfe404). Thank you also to Tudor Timcu for the field report
+and proposed fix behind the Apple Network Extension sleep/wake recovery work
+(#1308, #1309), Attila Nagy for reporting the DNS burst overflow (#1218), Ivan
+Porto Carrero for the mTLS use cases behind staged client authentication
+(#1200), Yann for reporting the missing `trust_anchors` extension (#1195), and
+Maarten Deprez for reporting the missing `ExtensionsRef` forwarding (#1306).
 
 Rama also builds on the work of the upstream projects it maintains forks or
-ports of. Four sync rounds this cycle (#1139, #1241, #1298, #1318, and the h2
-sync in #1239) brought in fixes from hyper, h2, h3, http, http-body,
+ports of. Five sync rounds this cycle (#1139, #1241, #1298, #1318, #1368, and
+the h2 sync in #1239) brought in fixes from hyper, h2, h3, http, http-body,
 http-body-util, hyper-util, headers, tower-http, axum, tonic, tungstenite,
 lol-html, quinn, quinn-udp, and rustls-native-certs, credited in those commits
 to: 0x676e67,
 Aaron Todd, Aashish Thapa, aiqubits, Alex (ragen1337), Alex Butler, Alexander
 (AlexanderHD27), Alexander Kjäll, Almaz, Andrea Bozzo, Andrei Gheorghe, André
-Cruz, Ariel Ben-Yehuda, Benjamin Saunders, Bill Fraser, Breeze, brentechols,
+Cruz, Antoine Vandecreme, Ariel Ben-Yehuda, Asuka, Bayanasar Khurd, Benjamin
+Saunders, Bill Fraser, Breeze, brentechols,
 Brian Schroeder, Bugen Zhao, Chen Hongzhi, Choudhry Shehryar, ChrisJr404,
 Christoph Sens, cui (cuiweixie), cui fliter, CyberneticX-Tech, Dahale Aditya
 Dnyaneshwar, Dan Bondarenko, darkuss, David Mládek, David Pedersen, David
 Tolnay, Denis Cornehl, Dihan Nahdi, Diogo Sousa, Dirkjan Ochtman, Dmitry
 Adamushka, Dmitry B., Dmitry Marakasov, Dominic Rubas, dox4, dswij, Endale
-Dinh, Erick Tryzelaar, Evgenii Shutov, f3ath, Falk Woldmann Lu, Feldt, Florian
+Dinh, Erick Tryzelaar, Evgenii Shutov, f3ath, Falk Woldmann Lu, Feldt, Felipe
+R. Monteiro, Florian
 Uekermann, Frank Taylor, Gavin D., Ignacio Goldchluk, Jacob Thrane Lund,
 jaeminbird, Jaideep Pyne, James (jg-rp), Jan (Threated), Jayakumar Thanakodi,
 Jeremy Schoemaker, jeremyjpj0916, Jess Izen, Jindřich Bär, Joey de Waal, Jonas
-Platte, Joseph Dye, K-tecchan, karanabe, katelyn martin, kaze, Lars Eggert,
+Platte, Joseph Dye, K-tecchan, karanabe, katelyn martin, kaze, kevin
+(kevin9327), Lars Eggert,
 Laurence Rowe, Leo Camus, Lethe Lee, LoadingALIAS, Lorenz Leutgeb, Lucio
 Franco, Luke Curley, Luke Parker, Martin Trigaux, Mathieu (4Mathleu), Mathieu
 Tricoire, Max Inden, Minh Vu, Mira Sato, Muhamad Awad, Muhammed Çiçekel,
-Nakaryo, Nanasi, Nathan Jaremko, Nathaniel Ford, Nor.na, Paolo Barbolini,
-Patrick Hintermayer, Patrik Wenger, PeterUlb, Phoenix K, Reiner Pope, Robert
+Nakaryo, Nanasi, Nathan Jaremko, Nathaniel Ford, nattergabriel, Nor.na, Paolo
+Barbolini, Patrick Hintermayer, Patrik Wenger, PeterUlb, Phat Le, Phoenix K,
+Reiner Pope, Robert
 Kiel, ruben (Ruben2424), Rémi Berson, Sabnock, Sai Asish Y, Sam Hitz, Sean
 Lynch, Sean McArthur, Seungtaek Oh, Shai (Shaisolaris), shodoco, Shuvro Roy,
 subotac, syszery, t0ms, tangaac, Temporary Fix, Thomas Eizinger, Tim Vilgot
-Mikael Fredenberg, Tobias Bieniek, Toshit Chawda, tottoto, Toyeshh Medikonda,
-Trivikram Kamat, ump45nose, Vaibhav Srivastava, Vaiz, vcarus, vishal-770, vk
-(kv-cache), vvvviiv, WaterWhisperer, xd009642, Yann Simon, Yusuke Tanaka,
-zerox80, Árni Dagur, Örjan Fors, and 赤坂理子.
+Mikael Fredenberg, Tobias Bieniek, Tom Kaitchuck, Toshit Chawda, tottoto,
+Toyeshh Medikonda, Trivikram Kamat, ump45nose, Vaibhav Srivastava, Vaiz,
+vcarus, vishal-770, vk (kv-cache), vvvviiv, WaterWhisperer, xd009642, Yann
+Simon, Yusuke Tanaka, zerox80, Árni Dagur, Örjan Fors, and 赤坂理子.
 
 Thank you also to our GitHub Sponsors for directly funding Rama development,
 and to our commercial partners for funding a significant part of the work in
@@ -136,10 +140,11 @@ training, or custom integrations, see [ramaproxy.com](https://ramaproxy.com).
   #1160, #1163, #1175).
 * **ICAP**: `rama-icap` adds an ICAP client, server and HTTP adaptation layer,
   `rama serve icap` and `--icap` in the proxy (#1136, #1142, #1143).
-* **Trust and TLS fidelity**: platform certificate verification, SPKI deny
-  lists, staged client authentication in the TLS MITM relay, closer BoringSSL
-  ClientHello replay, and reassembly of fragmented ClientHellos (#1209, #1234,
-  #1276, #1303, #1313).
+* **Trust and TLS fidelity**: platform certificate verification, native trust
+  roots that reload for new connections, SPKI deny lists, staged client
+  authentication in the TLS MITM relay, closer BoringSSL ClientHello replay, and
+  reassembly of fragmented ClientHellos (#1209, #1234, #1276, #1303, #1313,
+  #1367).
 * **Protocol hardening**: one header limit and strict field validation across
   HTTP/1.1, HTTP/2 and HTTP/3, adaptive server deadlines, panic-free header
   decoding, bounded decompression and multipart, and a safety proof for every
@@ -275,6 +280,16 @@ training, or custom integrations, see [ramaproxy.com](https://ramaproxy.com).
 * **Bound the platform verifier**: OS verification can block on network
   fetches (revocation, intermediate fetching) and cannot be cancelled. Size the
   blocking pool and bound concurrent handshakes accordingly (#1276).
+* **Let long-running clients pick up new roots**: native trust is still read
+  once per process by default. Clients and proxies that outlive a CA rotation
+  or a system trust store change can give `NativeTrustPolicy` or
+  `PlatformTrustPolicy` a reload trigger (`NativeTrustStoreChanges`,
+  `UnixSignalTrigger::sighup()`) and a `max_age`, as the `http_version_proxy`
+  example does (#1367).
+* **Size request replay for the uploads you retry**: `RetryLayer` only retries
+  a body it could capture, by default up to 64 KiB in memory. Choose a larger
+  `MemoryReplay` or an `FsReplayStore` with `ManagedPolicy::with_replay_store`
+  when larger uploads must be retried.
 * **Load profile databases once**: the embedded profile set takes a noticeable
   amount of memory when decoded. Build one `UserAgentDatabase` and share it as
   an `Arc` across layers and clients (#1282).
@@ -427,9 +442,11 @@ stays at 1.96 and the edition at 2024.
   instead of `From<&str>`. `ServerTrustRoots` became `ServerTrustSource`
   (`Default` is now `Native`, with a new `Platform` variant), with
   `TlsServerTrust::native_roots()`, `source()` and `with_source()` replacing
-  `default_roots()`, `roots()` and `with_roots()`. The HTTP layer's
-  `TimeoutError` became `rama::error::TimeoutError` (#1146, #1228, #1276,
-  #1347).
+  `default_roots()`, `roots()` and `with_roots()`. `Native` and `Platform`
+  carry a `NativeTrustPolicy` and `PlatformTrustPolicy`: build them with
+  `ServerTrustSource::native_roots()` and `platform_verifier()`, and match them
+  as `Native(_)` and `Platform(_)`. The HTTP layer's `TimeoutError` became
+  `rama::error::TimeoutError` (#1146, #1228, #1276, #1347, #1367).
 * **`SocketInfo`** is a shared cell that QUIC updates after connection
   migration, so it is no longer `Clone`. Copy `info.address_pair()` (a
   `SocketAddresses` value) where you cloned it before; `local_addr()` and
@@ -487,6 +504,15 @@ stays at 1.96 and the edition at 2024.
   (`with_max_buffered_bytes`, `MemoryLimitPolicy`); SOCKS5 `write_to_buf` and
   the OpenTelemetry exporter's `HeaderBag::merge` return a `Result` (#1132,
   #1140, #1143, #1301, #1304, #1321, #1355).
+* **HTTP retries stream the first attempt**: `RetryLayer` no longer buffers
+  the whole request body. The first attempt streams while the body is captured
+  for replay, by default up to 64 KiB in memory within 30 s; a larger or slower
+  body is sent once and not retried. `PolicyResult::Retry` gained a `result`
+  field, returned when the body cannot be replayed or the policy declines
+  another attempt. `Policy` gained `replay_store` and `next_attempt`, and
+  `ManagedPolicy` applies its backoff in `next_attempt`, so a delay only starts
+  once the upload was captured. `ManagedPolicy` gained a store type parameter
+  (`with_replay_store`).
 * **`TlsTunnel`** gained `application_protocol` and `alpn`, so the TLS spoken
   with an intermediary is configured apart from the final origin's TLS. Add
   `application_protocol: None, alpn: None` to existing literals to keep the
@@ -720,6 +746,14 @@ as a compiled, compressed binary, so loading it only decodes.
     clients (`TlsClientConfig::with_platform_verifier`), extra roots through
     `SSL_CERT_EXTRA_FILE` and `SSL_CERT_EXTRA_DIR`, and reject-only chain
     policies such as `DistrustedServerKeys` (SPKI deny lists) (#1276).
+  * Added reloadable native trust: `NativeTrustPolicy` and
+    `PlatformTrustPolicy` take a reload trigger (`NativeTrustStoreChanges` for
+    OS store notifications and the `SSL_CERT_*` paths, `UnixSignalTrigger`,
+    `ChannelReloadTrigger`, or any stream) and a `max_age`. New handshakes on
+    BoringSSL, Rustls and QUIC use the refreshed roots while established
+    connections keep theirs, and connectors cache the derived trust stores
+    (`server_trust_cache_capacity`). The root crate has a `native-certs` feature
+    for these APIs, enabled by `boring` and `rustls` (#1367).
   * Added staged client authentication to the BoringSSL `TlsMitmRelay`: a
     per-connection `TlsMitmClientAuthPolicy` verifies the ingress client and then
     selects the upstream credential (#1209, superseding #1202, co-authored by
@@ -821,6 +855,11 @@ as a compiled, compressed binary, so loading it only decodes.
     (#1245, by Abdelkader Boudih), `ForceStatusCode`, fallible
     `Redirect::try_*` constructors (#1143), and configurable path matching with
     `PathMatchPolicy` (#1144).
+  * Added bounded request body replay to `RetryLayer`
+    (`rama::http::layer::retry::storage`): the first attempt streams while its
+    body is captured in memory (`MemoryReplay`) or spilled to private temporary
+    files under a shared disk budget (`FsReplayStore`), behind the
+    `ReplayStore` trait for custom backends.
   * Added draining of HTTP bodies: reuse of HTTP/1 client connections after a
     response body is dropped early (`Http1BodyDrainConfig`), and
     `DrainRequestBodyLayer` with an opt-in HTTP/1 server `request_body_drain`
@@ -905,7 +944,7 @@ as a compiled, compressed binary, so loading it only decodes.
   places them itself (#1258).
 * The embedded user-agent profiles are a compiled, compressed set that is
   analysed at export time, so loading only decodes it. The set was refreshed
-  throughout the cycle (#1258, #1282, #1286, #1310, #1329, #1355).
+  throughout the cycle (#1258, #1282, #1286, #1310, #1329, #1355, #1364).
 * The BoringSSL acceptor only issues session tickets with
   `with_session_resumption(true)` (#1234).
 * Apple Network Extension: provider-side refusals fail open by default, egress
@@ -938,10 +977,10 @@ as a compiled, compressed binary, so loading it only decodes.
 * Endpoint diagnostics explain the `From<Rejection>` requirement, and
   streaming-body plumbing is shared across the rewrite and capture layers
   (#1189, #1244, by Abdelkader Boudih).
-* Synced the maintained forks with upstream in four rounds: hyper, h2, http,
-  http-body-util, hyper-util, headers, h3, tower-http, axum, tonic,
+* Synced the maintained forks with upstream in five rounds: hyper, h2, http,
+  http-body, http-body-util, hyper-util, headers, h3, tower-http, axum, tonic,
   tungstenite, lol-html, quinn, quinn-udp and rustls-native-certs (#1139,
-  #1239, #1241, #1298, #1318).
+  #1239, #1241, #1298, #1318, #1368).
 * Raised `rama-boring` to 0.7 and OpenTelemetry to 0.33, unpinned `time`
   (#1220, by Abdelkader Boudih), and refreshed all dependencies (#1310 and the
   other update rounds).
@@ -970,14 +1009,27 @@ as a compiled, compressed binary, so loading it only decodes.
   malformed on every version, bare LF in chunked framing is rejected, an HPACK
   table can no longer desynchronise on a self-dependent stream, `100 Continue`
   no longer stalls a pipelined response, and oversized field counts, gRPC
-  metadata, HAR headers and FastCGI records fail instead of panicking (#1321,
-  #1355).
+  metadata, HAR headers and FastCGI records fail instead of panicking. HTTP/2
+  refuses to send field values that HTTP/2 forbids, such as ones with leading
+  or trailing whitespace (#1321, #1355, #1366).
+* Fixed HTTP/2 adaptive flow control (`adaptive_window`) stopping after the
+  first bandwidth sample, which left the receive window at its 65,535-byte
+  default (#1362, by Kai).
+* Fixed upstream issues brought in by the last fork sync: HTTP/2 advertises
+  released stream credit again after the receive window shrinks and keeps a
+  peer's `GOAWAY` reason across transport failures; HTTP/1 gives each request
+  one readiness permit, keeps streaming framing when converting from HTTP/2,
+  removes `Content-Length` for every transfer coding and keeps `HEAD`
+  representation headers; and an HTTP/2 server keeps accepting after rejecting
+  one CONNECT stream (#1368).
 * Hardened body handling: decompression caps zstd windows and total decoded
   size, nested body limits keep the strictest one, multipart forms are bounded,
   gRPC streams that end inside a message are rejected, and WebSocket refuses
   interleaved data frames and stray RSV bits (#1321, #1340, #1355).
 * `ServeDir` no longer serves dot-prefixed and hidden entries by default, and
-  its `HEAD` answers match `GET` (#1321, #1355).
+  its `HEAD` answers match `GET`. With precompressed variants configured, its
+  `304` and `412` answers also carry `Vary: Accept-Encoding` (#1321, #1355,
+  #1359).
 * Fixed TCP and Unix listeners spinning on accept errors such as `EMFILE`:
   they now back off, and binding a Unix socket only replaces stale socket files
   (#1321).
@@ -987,7 +1039,10 @@ as a compiled, compressed binary, so loading it only decodes.
   reassembled, so a client can no longer dodge strict SNI routing that way
   (#1303).
 * Fixed unbounded memory in the HTML rewriter: one construct is bounded and the
-  rewriter fails closed by default (#1301).
+  rewriter fails closed by default (#1301). Nested SVG and MathML content no
+  longer hides real elements or exposes script and style text to handlers after
+  an HTML breakout or integration point, following lol-html's
+  GHSA-4mwc-7445-8xvx and GHSA-6hc8-66v8-xhf6 (#1368).
 * Fixed HTTP client pool reuse: abandoned HTTP/1 bodies no longer hand out the
   connection again, parked waiters are woken when a slot frees, and upgraded
   tunnels no longer inherit the HTTP connection's health (#1141).
@@ -1017,6 +1072,9 @@ as a compiled, compressed binary, so loading it only decodes.
   #1323).
 * Fixed `localhost` and `*.localhost` lookups depending on the resolver: they
   now resolve to loopback as RFC 6761 asks (#1140).
+* Fixed proxy database filters: an empty value list now matches no proxy, a
+  wildcard filter only selects wildcard rows, and indexed and ID lookups agree
+  (#1359).
 * Fixed OpenTelemetry HTTP metrics leaking the active-request gauge on cancelled
   requests (#1194, by Brecht Stamper).
 * Updated wasmtime for RUSTSEC-2026-0325..0327, and rustls-webpki and
