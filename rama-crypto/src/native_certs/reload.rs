@@ -1,15 +1,13 @@
 use super::{
     CertPaths, CertificateDer, CertificateResult, ENV_EXTRA_CERT_DIR, ENV_EXTRA_CERT_FILE,
 };
+use crate::pki_types::pem::PemObject as _;
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _};
 use std::{
-    fs, io,
-    path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime},
+    fs::File,
+    io::{self, Read},
+    path::Path,
 };
-
-#[cfg(any(target_os = "macos", windows))]
-use super::notifications::StoreNotifications;
 
 /// Read the native roots and environment-supplied extra roots for a fresh snapshot.
 ///
@@ -65,34 +63,58 @@ fn load_from_sources(
 }
 
 fn checked_load_paths(paths: &CertPaths) -> Result<Vec<CertificateDer<'static>>, BoxError> {
-    let mut result = CertificateResult::default();
-    let mut seen = super::SeenFiles::default();
-    if let Some(file) = &paths.file {
-        super::load_pem_certs(file, &mut result, false);
-        if let Ok(metadata) = fs::metadata(file) {
-            seen.first_visit(&metadata);
-            if result.certs.is_empty()
-                && result.errors.is_empty()
-                && metadata.len() != 0
-                && fs::read(file)?
-                    .iter()
-                    .any(|byte| !byte.is_ascii_whitespace())
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "no PEM certificates in nonempty native trust file '{}'",
-                        file.display()
-                    ),
-                )
-                .into());
-            }
+    let result = super::read_cert_paths(paths.file.as_deref(), &paths.dirs, load_bundle);
+    checked_load(result)
+}
+
+// For a reload, an empty bundle can intentionally withdraw all trust. Reject a
+// nonempty file with no certificates so a malformed update keeps the last snapshot.
+fn load_bundle(path: &Path, result: &mut CertificateResult) {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            result.io_error(error, path, "opening native trust bundle");
+            return;
+        }
+    };
+    let mut reader = BundleReader {
+        file,
+        has_content: false,
+    };
+    let mut found_entry = false;
+    for entry in CertificateDer::pem_reader_iter(&mut reader) {
+        found_entry = true;
+        match entry {
+            Ok(cert) => result.certs.push(cert),
+            Err(error) => result.pem_error(error, path),
         }
     }
-    for dir in &paths.dirs {
-        super::load_pem_certs_from_dir(dir, &mut result, &mut seen);
+    if !found_entry && reader.has_content {
+        result.io_error(
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "no PEM certificates in nonempty native trust file",
+            ),
+            path,
+            "reading native trust bundle",
+        );
     }
-    checked_load(result)
+}
+
+struct BundleReader {
+    file: File,
+    has_content: bool,
+}
+
+impl Read for BundleReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = self.file.read(buffer)?;
+        self.has_content = self.has_content
+            || buffer[..count]
+                .iter()
+                .any(|byte| !byte.is_ascii_whitespace());
+        Ok(count)
+    }
 }
 
 fn checked_load(result: CertificateResult) -> Result<Vec<CertificateDer<'static>>, BoxError> {
@@ -111,242 +133,5 @@ fn checked_load(result: CertificateResult) -> Result<Vec<CertificateDer<'static>
     Ok(result.certs)
 }
 
-/// Tracks changes in the native store and configured files between probes.
-/// Each instance maintains its own cursor over store notifications and file metadata.
-pub struct NativeCertsChanges {
-    interval: Duration,
-    probed_at: Option<Instant>,
-    files: Vec<(PathBuf, FileState)>,
-    #[cfg(any(target_os = "macos", windows))]
-    notifications: Option<StoreNotifications>,
-}
-
-impl NativeCertsChanges {
-    /// Set the minimum interval between filesystem checks.
-    pub const fn new(interval: Duration) -> Self {
-        Self {
-            interval,
-            probed_at: None,
-            files: Vec::new(),
-            #[cfg(any(target_os = "macos", windows))]
-            notifications: None,
-        }
-    }
-
-    fn probe_due(&self) -> bool {
-        self.probed_at
-            .is_none_or(|last| last.elapsed() >= self.interval)
-    }
-
-    /// Probe the backing sources and consume any detected change. May block.
-    pub fn changed(&mut self) -> bool {
-        if !self.probe_due() {
-            #[cfg(any(target_os = "macos", windows))]
-            return self
-                .notifications
-                .as_mut()
-                .and_then(StoreNotifications::poll)
-                .unwrap_or(false);
-            #[cfg(not(any(target_os = "macos", windows)))]
-            return false;
-        }
-        let base = CertPaths::from_env();
-        #[cfg(any(target_os = "macos", windows))]
-        let notified = if base.has_overrides() {
-            self.notifications = None;
-            false
-        } else {
-            self.notifications
-                .get_or_insert_with(StoreNotifications::new)
-                .poll()
-                .unwrap_or(true)
-        };
-        #[cfg(not(any(target_os = "macos", windows)))]
-        let notified = false;
-
-        #[cfg(all(unix, not(target_os = "macos")))]
-        let base = if base.has_overrides() {
-            base
-        } else {
-            super::unix::system_paths()
-        };
-        let extra = CertPaths::from_env_vars(ENV_EXTRA_CERT_FILE, ENV_EXTRA_CERT_DIR);
-        self.probe_files(&base, &extra, Instant::now()) || notified
-    }
-
-    fn probe_files(&mut self, base: &CertPaths, extra: &CertPaths, now: Instant) -> bool {
-        let mut files = Vec::new();
-        record_paths(base, &mut files);
-        record_paths(extra, &mut files);
-
-        let changed = self.probed_at.is_some() && files != self.files;
-        self.probed_at = Some(now);
-        self.files = files;
-        changed
-    }
-}
-
-fn record_paths(paths: &CertPaths, files: &mut Vec<(PathBuf, FileState)>) {
-    if let Some(file) = &paths.file {
-        files.push((file.clone(), file_state(file)));
-    }
-    for dir in &paths.dirs {
-        files.push((dir.clone(), file_state(dir)));
-        let Ok(entries) = fs::read_dir(dir) else {
-            continue;
-        };
-        let first = files.len();
-        files.extend(entries.map(|entry| match entry {
-            Ok(entry) => {
-                let path = entry.path();
-                let state = file_state(&path);
-                (path, state)
-            }
-            Err(error) => (dir.clone(), FileState::Unavailable(error.kind())),
-        }));
-        files[first..].sort_unstable();
-    }
-}
-
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum FileState {
-    Present {
-        modified: Option<SystemTime>,
-        len: u64,
-        #[cfg(unix)]
-        dev: u64,
-        #[cfg(unix)]
-        inode: u64,
-        #[cfg(unix)]
-        changed: (i64, i64),
-    },
-    Unavailable(io::ErrorKind),
-}
-
-fn file_state(path: &Path) -> FileState {
-    #[cfg(unix)]
-    use std::os::unix::fs::MetadataExt as _;
-
-    match fs::metadata(path) {
-        Ok(metadata) => FileState::Present {
-            modified: metadata.modified().ok(),
-            len: metadata.len(),
-            #[cfg(unix)]
-            dev: metadata.dev(),
-            #[cfg(unix)]
-            inode: metadata.ino(),
-            #[cfg(unix)]
-            changed: (metadata.ctime(), metadata.ctime_nsec()),
-        },
-        Err(error) => FileState::Unavailable(error.kind()),
-    }
-}
-
 #[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-    use crate::native_certs::tests::TestDir;
-
-    #[test]
-    fn explicit_empty_file_differs_from_invalid_pem() {
-        let dir = TestDir::new("reload-empty");
-        let file = dir.0.join("bundle.pem");
-        let paths = CertPaths {
-            file: Some(file.clone()),
-            dirs: Vec::new(),
-        };
-        drop(checked_load_paths(&paths).unwrap_err());
-        fs::write(&file, "broken trust bundle").unwrap();
-        drop(checked_load_paths(&paths).unwrap_err());
-        fs::write(&file, " \n").unwrap();
-        assert!(checked_load_paths(&paths).unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_successful_empty_system_store_clears_live_roots() {
-        use crate::pem::PemEncode as _;
-
-        let dir = TestDir::new("reload-empty-system");
-        let bundle = dir.0.join("system.pem");
-        let extra_file = dir.0.join("extra.pem");
-        let system = CertPaths {
-            file: Some(bundle.clone()),
-            dirs: Vec::new(),
-        };
-        let extra = CertPaths {
-            file: Some(extra_file.clone()),
-            dirs: Vec::new(),
-        };
-        let unset = CertPaths {
-            file: None,
-            dirs: Vec::new(),
-        };
-        let refresh = |extra: &CertPaths, fallback| {
-            load_from_sources(&unset, extra, fallback, || checked_load_paths(&system))
-        };
-
-        fs::write(&bundle, b"").unwrap();
-        let (initial, bundled) = refresh(&unset, true).unwrap();
-        assert!(bundled);
-        assert!(initial.contains(&super::super::bundled_root_certs()[0]));
-
-        let roots = super::super::bundled_root_certs();
-        fs::write(&bundle, roots[0].to_pem()).unwrap();
-        fs::write(&extra_file, roots[1].to_pem()).unwrap();
-        let (live, bundled) = refresh(&extra, bundled).unwrap();
-        assert!(!bundled);
-        assert_eq!(live.len(), 2);
-        assert!(live.contains(&roots[0]));
-        assert!(live.contains(&roots[1]));
-
-        fs::write(&bundle, b"").unwrap();
-        let (extra_only, bundled) = refresh(&extra, bundled).unwrap();
-        assert!(!bundled);
-        assert_eq!(extra_only, &[roots[1].clone()]);
-        let (empty, bundled) = refresh(&unset, bundled).unwrap();
-        assert!(!bundled);
-        assert!(empty.is_empty());
-
-        fs::remove_file(&bundle).unwrap();
-        let error = refresh(&extra, bundled)
-            .unwrap_err()
-            .downcast::<crate::native_certs::Error>()
-            .unwrap();
-        assert!(matches!(
-            error.kind,
-            crate::native_certs::ErrorKind::Io { inner, .. }
-                if inner.kind() == io::ErrorKind::NotFound
-        ));
-    }
-
-    #[test]
-    fn observes_atomically_replaced_bundle_and_in_place_directory_changes() {
-        let dir = TestDir::new("reload-metadata");
-        let bundle = dir.0.join("bundle.pem");
-        let replacement = dir.0.join("replacement.pem");
-        let extra_dir = dir.0.join("extra");
-        let extra_anchor = extra_dir.join("anchor.pem");
-        fs::create_dir(&extra_dir).unwrap();
-        fs::write(&bundle, b"first").unwrap();
-        fs::write(&extra_anchor, b"first").unwrap();
-        let base = CertPaths {
-            file: Some(bundle.clone()),
-            dirs: Vec::new(),
-        };
-        let extra = CertPaths {
-            file: None,
-            dirs: vec![extra_dir],
-        };
-        let mut changes = NativeCertsChanges::new(Duration::from_secs(60));
-        let now = Instant::now();
-        assert!(changes.probe_due());
-        assert!(!changes.probe_files(&base, &extra, now));
-        fs::write(&replacement, b"other").unwrap();
-        fs::rename(&replacement, &bundle).unwrap();
-        assert!(!changes.probe_due());
-        assert!(changes.probe_files(&base, &extra, now));
-        assert!(!changes.probe_files(&base, &extra, now));
-        fs::write(&extra_anchor, b"different").unwrap();
-        assert!(changes.probe_files(&base, &extra, now));
-    }
-}
+mod tests;

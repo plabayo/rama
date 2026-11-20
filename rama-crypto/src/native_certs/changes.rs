@@ -1,0 +1,148 @@
+#[cfg(any(target_os = "macos", windows))]
+use super::notifications::StoreNotifications;
+use super::{CertPaths, ENV_EXTRA_CERT_DIR, ENV_EXTRA_CERT_FILE};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime},
+};
+
+/// Tracks changes in the native store and configured files between probes.
+/// Each instance maintains its own cursor over store notifications and file metadata.
+pub struct NativeCertsChanges {
+    interval: Duration,
+    probed_at: Option<Instant>,
+    files: Vec<(PathBuf, FileState)>,
+    #[cfg(any(target_os = "macos", windows))]
+    notifications: Option<StoreNotifications>,
+}
+
+impl NativeCertsChanges {
+    /// Set the minimum interval between filesystem checks.
+    pub const fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            probed_at: None,
+            files: Vec::new(),
+            #[cfg(any(target_os = "macos", windows))]
+            notifications: None,
+        }
+    }
+
+    fn probe_due(&self) -> bool {
+        self.probed_at
+            .is_none_or(|last| last.elapsed() >= self.interval)
+    }
+
+    /// Probe the backing sources and consume any detected change. May block.
+    pub fn changed(&mut self) -> bool {
+        if !self.probe_due() {
+            #[cfg(any(target_os = "macos", windows))]
+            return self
+                .notifications
+                .as_mut()
+                .and_then(StoreNotifications::poll)
+                .unwrap_or(false);
+            #[cfg(not(any(target_os = "macos", windows)))]
+            return false;
+        }
+        let base = CertPaths::from_env();
+        #[cfg(any(target_os = "macos", windows))]
+        let notified = self.check_store(&base);
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let notified = false;
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let base = if base.has_overrides() {
+            base
+        } else {
+            super::unix::system_paths()
+        };
+        let extra = CertPaths::from_env_vars(ENV_EXTRA_CERT_FILE, ENV_EXTRA_CERT_DIR);
+        self.probe_files(&base, &extra, Instant::now()) || notified
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    fn check_store(&mut self, base: &CertPaths) -> bool {
+        if base.has_overrides() {
+            self.notifications = None;
+            return false;
+        }
+
+        // If native notifications are unavailable, refresh once per probe interval.
+        self.notifications
+            .get_or_insert_with(StoreNotifications::new)
+            .poll()
+            .unwrap_or(true)
+    }
+
+    fn probe_files(&mut self, base: &CertPaths, extra: &CertPaths, now: Instant) -> bool {
+        let mut files = Vec::new();
+        record_paths(base, &mut files);
+        record_paths(extra, &mut files);
+
+        let changed = self.probed_at.is_some() && files != self.files;
+        self.probed_at = Some(now);
+        self.files = files;
+        changed
+    }
+}
+
+fn record_paths(paths: &CertPaths, files: &mut Vec<(PathBuf, FileState)>) {
+    if let Some(file) = &paths.file {
+        files.push((file.clone(), file_state(file)));
+    }
+    for dir in &paths.dirs {
+        files.push((dir.clone(), file_state(dir)));
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        let first = files.len();
+        files.extend(entries.map(|entry| match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                let state = file_state(&path);
+                (path, state)
+            }
+            Err(error) => (dir.clone(), FileState::Unavailable(error.kind())),
+        }));
+        files[first..].sort_unstable();
+    }
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum FileState {
+    Present {
+        modified: Option<SystemTime>,
+        len: u64,
+        #[cfg(unix)]
+        dev: u64,
+        #[cfg(unix)]
+        inode: u64,
+        #[cfg(unix)]
+        changed: (i64, i64),
+    },
+    Unavailable(io::ErrorKind),
+}
+
+fn file_state(path: &Path) -> FileState {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt as _;
+
+    match fs::metadata(path) {
+        Ok(metadata) => FileState::Present {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+            #[cfg(unix)]
+            dev: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            #[cfg(unix)]
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        },
+        Err(error) => FileState::Unavailable(error.kind()),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests;

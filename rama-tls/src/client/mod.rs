@@ -67,12 +67,13 @@ mod config;
 #[cfg(feature = "http")]
 mod http;
 mod pool;
+mod server_trust;
 #[doc(inline)]
 pub use config::{
-    ClientAuth, ClientAuthData, ServerTrustSource, ServerVerifyMode, TlsClientAuth,
-    TlsClientConfig, TlsEncryptedClientHello, TlsServerCertPin, TlsServerCertPinCheck,
-    TlsServerCertPinSet, TlsServerCertPins, TlsServerIdentity, TlsServerName, TlsServerTrust,
-    TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain, TlsStoreServerHello,
+    ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
+    TlsEncryptedClientHello, TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet,
+    TlsServerCertPins, TlsServerIdentity, TlsServerName, TlsServerVerify, TlsStoreServerCertChain,
+    TlsStoreServerHello,
 };
 #[cfg(feature = "http")]
 pub use http::{http_alpn_override, negotiated_http_version};
@@ -81,6 +82,8 @@ pub use pool::{
     TlsPoolIdBuilder,
 };
 use rama_crypto::pki_types::CertificateDer;
+#[doc(inline)]
+pub use server_trust::{ServerTrustSource, TlsServerTrust, TlsServerTrustAnchors};
 
 use super::{
     CertificateCompressionAlgorithm, CipherSuite, ProtocolVersion, SignatureScheme, SupportedGroup,

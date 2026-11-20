@@ -58,9 +58,12 @@ use macos as platform;
 #[cfg(any(target_os = "macos", windows))]
 mod notifications;
 
+mod changes;
 mod reload;
 #[doc(inline)]
-pub use reload::{NativeCertsChanges, load_reloadable_native_certs};
+pub use changes::NativeCertsChanges;
+#[doc(inline)]
+pub use reload::load_reloadable_native_certs;
 
 /// Returns the cached, process-wide default trust anchors used by rama tls
 /// clients (both the `rustls` and `boring` backends consume these).
@@ -280,26 +283,30 @@ fn load_certs_from_paths_internal(
     file: Option<&Path>,
     dir: &[impl AsRef<Path>],
 ) -> CertificateResult {
-    let mut out = CertificateResult::default();
-    if file.is_none() && dir.is_empty() {
-        return out;
-    }
+    let mut out = read_cert_paths(file, dir, |path, out| load_pem_certs(path, out, false));
+    out.certs.sort_unstable_by(|a, b| a.cmp(b));
+    out.certs.dedup();
+    out
+}
 
+fn read_cert_paths(
+    file: Option<&Path>,
+    dirs: &[impl AsRef<Path>],
+    read_bundle: impl FnOnce(&Path, &mut CertificateResult),
+) -> CertificateResult {
+    let mut out = CertificateResult::default();
     let mut seen = SeenFiles::default();
     if let Some(cert_file) = file {
         if let Ok(metadata) = fs::metadata(cert_file) {
             seen.first_visit(&metadata);
         }
         // An explicit file is expected to exist and be readable: surface errors.
-        load_pem_certs(cert_file, &mut out, false);
+        read_bundle(cert_file, &mut out);
     }
 
-    for cert_dir in dir.iter() {
-        load_pem_certs_from_dir(cert_dir.as_ref(), &mut out, &mut seen);
+    for dir in dirs {
+        load_pem_certs_from_dir(dir.as_ref(), &mut out, &mut seen);
     }
-
-    out.certs.sort_unstable_by(|a, b| a.cmp(b));
-    out.certs.dedup();
     out
 }
 
