@@ -339,10 +339,9 @@ pub async fn settle_the_keys_answering(
     answer(what, deadline, connection, carrying).await;
 }
 
-// An earlier automatic or peer update already retired the initial short phase.
-// Waiting for another update can deadlock until the carrying exchange sends
-// an ACK-eliciting packet under the current keys.
-async fn ensure_updated_keys(what: &str, deadline: Deadline, connection: &Connection) {
+/// Retire the initial short phase unless an automatic or peer update already did so.
+/// The caller carries these keys to the peer with an ACK-eliciting exchange.
+pub async fn ensure_updated_keys(what: &str, deadline: Deadline, connection: &Connection) {
     deadline
         .wait(what, async {
             while connection.stats().key_updates == 0 && !connection.force_key_update() {
