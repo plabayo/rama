@@ -567,6 +567,7 @@ where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     is_connect: bool,
+    is_head: bool,
     // Extended CONNECT (RFC 8441): a `:protocol` tunnel.
     extended: bool,
     eos: bool,
@@ -787,6 +788,7 @@ where
             send_when: SendWhen {
                 when: ResponseFutMap {
                     fut: f.fut,
+                    is_head: f.is_head,
                     ping: Some(ping),
                     send_stream: Some(send_stream),
                     extended: f.extended,
@@ -822,6 +824,7 @@ pin_project! {
     {
         #[pin]
         fut: ResponseFuture,
+        is_head: bool,
         #[pin]
         ping: Option<Recorder>,
         #[pin]
@@ -881,7 +884,11 @@ where
                     res.extensions().insert_arc(peer.clone());
                 }
 
-                let content_length = headers::content_length_parse_all(res.headers());
+                let content_length = if *this.is_head {
+                    Some(0)
+                } else {
+                    headers::content_length_parse_all(res.headers())
+                };
                 if let (Some(send_stream), status) = (send_stream, res.status())
                     && status.is_success()
                 {
@@ -979,6 +986,7 @@ where
                     let content_length = headers::content_length_parse_all(req.headers());
 
                     let allowed_trailers = req.extensions().get_arc::<ForbiddenTrailers>();
+                    let is_head = req.method() == Method::HEAD;
                     let is_connect = req.method() == Method::CONNECT;
                     let extended = is_connect && req.extensions().contains::<Protocol>();
 
@@ -1013,6 +1021,7 @@ where
                     };
 
                     let f = FutCtx {
+                        is_head,
                         is_connect,
                         extended,
                         eos,

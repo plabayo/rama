@@ -67,6 +67,18 @@ impl SizeHint {
         self.upper = Some(value);
     }
 
+    /// Adds the bounds, saturating the lower bound and dropping an overflowing upper bound.
+    #[inline]
+    pub fn saturating_add(self, rhs: Self) -> Self {
+        Self {
+            lower: self.lower.saturating_add(rhs.lower),
+            upper: self
+                .upper
+                .zip(rhs.upper)
+                .and_then(|(a, b)| a.checked_add(b)),
+        }
+    }
+
     /// Reduce the remaining byte bounds after consuming a data frame.
     /// Unknown upper bounds stay unknown and both bounds saturate at zero.
     pub fn consume(&mut self, bytes: u64) {
@@ -98,13 +110,7 @@ impl core::ops::Add for SizeHint {
     type Output = SizeHint;
 
     fn add(self, rhs: Self) -> Self::Output {
-        SizeHint {
-            lower: self.lower().saturating_add(rhs.lower()),
-            upper: self
-                .upper()
-                .zip(rhs.upper())
-                .and_then(|(this, rhs)| this.checked_add(rhs)),
-        }
+        self.saturating_add(rhs)
     }
 }
 

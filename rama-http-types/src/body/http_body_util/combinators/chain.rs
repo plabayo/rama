@@ -130,9 +130,9 @@ where
 
     fn size_hint(&self) -> SizeHint {
         match &self.inner {
-            Inner::First { first, second } => {
-                first.size_hint() + second.as_ref().map(Body::size_hint).unwrap_or_default()
-            }
+            Inner::First { first, second } => first
+                .size_hint()
+                .saturating_add(second.as_ref().map(Body::size_hint).unwrap_or_default()),
             Inner::Second { second, .. } => second.size_hint(),
             Inner::Finished => SizeHint::with_exact(0),
         }

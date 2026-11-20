@@ -31,6 +31,7 @@ pub(crate) use self::charref::{attribute_value_is, decode_attribute_value_into};
 pub use self::context::ParsingAmbiguityError;
 pub(crate) use self::context::{ContextTracker, TextMode, annotation_xml_is_html};
 pub use self::error::{MemoryLimitExceededError, TokenizerError};
+pub(super) use self::machine::Halt;
 pub(crate) use self::machine::Stopped;
 pub use self::machine::{DEFAULT_MAX_BUFFERED_BYTES, Tokenizer, tokenize};
 pub use self::name::LocalNameHash;

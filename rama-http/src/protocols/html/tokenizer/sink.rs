@@ -1,6 +1,6 @@
 //! The sink that receives tokens from the [`Tokenizer`](super::Tokenizer).
 
-use super::context::{ContextTracker, ParsingAmbiguityError, TextMode};
+use super::context::{ContextTracker, TextMode};
 use super::name::LocalNameHash;
 use super::token::{Cdata, Comment, Doctype, EndTag, StartTag, Text};
 
@@ -54,7 +54,7 @@ pub(crate) trait ParseSink {
     fn text_mode(&mut self, hash: LocalNameHash, name: &[u8]) -> Option<TextMode>;
 
     /// Consumes a start tag.
-    fn start_tag(&mut self, tag: &StartTag<'_>) -> Result<(), ParsingAmbiguityError>;
+    fn start_tag(&mut self, tag: &StartTag<'_>, limit: usize) -> Result<(), super::Halt>;
 
     /// Consumes an end tag; `closes_text` marks the end tag of a text-mode
     /// body, which the tokenizer found itself.
@@ -92,19 +92,23 @@ impl<S: TokenSink> ParseSink for Standalone<'_, S> {
         self.context.peek_text_mode(hash, name)
     }
 
-    fn start_tag(&mut self, tag: &StartTag<'_>) -> Result<(), ParsingAmbiguityError> {
-        self.sink.start_tag(tag);
-        self.context.on_start_tag(tag)
+    fn start_tag(&mut self, tag: &StartTag<'_>, limit: usize) -> Result<(), super::Halt> {
+        let result = self.context.on_start_tag(tag, limit);
+        // Strict mode emits the complete tag before reporting ambiguity about its body.
+        // A memory-limit stop leaves the whole tag in the unconsumed input.
+        if !matches!(result, Err(super::Halt::OverLimit { .. })) {
+            self.sink.start_tag(tag);
+        }
+        result
     }
 
     fn end_tag(&mut self, tag: &EndTag<'_>, closes_text: bool) {
         self.sink.end_tag(tag);
-        if !closes_text {
-            self.context.on_end_tag(tag);
-        }
+        self.context.on_end_tag(tag, closes_text);
     }
 
     fn text(&mut self, text: &Text<'_>) {
+        self.context.on_text(text.raw());
         self.sink.text(text);
     }
 

@@ -31,6 +31,7 @@ mod element;
 mod rewriter;
 mod tree;
 
+pub(super) use self::tree::ForeignContext;
 pub use self::tree::ScopeMode;
 use self::tree::{EndOutcome, OpenElements, Origin, Placement, StartPlan};
 

@@ -429,6 +429,26 @@ where
         self.inner.ping_pong.take_user_pings()
     }
 
+    fn remote_go_away_if_idle(&self) -> Option<Error> {
+        let frame = self.inner.error.as_ref()?;
+        if frame.reason() == Reason::NO_ERROR || self.inner.streams.has_streams() {
+            return None;
+        }
+        Some(Error::remote_go_away(
+            frame.debug_data().clone(),
+            frame.reason(),
+        ))
+    }
+
+    fn prefer_remote_go_away(&self, error: Error) -> Error {
+        if matches!(error, Error::Io(..))
+            && let Some(remote) = self.remote_go_away_if_idle()
+        {
+            return remote;
+        }
+        error
+    }
+
     /// Advances the internal state of the connection.
     pub(crate) fn poll(&mut self, cx: &mut Context) -> Poll<Result<(), Error>> {
         // XXX(eliza): cloning the span is unfortunately necessary here in
@@ -453,8 +473,10 @@ where
                             // Ensure all window updates have been sent.
                             //
                             // This will also handle flushing `self.codec`
-                            ready!(self.inner.streams.poll_complete(cx, &mut self.codec))?;
-                            ready!(self.poll_alt_svc(cx))?;
+                            ready!(self.inner.streams.poll_complete(cx, &mut self.codec))
+                                .map_err(|err| self.prefer_remote_go_away(err))?;
+                            ready!(self.poll_alt_svc(cx))
+                                .map_err(|err| self.prefer_remote_go_away(err))?;
 
                             if (self.inner.error.is_some()
                                 || self.inner.go_away.should_close_on_idle())
@@ -468,12 +490,18 @@ where
                         }
                     };
 
+                    if matches!(result, Err(Error::Io(..)))
+                        && let Some(error) = self.remote_go_away_if_idle()
+                    {
+                        return Poll::Ready(Err(error));
+                    }
                     self.inner.as_dyn().handle_poll2_result(result)?
                 }
                 State::Closing(reason, initiator) => {
                     tracing::trace!("connection closing after flush");
                     // Flush/shutdown the codec
-                    ready!(self.codec.shutdown(cx))?;
+                    ready!(self.codec.shutdown(cx))
+                        .map_err(|err| self.prefer_remote_go_away(err.into()))?;
 
                     // Transition the state to error
                     self.inner.state = State::Closed(reason, initiator);

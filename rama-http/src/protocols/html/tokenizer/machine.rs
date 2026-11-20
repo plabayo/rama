@@ -170,6 +170,9 @@ impl Tokenizer {
         /// Defaults to [`DEFAULT_MAX_BUFFERED_BYTES`]; budgets below 9 bytes
         /// (the longest markup opener, `<![CDATA[`) act as 9.
         ///
+        /// While tracking SVG or MathML, the same budget independently bounds the
+        /// open-element frame bytes used to determine text modes and CDATA.
+        ///
         /// The tokenizer's input and attribute scratch buffers stay below
         /// about twice the budget (they are capped separately); this is not a
         /// ceiling for the whole heap (e.g. nesting context, a rewriter's
@@ -446,7 +449,7 @@ fn shrink(buffer: &mut Vec<u8>, ranges: &mut Vec<AttrRange>) {
 }
 
 /// Why a run stopped before the end of its input.
-enum Halt {
+pub(crate) enum Halt {
     Ambiguity(ParsingAmbiguityError),
     /// The construct at `at` does not fit the memory limit.
     OverLimit {
@@ -794,14 +797,17 @@ fn scan_start_tag<P: ParseSink>(
     let name_bytes = slice(input, name_start, tag.name_end);
     let name_hash = LocalNameHash::of(name_bytes);
     let text_mode = sink.text_mode(name_hash, name_bytes);
-    sink.start_tag(&StartTag {
-        input,
-        raw: Span::new(lt, tag.close),
-        name: Span::new(name_start, tag.name_end),
-        name_hash,
-        attributes: &attributes.ranges,
-        self_closing: tag.self_closing,
-    })?;
+    sink.start_tag(
+        &StartTag {
+            input,
+            raw: Span::new(lt, tag.close),
+            name: Span::new(name_start, tag.name_end),
+            name_hash,
+            attributes: &attributes.ranges,
+            self_closing: tag.self_closing,
+        },
+        limit,
+    )?;
     // Done with: a large tag's ranges are then released by the next shrink.
     attributes.ranges.clear();
     let Some(mode) = text_mode else {

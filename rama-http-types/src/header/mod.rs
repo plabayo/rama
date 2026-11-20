@@ -25,8 +25,8 @@
 //!
 //! ## Limitations
 //!
-//! `HeaderName` has a max length of 32,768 for header names. Attempting to
-//! parse longer names will result in a panic.
+//! `HeaderName` accepts names up to 65,535 bytes. Fallible constructors return
+//! an error for longer names.
 //!
 //! # `HeaderMap`
 //!
