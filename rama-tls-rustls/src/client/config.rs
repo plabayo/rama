@@ -20,7 +20,8 @@ use rama_tls::client::{
     ClientHandshake, DynTlsServerCertChainPolicy, ServerTrustSource, TlsClientAuth,
     TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity, TlsPoolComponent, TlsPoolId,
     TlsServerCertPinCheck, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
-    TlsSessionProfileScope, TlsStoreServerCertChain,
+    TlsSessionProfileScope, TlsStoreServerCertChain, rustls_server_verification,
+    rustls_server_verification_async,
 };
 use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
@@ -48,39 +49,36 @@ pub struct RustlsTlsConnectorConfig<'a> {
 }
 
 impl RustlsTlsConnectorConfig<'_> {
-    pub(crate) fn pin_server_trust(&self) -> Result<Option<TlsServerTrust>, BoxError> {
-        if self.verifier.is_some()
-            || self
-                .verify
-                .is_some_and(|verify| verify.0 == rama_tls::client::ServerVerifyMode::Disable)
-        {
-            return Ok(None);
-        }
-        let Some(trust) = self.server_trust else {
-            return Ok(None);
-        };
-        Ok(trust
-            .source()
-            .snapshot()?
-            .map(|source| trust.clone().with_source(source)))
+    /// Acquire the native server verifier for an explicit common trust policy.
+    ///
+    /// Returns `None` when the backend's default or a custom verifier applies.
+    /// A synchronous acquisition may block while reading the trust store.
+    pub fn server_verification(
+        extensions: &Extensions,
+    ) -> Result<Option<super::RustlsServerVerification>, BoxError> {
+        Self::common_server_trust(extensions)
+            .map(rustls_server_verification)
+            .transpose()
     }
 
-    /// Prepare server trust for one connection on a Tokio runtime.
-    ///
-    /// Pass the connection's own effective configuration. The preparation can
-    /// install a pinned trust source and a prepared platform verifier there.
-    pub async fn prepare_server_trust(extensions: &Extensions) -> Result<(), BoxError> {
-        let Some(trust) = extensions.get_ref::<TlsServerTrust>() else {
-            return Ok(());
+    /// Acquire native server verification without blocking a Tokio worker
+    /// during reloadable trust reads or derived store construction.
+    pub async fn server_verification_async(
+        extensions: &Extensions,
+    ) -> Result<Option<super::RustlsServerVerification>, BoxError> {
+        let Some(trust) = Self::common_server_trust(extensions) else {
+            return Ok(None);
         };
-        if extensions.contains::<RustlsServerCertVerifier>()
-            || extensions
+        rustls_server_verification_async(trust).await.map(Some)
+    }
+
+    fn common_server_trust(extensions: &Extensions) -> Option<&TlsServerTrust> {
+        let trust = extensions.get_ref::<TlsServerTrust>()?;
+        (!extensions.contains::<RustlsServerCertVerifier>()
+            && extensions
                 .get_ref::<TlsServerVerify>()
-                .is_some_and(|verify| verify.0 == rama_tls::client::ServerVerifyMode::Disable)
-        {
-            return Ok(());
-        }
-        super::platform_verifier::prepare_server_trust(extensions, trust).await
+                .is_none_or(|verify| verify.0 != rama_tls::client::ServerVerifyMode::Disable))
+        .then_some(trust)
     }
 
     /// Compact identity of request-level overrides, or `None` for the baseline.
@@ -208,21 +206,15 @@ impl RustlsTlsConnectorConfig<'_> {
         super::connector_data::build_client_config(&self, Some(provider), None)
     }
 
-    /// Build a native configuration with the same backend state prepared in
-    /// `extensions` by [`Self::prepare_server_trust`].
+    /// Build a native client configuration with the supplied server verification.
     ///
-    /// A prepared verifier is only reused if it matches this configuration's
-    /// trust source and explicit additional anchors.
-    pub fn try_into_client_config_with_prepared_trust(
+    /// Acquire the verifier or store for the same policy as this configuration.
+    pub fn try_into_client_config_with_verification(
         self,
         provider: Arc<crate::dep::rustls::crypto::CryptoProvider>,
-        extensions: &Extensions,
+        verification: &super::RustlsServerVerification,
     ) -> Result<ClientConfig, BoxError> {
-        super::connector_data::build_client_config(
-            &self,
-            Some(provider),
-            extensions.get_ref::<super::platform_verifier::PreparedPlatformVerifier>(),
-        )
+        super::connector_data::build_client_config(&self, Some(provider), Some(verification))
     }
 }
 

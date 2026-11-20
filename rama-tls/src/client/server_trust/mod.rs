@@ -20,6 +20,8 @@ mod native;
 /// Configure this policy once and clone it so callers share its reload state
 /// and can reuse pooled connections. Refreshes apply to new handshakes.
 /// Established pooled connections can continue serving requests until they close.
+/// Rama’s rustls and BoringSSL connectors, including their QUIC providers,
+/// apply this policy. A custom verifier controls its own trust decisions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NativeTrustPolicy {
     #[cfg(feature = "native-certs")]
@@ -54,6 +56,8 @@ impl Default for NativeTrustPolicy {
 /// Configure this policy once and clone it so callers share its reload state
 /// and can reuse pooled connections. Refreshes apply to new handshakes.
 /// Established pooled connections can continue serving requests until they close.
+/// Rama’s rustls and BoringSSL connectors, including their QUIC providers,
+/// apply this policy. A custom verifier controls its own trust decisions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct PlatformTrustPolicy {

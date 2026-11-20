@@ -47,10 +47,6 @@ pub use chain_policy::{
 #[cfg(feature = "dns")]
 pub mod ech_discovery;
 
-#[cfg(feature = "native-certs")]
-#[cfg_attr(docsrs, doc(cfg(feature = "native-certs")))]
-pub mod platform_verifier;
-
 mod ech;
 pub use ech::{
     EchRequirement, EchRetryConfig, TargetEchResolution, TlsEchAccepted, resolve_target_ech,
@@ -65,6 +61,15 @@ pub use native_trust::UnixSignalTrigger;
 pub use native_trust::{
     ChannelReloadClosed, ChannelReloadSender, ChannelReloadTrigger, IntoNativeTrustReloadTrigger,
     NativeTrustRefreshError, NativeTrustStoreChanges,
+};
+#[cfg(feature = "boring-native-verification")]
+pub use native_trust::{
+    boring_native_root_store, boring_server_verification, boring_server_verification_async,
+};
+#[cfg(feature = "rustls-native-verification")]
+pub use native_trust::{
+    rustls_native_root_store, rustls_server_verification, rustls_server_verification_async,
+    rustls_webpki_root_store,
 };
 
 mod config;

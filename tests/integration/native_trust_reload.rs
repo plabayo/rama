@@ -230,13 +230,17 @@ async fn run(dir: PathBuf, trust: impl FnOnce(ChannelReloadTrigger) -> TlsServer
     reload.request_reload().unwrap();
     use_b.store(true, Ordering::Relaxed);
     read_server_byte(&mut rustls.serve(request()).await.unwrap().conn).await;
-    loop {
-        if let Ok(mut updated) = auto_rustls.serve(request()).await {
-            read_server_byte(&mut updated.conn).await;
-            break;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(mut updated) = auto_rustls.serve(request()).await {
+                read_server_byte(&mut updated.conn).await;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    })
+    .await
+    .expect("the file watcher should pick up the replacement CA");
     let mut replacement = boring.serve(request()).await.unwrap().conn;
     read_server_byte(&mut replacement).await;
     assert!(!resumed(&replacement));

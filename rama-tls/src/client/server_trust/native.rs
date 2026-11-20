@@ -1,3 +1,14 @@
+#![cfg_attr(
+    not(any(
+        feature = "boring-native-verification",
+        feature = "rustls-native-verification"
+    )),
+    expect(
+        dead_code,
+        reason = "material is only consumed when a TLS backend is enabled"
+    )
+)]
+
 use std::time::Duration;
 
 use rama_core::error::BoxError;
@@ -99,11 +110,6 @@ impl NativeTrustPolicy {
             self
         }
     }
-
-    /// Roots pinned for this source by [`ServerTrustSource::snapshot`].
-    pub fn pinned_roots(&self) -> Option<&[CertificateDer<'static>]> {
-        self.state.snapshot.as_ref()?.native_roots()
-    }
 }
 
 impl PlatformTrustPolicy {
@@ -138,21 +144,6 @@ impl PlatformTrustPolicy {
         }
     }
 
-    /// Full native roots pinned for this source by [`ServerTrustSource::snapshot`]
-    /// on targets without an operating system verifier.
-    pub fn pinned_native_roots(&self) -> Option<&[CertificateDer<'static>]> {
-        self.state.snapshot.as_ref()?.native_roots()
-    }
-
-    /// Extra roots pinned for this source by [`ServerTrustSource::snapshot`] on
-    /// targets with an operating system verifier.
-    ///
-    /// An empty slice is a pinned generation with no environment extra roots.
-    /// Application anchors are available through [`TlsServerTrust::additional_anchors`](super::TlsServerTrust::additional_anchors).
-    pub fn pinned_extra_roots(&self) -> Option<&[CertificateDer<'static>]> {
-        self.state.snapshot.as_ref()?.platform_extra_roots()
-    }
-
     const SCOPE: NativeTrustScope = if PlatformVerifier::IS_AVAILABLE {
         NativeTrustScope::PlatformExtras
     } else {
@@ -161,23 +152,14 @@ impl PlatformTrustPolicy {
 }
 
 impl ServerTrustSource {
-    /// Pin a reloadable source to one immutable generation for a handshake.
-    ///
-    /// TLS backends may use the returned source as part of a cache key.
-    /// Returns `None` for static or already pinned sources. May block on
-    /// filesystem or system store access. Async connectors should use
-    /// [`Self::snapshot_async`].
-    pub fn snapshot(&self) -> Result<Option<Self>, BoxError> {
+    pub(in crate::client) fn snapshot(&self) -> Result<Option<Self>, BoxError> {
         let Some(state) = self.native_state() else {
             return Ok(None);
         };
         Ok(state.pin()?.map(|state| self.with_pinned_state(state)))
     }
 
-    /// Pin a reloadable source on a Tokio runtime, reading trust stores on
-    /// a blocking worker. Returns `None` under the same conditions as
-    /// [`Self::snapshot`].
-    pub async fn snapshot_async(&self) -> Result<Option<Self>, BoxError> {
+    pub(in crate::client) async fn snapshot_async(&self) -> Result<Option<Self>, BoxError> {
         let Some(state) = self.native_state() else {
             return Ok(None);
         };
@@ -185,6 +167,17 @@ impl ServerTrustSource {
             .pin_async()
             .await?
             .map(|state| self.with_pinned_state(state)))
+    }
+
+    pub(in crate::client) fn prepared_native_roots(&self) -> Option<&[CertificateDer<'static>]> {
+        self.native_state()?.snapshot.as_ref()?.native_roots()
+    }
+
+    pub(in crate::client) fn prepared_platform_roots(&self) -> Option<&[CertificateDer<'static>]> {
+        self.native_state()?
+            .snapshot
+            .as_ref()?
+            .platform_extra_roots()
     }
 
     fn native_state(&self) -> Option<&NativeTrustState> {

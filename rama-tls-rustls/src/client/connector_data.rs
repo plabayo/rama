@@ -1,6 +1,5 @@
 use crate::RamaTlsRustlsCrateMarker;
 use crate::client::config::RustlsTlsConnectorConfig;
-use crate::client::platform_verifier::{PreparedPlatformVerifier, cached_platform_verifier};
 use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{
     ALL_VERSIONS, ClientConfig,
@@ -9,21 +8,18 @@ use crate::dep::rustls::{
 use crate::key_log::RamaKeyLog;
 use crate::verify::{NoServerCertVerifier, PinnedServerCertVerifier};
 use crate::verify_chain::{ChainSource, ChainVerifier};
-use moka::sync::Cache;
 use rama_core::conversion::{RamaTryFrom, RamaTryInto};
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
-use rama_crypto::{
-    pki_types::{CertificateDer, PrivateKeyDer},
-    platform_verifier::PlatformVerifier,
-};
+use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::address::Host;
 use rama_tls::client::{
-    ClientAuth, ClientHandshake, ServerTrustSource, ServerVerifyMode, TlsServerTrust,
+    ClientAuth, ClientHandshake, ServerVerifyMode, TlsServerTrust, rustls_native_root_store,
+    rustls_server_verification,
 };
 use rama_tls::keylog::open_intent_sink;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 use rama_crypto::pki_types::PrivatePkcs8KeyDer;
@@ -46,16 +42,19 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for TlsConnectorData {
 }
 
 impl TlsConnectorData {
-    pub(super) fn from_extensions(extensions: &Extensions) -> Result<Self, BoxError> {
+    pub(super) fn from_extensions(
+        extensions: &Extensions,
+        verification: Option<&super::RustlsServerVerification>,
+    ) -> Result<Self, BoxError> {
         Self::from_config(
             &RustlsTlsConnectorConfig::from_extensions(extensions),
-            extensions.get_ref::<PreparedPlatformVerifier>(),
+            verification,
         )
     }
 
     fn from_config(
         value: &RustlsTlsConnectorConfig<'_>,
-        prepared: Option<&PreparedPlatformVerifier>,
+        prepared: Option<&super::RustlsServerVerification>,
     ) -> Result<Self, BoxError> {
         crate::ensure_default_crypto_provider();
         Ok(Self {
@@ -84,7 +83,7 @@ impl RamaTryFrom<&rama_tls::client::TlsClientConfig, RamaTlsRustlsCrateMarker> f
         build_client_config(
             &RustlsTlsConnectorConfig::from_extensions(extensions),
             None,
-            extensions.get_ref::<PreparedPlatformVerifier>(),
+            None,
         )
     }
 }
@@ -101,7 +100,7 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
 pub(super) fn build_client_config(
     value: &RustlsTlsConnectorConfig<'_>,
     provider: Option<Arc<rustls::crypto::CryptoProvider>>,
-    prepared: Option<&PreparedPlatformVerifier>,
+    prepared: Option<&super::RustlsServerVerification>,
 ) -> Result<ClientConfig, BoxError> {
     if value.ech_requirement == Some(&rama_tls::client::EchRequirement::Required) {
         return Err(BoxError::from_static_str(
@@ -135,8 +134,7 @@ pub(super) fn build_client_config(
                 );
                 ResolvedTrust::Roots(client_root_certs())
             } else {
-                let pinned_trust = value.pin_server_trust()?;
-                resolve_trust(pinned_trust.as_ref().unwrap_or(trust), prepared)?
+                resolve_trust(trust, prepared)?
             }
         }
         _ => ResolvedTrust::Roots(client_root_certs()),
@@ -278,95 +276,21 @@ pub(super) fn build_client_config(
 /// How a trust policy verifies server chains with rustls.
 enum ResolvedTrust {
     Roots(Arc<RootCertStore>),
-    Platform(Arc<PlatformVerifier>),
+    Platform(Arc<rama_crypto::platform_verifier::PlatformVerifier>),
 }
 
 fn resolve_trust(
     trust: &TlsServerTrust,
-    prepared: Option<&PreparedPlatformVerifier>,
+    prepared: Option<&super::RustlsServerVerification>,
 ) -> Result<ResolvedTrust, BoxError> {
-    if matches!(trust.source(), ServerTrustSource::Platform(_)) {
-        if PlatformVerifier::IS_AVAILABLE {
-            return cached_platform_verifier(trust, prepared).map(ResolvedTrust::Platform);
-        }
-        tracing::debug!(
-            "rustls connector: no platform certificate verifier on this platform: verifying against native roots"
-        );
-    }
-    rustls_root_certs(trust).map(ResolvedTrust::Roots)
-}
-
-fn pinned_native_roots(source: &ServerTrustSource) -> Option<&[CertificateDer<'static>]> {
-    match source {
-        ServerTrustSource::Native(policy) => policy.pinned_roots(),
-        ServerTrustSource::Platform(policy) => policy.pinned_native_roots(),
-        _ => None,
-    }
-}
-
-fn rustls_root_certs(trust: &TlsServerTrust) -> Result<Arc<RootCertStore>, BoxError> {
-    if pinned_native_roots(trust.source()).is_none() {
-        match (trust.source(), trust.additional_anchors()) {
-            (ServerTrustSource::Native(_) | ServerTrustSource::Platform(_), None) => {
-                return Ok(client_root_certs());
-            }
-            (ServerTrustSource::WebPki, None) => return Ok(webpki_root_certs()),
-            _ => {}
-        }
-    }
-
-    const MAX_CACHED_TRUST_POLICIES: u64 = 64;
-    static ROOT_CERTS: LazyLock<Cache<TlsServerTrust, Arc<RootCertStore>>> = LazyLock::new(|| {
-        Cache::builder()
-            .max_capacity(MAX_CACHED_TRUST_POLICIES)
-            .build()
-    });
-
-    ROOT_CERTS
-        .entry(trust.clone())
-        .or_try_insert_with(|| build_rustls_root_certs(trust).map(Arc::new))
-        .map(|entry| entry.into_value())
-        .map_err(|err| {
-            err.to_string()
-                .context("build cached derived rustls trust store")
-        })
-}
-
-fn build_rustls_root_certs(trust: &TlsServerTrust) -> Result<RootCertStore, BoxError> {
-    let mut roots = match trust.source() {
-        ServerTrustSource::Native(_) | ServerTrustSource::Platform(_) => {
-            match pinned_native_roots(trust.source()) {
-                Some(anchors) => {
-                    let mut roots = RootCertStore::empty();
-                    roots.add_parsable_certificates(anchors.iter().cloned());
-                    roots
-                }
-                None => client_root_certs().as_ref().clone(),
-            }
-        }
-        ServerTrustSource::WebPki => webpki_root_certs().as_ref().clone(),
-        ServerTrustSource::Custom(anchors) => {
-            let mut roots = RootCertStore::empty();
-            add_rustls_trust_anchors(&mut roots, anchors)?;
-            roots
-        }
+    let verification = match prepared {
+        Some(verification) => verification.clone(),
+        None => rustls_server_verification(trust)?,
     };
-    if let Some(anchors) = trust.additional_anchors() {
-        add_rustls_trust_anchors(&mut roots, anchors)?;
-    }
-    Ok(roots)
-}
-
-fn add_rustls_trust_anchors(
-    roots: &mut RootCertStore,
-    anchors: &rama_tls::client::TlsServerTrustAnchors,
-) -> Result<(), BoxError> {
-    for certificate in anchors.certificates() {
-        roots
-            .add(certificate.clone())
-            .context("add configured server trust anchor to rustls root store")?;
-    }
-    Ok(())
+    Ok(match verification {
+        rama_core::combinators::Either::A(store) => ResolvedTrust::Roots(store),
+        rama_core::combinators::Either::B(verifier) => ResolvedTrust::Platform(verifier),
+    })
 }
 
 /// Resolve a common [`ClientAuth`] into the native rustls cert chain + private
@@ -395,34 +319,12 @@ fn rustls_client_auth(
 /// no native roots are found, that loader warns and falls back to the bundled
 /// webpki (Mozilla CCADB) roots.
 pub fn client_root_certs() -> Arc<RootCertStore> {
-    static ROOT_CERTS: LazyLock<Arc<RootCertStore>> = LazyLock::new(|| {
-        let mut root_storage = RootCertStore::empty();
-        let anchors = rama_crypto::native_certs::shared_native_trust_anchors();
-        let (added, ignored) = root_storage.add_parsable_certificates(anchors.iter().cloned());
-        rama_core::telemetry::tracing::trace!(
-            added,
-            ignored,
-            "rama-tls-rustls: initialised client root cert store from shared native trust anchors"
-        );
-        Arc::new(root_storage)
-    });
-    ROOT_CERTS.clone()
+    rustls_native_root_store()
 }
 
-/// The bundled Mozilla (CCADB) root certificate store.
-pub(super) fn webpki_root_certs() -> Arc<RootCertStore> {
-    static ROOT_CERTS: LazyLock<Arc<RootCertStore>> = LazyLock::new(|| {
-        let mut root_storage = RootCertStore::empty();
-        let anchors = rama_crypto::native_certs::bundled_root_certs();
-        let (added, ignored) = root_storage.add_parsable_certificates(anchors.iter().cloned());
-        rama_core::telemetry::tracing::trace!(
-            added,
-            ignored,
-            "rama-tls-rustls: initialised client root cert store from bundled WebPKI roots"
-        );
-        Arc::new(root_storage)
-    });
-    ROOT_CERTS.clone()
+#[cfg(test)]
+fn webpki_root_certs() -> Arc<RootCertStore> {
+    rama_tls::client::rustls_webpki_root_store()
 }
 
 #[cfg(not(any(feature = "aws-lc", feature = "ring")))]
@@ -602,6 +504,15 @@ mod tests {
             config.as_extensions(),
         ))
         .unwrap();
+    }
+
+    fn rustls_root_certs(trust: &TlsServerTrust) -> Result<Arc<RootCertStore>, BoxError> {
+        match resolve_trust(trust, None)? {
+            ResolvedTrust::Roots(roots) => Ok(roots),
+            ResolvedTrust::Platform(_) => {
+                Err(BoxError::from_static_str("expected a rustls root store"))
+            }
+        }
     }
 
     #[test]

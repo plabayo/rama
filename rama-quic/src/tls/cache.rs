@@ -1,6 +1,6 @@
 //! Bounded reuse of native QUIC TLS configurations and their session state.
 
-use std::{collections::VecDeque, fmt, sync::Arc};
+use std::{borrow::Cow, collections::VecDeque, fmt, sync::Arc};
 
 use parking_lot::Mutex;
 use rama_core::{
@@ -12,23 +12,15 @@ use rama_tls::client::{
     EchRequirement, TlsClientConfig, TlsEncryptedClientHello, TlsPoolId, TlsServerName,
 };
 
+use super::verification::ServerVerification;
 use super::{
     ClientHandshake, ClientSessionPolicy, QuicClientConfigProvider, TlsConfigError, TlsOptions,
 };
 use crate::ClientConfig;
 #[cfg(feature = "boring")]
-use rama_tls_boring::client::{
-    BoringExtensionOrder, BoringServerVerifyCertStore, BoringTlsConnectorConfig,
-};
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use rama_tls_rustls::client::{RustlsServerCertVerifier, RustlsTlsConnectorConfig};
-#[cfg(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-))]
 use {
     rama_net::client::pool::ReuseKey,
-    rama_tls::client::{ServerVerifyMode, TlsServerTrust, TlsServerVerify},
+    rama_tls_boring::client::{BoringExtensionOrder, BoringTlsConnectorConfig},
 };
 
 // Keep native override configurations bounded alongside the protected default context.
@@ -130,33 +122,6 @@ impl ClientConfigCache {
         &self.provider
     }
 
-    #[cfg(any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-    ))]
-    fn common_server_trust<'a>(&self, extensions: &'a Extensions) -> Option<&'a TlsServerTrust> {
-        let trust = extensions.get_ref::<TlsServerTrust>()?;
-        if extensions
-            .get_ref::<TlsServerVerify>()
-            .is_some_and(|verify| verify.0 == ServerVerifyMode::Disable)
-        {
-            return None;
-        }
-
-        // Built-in TLS classifiers identify the native extensions in use.
-        // Leave the policy as supplied for other provider classifiers.
-        let classifier = self.provider.pool_classifier();
-        #[cfg(feature = "boring")]
-        if classifier == ReuseKey::of::<BoringTlsConnectorConfig>() {
-            return (!extensions.contains::<BoringServerVerifyCertStore>()).then_some(trust);
-        }
-        #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-        if classifier == ReuseKey::of::<RustlsTlsConnectorConfig>() {
-            return (!extensions.contains::<RustlsServerCertVerifier>()).then_some(trust);
-        }
-        None
-    }
-
     /// Prepare a peer-bound handshake with this connector's ticket domain and
     /// options. Prepared state bypasses the ordinary configuration cache; only
     /// backend session metadata is shared.
@@ -166,17 +131,26 @@ impl ClientConfigCache {
         peer: Host,
         handshake: ClientHandshake,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        let verification =
+            ServerVerification::acquire(self.provider.as_ref(), config.as_extensions())?;
+        self.prepare_for_peer(config, peer, handshake, verification)
+    }
+
+    fn prepare_for_peer(
+        &self,
+        config: &TlsClientConfig,
+        peer: Host,
+        handshake: ClientHandshake,
+        verification: Option<ServerVerification>,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
         let defaults = self.configs.lock().session_defaults.clone();
-        let scoped;
-        let config = if let Some(defaults) = defaults {
-            scoped = config.clone();
-            scoped.as_extensions().extend(&defaults);
-            &scoped
-        } else {
-            config
-        };
-        self.provider
-            .prepare_client_config(config, self.effective_options(config), peer, handshake)
+        let config = scoped_config(config, defaults.as_ref(), verification);
+        self.provider.prepare_client_config(
+            &config,
+            self.effective_options(&config),
+            peer,
+            handshake,
+        )
     }
 
     /// Build or reuse the final TLS configuration, classified by this cache's provider.
@@ -223,7 +197,9 @@ impl ClientConfigCache {
                 })?;
             return self.client_config_for_peer(config, overrides, &peer.0);
         }
-        self.cached_client_config(config, overrides)
+        let verification =
+            ServerVerification::acquire(self.provider.as_ref(), config.as_extensions())?;
+        self.cached_client_config(config, overrides, verification)
     }
 
     /// Build native TLS for `peer`, applying any explicit handshake-offer policy.
@@ -236,9 +212,21 @@ impl ClientConfigCache {
         overrides: &Extensions,
         peer: &Host,
     ) -> Result<ClientConfig, TlsConfigError> {
+        let verification =
+            ServerVerification::acquire(self.provider.as_ref(), config.as_extensions())?;
+        self.config_for_peer(config, overrides, peer, verification)
+    }
+
+    fn config_for_peer(
+        &self,
+        config: &TlsClientConfig,
+        overrides: &Extensions,
+        peer: &Host,
+        verification: Option<ServerVerification>,
+    ) -> Result<ClientConfig, TlsConfigError> {
         if self.needs_endpoint_ech(config) {
             return self
-                .prepare_client_config(
+                .prepare_for_peer(
                     config,
                     peer.clone(),
                     config
@@ -246,6 +234,7 @@ impl ClientConfigCache {
                         .get_ref::<ClientHandshake>()
                         .copied()
                         .unwrap_or_default(),
+                    verification,
                 )?
                 .ok_or_else(|| {
                     TlsConfigError::InvalidConfiguration(BoxError::from_static_str(
@@ -259,14 +248,14 @@ impl ClientConfigCache {
             .filter(|mode| **mode != ClientHandshake::Auto)
         {
             return self
-                .prepare_client_config(config, peer.clone(), *handshake)?
+                .prepare_for_peer(config, peer.clone(), *handshake, verification)?
                 .ok_or_else(|| {
                     TlsConfigError::InvalidConfiguration(BoxError::from_static_str(
                         "TLS provider does not support the requested QUIC handshake policy",
                     ))
                 });
         }
-        self.cached_client_config(config, overrides)
+        self.cached_client_config(config, overrides, verification)
     }
 
     pub(crate) async fn client_config_for_peer_async(
@@ -275,60 +264,25 @@ impl ClientConfigCache {
         overrides: &Extensions,
         peer: &Host,
     ) -> Result<ClientConfig, TlsConfigError> {
-        #[cfg(any(
-            feature = "boring",
-            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-        ))]
-        {
-            let extensions = config.as_extensions();
-            if extensions.contains::<TlsServerTrust>() {
-                let classifier = self.provider.pool_classifier();
-                #[cfg(feature = "boring")]
-                if classifier == ReuseKey::of::<BoringTlsConnectorConfig>() {
-                    BoringTlsConnectorConfig::prepare_server_trust(extensions).await?;
-                }
-                #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-                if classifier == ReuseKey::of::<RustlsTlsConnectorConfig>() {
-                    RustlsTlsConnectorConfig::prepare_server_trust(extensions).await?;
-                }
-            }
-        }
-
-        self.client_config_for_peer(&config, overrides, peer)
+        let verification =
+            ServerVerification::acquire_async(self.provider.as_ref(), config.as_extensions())
+                .await?;
+        self.config_for_peer(&config, overrides, peer, verification)
     }
 
     fn cached_client_config(
         &self,
         config: &TlsClientConfig,
         overrides: &Extensions,
+        verification: Option<ServerVerification>,
     ) -> Result<ClientConfig, TlsConfigError> {
-        // Classify and build from the same snapshot, even if trust rotates during
-        // a cache miss. Async connectors have already pinned their configuration.
-        #[cfg(any(
-            feature = "boring",
-            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-        ))]
-        let pinned;
-        #[cfg(any(
-            feature = "boring",
-            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-        ))]
-        let config = if let Some(trust) = self.common_server_trust(config.as_extensions())
-            && let Some(source) = trust.source().snapshot()?
-        {
-            pinned = config
-                .clone()
-                .with_server_trust(trust.clone().with_source(source));
-            &pinned
-        } else {
-            config
-        };
         let request_policy = self.provider.pool_id(overrides);
         let effective_policy = self.provider.pool_id(config.as_extensions());
         if request_policy.as_ref().is_some_and(|id| !id.is_reusable()) {
+            let config = scoped_config(config, None, verification);
             return self
                 .provider
-                .client_config(config, self.effective_options(config));
+                .client_config(&config, self.effective_options(&config));
         }
 
         // An opaque default is scoped to this cache, not shared across connectors.
@@ -337,6 +291,7 @@ impl ClientConfigCache {
         let policy = (
             request_policy,
             effective_policy,
+            verification.clone(),
             self.effective_options(config).early_data,
         );
         let session_defaults = {
@@ -346,17 +301,10 @@ impl ClientConfigCache {
             }
             configs.session_defaults.clone()
         };
-        let scoped;
-        let config = if let Some(defaults) = session_defaults {
-            scoped = config.clone();
-            scoped.as_extensions().extend(&defaults);
-            &scoped
-        } else {
-            config
-        };
+        let config = scoped_config(config, session_defaults.as_ref(), verification);
         let config = self
             .provider
-            .client_config(config, self.effective_options(config))?;
+            .client_config(&config, self.effective_options(&config))?;
         let mut configs = self.configs.lock();
         if let Some(existing) = configs.get(&policy, is_default) {
             return Ok(existing);
@@ -366,7 +314,27 @@ impl ClientConfigCache {
     }
 }
 
-type Policy = (Option<TlsPoolId>, Option<TlsPoolId>, bool);
+fn scoped_config<'a>(
+    config: &'a TlsClientConfig,
+    defaults: Option<&Extensions>,
+    verification: Option<ServerVerification>,
+) -> Cow<'a, TlsClientConfig> {
+    let mut scoped = Cow::Borrowed(config);
+    if let Some(defaults) = defaults {
+        scoped.to_mut().as_extensions().extend(defaults);
+    }
+    if let Some(verification) = verification {
+        scoped.to_mut().as_extensions().insert(verification);
+    }
+    scoped
+}
+
+type Policy = (
+    Option<TlsPoolId>,
+    Option<TlsPoolId>,
+    Option<ServerVerification>,
+    bool,
+);
 
 struct Entry {
     policy: Policy,

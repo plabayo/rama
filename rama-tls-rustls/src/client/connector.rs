@@ -443,8 +443,8 @@ impl<S, K> TlsConnector<S, K> {
     ) -> Result<TlsConnectorData, BoxError> {
         let effective = self.tunnel_config_extensions(tunnel, application_protocol);
 
-        RustlsTlsConnectorConfig::prepare_server_trust(&effective).await?;
-        TlsConnectorData::from_extensions(&effective)
+        let verification = RustlsTlsConnectorConfig::server_verification_async(&effective).await?;
+        TlsConnectorData::from_extensions(&effective, verification.as_ref())
     }
 
     /// Request extensions resolved over the connector base, local to the caller.
@@ -568,8 +568,8 @@ impl<S, K> TlsConnector<S, K> {
             request_extensions.get_ref::<TlsAlpn>(),
         )?;
 
-        RustlsTlsConnectorConfig::prepare_server_trust(&extensions).await?;
-        TlsConnectorData::from_extensions(&extensions)
+        let verification = RustlsTlsConnectorConfig::server_verification_async(&extensions).await?;
+        TlsConnectorData::from_extensions(&extensions, verification.as_ref())
     }
 
     async fn handshake<T>(

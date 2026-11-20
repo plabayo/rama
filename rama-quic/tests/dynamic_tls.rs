@@ -348,6 +348,114 @@ async fn exchange(
     connection
 }
 
+#[tokio::test]
+async fn native_root_rotation_invalidates_quic_sessions() {
+    use std::{env, process::Command};
+
+    const CHILD: &str = "RAMA_QUIC_NATIVE_ROTATION_BUNDLE";
+    let Some(bundle) = env::var_os(CHILD) else {
+        let dir = rama_utils::fs::TempDir::new_sync().unwrap();
+        let bundle = dir.path().join("native.pem");
+        let status = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native_root_rotation_invalidates_quic_sessions",
+                "--nocapture",
+            ])
+            .env(CHILD, &bundle)
+            .env("SSL_CERT_FILE", &bundle)
+            .env_remove("SSL_CERT_DIR")
+            .env_remove("SSL_CERT_EXTRA_FILE")
+            .env_remove("SSL_CERT_EXTRA_DIR")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    };
+    let bundle = std::path::Path::new(&bundle);
+    #[cfg(feature = "boring")]
+    assert_native_rotation(bundle, Arc::new(rama_quic::tls::BoringTlsProvider::new())).await;
+    #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    assert_native_rotation(
+        bundle,
+        Arc::new(rama_quic::tls::RustlsTlsProvider::new(rustls::crypto())),
+    )
+    .await;
+}
+
+async fn assert_native_rotation(
+    bundle: &std::path::Path,
+    provider: Arc<impl QuicClientConfigProvider + QuicServerConfigProvider + 'static>,
+) {
+    use rama_core::extensions::{Extensions, ExtensionsRef as _};
+    use rama_crypto::pem::PemEncode as _;
+    use rama_quic::{NegotiatedTlsParameters, tls::ClientConfigCache};
+    use rama_tls::client::{ChannelReloadTrigger, NativeTrustPolicy};
+
+    let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+    let pem = ca.certificate_chain()[0].to_pem();
+    std::fs::write(bundle, &pem).unwrap();
+    let server = server(
+        &TlsServerConfig::new()
+            .with_alpn(alpn())
+            .with_server_auth(issue(&ca, "a.test")),
+        provider.as_ref(),
+    )
+    .await;
+    let addr = server.local_addr().unwrap();
+    let served = serve_echo(&server);
+    let client = client().await;
+    let (reload, trigger) = ChannelReloadTrigger::new();
+    let tls = TlsClientConfig::new()
+        .with_alpn(alpn())
+        .with_server_trust(NativeTrustPolicy::new().with_reload_trigger(trigger));
+    let cache = ClientConfigCache::new(provider, TlsOptions::default());
+    let overrides = Extensions::new();
+    let config = || cache.client_config(&tls, &overrides).unwrap();
+
+    let check_resumption = async |expected| {
+        let connection = timeout(DEADLINE, exchange(&client, config(), addr, "a.test"))
+            .await
+            .unwrap();
+        assert_eq!(
+            connection
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .unwrap()
+                .resumed,
+            Some(expected)
+        );
+        connection.close(VarInt::from(0u32), b"done");
+    };
+    check_resumption(false).await;
+    check_resumption(true).await;
+
+    let replacement = CertificateAuthorityData::generate(SelfSignedCaConfig {
+        subject: rama_crypto::cert::CertificateSubject {
+            common_name: Some("Replacement QUIC test CA".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .unwrap();
+    std::fs::write(bundle, replacement.certificate_chain()[0].to_pem()).unwrap();
+    reload.request_reload().unwrap();
+    let error = connect(&client, config(), addr, "a.test")
+        .await
+        .unwrap_err();
+    // Both providers must reject the old certificate with the TLS unknown_ca alert.
+    assert!(
+        matches!(&error, ConnectionError::TransportError(error) if error.code == TransportErrorCode::crypto(48)),
+        "{error:?}"
+    );
+
+    std::fs::write(bundle, pem).unwrap();
+    reload.request_reload().unwrap();
+    check_resumption(false).await;
+    server.close(VarInt::from(0u32), b"done");
+    timeout(DEADLINE, served).await.unwrap().unwrap();
+}
+
 #[cfg(feature = "boring")]
 mod boring {
     use std::future::IntoFuture as _;
@@ -967,7 +1075,7 @@ mod rustls {
 
     use super::*;
 
-    fn crypto() -> Arc<rustls::crypto::CryptoProvider> {
+    pub(super) fn crypto() -> Arc<rustls::crypto::CryptoProvider> {
         #[cfg(feature = "aws-lc")]
         {
             Arc::new(rustls::crypto::aws_lc_rs::default_provider())

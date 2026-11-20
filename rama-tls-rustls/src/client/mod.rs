@@ -18,7 +18,6 @@ pub use config::{
 };
 
 mod connector_data;
-mod platform_verifier;
 pub(super) use connector_data::TlsConnectorData;
 
 #[doc(inline)]
@@ -35,3 +34,8 @@ pub use tls_stream_auto::AutoTlsStream;
 use crate::dep::tokio_rustls::client::TlsStream as RustlsTlsStream;
 
 pub use config::RustlsTlsClientConfigProvider;
+
+pub(crate) type RustlsServerVerification = rama_core::combinators::Either<
+    std::sync::Arc<crate::dep::rustls::RootCertStore>,
+    std::sync::Arc<rama_crypto::platform_verifier::PlatformVerifier>,
+>;

@@ -202,11 +202,12 @@ where
                 self.keylog_intent.clone(),
                 auth,
             );
-            client::BoringTlsConnectorConfig::prepare_server_trust(config.as_extensions())
-                .await
-                .context("tls mitm relay: pin direct egress trust policy")
-                .map_err(TlsMitmRelayError::config)?;
-            client::TlsConnectorData::try_from(&config)
+            let verification =
+                client::BoringTlsConnectorConfig::server_verification_async(config.as_extensions())
+                    .await
+                    .context("tls mitm relay: acquire direct egress server verification")
+                    .map_err(TlsMitmRelayError::config)?;
+            client::TlsConnectorData::from_client_config(&config, verification.as_ref())
                 .context("tls mitm relay: build direct egress connector data")
                 .map_err(TlsMitmRelayError::config)?
         };

@@ -76,6 +76,7 @@ pub use proto::{
 /// or use the convenience constructors to select the feature-default provider.
 pub mod tls {
     mod cache;
+    pub(crate) mod verification;
     pub use cache::ClientConfigCache;
 
     mod factory;

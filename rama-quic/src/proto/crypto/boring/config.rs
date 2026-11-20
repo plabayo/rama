@@ -276,7 +276,13 @@ impl QuicClientConfig {
                 BoxError::from_static_str("resumed TLS conflicts with the fresh client policy"),
             ));
         }
-        let mut builder = TlsConnectorContextBuilder::try_from(config)?;
+        let mut builder = match extensions.get_ref::<crate::tls::verification::ServerVerification>()
+        {
+            Some(crate::tls::verification::ServerVerification::Boring(verification)) => {
+                TlsConnectorContextBuilder::with_server_verification(config, verification)?
+            }
+            _ => TlsConnectorContextBuilder::try_from(config)?,
+        };
         if builder
             .max_proto_version()
             .is_some_and(|version| version != SslVersion::TLS1_3)

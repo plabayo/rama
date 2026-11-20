@@ -1,6 +1,6 @@
 use crate::{
     TlsStream,
-    client::{BoringTlsConnectorConfig, PreparedPlatformVerifier, TlsConnectorData},
+    client::{BoringTlsConnectorConfig, TlsConnectorData},
     proxy::{TlsMitmRelay, TlsMitmRelayError},
 };
 use rama_core::{
@@ -13,7 +13,7 @@ use rama_core::{
 use rama_net::{address::Domain, client::ConnectorTarget};
 use rama_tls::{
     SecureTransport,
-    client::{ClientHello, TlsClientConfig, TlsServerName, TlsServerTrust},
+    client::{ClientHello, TlsClientConfig, TlsServerName},
     server::InputWithClientHello,
 };
 
@@ -164,11 +164,15 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
                 .maybe_with_connector_target(connector_target.clone())
                 .maybe_with_sni(effective_sni.clone())
         };
-        BoringTlsConnectorConfig::prepare_server_trust(config.as_extensions())
-            .await
-            .map_err(config_error)?;
+        let verification =
+            BoringTlsConnectorConfig::server_verification_async(config.as_extensions())
+                .await
+                .map_err(config_error)?;
 
-        let connector_data = match TlsConnectorData::try_from(&config) {
+        let connector_data = match TlsConnectorData::from_client_config(
+            &config,
+            verification.as_ref(),
+        ) {
             Ok(data) => Ok(data),
             Err(error) if client_hello.is_some() => {
                 tracing::warn!(
@@ -187,13 +191,7 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
                 }
                 #[cfg(feature = "http")]
                 apply_target_http_version(client_hello, flow_extensions, &fallback);
-                if let Some(trust) = config.as_extensions().get_ref::<TlsServerTrust>() {
-                    fallback.set_server_trust(trust.clone());
-                }
-                if let Some(prepared) = config.as_extensions().get_ref::<PreparedPlatformVerifier>() {
-                    fallback.insert(prepared.clone());
-                }
-                TlsConnectorData::try_from(&fallback)
+                TlsConnectorData::from_client_config(&fallback, verification.as_ref())
             }
             Err(error) => Err(error),
         }
