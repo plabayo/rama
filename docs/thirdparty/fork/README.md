@@ -27,9 +27,9 @@ as a distant relative.
     - Original: <https://github.com/hyperium/hyper/blob/cf563e8a97cc389fd8800a9f178e847dc3203d1f/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
-- hyper-util: <https://github.com/hyperium/hyper-util/tree/885c965642d3531856bba936e3ea463acddb3d4b>
+- hyper-util: <https://github.com/hyperium/hyper-util/tree/8a1e01a1f759ff82414407c73f172efeba071218>
   - License:
-    - Original: <https://github.com/hyperium/hyper-util/blob/885c965642d3531856bba936e3ea463acddb3d4b/LICENSE>
+    - Original: <https://github.com/hyperium/hyper-util/blob/8a1e01a1f759ff82414407c73f172efeba071218/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
 - headers: <https://github.com/hyperium/headers/tree/6a091bf3ae6ae39b22f4185a981efffe60a8b8e5>
@@ -37,12 +37,12 @@ as a distant relative.
     - Original: <https://github.com/hyperium/headers/blob/6a091bf3ae6ae39b22f4185a981efffe60a8b8e5/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
-- tonic: <https://github.com/grpc/grpc-rust/tree/d140e69f75e0285fa0ff34ea2e5b43ddbc5a531c>
+- tonic: <https://github.com/grpc/grpc-rust/tree/90ffb4e6bb1838ca4c4e423941b99a2ce1a71d2a>
   - developed upstream as `grpc/grpc-rust` (formerly `hyperium/tonic`); rama tracks the `tonic`,
     `tonic-prost`, `tonic-types`, `tonic-web`, `tonic-health` and build crates, not the new
     `grpc` crates
   - License:
-    - Original: <https://github.com/grpc/grpc-rust/blob/d140e69f75e0285fa0ff34ea2e5b43ddbc5a531c/LICENSE>
+    - Original: <https://github.com/grpc/grpc-rust/blob/90ffb4e6bb1838ca4c4e423941b99a2ce1a71d2a/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
 - http: <https://github.com/hyperium/http/tree/4a0885cf32746d37ab0d0e570e14a4ad75bb3ce7>
@@ -114,7 +114,7 @@ as a distant relative.
 These are forks made within other code repositories,
 but still directly in function of Rama.
 
-- <https://github.com/cloudflare/boring/tree/e71b24328f1cd787f64036d8208a4470ae58e200>
+- <https://github.com/cloudflare/boring/tree/8ceea15cc9b04de2427dd8d26f7f3e9882c478f0>
   - boring:
     - Fork: <https://github.com/plabayo/rama-boring/tree/master/boring>
     - License:
@@ -241,10 +241,10 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/SimonSapin/rust-utf8/blob/218fea2b57b0e4c3de9fa17a376fcc4a4c0d08f3/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/rust-utf8](./licenses/rust-utf8)
-- <https://github.com/snapview/tungstenite-rs/tree/2f20dc53e2a8d09bba02970d7ba15c5f33fbc17a>
+- <https://github.com/snapview/tungstenite-rs/tree/89576c6fcf7ac71332a26257ad71eb90e06e2516>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tungstenite-rs/blob/2f20dc53e2a8d09bba02970d7ba15c5f33fbc17a/LICENSE-MIT>
+    - Original: <https://github.com/snapview/tungstenite-rs/blob/89576c6fcf7ac71332a26257ad71eb90e06e2516/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/tungstenite-rs](./licenses/tungstenite-rs)
 - <https://github.com/snapview/tokio-tungstenite/tree/76e10f08c488eb0032f136c7c56a437cd30164c2>
@@ -259,14 +259,14 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/Michael-F-Bryan/include_dir/blob/d742c6fffce99ee89da91b934e7ce6fb2a82680c/LICENSE>
     - Type: MIT
     - Copy: [./licenses/include_dir](./licenses/include_dir)
-- <https://github.com/misalcedo/ppp/tree/28c5db92fda7337fc1ef36e6f19db96d511cd319>
+- <https://github.com/misalcedo/ppp/tree/4564452474b1f080adb71c813f7c81aae81976d9>
   - PROXY protocol v1/v2 parser, adapted+scoped for rama use (rama error types
     + a streaming-friendly `ParseError::Partial`); originally by Miguel D. Salcedo
   - reviewed against upstream `main` (`4564452`, 2026-04-29): nothing further to
     port — the only code change since the fork (the v1 partial-newline fix) is
     already covered, more strictly, by rama's `Partial` handling
   - License:
-    - Original: <https://github.com/misalcedo/ppp/blob/28c5db92fda7337fc1ef36e6f19db96d511cd319/LICENSE>
+    - Original: <https://github.com/misalcedo/ppp/blob/4564452474b1f080adb71c813f7c81aae81976d9/LICENSE>
     - Type: Apache 2.0
     - Copy: [./licenses/ppp](./licenses/ppp)
 
