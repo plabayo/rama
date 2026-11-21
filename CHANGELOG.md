@@ -982,8 +982,8 @@ as a compiled, compressed binary, so loading it only decodes.
   tungstenite, lol-html, quinn, quinn-udp and rustls-native-certs (#1139,
   #1239, #1241, #1298, #1318, #1368).
 * Raised `rama-boring` to 0.7 and OpenTelemetry to 0.33, unpinned `time`
-  (#1220, by Abdelkader Boudih), and refreshed all dependencies (#1310 and the
-  other update rounds).
+  (#1220, by Abdelkader Boudih), and refreshed dependencies, including venndb
+  0.7.1 for the in-memory proxy database (#1310, #1369).
 * Release workflows separate build and test jobs from privileged signing and
   publishing, with deny-by-default permissions and no persisted checkout
   credentials (#1197).
