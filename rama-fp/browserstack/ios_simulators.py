@@ -58,7 +58,7 @@ def transition(command, udid, expected):
                 raise
 
 
-def probe_safari(version, timeout=600):
+def probe_safari(version, timeout=240):
     """Wait for an automation session, not just a booted OS or a launched app.
 
     Run in a child process: the parent also bounds blocked WebDriver commands.
@@ -91,9 +91,9 @@ def probe_safari(version, timeout=600):
             time.sleep(min(10, remaining))
 
 
-def run_bounded(arguments, timeout):
+def run_bounded(arguments, timeout, env=None):
     """Bound the child and its driver processes, including a blocked probe/quit."""
-    with subprocess.Popen(arguments, start_new_session=True) as process:
+    with subprocess.Popen(arguments, start_new_session=True, env=env) as process:
         try:
             returncode = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -115,35 +115,44 @@ def run_device(version, udid, output):
                "bootstatus_timed_out": False}
     stage = "boot"
     try:
-        transition("boot", udid, "Booted")
-        stage = "bootstatus"
-        try:
-            simctl("bootstatus", udid, "-b", timeout=900)
-        except subprocess.TimeoutExpired:
-            receipt["bootstatus_timed_out"] = True
-            # The status client can stall without output. Require this device
-            # to report Booted, then let the bounded Safari
-            # probe below establish readiness before any capture journey runs.
-            devices = json.loads(simctl("list", "devices", "--json", capture=True))["devices"]
-            if not any(device["udid"] == udid and device["state"] == "Booted"
-                       for group in devices.values() for device in group):
-                raise
-            print(f"WAIT iOS {version}: bootstatus timed out; checking Safari readiness",
-                  flush=True)
-        stage = "safari_ready"
-        # Booted does not mean Safari's remote automation is ready. Let the same
-        # session owner as the collector prove it can open, script and quit Safari.
-        # Avoid simctl terminate: it can hang even after a successful warm launch.
-        run_bounded(
-            [sys.executable, str(Path(__file__).resolve()), "--probe-safari", version],
-            timeout=660,
-        )
+        environment = {**os.environ, "RAMA_FP_IOS_SIMULATOR_UDID": udid}
+        for startup_attempt in range(2):
+            receipt["startup_attempts"] = startup_attempt + 1
+            stage = "boot"
+            transition("boot", udid, "Booted")
+            stage = "bootstatus"
+            try:
+                simctl("bootstatus", udid, "-b", timeout=300)
+            except subprocess.TimeoutExpired:
+                receipt["bootstatus_timed_out"] = True
+                # The status client can stall without output. Require this device
+                # to report Booted, then let the bounded Safari
+                # probe below establish readiness before any capture journey runs.
+                devices = json.loads(simctl("list", "devices", "--json", capture=True))["devices"]
+                if not any(device["udid"] == udid and device["state"] == "Booted"
+                           for group in devices.values() for device in group):
+                    raise
+                print(f"WAIT iOS {version}: bootstatus timed out; checking Safari readiness",
+                      flush=True)
+            stage = "safari_ready"
+            try:
+                run_bounded(
+                    [sys.executable, str(Path(__file__).resolve()), "--probe-safari", version],
+                    timeout=300, env=environment,
+                )
+                break
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+                if startup_attempt:
+                    raise
+                print(f"RESTART iOS {version}: Safari readiness probe failed", flush=True)
+                stage = "shutdown"
+                transition("shutdown", udid, "Shutdown")
         stage = "journeys"
         run_bounded(
             [sys.executable, str(Path(__file__).with_name("main.py")),
              "--output", str(output / ("ios-" + version)),
              "--device", "ios-simulator:" + version, "--defer-h3-gate"],
-            timeout=1200,
+            timeout=1200, env=environment,
         )
         receipt["status"] = "passed"
     except Exception as error:

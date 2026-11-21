@@ -78,7 +78,12 @@ def device_options(kind, platform_version=None):
         options.set_capability("platformName", "iOS")
         options.set_capability("safari:useSimulator", True)
         options.set_capability("safari:deviceType", "iPhone")
-        if platform_version:
+        # The orchestrator knows exactly which device it booted. A runtime's
+        # patch version can differ from the OS version advertised by Safari.
+        udid = os.environ.get("RAMA_FP_IOS_SIMULATOR_UDID")
+        if udid:
+            options.set_capability("safari:deviceUDID", udid)
+        elif platform_version:
             options.set_capability("safari:platformVersion", platform_version)
         return options
     if kind == "firefox-android":

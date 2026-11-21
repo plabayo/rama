@@ -216,11 +216,11 @@ jobs:
           cp trademark.html www/trademark.html
           cp sitemap.xml www/sitemap.xml
           cp robots.txt www/robots.txt
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           # Preserve the cache pruning policy from setup-uv v6.
           prune-cache: true
-      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+      - uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2.90.7
         with:
           tool: just
       # The README's LoC badge reads this file from the published site.

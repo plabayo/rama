@@ -47,7 +47,8 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(runner._rama_evidence["client_exit"], code)
 
     def test_auto_unsupported_disabled_for_every_selected_implementation(self):
-        self.assertEqual(implementations_without_heuristics(["peer-one", "peer-two"]), "rama,peer-one,peer-two")
+        self.assertEqual(implementations_without_heuristics(["rama"], ["peer-one", "peer-two"]), "rama,peer-one,peer-two")
+        self.assertEqual(implementations_without_heuristics(["quic-go"], ["rama"]), "quic-go,rama")
 
     def test_ci_groups_cover_all_cases_once(self):
         lock = json.loads(Path(__file__).with_name("runner.lock.json").read_text())
