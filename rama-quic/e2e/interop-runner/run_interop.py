@@ -149,8 +149,9 @@ def unsupported_policy(role, backend, peers):
     return policy
 
 
-def implementations_without_heuristics(peers):
-    return ",".join(["rama", *peers])
+def implementations_without_heuristics(clients, servers):
+    # The upstream CLI rejects any implementation outside this attempt.
+    return ",".join(dict.fromkeys([*clients, *servers]))
 
 
 def role_timeout(cases, peer_count):
@@ -378,7 +379,7 @@ def main():
             peers = [name for name in (*clients, *servers) if name != "rama"]
             command = [venv / "bin/python", HERE / "upstream_adapter.py", checkout,
                        "-c", ",".join(clients), "-s", ",".join(servers), "-t", ",".join(role_cases),
-                       "-n", implementations_without_heuristics(lock["peers"]),
+                       "-n", implementations_without_heuristics(clients, servers),
                        "-j", root / f"rama-{role}.json",
                        "-l", root / f"logs-rama-{role}", "-f", "true", "-d"]
             print(f"Running Rama as {role}: {','.join(role_cases)} "
