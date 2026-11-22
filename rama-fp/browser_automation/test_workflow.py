@@ -76,6 +76,12 @@ class CookieOriginTests(unittest.TestCase):
         workflow.open_cookie_origin(driver, "https://fp.example/")
         self.assertEqual(driver.get.call_count, 2)
 
+    def test_same_host_https_upgrade_can_set_cookies(self):
+        driver = Mock()
+        driver.execute_script.return_value = "https://fp.example/consent"
+        workflow.open_cookie_origin(driver, "http://fp.example/")
+        driver.get.assert_called_once()
+
     def test_foreign_document_is_rejected(self):
         driver = Mock()
         driver.execute_script.return_value = "https://foreign.example/consent"

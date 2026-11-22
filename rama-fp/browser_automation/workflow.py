@@ -693,7 +693,7 @@ def drop_connections(driver, origins):
 
 
 def open_cookie_origin(driver, origin):
-    """Commit a same-origin document before installing collection cookies."""
+    """Wait for the cookie host, including a browser HTTPS upgrade."""
     target = urlsplit(origin)
     for _ in range(2):
         try:
@@ -703,7 +703,10 @@ def open_cookie_origin(driver, origin):
             # Inspect the committed document just as for a successful GET.
             pass
         committed = urlsplit(driver.execute_script("return document.URL"))
-        if committed[:2] == target[:2]:
+        if committed.netloc == target.netloc and (
+            committed.scheme == target.scheme
+            or (target.scheme, committed.scheme) == ("http", "https")
+        ):
             return
         if committed.geturl() != "about:blank":
             raise JourneyTimeout("cookie bootstrap reached an unexpected origin")
