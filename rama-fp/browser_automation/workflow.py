@@ -692,6 +692,24 @@ def drop_connections(driver, origins):
             print(f"SKIP disconnect: {type(error).__name__}", flush=True)
 
 
+def open_cookie_origin(driver, origin):
+    """Commit a same-origin document before installing collection cookies."""
+    target = urlsplit(origin)
+    for _ in range(2):
+        try:
+            driver.get(urljoin(origin, "/"))
+        except TimeoutException:
+            # The consent page may commit before its subresources finish loading.
+            # Inspect the committed document just as for a successful GET.
+            pass
+        committed = urlsplit(driver.execute_script("return document.URL"))
+        if committed[:2] == target[:2]:
+            return
+        if committed.geturl() != "about:blank":
+            raise JourneyTimeout("cookie bootstrap reached an unexpected origin")
+    raise JourneyTimeout("cookie bootstrap stayed on the initial blank document")
+
+
 def run_capture_flow(
     driver,
     origin,
@@ -701,6 +719,7 @@ def run_capture_flow(
     all_flows=True,
     sites=False,
     new_connections_after=False,
+    wait_for_assets=False,
     timeout=30,
 ):
     """Collect one real browser journey against a configurable fp origin.
@@ -728,7 +747,7 @@ def run_capture_flow(
     try:
         # Install collection cookies before visiting the page that runs the probes.
         if cookies:
-            driver.get(urljoin(origin, "/"))
+            open_cookie_origin(driver, origin)
             for name, value in cookies.items():
                 driver.add_cookie({"name": name, "value": value, "path": "/"})
 
@@ -811,6 +830,17 @@ def run_capture_flow(
         'return document.querySelector(\'meta[name="rama-fp-sites"]\')?.content ?? null'
     )) if sites else None
 
+    def wait_for_page_assets():
+        if wait_for_assets:
+            wait.until(
+                lambda browser: browser.execute_script(
+                    "return document.readyState === 'complete' && "
+                    "Array.from(document.images).every(img => img.complete && img.naturalWidth > 0)"
+                ),
+                "page assets did not finish loading before navigation or teardown",
+            )
+
+    wait_for_page_assets()
     # Native keyboard activation avoids SafariDriver's intermittent
     # click no-op on the long report page. The browser still submits the form.
     activate = partial(submit_form, driver, 'form[action="/form"]', timeout=timeout)
@@ -832,6 +862,7 @@ def run_capture_flow(
         ),
         "POST form response never showed the GET form",
     )
+    wait_for_page_assets()
     form_html = driver.page_source
     activate = partial(
         submit_form, driver, 'form[method="GET"][action="/form"]', timeout=timeout
@@ -845,6 +876,7 @@ def run_capture_flow(
     get_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
+    wait_for_page_assets()
     get_form_html = driver.page_source
 
     # A same-origin link click, the navigation a page's own links make.
@@ -859,6 +891,7 @@ def run_capture_flow(
     link_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
+    wait_for_page_assets()
     site_navigations = (
         visit_sites(driver, wait, origin, site_probes, timeout) if sites else None
     )

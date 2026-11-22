@@ -68,6 +68,22 @@ def page_results(*, fetch="h3", xhr="h3", websocket="h2", probe="owned page echo
     }
 
 
+class CookieOriginTests(unittest.TestCase):
+    def test_stalled_blank_tab_retries_before_installing_cookies(self):
+        driver = Mock(current_url="about:blank")
+        driver.get.side_effect = [TimeoutException(), None]
+        driver.execute_script.side_effect = ["about:blank", "https://fp.example/consent"]
+        workflow.open_cookie_origin(driver, "https://fp.example/")
+        self.assertEqual(driver.get.call_count, 2)
+
+    def test_foreign_document_is_rejected(self):
+        driver = Mock()
+        driver.execute_script.return_value = "https://foreign.example/consent"
+        with self.assertRaises(workflow.JourneyTimeout):
+            workflow.open_cookie_origin(driver, "https://fp.example/")
+        driver.get.assert_called_once()
+
+
 class EchCaptureTests(unittest.TestCase):
     def test_acceptance_is_observed_without_repeating_http_flows(self):
         driver = Mock()
