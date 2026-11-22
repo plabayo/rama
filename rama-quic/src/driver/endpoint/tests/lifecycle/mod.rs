@@ -4154,6 +4154,37 @@ async fn a_retry_sent_from_a_replaced_socket_is_answered_there_until_its_route_e
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
+/// Forward exactly one Initial so no retransmission or close can create a second
+/// pending attempt on the old socket. Keep the peer port bound through expiry.
+async fn unanswered_initial(
+    client_config: ClientConfig,
+    server: &Endpoint,
+) -> (Incoming, tokio::net::UdpSocket) {
+    let relay = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
+    let connecting = client
+        .connect_with(client_config, relay.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let mut datagram = vec![0; u16::MAX as usize];
+    let (len, _) = tokio::time::timeout(Duration::from_secs(2), relay.recv_from(&mut datagram))
+        .await
+        .unwrap()
+        .unwrap();
+    relay
+        .send_to(&datagram[..len], server.local_addr().unwrap())
+        .await
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(connecting);
+    client.shutdown().await;
+    (incoming, relay)
+}
+
 /// A Retry nobody answers keeps its socket exactly for the token lifetime, then the expiry
 /// timer retires it; shutting down during a hold releases the socket at once and frees the
 /// port.
@@ -4169,30 +4200,8 @@ async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_e
         WeakScope::detached(),
         Duration::from_secs(1),
     );
-    let addr_a = server.local_addr().unwrap();
-    let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
-    let connecting = client
-        .connect_with(client_config.clone(), addr_a, "localhost")
-        .unwrap();
-    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
-        .await
-        .unwrap()
-        .unwrap();
-    let before_close = server.stats().received_datagrams;
-    let client_addr = client.local_addr().unwrap();
-    drop(connecting);
-    client.shutdown().await;
-    // The client's close went to A on its way out; it belongs to the pending attempt, and a
-    // Retry issued before it is taken in would meet it as a fresh attempt holding A instead.
-    wait_for(
-        "the client's close reaches A",
-        Duration::from_secs(2),
-        || server.stats().received_datagrams > before_close,
-    )
-    .await;
-    server
-        .rebind_abstract(loopback_socket_from(client_addr))
-        .unwrap();
+    let (incoming, _peer) = unanswered_initial(client_config.clone(), &server).await;
+    server.rebind_abstract(loopback_socket()).unwrap();
     let addr_b = server.local_addr().unwrap();
     let retried_at = Instant::now();
     incoming.retry().unwrap();
@@ -4220,23 +4229,7 @@ async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_e
         Duration::from_secs(1),
     );
     let addr_a = server.local_addr().unwrap();
-    let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
-    let connecting = client
-        .connect_with(client_config, addr_a, "localhost")
-        .unwrap();
-    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
-        .await
-        .unwrap()
-        .unwrap();
-    let before_close = server.stats().received_datagrams;
-    drop(connecting);
-    client.shutdown().await;
-    wait_for(
-        "the client's close reaches A",
-        Duration::from_secs(2),
-        || server.stats().received_datagrams > before_close,
-    )
-    .await;
+    let (incoming, _peer) = unanswered_initial(client_config, &server).await;
     server.rebind_abstract(loopback_socket()).unwrap();
     let addr_b = server.local_addr().unwrap();
     incoming.retry().unwrap();
