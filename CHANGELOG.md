@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # 0.5.0
 
-> Release date: `2026-11-19`
+> Release date: `2026-11-24`
 
 In the 0.5.0 release, Rama adds support for QUIC, h3 (HTTP/3) and MASQUE
 proxies. It was tracked as issue #14 since December 2023, and we now support it
