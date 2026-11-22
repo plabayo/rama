@@ -181,9 +181,7 @@ async fn the_whole_fallback_list_is_preserved_in_order() {
     );
     // a socks5 directive lets the proxy resolve the name
     assert_eq!(
-        slice[1]
-            .proxy_address()
-            .map(|a| a.protocol.scheme().to_string()),
+        slice[1].proxy_address().map(|a| a.protocol.to_string()),
         Some("socks5h".to_owned()),
     );
     assert_eq!(slice[2], ProxyRoute::Direct);

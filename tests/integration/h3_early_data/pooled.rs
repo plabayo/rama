@@ -7,7 +7,7 @@ use rama::{
     http::{
         StatusCode, Version as HttpVersion,
         body::util::CollectOptions,
-        client::{EasyHttpConnectorBuilder, HttpPooledConnectorConfig},
+        client::{EasyHttpWebClient, HttpPooledConnectorConfig},
         conn::TargetHttpVersion,
         header,
         layer::retry::early_data::prepare_bodyless,
@@ -200,7 +200,7 @@ async fn pooled_recovery(provider: Provider, scenario: Scenario) {
     let rule_calls = Arc::new(AtomicUsize::new(0));
     let application_calls = rule_calls.clone();
     let client = Arc::new(
-        EasyHttpConnectorBuilder::new(WeakScope::detached())
+        EasyHttpWebClient::connector_builder(WeakScope::detached())
             .with_custom_quic_connector(SharedQuicEndpoint::supplied(
                 fixture.client.clone(),
                 WeakScope::detached(),
@@ -477,7 +477,7 @@ async fn real_ingress_request(provider: Provider, version: HttpVersion) -> Reque
         let address = listener.local_addr().unwrap();
         let service = HttpServer::auto(WeakScope::detached()).service(capture);
         let _serving = Task::spawn(listener.serve(service));
-        let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
             .with_default_transport_connector()
             .without_dns_connector()
             .without_proxy_support()

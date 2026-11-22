@@ -160,15 +160,17 @@ async fn run_case(case: Case) {
     .await;
     let version = case.carrier.version();
     let (scheme, client_template) = case.config.client();
-    let proxy = ProxyAddress::try_from(
-        format!(
-            "{scheme}://{}{proxy}{client_template}",
-            case.credentials.userinfo()
+    let proxy = with_version(
+        ProxyAddress::try_from(
+            format!(
+                "{scheme}://{}{proxy}{client_template}",
+                case.credentials.userinfo()
+            )
+            .as_str(),
         )
-        .as_str(),
-    )
-    .unwrap()
-    .with_http_version(version);
+        .unwrap(),
+        version,
+    );
     let target = match case.target {
         Target::Ipv4 | Target::Ipv6 => HostWithPort::from(origin),
         Target::Name => {

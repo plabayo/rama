@@ -6,7 +6,7 @@ use rama::{
     futures::StreamExt as _,
     graceful::WeakScope,
     http::{
-        client::EasyHttpConnectorBuilder,
+        client::EasyHttpWebClient,
         ws::{Message, handshake::client::HttpClientWebSocketExt as _},
     },
     tls::{client::TlsClientConfig, server::ServerAuthData},
@@ -92,12 +92,11 @@ async fn test_ws_over_h3() {
     let tls = TlsClientConfig::new()
         .try_with_server_trust_anchors(auth.cert_chain.clone())
         .unwrap();
-    let client_builder = EasyHttpConnectorBuilder::new(WeakScope::detached())
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_default_proxy_support();
-    let client_builder = client_builder.with_default_tls_support(tls.clone());
-    let client = client_builder
+        .with_default_proxy_support()
+        .with_default_tls_support(tls)
         .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();

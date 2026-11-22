@@ -136,12 +136,6 @@ impl RetryBody {
     }
 }
 
-impl Default for RetryBody {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
-
 /// A single shared payload and its optional trailing headers.
 #[derive(Debug, Clone)]
 pub(super) struct MemoryCursor {
@@ -193,6 +187,7 @@ impl ReplaySource for MemoryCursor {
         Box::new(self.clone())
     }
 }
+
 impl StreamingBody for RetryBody {
     type Data = Bytes;
     type Error = rama_core::error::BoxError;

@@ -150,8 +150,8 @@ impl<T: fmt::Debug> fmt::Debug for LiveUpdateProxyDBSetter<T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::{IpCategory, ProxyProtocols};
     use crate::{Proxy, ProxyFilter, proxydb::ProxyContext};
-    use crate::{ProxyProtocols, ProxyType};
     use rama_net::address::ProxyProtocol;
     use rama_net::{asn::Asn, transport::TransportProtocol};
     use rama_utils::str::non_empty_str;
@@ -201,7 +201,7 @@ mod tests {
             address: "authority:80".parse().unwrap(),
             credential: None,
             protocols: ProxyProtocols::from([ProxyProtocol::HTTPS]),
-            kind: ProxyType::Mobile,
+            ip_category: IpCategory::Mobile,
             pool_id: Some("pool_id".into()),
             continent: Some("continent".into()),
             country: Some("country".into()),

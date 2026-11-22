@@ -15,15 +15,15 @@ use tokio::{
 /// One proxy per line, in this column order:
 ///
 /// ```text
-/// id,type,address,pool_id,continent,country,state,city,carrier,asn,credential,protocols
+/// id,ip_category,address,pool_id,continent,country,state,city,carrier,asn,credential,protocols
 /// ```
 ///
-/// - `type`: a [`ProxyType`](crate::ProxyType) name, such as `residential`
+/// - `ip_category`: an [`IpCategory`](crate::IpCategory) name, such as `residential`
 /// - `address`: `[user[:pass]@]host:port`, without a scheme
 /// - `credential`: replaces the credential of the address when set, written as a
 ///   [`ProxyCredential`](rama_net::user::ProxyCredential)
-/// - `protocols`: every protocol the proxy speaks, `;`-separated, as
-///   [`Proxy::protocols`] documents, such as `socks5+tcp;socks5+udp;h2`
+/// - `protocols`: every protocol the proxy speaks, `;`-separated and in order of
+///   preference, as [`Proxy::protocols`] documents, such as `socks5+tcp;socks5+udp;h2`
 ///
 /// A `,` separates columns and a `;` protocols, so neither can appear in a template here.
 pub struct ProxyCsvRowReader {
@@ -119,7 +119,7 @@ pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
         address,
         credential,
         protocols,
-        kind,
+        ip_category: kind,
         pool_id,
         continent,
         country,
@@ -203,7 +203,7 @@ impl From<std::io::Error> for ProxyCsvRowReaderError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ProxyType;
+    use crate::IpCategory;
     use crate::{ProxyFilter, proxydb::ProxyContext};
     use rama_net::address::{ProxyPathTemplate, ProxyProtocol};
     use rama_net::http::Version;
@@ -236,13 +236,13 @@ mod tests {
         assert!(filter.is_any());
     }
 
-    fn proxy(id: NonEmptyStr, address: &str, kind: ProxyType) -> Proxy {
+    fn proxy(id: NonEmptyStr, address: &str, kind: IpCategory) -> Proxy {
         Proxy {
             id,
             address: address.parse().unwrap(),
             credential: None,
             protocols: ProxyProtocols::new(),
-            kind,
+            ip_category: kind,
             pool_id: None,
             continent: None,
             country: None,
@@ -258,7 +258,7 @@ mod tests {
         for (input, output) in [
             (
                 "id,datacenter,authority:80,,,,,,,,,",
-                proxy(non_empty_str!("id"), "authority:80", ProxyType::Datacenter),
+                proxy(non_empty_str!("id"), "authority:80", IpCategory::Datacenter),
             ),
             (
                 "id,Mobile,authority:80,pool_id,,country,,city,carrier,,Basic dXNlcm5hbWU6cGFzc3dvcmQ=,http",
@@ -269,23 +269,20 @@ mod tests {
                     country: Some("country".into()),
                     city: Some("city".into()),
                     carrier: Some("carrier".into()),
-                    ..proxy(non_empty_str!("id"), "authority:80", ProxyType::Mobile)
+                    ..proxy(non_empty_str!("id"), "authority:80", IpCategory::Mobile)
                 },
             ),
             (
                 "123,residential,host:1234,,americas,*,*,*,carrier,13335,,socks5+tcp",
                 Proxy {
-                    protocols: ProxyProtocols::from([ProxyProtocol::Socks5 {
-                        remote_dns: false,
-                        transport: Some(TransportProtocol::Tcp),
-                    }]),
+                    protocols: ProxyProtocols::from([ProxyProtocol::SOCKS5_TCP]),
                     continent: Some("americas".into()),
                     country: Some("*".into()),
                     state: Some("*".into()),
                     city: Some("*".into()),
                     carrier: Some("carrier".into()),
                     asn: Some(Asn::from_static(13335)),
-                    ..proxy(non_empty_str!("123"), "host:1234", ProxyType::Residential)
+                    ..proxy(non_empty_str!("123"), "host:1234", IpCategory::Residential)
                 },
             ),
             (
@@ -294,24 +291,19 @@ mod tests {
                     credential: Some(basic!("john", "secret").into()),
                     protocols: ProxyProtocols::from([
                         ProxyProtocol::HTTPS,
-                        ProxyProtocol::Socks5 {
-                            remote_dns: true,
-                            transport: Some(TransportProtocol::Udp),
-                        },
+                        ProxyProtocol::SOCKS5H_UDP,
                     ]),
                     continent: Some("europe".into()),
                     asn: Some(Asn::unspecified()),
-                    ..proxy(non_empty_str!("foo"), "bar:443", ProxyType::Isp)
+                    ..proxy(non_empty_str!("foo"), "bar:443", IpCategory::Isp)
                 },
             ),
             (
-                "foo,datacenter,john:secret@bar:443,,,,,,,,jane:other,h2",
+                "foo,datacenter,john:secret@bar:443,,,,,,,,Basic amFuZTpvdGhlcg==,h2",
                 Proxy {
                     credential: Some(basic!("jane", "other").into()),
-                    protocols: ProxyProtocols::from([
-                        ProxyProtocol::HTTPS.with_http_version(Version::HTTP_2)
-                    ]),
-                    ..proxy(non_empty_str!("foo"), "bar:443", ProxyType::Datacenter)
+                    protocols: ProxyProtocols::from([ProxyProtocol::H2]),
+                    ..proxy(non_empty_str!("foo"), "bar:443", IpCategory::Datacenter)
                 },
             ),
         ] {
@@ -320,7 +312,7 @@ mod tests {
             assert_eq!(proxy.address, output.address, "{input}");
             assert_eq!(proxy.credential, output.credential, "{input}");
             assert_eq!(proxy.protocols, output.protocols, "{input}");
-            assert_eq!(proxy.kind, output.kind, "{input}");
+            assert_eq!(proxy.ip_category, output.ip_category, "{input}");
             assert_eq!(proxy.pool_id, output.pool_id, "{input}");
             assert_eq!(proxy.continent, output.continent, "{input}");
             assert_eq!(proxy.country, output.country, "{input}");
@@ -344,11 +336,11 @@ mod tests {
             "id,datacenter,authority:80,,,,,,,,,http,",
             // too few columns
             "id,datacenter,authority:80,,,,,,,,",
-            // missing id, type or address
+            // missing id, ip category or address
             ",datacenter,authority:80,,,,,,,,,http",
             "id,,authority:80,,,,,,,,,http",
             "id,datacenter,,,,,,,,,,http",
-            // unknown type
+            // unknown ip category
             "id,hosting,authority:80,,,,,,,,,http",
             // an address with a scheme or path
             "id,datacenter,http://authority:80,,,,,,,,,http",
@@ -369,9 +361,9 @@ mod tests {
         assert_eq!(
             proxy.protocols,
             ProxyProtocols::from([
-                ProxyProtocol::HTTPS.with_http_version(Version::HTTP_2),
-                ProxyProtocol::try_from_scheme("h3+udp").unwrap(),
-                ProxyProtocol::try_from_scheme("socks5h+udp").unwrap(),
+                ProxyProtocol::H2,
+                ProxyProtocol::connect_udp(Version::HTTP_3),
+                ProxyProtocol::SOCKS5H_UDP,
                 ProxyProtocol::Custom(SmolStr::new_static("warp")),
             ]),
         );
@@ -403,7 +395,7 @@ mod tests {
             Some(basic!("username", "password").into())
         );
         assert_eq!(proxy.protocols, ProxyProtocols::from([ProxyProtocol::HTTP]));
-        assert_eq!(proxy.kind, ProxyType::Datacenter);
+        assert_eq!(proxy.ip_category, IpCategory::Datacenter);
         assert_eq!(proxy.pool_id, Some("pool_id".into()));
         assert_eq!(proxy.continent, Some("continent".into()));
         assert_eq!(proxy.country, Some("country".into()));
@@ -431,15 +423,9 @@ mod tests {
         );
         assert_eq!(
             proxy.protocols,
-            ProxyProtocols::from([
-                ProxyProtocol::HTTPS,
-                ProxyProtocol::Socks5 {
-                    remote_dns: false,
-                    transport: Some(TransportProtocol::Tcp),
-                }
-            ]),
+            ProxyProtocols::from([ProxyProtocol::HTTPS, ProxyProtocol::SOCKS5_TCP]),
         );
-        assert_eq!(proxy.kind, ProxyType::Datacenter);
+        assert_eq!(proxy.ip_category, IpCategory::Datacenter);
         assert_eq!(proxy.pool_id, Some("pool_id".into()));
         assert_eq!(proxy.continent, Some("continent".into()));
         assert_eq!(proxy.country, Some("country".into()));
@@ -453,7 +439,7 @@ mod tests {
         assert_eq!(proxy.address, "authority2:80".parse().unwrap());
         assert_eq!(proxy.credential, None);
         assert_eq!(proxy.protocols, ProxyProtocols::from([ProxyProtocol::HTTP]));
-        assert_eq!(proxy.kind, ProxyType::Residential);
+        assert_eq!(proxy.ip_category, IpCategory::Residential);
         assert_eq!(proxy.pool_id, Some("pool_id2".into()));
         assert_eq!(proxy.continent, Some("continent2".into()));
         assert_eq!(proxy.country, Some("country2".into()));

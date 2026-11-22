@@ -8,7 +8,7 @@ use rama::{
     http::{
         StatusCode, Version,
         body::util::BodyExt as _,
-        client::EasyHttpConnectorBuilder,
+        client::EasyHttpWebClient,
         conn::TargetHttpVersion,
         layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
@@ -66,7 +66,7 @@ async fn check_one_pooled_connection(websocket_first: bool) {
         .unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = spawn(listener.serve(service));
-    let builder = EasyHttpConnectorBuilder::new(WeakScope::detached())
+    let builder = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
         .with_default_proxy_support();

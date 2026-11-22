@@ -43,6 +43,7 @@ use rama::{
     http::{
         BodyLimitLayer, Method, Request, Response, StatusCode, Version,
         client::{DefaultProxyConnector, EasyHttpWebClient, ProxyConnector, masque_quic_transport},
+        conn::FallbackHttpVersion,
         header::trailer::ForbiddenTrailers,
         inspect::{control, mitm_policy},
         layer::{
@@ -90,7 +91,7 @@ use rama::{
     inspect as inspection,
     io::{peek::PeekPolicy, timeout::TimeoutIo},
     layer::{
-        ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapInputLayer, MapOutputLayer,
+        AddInputExtensionLayer, ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer,
         TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
@@ -1292,7 +1293,7 @@ pub struct CliCommandProxy {
     /// CONNECT, and UDP with CONNECT-UDP only where its address says the tunnels are:
     /// `+udp` for the default template, or a path as the template to use.
     /// A SOCKS5 proxy is `socks5` or `socks5h`, with `+tcp` or `+udp` to use it for that
-    /// transport only.
+    /// transport only, and `+tls` to reach it over TLS.
     #[arg(long, conflicts_with = "system_proxy")]
     upstream_proxy: Option<ProxyAddress>,
 
@@ -1937,11 +1938,15 @@ async fn run_with_dashboard_token(
         if let Some(endpoint) = masque_endpoint {
             let mut h3 = HttpServer::new_http3(scope.clone());
             h3.http3_mut().extended_connect = true;
+            // Arriving over HTTP/3 says nothing about the version the origin speaks.
+            let h3_http_service =
+                AddInputExtensionLayer::new(FallbackHttpVersion(Version::HTTP_11))
+                    .into_layer(tls_http_service);
             http3_endpoints.serve(
                 &scope,
                 "MASQUE proxy",
                 endpoint,
-                ConsumeErrLayer::trace_as_debug().into_layer(h3.service(tls_http_service)),
+                ConsumeErrLayer::trace_as_debug().into_layer(h3.service(h3_http_service)),
             )?;
         }
         let tls_acceptor = TlsAcceptorService::new(
@@ -2425,21 +2430,14 @@ fn new_proxy_client(
         .with_custom_tcp_connector(TcpConnector::new().with_connector(tcp_options))
         .with_default_dns_connector()
         .with_proxy_support(proxies)
-        .with_tls_support_using_boringssl(tls_config)
+        // The version a request arrived with describes the client's connection to this
+        // proxy, not the one to the origin.
+        .with_tls_support_using_boringssl_and_default_http_version(tls_config, Version::HTTP_11)
         .with_default_http_connector()
         .with_custom_connector(connect_timeout.map_or_else(TimeoutLayer::never, TimeoutLayer::new))
         .with_default_connection_pool()
         .build_client()
         .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http());
-    // HTTP/3 on a request is prior knowledge, but here it only describes the ingress
-    // connection: the egress starts at HTTP/1.1 and TLS negotiation can raise it.
-    let client = MapInputLayer::new(|mut request: Request| {
-        if request.version() == Version::HTTP_3 {
-            *request.version_mut() = Version::HTTP_11;
-        }
-        request
-    })
-    .into_layer(client);
     let client = upstream.http_service(client);
     let base = require_request_service(
         (
@@ -2541,7 +2539,7 @@ fn upstream_proxies(
         )
         .with_default_http_connector()
         .with_default_connection_pool()
-        .with_every_method()
+        .with_all_proxy_protocols()
         .build()
         .with_forward_proxy_auth(upstream.forward_proxy_auth())
         .with_isolate_forward_proxy_auth_error(true))

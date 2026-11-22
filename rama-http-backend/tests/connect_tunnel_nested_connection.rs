@@ -168,7 +168,8 @@ async fn custom_transfer_carries_a_chosen_fact_into_the_tunnel() {
             nested.insert(ProxyConnFact);
         }
     };
-    let layer = lazy_connect_layer().with_extensions_transfer(DefaultExtensionsTransfer.and(carry));
+    let layer =
+        lazy_connect_layer().with_extensions_transfer(DefaultExtensionsTransfer::new().and(carry));
     serve_lazy_connect_proxy(tls_proxy_connection(server_io), layer);
 
     let observed = request_inside_tunnel(client_io).await;

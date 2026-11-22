@@ -61,7 +61,7 @@ async fn dns_stream_negotiates_and_reuses_either_http_version() {
     ] {
         let (auth, tls) = credentials();
         let server = Server::start_with_alpn(auth, version, advertise_alpn).await;
-        let builder = EasyHttpConnectorBuilder::new(WeakScope::detached())
+        let builder = EasyHttpWebClient::connector_builder(WeakScope::detached())
             .with_default_transport_connector()
             .with_default_dns_connector()
             .without_proxy_support();

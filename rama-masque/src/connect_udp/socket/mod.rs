@@ -65,11 +65,12 @@ const CONTEXT_PREFIX: usize = 1;
 /// connection ID and a 1 to 4 byte packet number.
 const RETURN_DIRECTION_MARGIN: usize = 23;
 
-/// What the proxy can send back without knowing its packet size: common QUIC stacks start at
-/// 1280-byte packets, less the most a native datagram costs (header with a 20-byte
-/// connection ID and 4-byte packet number, AEAD tag, DATAGRAM frame, Quarter Stream ID and
-/// Context ID).
-const RETURN_DIRECTION_FLOOR: usize = 1280 - (1 + 20 + 4 + 16 + 3 + 4 + CONTEXT_PREFIX);
+/// The most a native datagram costs in a proxy's packet: header with a 20-byte connection ID
+/// and 4-byte packet number, AEAD tag, DATAGRAM frame, Quarter Stream ID and Context ID.
+const NATIVE_DATAGRAM_OVERHEAD: usize = 1 + 20 + 4 + 16 + 3 + 4 + CONTEXT_PREFIX;
+
+/// The packet size assumed for a proxy that does not say: common QUIC stacks start at 1280.
+const DEFAULT_PROXY_PACKET_SIZE: u16 = 1280;
 
 /// The [`SessionConfig`] a CONNECT-UDP tunnel's [`HttpDatagramSession`] needs.
 ///
@@ -104,6 +105,7 @@ pub struct ConnectUdpSocketConfig {
     close_grace: Duration,
     /// The smallest payload limit the tunnel's owner can work with.
     min_payload: Option<usize>,
+    proxy_packet_size: Option<u16>,
 }
 
 impl Default for ConnectUdpSocketConfig {
@@ -114,7 +116,8 @@ impl Default for ConnectUdpSocketConfig {
             idle_timeout: Duration::from_mins(2),
             close_grace: CLOSE_GRACE,
             min_payload: None,
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            proxy_packet_size: None,
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 }
@@ -137,6 +140,19 @@ impl ConnectUdpSocketConfig {
         /// tunnel closes ([`ConnectUdpClose::Capacity`]) instead of losing every payload.
         pub fn min_payload(mut self, min: Option<usize>) -> Self {
             self.min_payload = min;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// The UDP payload size of the packets the proxy sends, such as the initial MTU of its
+        /// QUIC transport: what comes back through the tunnel is sized to fit in them.
+        ///
+        /// Unknown by default, which assumes the 1280-byte packets common QUIC stacks start at.
+        /// A proxy which sends larger packets leaves room for a QUIC connection tunneled
+        /// through this one to tunnel QUIC itself.
+        pub fn proxy_packet_size(mut self, size: Option<u16>) -> Self {
+            self.proxy_packet_size = size;
             self
         }
     }
@@ -222,6 +238,8 @@ struct Shared {
     progress: IdleActivity,
     peer: SocketAddress,
     min_payload: Option<usize>,
+    /// The most the proxy can send back in one native datagram.
+    return_floor: usize,
     stats: StatsCounters,
     /// The proxy's budget for this tunnel, when it has one.
     account: Option<TunnelAccount>,
@@ -432,6 +450,12 @@ where
             progress: IdleActivity::new(),
             peer,
             min_payload: config.min_payload,
+            return_floor: usize::from(
+                config
+                    .proxy_packet_size
+                    .unwrap_or(DEFAULT_PROXY_PACKET_SIZE),
+            )
+            .saturating_sub(NATIVE_DATAGRAM_OVERHEAD),
             stats: StatsCounters::default(),
             account: (budget.is_some() || principal.is_some()).then(|| {
                 budget
@@ -505,7 +529,7 @@ fn capabilities(shared: &Shared) -> DatagramCapabilities {
     if shared.native.is_some() {
         capabilities.max_receive_payload = Some(
             max.saturating_sub(RETURN_DIRECTION_MARGIN)
-                .min(RETURN_DIRECTION_FLOOR),
+                .min(shared.return_floor),
         );
     }
     // No MTU discovery through the tunnel: the inner sender sizes its packets itself.

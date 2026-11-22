@@ -31,7 +31,14 @@ pub trait ProxySelector<Input> {
 
 /// Selects every input with a proxied [`ProxyRoute`], whichever proxy it names.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct ProxiedRoute;
+
+impl ProxiedRoute {
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl<Input: ExtensionsRef> ProxySelector<Input> for ProxiedRoute {
     fn is_proxied(&self, input: &Input) -> bool {
@@ -321,8 +328,11 @@ mod tests {
 
     #[tokio::test]
     async fn only_a_requested_direct_route_publishes_the_direct_outcome() {
-        let connector =
-            MaybeProxiedConnector::new(duplex_connector(), unreachable_connector(), ProxiedRoute);
+        let connector = MaybeProxiedConnector::new(
+            duplex_connector(),
+            unreachable_connector(),
+            ProxiedRoute::new(),
+        );
 
         let established = connector
             .connect(ConnectRequest::new(HostWithPort::example_domain_http()))
@@ -366,8 +376,11 @@ mod tests {
                         conn: ServiceInput::new(io),
                     })
                 });
-                let connector =
-                    MaybeProxiedConnector::new(direct, unreachable_connector(), ProxiedRoute);
+                let connector = MaybeProxiedConnector::new(
+                    direct,
+                    unreachable_connector(),
+                    ProxiedRoute::new(),
+                );
                 let input = ConnectRequest::new(HostWithPort::example_domain_http());
                 if route_configured {
                     input.extensions.insert(ProxyRoute::Direct);
@@ -410,7 +423,7 @@ mod tests {
         let connector = MaybeProxiedConnector::new(
             unreachable_connector(),
             TunnelLayer.into_layer(duplex_connector()),
-            ProxiedRoute,
+            ProxiedRoute::new(),
         );
         let input = ConnectRequest::new(HostWithPort::example_domain_http());
         input.extensions.insert(ProxyRoute::Proxy(socks_proxy()));

@@ -8,7 +8,7 @@ use rama::{
     graceful::WeakScope,
     http::{
         Body, Request, Version,
-        client::EasyHttpConnectorBuilder,
+        client::EasyHttpWebClient,
         datagram::{
             DatagramTransport, HttpDatagramSession, SessionEvent, ViolationPolicy,
             handshake::{prepare_capsule_request, validate_capsule_response},
@@ -91,12 +91,11 @@ async fn test_http_datagram_echo() {
     let tls = TlsClientConfig::new()
         .try_with_server_trust_anchors(auth.cert_chain.clone())
         .unwrap();
-    let client_builder = EasyHttpConnectorBuilder::new(WeakScope::detached())
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_default_proxy_support();
-    let client_builder = client_builder.with_default_tls_support(tls.clone());
-    let client = client_builder
+        .with_default_proxy_support()
+        .with_default_tls_support(tls)
         .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();

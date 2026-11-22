@@ -157,7 +157,15 @@ impl ConnectionAttempt {
 /// Gives a child connection an attempt [`ConnectionAttempt::dialed_for`] the
 /// attempt of its parent, if that has one.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct ConnectionAttemptTransfer;
+
+impl ConnectionAttemptTransfer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl ExtensionsTransfer for ConnectionAttemptTransfer {
     fn transfer(&self, parent: &Extensions, child: &Extensions) {
@@ -229,7 +237,7 @@ mod tests {
         origin.insert(
             ConnectionAttempt::new().with_authenticated_peer(Host::from_static("origin.example")),
         );
-        let leg = origin.fork_connection(&ConnectionAttemptTransfer);
+        let leg = origin.fork_connection(&ConnectionAttemptTransfer::new());
 
         let leg_attempt = leg
             .get_ref::<ConnectionAttempt>()
@@ -262,7 +270,7 @@ mod tests {
                 .policy_scope()
         };
 
-        let connector_leg = origin.fork_connection(&ConnectionAttemptTransfer);
+        let connector_leg = origin.fork_connection(&ConnectionAttemptTransfer::new());
         connector_leg
             .get_ref::<ConnectionAttempt>()
             .expect("the proxy connection's own attempt")
@@ -270,7 +278,7 @@ mod tests {
             .unwrap();
         assert_eq!(origin_scope(), ConnectionPolicyScope::Unknown);
 
-        let request_leg = origin.fork_connection(&ConnectionAttemptTransfer);
+        let request_leg = origin.fork_connection(&ConnectionAttemptTransfer::new());
         request_leg
             .get_ref::<ConnectionAttempt>()
             .expect("the proxy connection's own attempt")

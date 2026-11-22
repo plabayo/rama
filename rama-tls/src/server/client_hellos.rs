@@ -117,7 +117,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(ServerEchAccepted::new(true));
         proxy.insert(EchServerObservation::new(hello(2)));
-        let origin = proxy.fork_connection(&NoExtensionsTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
         origin.insert(SecureTransport::with_client_hello(hello(3)));
 
         let hellos = ServerClientHellos::from_extensions(&origin);

@@ -10,15 +10,21 @@ use crate::{
         Body as ResponseBody, HeaderValue,
         client::{
             HttpConnector, HttpPooledConnector, HttpPooledConnectorConfig,
-            builder::{DnsStage, QuicLeg, TlsStage, TransportStage},
+            builder::{AltSvcConnectionLayer, DnsStage, HttpsDiscovery, TlsStage, TransportStage},
             proxy::{HttpForwardProxyConnector, layer::HttpConnectProxyConnector},
         },
         header::IntoHeaderName,
+        layer::{
+            alt_svc::{AltSvc, AltSvcBody, AltSvcCache},
+            http_service::HttpServiceConnector,
+            map_response_body::MapResponseBody,
+        },
+        proxy::ProxyRequestBody,
     },
     net::{
         client::{
-            ConnectRequest, ConnectorService, PlaintextProxyOnly, PlaintextProxyOnlyLayer,
-            ProxyDialer,
+            ConnectRequest, ConnectorService, MapEstablishedConnection, PlaintextProxyOnly,
+            PlaintextProxyOnlyLayer, ProxyDialer,
         },
         stream::DefaultExtensionsTransfer,
     },
@@ -26,6 +32,12 @@ use crate::{
 };
 use rama_utils::macros::generate_set_and_with;
 use std::marker::PhantomData;
+
+#[cfg(feature = "quic")]
+use crate::{
+    dns::client::resolver::{BoxDnsResolver, DnsResolver},
+    http::layer::https_service::{HttpsService, HttpsServiceLayer},
+};
 
 #[cfg(feature = "socks5")]
 use crate::proxy::socks5::{Socks5ConnectProxyConnector, Socks5ConnectProxyConnectorLayer};
@@ -41,28 +53,19 @@ use crate::tls::rustls::client as rustls_client;
 #[cfg(all(
     feature = "masque",
     feature = "quic",
-    any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-    )
+    any(feature = "boring", feature = "rustls")
 ))]
 use crate::http::client::masque_quic_transport;
-#[cfg(feature = "quic")]
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
 use crate::{
-    http::client::builder::NoTcpConnector,
+    http::client::builder::{NoTcpConnector, QuicLeg, quic_tls_provider_or_unavailable},
     quic::{
         TransportConfig,
         client::{ClientEndpoint, SharedQuicEndpoint},
     },
 };
 
-#[cfg(all(
-    feature = "quic",
-    any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-    )
-))]
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
 use {
     crate::{
         Service,
@@ -103,12 +106,14 @@ pub struct ProxyConnectorBuilder<T = (), C = (), S = (), D = ()> {
 /// type `B` its connections send.
 #[derive(Debug)]
 pub struct ProxyHttpStage<B = ResponseBody> {
+    discovery: HttpsDiscovery,
     _phantom: PhantomData<fn() -> B>,
 }
 
 impl<B> ProxyHttpStage<B> {
-    const fn new() -> Self {
+    const fn new(discovery: HttpsDiscovery) -> Self {
         Self {
+            discovery,
             _phantom: PhantomData,
         }
     }
@@ -125,6 +130,25 @@ impl ProxyConnectorBuilder {
             stage: (),
             dns: (),
             scope: scope.into(),
+        }
+    }
+}
+
+impl<T, S, D> ProxyConnectorBuilder<T, (), S, D> {
+    /// Map the connector towards proxies built so far, keeping the stage.
+    ///
+    /// After the TLS stage this is how every connection to a proxy is secured, also one
+    /// whose address does not ask for TLS: `.map_connector(|tls| tls.into_secure())`.
+    pub fn map_connector<T2>(
+        self,
+        map_fn: impl FnOnce(T) -> T2,
+    ) -> ProxyConnectorBuilder<T2, (), S, D> {
+        ProxyConnectorBuilder {
+            stream: map_fn(self.stream),
+            http: (),
+            stage: self.stage,
+            dns: self.dns,
+            scope: self.scope,
         }
     }
 }
@@ -148,7 +172,7 @@ impl<T, C, S, D> ProxyConnectorBuilder<T, C, S, D> {
 impl<D> ProxyConnectorBuilder<(), (), (), D> {
     /// Dial proxies over TCP, and over QUIC for an `h3://` proxy where this build has a
     /// QUIC TLS backend.
-    #[cfg(feature = "quic")]
+    #[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
     #[must_use]
     pub fn with_default_transport_connector(
         self,
@@ -159,7 +183,7 @@ impl<D> ProxyConnectorBuilder<(), (), (), D> {
     }
 
     /// Dial proxies over TCP.
-    #[cfg(not(feature = "quic"))]
+    #[cfg(not(all(feature = "quic", any(feature = "boring", feature = "rustls"))))]
     #[must_use]
     pub fn with_default_transport_connector(
         self,
@@ -168,7 +192,7 @@ impl<D> ProxyConnectorBuilder<(), (), (), D> {
     }
 
     /// Dial proxies over QUIC only, which makes every proxy but an `h3://` one unreachable.
-    #[cfg(feature = "quic")]
+    #[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
     #[must_use]
     pub fn with_default_quic_connector(
         self,
@@ -200,7 +224,7 @@ impl<D> ProxyConnectorBuilder<(), (), (), D> {
     /// the only transport leg, which makes every proxy but an `h3://` one unreachable
     /// unless a TCP leg is added with
     /// [`ProxyConnectorBuilder::with_custom_tcp_connector`].
-    #[cfg(feature = "quic")]
+    #[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
     pub fn with_custom_quic_connector<E>(
         self,
         endpoints: E,
@@ -226,7 +250,7 @@ impl<D> ProxyConnectorBuilder<(), (), (), D> {
     }
 }
 
-#[cfg(feature = "quic")]
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
 impl<T, E, D> ProxyConnectorBuilder<T, (), TransportStage<QuicLeg<E>>, D> {
     /// Configure the QUIC transport of the connections to `h3://` proxies, replacing the
     /// default one, which leaves a MASQUE proxy room for tunneled QUIC packets.
@@ -237,7 +261,7 @@ impl<T, E, D> ProxyConnectorBuilder<T, (), TransportStage<QuicLeg<E>>, D> {
     }
 }
 
-#[cfg(feature = "quic")]
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
 impl<T, Q, D> ProxyConnectorBuilder<T, (), TransportStage<Q>, D> {
     /// Reach an `h3://` proxy over the QUIC endpoints `endpoints` hands out, instead of the
     /// built-in ones or none: on a builder which already has a transport this swaps the
@@ -434,75 +458,9 @@ impl<T, Q, D> ProxyConnectorBuilder<T, (), DnsStage<Q>, D> {
         self,
     ) -> ProxyConnectorBuilder<PlaintextProxyOnly<T>, (), TlsStage<false, (), Q>, D> {
         ProxyConnectorBuilder {
-            stream: PlaintextProxyOnlyLayer.into_layer(self.stream),
+            stream: PlaintextProxyOnlyLayer::new().into_layer(self.stream),
             http: (),
             stage: TlsStage::without_tls(self.stage.quic),
-            dns: self.dns,
-            scope: self.scope,
-        }
-    }
-}
-
-#[cfg(feature = "boring")]
-#[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
-impl<T, Q, D>
-    ProxyConnectorBuilder<
-        boring_client::TlsConnector<T>,
-        (),
-        TlsStage<false, TlsClientConfig, Q>,
-        D,
-    >
-{
-    /// Secure the connection to every proxy over the TCP leg, also one whose address does
-    /// not ask for TLS: that is how a `socks5://` proxy is reached over TLS.
-    ///
-    /// The QUIC leg is left as it was, so an `h3://` proxy keeps working.
-    #[must_use]
-    pub fn require_tls(
-        self,
-    ) -> ProxyConnectorBuilder<
-        boring_client::TlsConnector<T, boring_client::ConnectorKindSecure>,
-        (),
-        TlsStage<false, TlsClientConfig, Q>,
-        D,
-    > {
-        ProxyConnectorBuilder {
-            stream: self.stream.into_secure(),
-            http: (),
-            stage: self.stage,
-            dns: self.dns,
-            scope: self.scope,
-        }
-    }
-}
-
-#[cfg(feature = "rustls")]
-#[cfg_attr(docsrs, doc(cfg(feature = "rustls")))]
-impl<T, Q, D>
-    ProxyConnectorBuilder<
-        rustls_client::TlsConnector<T>,
-        (),
-        TlsStage<false, TlsClientConfig, Q>,
-        D,
-    >
-{
-    /// Secure the connection to every proxy over the TCP leg, also one whose address does
-    /// not ask for TLS: that is how a `socks5://` proxy is reached over TLS.
-    ///
-    /// The QUIC leg is left as it was, so an `h3://` proxy keeps working.
-    #[must_use]
-    pub fn require_tls(
-        self,
-    ) -> ProxyConnectorBuilder<
-        rustls_client::TlsConnector<T, rustls_client::ConnectorKindSecure>,
-        (),
-        TlsStage<false, TlsClientConfig, Q>,
-        D,
-    > {
-        ProxyConnectorBuilder {
-            stream: self.stream.into_secure(),
-            http: (),
-            stage: self.stage,
             dns: self.dns,
             scope: self.scope,
         }
@@ -512,10 +470,10 @@ impl<T, Q, D>
 impl<T: Clone, Tls, Q, D> ProxyConnectorBuilder<T, (), TlsStage<false, Tls, Q>, D> {
     fn http_connector<B>(
         self,
-    ) -> ProxyConnectorBuilder<T, HttpConnector<T, B>, ProxyHttpStage<B>, D> {
+    ) -> ProxyConnectorBuilder<T, HttpConnector<T, ProxyRequestBody<B>>, ProxyHttpStage<B>, D> {
         let stream = self.stream.clone();
         let scope = self.scope.clone();
-        self.into_stage(ProxyHttpStage::new(), move |()| {
+        self.into_stage(ProxyHttpStage::new(HttpsDiscovery::disabled()), move |()| {
             HttpConnector::new(stream, scope)
         })
     }
@@ -525,12 +483,14 @@ impl<T: Clone, Tls, Q, D> ProxyConnectorBuilder<T, (), TlsStage<false, Tls, Q>, 
     /// is left out.
     ///
     /// `B` is the body type sent to a proxy, which is the one the client serves origins with.
+    /// Its connections report the HTTP version they speak in a `TargetHttpVersion`, as
+    /// `HttpConnector` does: a proxy address that names a version is checked against it.
     pub fn with_custom_http_connector<B, L: Layer<T>>(
         self,
         connector_layer: L,
     ) -> ProxyConnectorBuilder<T, L::Service, ProxyHttpStage<B>, D> {
         let stream = self.stream.clone();
-        self.into_stage(ProxyHttpStage::new(), move |()| {
+        self.into_stage(ProxyHttpStage::new(HttpsDiscovery::disabled()), move |()| {
             connector_layer.into_layer(stream)
         })
     }
@@ -545,7 +505,7 @@ impl<T: Clone, Q, D> ProxyConnectorBuilder<T, (), TlsStage<false, (), Q>, D> {
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn with_default_http_connector<B>(
         self,
-    ) -> ProxyConnectorBuilder<T, HttpConnector<T, B>, ProxyHttpStage<B>, D> {
+    ) -> ProxyConnectorBuilder<T, HttpConnector<T, ProxyRequestBody<B>>, ProxyHttpStage<B>, D> {
         self.http_connector()
     }
 }
@@ -560,39 +520,12 @@ impl<T: Clone, D> ProxyConnectorBuilder<T, (), TlsStage<false, TlsClientConfig, 
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn with_default_http_connector<B>(
         self,
-    ) -> ProxyConnectorBuilder<T, HttpConnector<T, B>, ProxyHttpStage<B>, D> {
+    ) -> ProxyConnectorBuilder<T, HttpConnector<T, ProxyRequestBody<B>>, ProxyHttpStage<B>, D> {
         self.http_connector()
     }
 }
 
-#[cfg(all(
-    feature = "rustls",
-    not(feature = "boring"),
-    feature = "quic",
-    not(any(feature = "aws-lc", feature = "ring"))
-))]
-impl<T: Clone, D, E> ProxyConnectorBuilder<T, (), TlsStage<false, TlsClientConfig, QuicLeg<E>>, D> {
-    /// Speak HTTP to a proxy over the TCP leg, in the version its [`ProxyAddress`] asks for;
-    /// an `h3://` proxy needs a QUIC TLS backend (boringssl, or rustls with `aws-lc` or
-    /// `ring`).
-    ///
-    /// `B` is the body type sent to a proxy, which is the one the client serves origins with.
-    ///
-    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
-    pub fn with_default_http_connector<B>(
-        self,
-    ) -> ProxyConnectorBuilder<T, HttpConnector<T, B>, ProxyHttpStage<B>, D> {
-        self.http_connector()
-    }
-}
-
-#[cfg(all(
-    feature = "quic",
-    any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-    )
-))]
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
 #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
 impl<T: Clone, D, E> ProxyConnectorBuilder<T, (), TlsStage<false, TlsClientConfig, QuicLeg<E>>, D> {
     /// Build the QUIC TLS configurations through `provider` instead of the backend the
@@ -614,7 +547,7 @@ impl<T: Clone, D, E> ProxyConnectorBuilder<T, (), TlsStage<false, TlsClientConfi
         self,
     ) -> ProxyConnectorBuilder<
         T,
-        HttpConnector<HttpTransportConnector<T, D::Service>, B>,
+        HttpConnector<HttpTransportConnector<T, D::Service>, ProxyRequestBody<B>>,
         ProxyHttpStage<B>,
         D,
     >
@@ -641,15 +574,7 @@ impl<T: Clone, D, E> ProxyConnectorBuilder<T, (), TlsStage<false, TlsClientConfi
         );
         #[cfg(not(feature = "masque"))]
         let transport = self.stage.quic.transport.clone();
-        #[expect(
-            clippy::expect_used,
-            reason = "every TLS stage of a build with a QUIC TLS backend picks a provider"
-        )]
-        let provider = self
-            .stage
-            .quic_tls
-            .clone()
-            .expect("TLS stage without a QUIC TLS provider");
+        let provider = quic_tls_provider_or_unavailable(self.stage.quic_tls.clone());
         #[expect(
             clippy::expect_used,
             reason = "the built-in HTTP/3 configuration is always valid"
@@ -660,9 +585,10 @@ impl<T: Clone, D, E> ProxyConnectorBuilder<T, (), TlsStage<false, TlsClientConfi
             .build_lazy()
             .expect("built-in HTTP/3 configuration");
         let quic = self.dns.layer(quic);
+        let discovery = HttpsDiscovery::default().with_tls(&self.stage.tls, false);
         let stream = self.stream.clone();
         let scope = self.scope.clone();
-        self.into_stage(ProxyHttpStage::new(), move |()| {
+        self.into_stage(ProxyHttpStage::new(discovery), move |()| {
             HttpConnector::new(stream, scope).with_http3_connector(quic)
         })
     }
@@ -674,7 +600,12 @@ where
 {
     /// Pool the HTTP connections to a proxy with rama's defaults, so the tunnels and
     /// forwarded requests through one proxy share its HTTP/2 and HTTP/3 connections.
-    pub fn with_default_connection_pool(self) -> ProxyMethodBuilder<T, HttpPooledConnector<C>, B> {
+    ///
+    /// Outside the pool sit HTTPS-record discovery and Alt-Svc, as on an origin, so an
+    /// `https://` proxy without a version is reached over HTTP/3 when it advertises it.
+    pub fn with_default_connection_pool(
+        self,
+    ) -> ProxyMethodBuilder<T, ProxyServiceConnector<HttpPooledConnector<C>>, B> {
         self.with_connection_pool(HttpPooledConnectorConfig::default())
     }
 
@@ -682,14 +613,58 @@ where
     pub fn with_connection_pool(
         self,
         config: HttpPooledConnectorConfig,
-    ) -> ProxyMethodBuilder<T, HttpPooledConnector<C>, B> {
+    ) -> ProxyMethodBuilder<T, ProxyServiceConnector<HttpPooledConnector<C>>, B> {
         let http = config.build_connector(self.http);
+        let http = proxy_service_connector(http, self.stage.discovery);
         ProxyMethodBuilder::new(self.stream, http, self.scope)
     }
 
-    /// Give every tunnel and forwarded request a connection to the proxy of its own.
-    pub fn without_connection_pool(self) -> ProxyMethodBuilder<T, C, B> {
-        ProxyMethodBuilder::new(self.stream, self.http, self.scope)
+    /// Give every tunnel and forwarded request a connection to the proxy of its own, with
+    /// the discovery and Alt-Svc of [`Self::with_default_connection_pool`].
+    pub fn without_connection_pool(self) -> ProxyMethodBuilder<T, ProxyServiceConnector<C>, B> {
+        let http = proxy_service_connector(self.http, self.stage.discovery);
+        ProxyMethodBuilder::new(self.stream, http, self.scope)
+    }
+}
+
+#[cfg(feature = "quic")]
+type ProxyServiceSelector<C> = HttpsService<HttpServiceConnector<C>, BoxDnsResolver>;
+#[cfg(not(feature = "quic"))]
+type ProxyServiceSelector<C> = HttpServiceConnector<C>;
+
+/// The HTTP connector towards proxies the pool stage of a [`ProxyConnectorBuilder`] builds:
+/// `C` with HTTPS-record discovery and Alt-Svc around it.
+pub type ProxyServiceConnector<C> =
+    MapEstablishedConnection<ProxyServiceSelector<C>, ProxyAltSvcConnectionLayer>;
+
+fn proxy_service_connector<C>(connector: C, discovery: HttpsDiscovery) -> ProxyServiceConnector<C> {
+    let cache = AltSvcCache::default();
+    let connector = HttpServiceConnector::new(connector).with_cache(cache.clone());
+    #[cfg(feature = "quic")]
+    let connector = discovery.layer.with_cache(cache.clone()).layer(connector);
+    #[cfg(not(feature = "quic"))]
+    let _ = discovery;
+    MapEstablishedConnection::new(
+        connector,
+        ProxyAltSvcConnectionLayer {
+            alt_svc: AltSvcConnectionLayer { cache: Some(cache) },
+        },
+    )
+}
+
+/// [`AltSvcConnectionLayer`] for a connection to a proxy, whose responses the proxy
+/// methods read as plain [`ResponseBody`]s.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct ProxyAltSvcConnectionLayer {
+    alt_svc: AltSvcConnectionLayer,
+}
+
+impl<S> Layer<S> for ProxyAltSvcConnectionLayer {
+    type Service = MapResponseBody<AltSvc<S>, fn(AltSvcBody<ResponseBody>) -> ResponseBody>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        MapResponseBody::into_boxed_streaming_body(self.alt_svc.layer(inner))
     }
 }
 
@@ -719,6 +694,75 @@ pub struct ProxyMethodBuilder<
     _phantom: PhantomData<fn() -> B>,
 }
 
+impl<T, C, B> ProxyMethodBuilder<T, ProxyServiceConnector<C>, B> {
+    fn service_selector_mut(&mut self) -> &mut HttpServiceConnector<C> {
+        let connector = self.http.get_mut();
+        #[cfg(feature = "quic")]
+        let connector = connector.get_mut();
+        connector
+    }
+
+    /// Configure HTTP service selection towards proxies, including attempt timeouts and
+    /// budgets.
+    #[must_use]
+    pub fn configure_http_service(
+        mut self,
+        configure: impl FnOnce(&mut HttpServiceConnector<C>),
+    ) -> Self {
+        configure(self.service_selector_mut());
+        self
+    }
+
+    #[cfg(feature = "quic")]
+    /// Disable HTTPS discovery of proxies while retaining independently configured Alt-Svc.
+    #[must_use]
+    pub fn without_https_discovery(mut self) -> Self {
+        self.http.get_mut().config_mut().set_enabled(false);
+        self
+    }
+
+    #[cfg(feature = "quic")]
+    /// Enable HTTPS discovery of proxies with this resolver for HTTPS and A/AAAA records.
+    #[must_use]
+    pub fn with_https_resolver<R: DnsResolver>(mut self, resolver: R) -> Self {
+        let config = self.http.get_mut().config_mut();
+        *config = config
+            .clone()
+            .with_resolver(BoxDnsResolver::new(resolver))
+            .with_enabled(true);
+        self
+    }
+
+    #[cfg(feature = "quic")]
+    /// Configure the HTTPS discovery layer towards proxies.
+    #[must_use]
+    pub fn configure_https_discovery(
+        mut self,
+        configure: impl FnOnce(&mut HttpsServiceLayer<BoxDnsResolver>),
+    ) -> Self {
+        configure(self.http.get_mut().config_mut());
+        self
+    }
+
+    /// Disable advertised alternatives and response learning towards proxies.
+    #[must_use]
+    pub fn without_alt_svc(self) -> Self {
+        self.maybe_with_alt_svc_cache(None)
+    }
+
+    generate_set_and_with! {
+        /// The Alt-Svc cache of the connections towards proxies; `None` disables Alt-Svc
+        /// only. HTTPS-record discovery is configured separately.
+        pub fn alt_svc_cache(mut self, cache: Option<AltSvcCache>) -> Self {
+            self.service_selector_mut().maybe_set_cache(cache.clone());
+            #[cfg(feature = "quic")]
+            self.http.get_mut().config_mut().maybe_set_cache(cache.clone());
+            self.http.layer_mut().alt_svc.cache = cache;
+            self
+        }
+    }
+}
+
 impl<T, C, B> ProxyMethodBuilder<T, C, B> {
     fn new(stream: T, http: C, scope: WeakScope) -> Self {
         Self {
@@ -729,7 +773,7 @@ impl<T, C, B> ProxyMethodBuilder<T, C, B> {
             socks: ProxyMethodNotEnabled::SOCKS5,
             connect: ProxyMethodNotEnabled::HTTP_CONNECT,
             forward: ProxyMethodNotEnabled::HTTP_FORWARD,
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
             _phantom: PhantomData,
         }
     }
@@ -747,15 +791,18 @@ impl<T, C, B> ProxyMethodBuilder<T, C, B> {
         }
     }
 
-    /// Every proxy method this build of rama has, with its defaults.
-    pub fn with_every_method(
+    /// Support every proxy protocol this build of rama has, with its defaults: SOCKS5
+    /// (`socks5` feature), HTTP CONNECT and forwarding, and CONNECT-UDP (`masque` and
+    /// `quic` features). Pick a subset with `with_socks5`, `with_http_connect`,
+    /// `with_http_forward` and `with_http_connect_udp`.
+    pub fn with_all_proxy_protocols(
         self,
     ) -> ProxyMethodBuilder<
         T,
         C,
         B,
         ProxySocksMethod<T>,
-        HttpConnectProxyConnector<ProxyDialer<C>, B>,
+        HttpConnectProxyConnector<ProxyDialer<C>, ProxyRequestBody<B>>,
         ProxyConnectUdpMethod<C, B>,
         HttpForwardProxyConnector<ProxyDialer<C>>,
     >
@@ -809,7 +856,7 @@ impl<T, C, B, Socks, Connect, ConnectUdp, Forward>
         C,
         B,
         Socks,
-        HttpConnectProxyConnector<ProxyDialer<C>, B>,
+        HttpConnectProxyConnector<ProxyDialer<C>, ProxyRequestBody<B>>,
         ConnectUdp,
         Forward,
     >
@@ -839,7 +886,7 @@ impl<T, C, B, Socks, Connect, ConnectUdp, Forward>
         self.with_connect_udp(MaybeProxiedConnector::new(
             UdpConnector::new(),
             connect_udp,
-            ProxiedRoute,
+            ProxiedRoute::new(),
         ))
     }
 
@@ -865,7 +912,7 @@ impl<T, C, B, Socks, Connect, ConnectUdp, Forward>
 
     /// The [`ProxyConnector`] of the methods enabled so far.
     pub fn build(self) -> ProxyConnector<Socks, Connect, ConnectUdp, Forward> {
-        ProxyConnector::new(self.socks, self.connect, self.connect_udp, self.forward)
+        ProxyConnector::from_methods(self.socks, self.connect, self.connect_udp, self.forward)
     }
 
     #[cfg(feature = "socks5")]
@@ -945,7 +992,7 @@ impl<T, C, B, Socks, ConnectUdp, Forward>
         C,
         B,
         Socks,
-        HttpConnectProxyConnector<ProxyDialer<C>, B>,
+        HttpConnectProxyConnector<ProxyDialer<C>, ProxyRequestBody<B>>,
         ConnectUdp,
         Forward,
     >
@@ -983,7 +1030,7 @@ core::cfg_select! {
         /// reached without a proxy needs.
         pub type ProxyConnectUdpMethod<C, B = ResponseBody> = MaybeProxiedConnector<
             UdpConnector,
-            HttpConnectUdpProxyConnector<ProxyDialer<C>, B>,
+            HttpConnectUdpProxyConnector<ProxyDialer<C>, ProxyRequestBody<B>>,
             ProxiedRoute,
         >;
 
@@ -991,14 +1038,14 @@ core::cfg_select! {
         pub type ProxyConnectUdpNotEnabled<C, B = ResponseBody> =
             ProxyConnectUdpMethod<ProxyMethodNotEnabled<C>, B>;
 
-        fn connect_udp_not_enabled<C, B>(scope: &WeakScope) -> ProxyConnectUdpNotEnabled<C, B> {
+        pub(super) fn connect_udp_not_enabled<C, B>(scope: &WeakScope) -> ProxyConnectUdpNotEnabled<C, B> {
             MaybeProxiedConnector::new(
                 UdpConnector::new(),
                 HttpConnectUdpProxyConnector::new(
                     ProxyMethodNotEnabled::HTTP_CONNECT_UDP,
                     scope.clone(),
                 ),
-                ProxiedRoute,
+                ProxiedRoute::new(),
             )
         }
     }
@@ -1010,7 +1057,7 @@ core::cfg_select! {
         /// this build is the only one it has.
         pub type ProxyConnectUdpNotEnabled<C, B = ResponseBody> = ProxyConnectUdpMethod<C, B>;
 
-        fn connect_udp_not_enabled<C, B>(_scope: &WeakScope) -> ProxyConnectUdpNotEnabled<C, B> {
+        pub(super) fn connect_udp_not_enabled<C, B>(_scope: &WeakScope) -> ProxyConnectUdpNotEnabled<C, B> {
             ProxyMethodNotEnabled::HTTP_CONNECT_UDP
         }
     }
@@ -1029,7 +1076,7 @@ core::cfg_select! {
 }
 
 core::cfg_select! {
-    all(feature = "quic", any(feature = "boring", all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))) => {
+    all(feature = "quic", any(feature = "boring", feature = "rustls")) => {
         type DefaultProxyTransport<T> = HttpTransportConnector<
             DefaultProxyStream<T>,
             DnsConnector<Http3Connector<SharedQuicEndpoint>>,
@@ -1040,13 +1087,14 @@ core::cfg_select! {
     }
 }
 
-pub(crate) type DefaultProxyHttpConnector<T, B> =
-    HttpPooledConnector<HttpConnector<DefaultProxyTransport<T>, B>>;
+pub(crate) type DefaultProxyHttpConnector<T, B> = ProxyServiceConnector<
+    HttpPooledConnector<HttpConnector<DefaultProxyTransport<T>, ProxyRequestBody<B>>>,
+>;
 
 pub(crate) type DefaultProxySocksMethod<T = TcpConnector> = ProxySocksMethod<DefaultProxyStream<T>>;
 
 pub(crate) type DefaultProxyConnectMethod<T = TcpConnector, B = ResponseBody> =
-    HttpConnectProxyConnector<ProxyDialer<DefaultProxyHttpConnector<T, B>>, B>;
+    HttpConnectProxyConnector<ProxyDialer<DefaultProxyHttpConnector<T, B>>, ProxyRequestBody<B>>;
 
 pub(crate) type DefaultProxyConnectUdpMethod<T = TcpConnector, B = ResponseBody> =
     ProxyConnectUdpMethod<DefaultProxyHttpConnector<T, B>, B>;

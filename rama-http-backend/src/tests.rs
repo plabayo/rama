@@ -64,7 +64,7 @@ async fn byte_stream_transport_rejects_http3_before_dialing() {
     let connector = HttpConnectRequestAdapter::new(
         HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new({
             let dials = dials.clone();
-            move |_| {
+            move || {
                 dials.fetch_add(1, Ordering::SeqCst);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
             }
@@ -139,10 +139,9 @@ async fn negotiated_stream_version_must_match_the_required_version() {
 
 #[tokio::test]
 async fn http_connector_accepts_protocol_independent_input() {
-    let connector =
-        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|_| {
-            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
-        }));
+    let connector = HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(
+        HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn)),
+    ));
 
     let input = ConnectRequest::new(HostWithPort::example_domain_https());
     input.extensions.insert(TargetHttpVersion(Version::HTTP_11));
@@ -164,9 +163,9 @@ async fn http_connector_accepts_protocol_independent_input() {
 #[tokio::test]
 async fn http_request_adapter_composes_with_http_connector() {
     let connector = HttpConnectRequestAdapter::new(
-        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|_| {
-            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
-        })),
+        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(
+            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn)),
+        )),
     );
 
     let established = connector
@@ -186,9 +185,9 @@ async fn http_request_adapter_composes_with_http_connector() {
 #[tokio::test]
 async fn test_http11_pipelining() {
     let connector = HttpConnectRequestAdapter::new(HttpConnectorLayer::default().into_layer(
-        MockConnectorService::new(|_| {
-            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
-        }),
+        MockConnectorService::new(
+            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn)),
+        ),
     ));
 
     let conn = connector
@@ -226,7 +225,7 @@ async fn test_http2_multiplex() {
         MockConnectorService::new({
             let inflight = inflight.clone();
             let max_inflight = max_inflight.clone();
-            move |_| {
+            move || {
                 let inflight = inflight.clone();
                 let max_inflight = max_inflight.clone();
                 HttpServer::auto(WeakScope::detached()).service(service_fn(move |_req: Request| {
@@ -266,9 +265,9 @@ async fn test_http2_multiplex() {
 #[tokio::test]
 async fn test_http11_handles_4_concurrent_requests() {
     let connector = HttpConnectRequestAdapter::new(HttpConnectorLayer::default().into_layer(
-        MockConnectorService::new(|_| {
-            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
-        }),
+        MockConnectorService::new(
+            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn)),
+        ),
     ));
 
     let conn = connector
@@ -292,9 +291,9 @@ async fn test_http11_handles_4_concurrent_requests() {
 #[tokio::test]
 async fn test_http2_handles_200_concurrent_requests() {
     let connector = HttpConnectRequestAdapter::new(HttpConnectorLayer::default().into_layer(
-        MockConnectorService::new(|_| {
-            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
-        }),
+        MockConnectorService::new(
+            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn)),
+        ),
     ));
 
     let conn = connector

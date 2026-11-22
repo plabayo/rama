@@ -81,7 +81,7 @@
 //! ```rust
 //! use rama_http_types::{Body, Version, Request};
 //! use rama_proxy::{
-//!      Proxy, ProxyProtocols, ProxyType,
+//!      Proxy, ProxyProtocols, IpCategory,
 //!      ProxyDBLayer, ProxyFilterMode,
 //!      ProxyFilter,
 //! };
@@ -93,7 +93,6 @@
 //!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyProtocol;
-//! use rama_net::transport::TransportProtocol;
 //! use rama_net::client::ProxyRoute;
 //! use rama_utils::str::non_empty_str;
 //! use std::{convert::Infallible, sync::Arc};
@@ -108,12 +107,9 @@
 //!             credential: None,
 //!             protocols: ProxyProtocols::from([
 //!                 ProxyProtocol::HTTP,
-//!                 ProxyProtocol::Socks5 {
-//!                     remote_dns: false,
-//!                     transport: Some(TransportProtocol::Udp),
-//!                 },
+//!                 ProxyProtocol::SOCKS5_UDP,
 //!             ]),
-//!             kind: ProxyType::Mobile,
+//!             ip_category: IpCategory::Mobile,
 //!             pool_id: None,
 //!             continent: Some("*".into()),
 //!             country: Some("*".into()),
@@ -127,7 +123,7 @@
 //!             address: "123.123.123.123:8080".parse().unwrap(),
 //!             credential: None,
 //!             protocols: ProxyProtocols::from([ProxyProtocol::HTTP]),
-//!             kind: ProxyType::Datacenter,
+//!             ip_category: IpCategory::Datacenter,
 //!             pool_id: None,
 //!             continent: None,
 //!             country: Some("US".into()),
@@ -158,7 +154,7 @@
 //!
 //!     req.extensions().insert(ProxyFilter {
 //!         country: Some(vec!["BE".into()]),
-//!         kind: Some(vec![ProxyType::Mobile]),
+//!         ip_category: Some(vec![IpCategory::Mobile]),
 //!         ..Default::default()
 //!     });
 //!
@@ -187,7 +183,7 @@
 //! ```rust
 //! use rama_http_types::{Body, Version, Request};
 //! use rama_proxy::{
-//!    Proxy, ProxyProtocols, ProxyType,
+//!    Proxy, ProxyProtocols, IpCategory,
 //!    ProxyDBLayer, ProxyFilterMode,
 //!    ProxyFilter,
 //! };
@@ -197,7 +193,6 @@
 //!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyProtocol;
-//! use rama_net::transport::TransportProtocol;
 //! use rama_net::client::ProxyRoute;
 //! use rama_net::user::credentials::basic;
 //! use rama_utils::str::non_empty_str;
@@ -211,12 +206,9 @@
 //!         credential: Some(basic!("john", "secret").into()),
 //!         protocols: ProxyProtocols::from([
 //!             ProxyProtocol::HTTP,
-//!             ProxyProtocol::Socks5 {
-//!                 remote_dns: false,
-//!                 transport: Some(TransportProtocol::Udp),
-//!             },
+//!             ProxyProtocol::SOCKS5_UDP,
 //!         ]),
-//!         kind: ProxyType::Residential,
+//!         ip_category: IpCategory::Residential,
 //!         pool_id: None,
 //!         continent: Some("*".into()),
 //!         country: Some("*".into()),
@@ -259,7 +251,7 @@
 //!         .unwrap();
 //!     req.extensions().insert(ProxyFilter {
 //!         country: Some(vec!["BE".into()]),
-//!         kind: Some(vec![ProxyType::Residential]),
+//!         ip_category: Some(vec![IpCategory::Residential]),
 //!         ..Default::default()
 //!     });
 //!     let output = service.serve(req).await.unwrap();
@@ -292,8 +284,8 @@ mod proxydb;
 
 #[doc(inline)]
 pub use proxydb::{
-    Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyID, ProxyProtocols, ProxyQueryPredicate,
-    ProxyType, StringFilter,
+    IpCategory, Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyID, ProxyProtocols,
+    ProxyQueryPredicate, StringFilter,
 };
 
 #[doc(inline)]

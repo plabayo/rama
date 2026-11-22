@@ -21,6 +21,7 @@
 //! Recorded responses expose their HAR path in `x-rama-har-file-path` for
 //! demonstration purposes. Do not expose local paths this way in production.
 
+#![recursion_limit = "256"]
 #![expect(
     clippy::expect_used,
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
@@ -33,7 +34,7 @@ use rama::{
     graceful::{Scope, WeakScope},
     http::{
         BodyLimitLayer, HeaderValue, Request, Response, StatusCode,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, ProxyConnector},
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
@@ -124,6 +125,9 @@ async fn main() -> Result<(), BoxError> {
             ),
             mitm_svc,
         );
+        let proxies = ProxyConnector::default_with_scope(weak_scope.clone())
+            .with_isolate_forward_proxy_auth_error(true);
+        let client = EasyHttpWebClient::default_using_proxies(weak_scope.clone(), proxies);
         let http_service = HttpServer::auto(weak_scope.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
@@ -144,7 +148,7 @@ async fn main() -> Result<(), BoxError> {
                 RemoveResponseHeaderLayer::hop_by_hop(),
                 ArcLayer::new(),
             )
-                .into_layer(EasyHttpWebClient::default_for_proxy_with_scope(weak_scope)),
+                .into_layer(client),
         ));
 
         tcp_service

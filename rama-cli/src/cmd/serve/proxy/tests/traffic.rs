@@ -243,19 +243,11 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
         )
         .unwrap();
     store.confirm_connection(connection_id);
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
+    let client = proxy_client(ProxyClientConfig {
         capture: Some(store.clone()),
         inspection: store.inspection_state(),
-        har: HarController::default(),
-        portal: None,
-        tcp_options: Arc::new(SocketOptions::default_tcp()),
-        connect_timeout: None,
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
-        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
-        icap: None,
-    })
-    .unwrap();
+        ..ProxyClientConfig::for_tests()
+    });
     let request = Request::builder()
         .uri(format!("http://{origin}/socket-summary"))
         .extension(ConnectionId(connection_id))
@@ -286,19 +278,11 @@ async fn live_har_controller_records_proxy_traffic_end_to_end() {
     let har = HarController::default();
     har.start(path.clone()).await.unwrap();
     let upstream = UpstreamProxyConfig::new(None, false, &[]).unwrap();
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
+    let client = proxy_client(ProxyClientConfig {
         har: har.clone(),
-        portal: None,
-        tcp_options: Arc::new(SocketOptions::default_tcp()),
-        connect_timeout: None,
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream,
-        icap: None,
-    })
-    .unwrap();
+        ..ProxyClientConfig::for_tests()
+    });
     let response = client
         .serve(
             Request::builder()

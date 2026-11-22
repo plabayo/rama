@@ -103,7 +103,7 @@ mod tests {
     use super::*;
     use crate::{DeviceKind, PlatformKind, UserAgentKind};
     use rama_core::username::parse_username;
-    use rama_proxy::{ProxyFilter, ProxyFilterUsernameParser, ProxyType};
+    use rama_proxy::{IpCategory, ProxyFilter, ProxyFilterUsernameParser};
 
     fn parse(username: &str) -> Result<(String, Option<UserAgent>), BoxError> {
         let ext = Extensions::new();
@@ -209,16 +209,16 @@ mod tests {
         assert_eq!(agent.unwrap().ua_kind(), Some(UserAgentKind::Firefox));
         let filter = filter.unwrap();
         assert_eq!(filter.country.unwrap()[0].as_ref(), "ua");
-        assert_eq!(filter.kind, None);
+        assert_eq!(filter.ip_category, None);
 
         let (agent, filter) = parse_with_proxy_filter("john-ua_mobile").unwrap();
         assert_eq!(agent.unwrap().device(), Some(DeviceKind::Mobile));
-        assert!(filter.is_none_or(|filter| filter.kind.is_none()));
+        assert!(filter.is_none_or(|filter| filter.ip_category.is_none()));
 
         let (agent, filter) = parse_with_proxy_filter("john-mobile-country-be").unwrap();
         assert!(agent.is_none());
         let filter = filter.unwrap();
-        assert_eq!(filter.kind, Some(vec![ProxyType::Mobile]));
+        assert_eq!(filter.ip_category, Some(vec![IpCategory::Mobile]));
         assert_eq!(filter.country.unwrap()[0].as_ref(), "be");
     }
 }

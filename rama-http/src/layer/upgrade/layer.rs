@@ -57,7 +57,7 @@ impl<O: Send + 'static> UpgradeLayer<O> {
             handlers: vec![Arc::new(UpgradeHandler::new(matcher, service, sink))],
             scope,
             error_sink: Arc::new(TracingErrorSink::default()),
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 
@@ -117,7 +117,7 @@ impl<O: Send + 'static> UpgradeLayer<O> {
             ))],
             scope,
             error_sink: Arc::new(TracingErrorSink::default()),
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 

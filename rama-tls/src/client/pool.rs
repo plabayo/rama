@@ -1021,7 +1021,7 @@ mod tests {
             Some(&TlsEchAccepted(true))
         );
 
-        let origin = proxy.fork_connection(&NoExtensionsTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
         assert_eq!(origin.get_ref::<TlsEchAccepted>(), None);
 
         origin.insert(TlsServerAuthentication(Some(Host::from_static(
@@ -1674,7 +1674,8 @@ mod tests {
             .await
             .unwrap()
             .conn;
-        leg.extensions().fork_connection(&DefaultExtensionsTransfer)
+        leg.extensions()
+            .fork_connection(&DefaultExtensionsTransfer::new())
     }
 
     async fn tunnel_rules(origin: &Extensions) -> ConnectionReuse {
@@ -2033,7 +2034,7 @@ mod tests {
                 .expect("published")
         };
         let asks = Extensions::new();
-        asks.insert(TlsRequired);
+        asks.insert(TlsRequired::new());
 
         assert!(published(false).matches(&Extensions::new()));
         assert!(!published(false).matches(&asks));
@@ -2048,7 +2049,7 @@ mod tests {
             let origin = Extensions::new();
             let bag = Extensions::new();
             if asks {
-                bag.insert(TlsRequired);
+                bag.insert(TlsRequired::new());
             }
             origin.insert(ProxyConnectionExtensions(bag));
             origin.insert(ProxyRoute::Proxy(proxy.clone()));
@@ -2073,7 +2074,7 @@ mod tests {
             publish_tls_required(leg.extensions(), secured);
             tunnels.push(
                 leg.extensions()
-                    .fork_connection(&DefaultExtensionsTransfer)
+                    .fork_connection(&DefaultExtensionsTransfer::new())
                     .get_ref::<ConnectionReuse>()
                     .cloned()
                     .expect("the rules of the connection to the proxy cross onto the tunnel"),

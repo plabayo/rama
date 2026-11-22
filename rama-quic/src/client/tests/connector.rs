@@ -300,7 +300,7 @@ fn a_nested_leg_takes_its_tls_config_from_the_connector() {
 
     let leg = ConnectRequest::new_with_extensions(
         HostWithPort::localhost_domain_with_port(443),
-        origin.fork_connection(&NoExtensionsTransfer),
+        origin.fork_connection(&NoExtensionsTransfer::new()),
     );
     let tls = quic.tls_config_for(&leg);
     let effective = tls.as_extensions();

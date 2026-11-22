@@ -47,8 +47,10 @@ RFC 9298 default template, and a path is a template of your own, such as
 asked for `CONNECT` and refused for HTTP/3.
 
 A proxy address can include credentials, a custom URI template and the HTTP version
-to speak: `h3://` is HTTP/3, `h2://` and `h1://` are the same proxy
-over TCP. See `rama send --help` and `rama serve proxy --help` for configuration options. The
+to speak: `h3://` is HTTP/3 over QUIC, `h2://` and `h1://` are HTTP/2 and HTTP/1.1 over
+TLS on TCP, and `https://` uses HTTP/3 when the proxy advertises it (HTTPS record or
+Alt-Svc) and otherwise negotiates its version with ALPN over TCP. The full scheme reference is
+in [HTTP clients](../http/http_clients.md#proxies). See `rama send --help` and `rama serve proxy --help` for configuration options. The
 [`masque_connect_udp_proxy` example][example] shows a client and server in Rust.
 The CLI currently exposes CONNECT-UDP; CONNECT-IP is available as a library API.
 
@@ -61,8 +63,8 @@ applications can explicitly allow the networks they intend to expose.
 
 For an HTTP client, an HTTP proxy with a CONNECT-UDP template carries UDP targets with
 CONNECT-UDP and TCP ones with ordinary `CONNECT`, both over the connection its scheme
-asks for: HTTP/3 for `h3://`, TCP for `h2://` and `h1://`, and TLS with the version
-negotiated for `https://`.
+asks for: HTTP/3 over QUIC for `h3://`, and TLS over TCP for `h2://`, `h1://` and
+`https://`, the last with its version negotiated.
 Proxies can also be chained through a MASQUE upstream.
 
 Start with [`rama::proxy::masque::connect_udp`][connect-udp]:

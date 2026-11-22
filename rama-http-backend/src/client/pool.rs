@@ -751,7 +751,14 @@ mod tests {
 
             // An explicit target takes precedence over request and fallback versions.
             input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
-            assert_eq!(HttpConnIdentifier::new().id(&input).unwrap(), baseline);
+            let target_only = request();
+            target_only
+                .extensions
+                .insert(TargetHttpVersion(Version::HTTP_2));
+            assert_eq!(
+                HttpConnIdentifier::new().id(&input).unwrap(),
+                HttpConnIdentifier::new().id(&target_only).unwrap()
+            );
         }
     }
 
@@ -1052,7 +1059,7 @@ mod tests {
         Connection: Service<Request, Output = Response, Error = BoxError> + ExtensionsRef,
     > {
         let conns = Arc::new(AtomicUsize::new(0));
-        HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
+        HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
             let conn_id = conns.fetch_add(1, Ordering::Relaxed);
             let resps = Arc::new(AtomicUsize::new(0));
             HttpServer::auto(WeakScope::detached()).service(service_fn(move |_req: Request| {
@@ -1146,7 +1153,7 @@ mod tests {
     async fn pool_does_not_reuse_h1_connection_after_server_close() {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
@@ -1191,7 +1198,7 @@ mod tests {
     async fn pool_does_not_reuse_h1_connection_after_upgrade() {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |req: Request| async move {
@@ -1271,7 +1278,7 @@ mod tests {
     ) {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
@@ -1330,7 +1337,7 @@ mod tests {
     async fn h1_streaming_body_abandoned_is_not_handed_out(drain: Option<Http1BodyDrainConfig>) {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
@@ -1386,7 +1393,7 @@ mod tests {
     async fn pool_evicts_h1_connection_when_inflight_request_cancelled() {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
@@ -1435,7 +1442,7 @@ mod tests {
         Output = EstablishedClientConnection<MockSocket, ConnectRequest>,
         Error = Infallible,
     > {
-        MockConnectorService::new(move |_| {
+        MockConnectorService::new(move || {
             dials.fetch_add(1, Ordering::Relaxed);
             let tunnels = tunnels.clone();
             HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
@@ -1543,10 +1550,14 @@ mod tests {
             .into_layer(HttpConnectProxyConnectorLayer::new().into_layer(to_proxy));
         let connector = build_test_connector(HttpPooledConnectorConfig::default(), inner);
 
-        let address = "http://proxy.example:8080"
-            .parse::<ProxyAddress>()
-            .unwrap()
-            .with_http_version(proxy_version);
+        let address = ProxyAddress {
+            protocol: ProxyProtocol::Http {
+                version: Some(proxy_version),
+                secure: false,
+                path_template: None,
+            },
+            ..ProxyAddress::try_from("http://proxy.example:8080").unwrap()
+        };
         for origin in ["http://one.example", "http://two.example"] {
             let request = Request::builder()
                 .uri(origin)
@@ -1577,7 +1588,7 @@ mod tests {
     async fn pool_reuses_h1_connection_after_body_consumed_through_trailers() {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
@@ -1803,7 +1814,7 @@ mod tests {
         Connection: Service<Request, Output = Response, Error = BoxError> + ExtensionsRef,
     > {
         let conns = Arc::new(AtomicUsize::new(0));
-        HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
+        HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
             let conn_id = conns.fetch_add(1, Ordering::Relaxed);
             HttpServer::auto(WeakScope::detached()).service(service_fn(
                 move |_req: Request| async move {

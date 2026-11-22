@@ -194,7 +194,9 @@ async fn derived_origin_policy_retains_producer_and_proxy_restrictions() {
         .await
         .unwrap()
         .conn;
-    let connection = leg.extensions().fork_connection(&DefaultExtensionsTransfer);
+    let connection = leg
+        .extensions()
+        .fork_connection(&DefaultExtensionsTransfer::new());
     TlsConnectionReuse::new(Provider::<1>, &input).publish(&connection, None);
     let policy = connection.get_ref::<ConnectionReuse>().unwrap();
     assert!(policy.matches(&input));

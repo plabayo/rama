@@ -88,7 +88,7 @@ pub struct SendCommand {
     /// CONNECT, and UDP with CONNECT-UDP only where its address says the tunnels are:
     /// `+udp` for the default template, or a path as the template to use.
     /// A SOCKS5 proxy is `socks5` or `socks5h`, with `+tcp` or `+udp` to use it for that
-    /// transport only.
+    /// transport only, and `+tls` to reach it over TLS.
     ///
     /// NO_PROXY still applies. Without this option, scheme-specific and all-protocol
     /// proxy environment variables are tried before operating-system settings.

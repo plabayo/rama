@@ -327,7 +327,7 @@ mod tests {
         let proxy_leg = Extensions::new();
         proxy_leg.insert(EstablishedProxyRoute::Forward(proxy_address("selected")));
 
-        let tunnel = proxy_leg.fork_connection(&NoExtensionsTransfer);
+        let tunnel = proxy_leg.fork_connection(&NoExtensionsTransfer::new());
         assert_eq!(tunnel.get_ref::<EstablishedProxyRoute>(), None);
 
         let route = EstablishedProxyRoute::Tunnel(proxy_address("selected"));

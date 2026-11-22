@@ -555,6 +555,20 @@ impl<S, Q, Body> HttpConnector<HttpTransportConnector<S, Q>, Body> {
             _phantom: PhantomData,
         }
     }
+
+    /// Wrap the stream transport connector of this connector, such as TCP, TLS or unix;
+    /// the QUIC transport is left alone.
+    pub fn map_stream_connector<S2>(
+        self,
+        map: impl FnOnce(S) -> S2,
+    ) -> HttpConnector<HttpTransportConnector<S2, Q>, Body> {
+        HttpConnector {
+            inner: self.inner.map_stream(map),
+            scope: self.scope,
+            response_limits: self.response_limits,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1004,7 +1018,7 @@ where
 #[derive(Clone, Debug)]
 /// A [`Layer`] that produces an [`HttpConnector`], over the stream connector it layers and
 /// the QUIC leg `Q` next to it, if any.
-pub struct HttpConnectorLayer<Body, Q = ()> {
+pub struct HttpConnectorLayer<Body, Q = NoHttp3Leg> {
     scope: WeakScope,
     response_limits: ResponseLimits,
     quic: Q,
@@ -1018,16 +1032,22 @@ pub struct HttpConnectorLayer<Body, Q = ()> {
 #[derive(Clone, Debug)]
 pub struct Http3Leg<Q>(Q);
 
+/// The QUIC leg of an [`HttpConnectorLayer`] that has none: its connectors only use the
+/// stream transport.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct NoHttp3Leg;
+
 /// The transport an [`HttpConnectorLayer`] builds its [`HttpConnector`] on: the stream
 /// connector alone, or that stream next to an [`Http3Leg`].
-pub trait HttpConnectorTransport<S>: Clone {
+pub trait HttpConnectorTransport<S>: Clone + private::Sealed {
     /// The transport connector of the [`HttpConnector`].
     type Transport;
 
     fn into_transport(self, stream: S) -> Self::Transport;
 }
 
-impl<S> HttpConnectorTransport<S> for () {
+impl<S> HttpConnectorTransport<S> for NoHttp3Leg {
     type Transport = S;
 
     fn into_transport(self, stream: S) -> Self::Transport {
@@ -1044,6 +1064,15 @@ impl<S, Q: Clone> HttpConnectorTransport<S> for Http3Leg<Q> {
     }
 }
 
+mod private {
+    pub trait Sealed {}
+
+    impl Sealed for super::NoHttp3Leg {}
+
+    #[cfg(feature = "quic")]
+    impl<Q> Sealed for super::Http3Leg<Q> {}
+}
+
 impl<Body> HttpConnectorLayer<Body> {
     /// Create a new [`HttpConnectorLayer`].
     #[must_use]
@@ -1051,7 +1080,7 @@ impl<Body> HttpConnectorLayer<Body> {
         Self {
             scope,
             response_limits: ResponseLimits::UNSET,
-            quic: (),
+            quic: NoHttp3Leg,
             _phantom: PhantomData,
         }
     }

@@ -13,7 +13,7 @@ use rama_http::{
     header::{IntoHeaderName, proxy_connect::is_managed_proxy_connect_request_header},
     io::upgrade::Upgraded,
 };
-use rama_http_types::{Body, Request, Response, Version};
+use rama_http_types::{Body, Request, Response, Version, proxy::ProxyRequestBody};
 use rama_net::{
     ConnectorTargetInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt,
     TargetHttpVersionInputExt,
@@ -38,14 +38,14 @@ use std::{marker::PhantomData, ops, sync::Arc};
 /// spoken is the one on the [`ProxyAddress`], or the one negotiated when it names none,
 /// and TLS to the proxy is the connector towards proxies' business.
 ///
-/// `B` is the body type of the connections towards the proxy, in which the CONNECT request
-/// is built: a client reaches its proxies with the body type it serves origins with.
+/// `B` is the body type of the connections towards the proxy: the CONNECT request carries
+/// its empty [`Default`] value.
 ///
 /// [`MaybeProxiedConnector`]: rama_net::client::MaybeProxiedConnector
 /// [`ProxyDialer`]: rama_net::client::ProxyDialer
 /// [`ProxyAddress`]: rama_net::address::ProxyAddress
 #[derive(ExtensionsRef)]
-pub struct HttpConnectProxyConnector<S, B = Body> {
+pub struct HttpConnectProxyConnector<S, B = ProxyRequestBody<Body>> {
     inner: S,
     headers: Option<HeaderMap>,
     extensions_transfer: SharedExtensionsTransfer,
@@ -86,7 +86,7 @@ impl<S, B> HttpConnectProxyConnector<S, B> {
         Self {
             inner: dialer,
             headers: None,
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
             _phantom: PhantomData,
         }
     }
@@ -168,13 +168,20 @@ where
         let app_is_plaintext_http = app_protocol
             .as_ref()
             .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
-        if app_is_http && requested_http_version == Some(Version::HTTP_3) {
-            return Err(ConnectionError::local(
-                BoxError::from_static_str(
-                    "http proxy connector: HTTP/3 tunneling requires CONNECT-UDP",
-                ),
-                ConnectionErrorKind::InvalidInput,
-            ));
+        if app_is_http {
+            match requested_http_version {
+                None
+                | Some(Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2) => {
+                }
+                Some(Version::HTTP_3) => {
+                    return Err(ConnectionError::local(
+                        BoxError::from_static_str(
+                            "http proxy connector: HTTP/3 tunneling requires CONNECT-UDP",
+                        ),
+                        ConnectionErrorKind::InvalidInput,
+                    ));
+                }
+            }
         }
 
         let conn = self
@@ -421,7 +428,7 @@ mod tests {
                 established
             },
         )
-        .into_layer(MockConnectorService::new(|_| {
+        .into_layer(MockConnectorService::new(|| {
             HttpServer::auto(WeakScope::detached()).service(service_fn(async |request: Request| {
                 assert_eq!(request.method(), Method::CONNECT);
                 let tunnel = handle_upgrade(&request);
@@ -452,7 +459,7 @@ mod tests {
         };
         let connector =
             HttpConnectProxyConnector::<_, Body>::new(mock_connect_proxy(Some(ProxyLegFact(7))))
-                .with_extensions_transfer(DefaultExtensionsTransfer.and(carry_fact));
+                .with_extensions_transfer(DefaultExtensionsTransfer::new().and(carry_fact));
 
         let EstablishedClientConnection { conn, .. } = connector
             .connect(connect_request())
@@ -486,7 +493,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_custom_headers_cannot_override_managed_fields() {
-        let proxy = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|_| {
+        let proxy = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
             HttpServer::auto(WeakScope::detached()).service(service_fn(async |request: Request| {
                 assert_eq!(request.method(), Method::CONNECT);
                 let headers = request.headers();
@@ -527,7 +534,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_repeated_custom_connect_header_is_sent_once() {
-        let proxy = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|_| {
+        let proxy = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
             HttpServer::auto(WeakScope::detached()).service(service_fn(async |request: Request| {
                 assert_eq!(
                     request
@@ -573,7 +580,7 @@ mod tests {
                 StatusCode::from_u16(299).unwrap(),
             ] {
                 let connection = HttpConnectorLayer::default().into_layer(
-                    MockConnectorService::new(move |_| {
+                    MockConnectorService::new(move || {
                         HttpServer::auto(WeakScope::detached()).service(service_fn(
                             move |request: Request| async move {
                                 let tunnel = handle_upgrade(&request);
@@ -629,19 +636,18 @@ mod tests {
                 ConnectionErrorKind::Rejected,
             ),
         ] {
-            let connection =
-                HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
-                    HttpServer::auto(WeakScope::detached()).service(service_fn(
-                        move |_request: Request| async move {
-                            Ok::<_, Infallible>(
-                                Response::builder()
-                                    .status(status)
-                                    .body(Body::from("not a tunnel"))
-                                    .unwrap(),
-                            )
-                        },
-                    ))
-                }));
+            let connection = HttpConnectorLayer::default().into_layer(MockConnectorService::new(
+                HttpServer::auto(WeakScope::detached()).service(service_fn(
+                    move |_request: Request| async move {
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(status)
+                                .body(Body::from("not a tunnel"))
+                                .unwrap(),
+                        )
+                    },
+                )),
+            ));
             let connector = HttpConnectProxyConnector::<_, Body>::new(connection);
 
             let error = tokio::time::timeout(
@@ -665,7 +671,7 @@ mod tests {
             let dials = Arc::new(AtomicUsize::new(0));
             let transport = MockConnectorService::new({
                 let dials = dials.clone();
-                move |_| {
+                move || {
                     dials.fetch_add(1, Ordering::Relaxed);
                     service_fn(move |mut socket: MockSocket| async move {
                         if version == Version::HTTP_2 {
@@ -689,7 +695,7 @@ mod tests {
             });
             let direct = MockConnectorService::new({
                 let dials = dials.clone();
-                move |_| {
+                move || {
                     dials.fetch_add(1, Ordering::Relaxed);
                     service_fn(|_: MockSocket| async { Ok::<_, Infallible>(()) })
                 }
@@ -699,7 +705,7 @@ mod tests {
                 HttpConnectProxyConnector::<_, Body>::new(
                     HttpConnectorLayer::default().into_layer(transport),
                 ),
-                ProxiedRoute,
+                ProxiedRoute::new(),
             ));
             let input = ConnectRequest::new(HostWithPort::example_domain_https())
                 .with_application_protocol(Protocol::HTTPS);
@@ -725,7 +731,7 @@ mod tests {
     #[tokio::test]
     async fn connect_tunnel_keeps_bytes_sent_along_with_the_proxy_response() {
         let connection =
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(|_| {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
                 service_fn(move |mut socket: MockSocket| async move {
                     let mut request = Vec::new();
                     while !request.ends_with(b"\r\n\r\n") {
@@ -775,9 +781,9 @@ mod tests {
     #[tokio::test]
     async fn https_proxy_requires_positive_tls_evidence() {
         let connection = HttpConnectorLayer::default().into_layer(PlaintextProxyOnly::new(
-            MockConnectorService::new(|_| {
-                service_fn(async |_socket: MockSocket| Ok::<_, Infallible>(()))
-            }),
+            MockConnectorService::new(service_fn(async |_socket: MockSocket| {
+                Ok::<_, Infallible>(())
+            })),
         ));
         let connector = HttpConnectProxyConnector::<_, Body>::new(connection);
 
@@ -802,7 +808,7 @@ mod tests {
                 established
             }
         })
-        .into_layer(MockConnectorService::new(|_| {
+        .into_layer(MockConnectorService::new(|| {
             HttpServer::auto(WeakScope::detached()).service(service_fn(async |request: Request| {
                 let tunnel = handle_upgrade(&request);
                 tokio::spawn(async move {
@@ -841,7 +847,7 @@ mod tests {
             let dials = Arc::new(AtomicUsize::new(0));
             let transport = MockConnectorService::new({
                 let dials = dials.clone();
-                move |_| {
+                move || {
                     dials.fetch_add(1, Ordering::Relaxed);
                     service_fn(move |mut socket: MockSocket| async move {
                         if version == Version::HTTP_2 {
@@ -862,7 +868,7 @@ mod tests {
             });
             let direct = MockConnectorService::new({
                 let dials = dials.clone();
-                move |_| {
+                move || {
                     dials.fetch_add(1, Ordering::Relaxed);
                     service_fn(|_: MockSocket| async { Ok::<_, Infallible>(()) })
                 }
@@ -872,7 +878,7 @@ mod tests {
                 HttpConnectProxyConnector::<_, Body>::new(
                     HttpConnectorLayer::default().into_layer(transport),
                 ),
-                ProxiedRoute,
+                ProxiedRoute::new(),
             ));
             let input = ConnectRequest::new(HostWithPort::example_domain_https())
                 .with_application_protocol(Protocol::HTTPS);
@@ -903,7 +909,7 @@ mod tests {
             .parse::<ProxyAddress>()
             .unwrap();
         let connector = HttpConnectProxyConnector::<_, Body>::new(
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(|_| {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     async |request: Request| {
                         assert_eq!(request.method(), Method::CONNECT);
@@ -950,7 +956,7 @@ mod tests {
                 never_forwards(),
                 HttpConnectProxyConnector::<_, Body>::new(
                     HttpConnectorLayer::default().into_layer(MockConnectorService::new(
-                        move |_| {
+                        move || {
                             HttpServer::auto(WeakScope::detached()).service(service_fn(
                                 move |request: Request| async move {
                                     assert_eq!(request.method(), Method::CONNECT);
@@ -966,7 +972,7 @@ mod tests {
                         },
                     )),
                 ),
-                HttpTunnelRoute,
+                HttpTunnelRoute::new(),
             );
             let input =
                 ConnectRequest::new(origin.clone()).with_application_protocol(protocol.clone());
@@ -976,7 +982,7 @@ mod tests {
                 .extensions
                 .insert(ConnectorTarget(destination.parse().unwrap()));
             assert!(forwarding_proxy(&input).is_none());
-            assert!(HttpTunnelRoute.is_proxied(&input));
+            assert!(HttpTunnelRoute::new().is_proxied(&input));
 
             let established = connector.serve(input).await.unwrap();
             assert!(
@@ -1038,7 +1044,7 @@ mod tests {
                 never_forwards(),
                 HttpConnectProxyConnector::<_, Body>::new(
                     HttpConnectorLayer::default().into_layer(MockConnectorService::new(
-                        move |_| {
+                        move || {
                             HttpServer::auto(WeakScope::detached()).service(service_fn(
                                 async move |request: Request| {
                                     assert_eq!(request.method(), Method::CONNECT);
@@ -1062,7 +1068,7 @@ mod tests {
                         },
                     )),
                 ),
-                HttpTunnelRoute,
+                HttpTunnelRoute::new(),
             );
             let request = ConnectRequest::new(HostWithPort::example_domain_http())
                 .with_application_protocol(protocol.clone());
@@ -1076,7 +1082,7 @@ mod tests {
             ));
             request.extensions.insert(PlaintextHttpProxyMode::Forward);
             assert!(forwarding_proxy(&request).is_none(), "{protocol}");
-            assert!(HttpTunnelRoute.is_proxied(&request), "{protocol}");
+            assert!(HttpTunnelRoute::new().is_proxied(&request), "{protocol}");
 
             let established = connector
                 .serve(request)
@@ -1100,7 +1106,7 @@ mod tests {
     async fn plaintext_http_tunnel_restores_origin_version_after_connect() {
         let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
         let connector = HttpConnectProxyConnector::<_, Body>::new(
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(|_| {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     async move |request: Request| {
                         assert_eq!(request.method(), Method::CONNECT);
@@ -1141,7 +1147,7 @@ mod tests {
     #[tokio::test]
     async fn plaintext_http_tunnel_defaults_missing_origin_version() {
         let connector = HttpConnectProxyConnector::<_, Body>::new(
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(|_| {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     async move |request: Request| {
                         assert_eq!(request.method(), Method::CONNECT);
@@ -1176,7 +1182,7 @@ mod tests {
     #[tokio::test]
     async fn non_http_tunnel_does_not_inherit_incidental_http_version() {
         let connector = HttpConnectProxyConnector::<_, Body>::new(
-            HttpConnectorLayer::default().into_layer(MockConnectorService::new(|_| {
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
                 HttpServer::auto(WeakScope::detached()).service(service_fn(
                     async move |request: Request| {
                         assert_eq!(request.method(), Method::CONNECT);
@@ -1222,7 +1228,7 @@ mod tests {
             let dials = Arc::new(AtomicUsize::new(0));
             let observed_dials = dials.clone();
             let connector = HttpConnectProxyConnector::<_, Body>::new(
-                HttpConnectorLayer::default().into_layer(MockConnectorService::new(move |_| {
+                HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                     observed_dials.fetch_add(1, Ordering::Relaxed);
                     service_fn(async |_socket: MockSocket| Ok::<_, Infallible>(()))
                 })),
@@ -1255,7 +1261,7 @@ mod tests {
     #[cfg(feature = "tls")]
     #[tokio::test]
     async fn automatic_connect_version_follows_proxy_tls_negotiation() {
-        let transport = MockConnectorService::new(|_| {
+        let transport = MockConnectorService::new(|| {
             HttpServer::auto(WeakScope::detached()).service(service_fn(async |request: Request| {
                 assert_eq!(request.method(), Method::CONNECT);
                 assert_eq!(request.version(), Version::HTTP_2);
@@ -1309,7 +1315,7 @@ mod tests {
                 established
             },
         )
-        .into_layer(MockConnectorService::new(|_| {
+        .into_layer(MockConnectorService::new(|| {
             HttpServer::auto(WeakScope::detached()).service(service_fn(async |request: Request| {
                 assert_eq!(request.method(), Method::CONNECT);
                 assert_eq!(request.version(), Version::HTTP_11);
@@ -1343,7 +1349,7 @@ mod tests {
                 established
             },
         )
-        .into_layer(MockConnectorService::new(|_| {
+        .into_layer(MockConnectorService::new(|| {
             HttpServer::auto(WeakScope::detached()).service(service_fn(async |request: Request| {
                 let tunnel = handle_upgrade(&request);
                 tokio::spawn(async move {
@@ -1444,7 +1450,7 @@ mod tests {
             HttpConnectProxyConnector::<_, Body>::new(
                 HttpConnectorLayer::default().into_layer(TcpConnector::new()),
             ),
-            ProxiedRoute,
+            ProxiedRoute::new(),
         ));
         let input = ConnectRequest::new(HostWithPort::example_domain_https())
             .with_application_protocol(Protocol::HTTPS);

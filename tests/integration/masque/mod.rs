@@ -19,8 +19,8 @@ use rama::{
         Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
         client::{
-            DefaultHttpWebClient, EasyHttpWebClient, Http3Connector, HttpConnector,
-            HttpPooledConnector, HttpTransportConnector, ProxyConnectUdpMethod, ProxyConnector,
+            EasyHttpWebClient, Http3Connector, HttpConnector, HttpPooledConnector,
+            HttpTransportConnector, ProxyConnectUdpMethod, ProxyConnector, ProxyServiceConnector,
             ProxySocksMethod, masque_quic_transport,
             proxy::{HttpForwardProxyConnector, layer::HttpConnectProxyConnector},
         },
@@ -34,13 +34,14 @@ use rama::{
         },
         proto::ext::HttpDatagrams,
         proxy::HttpProxyConnectMatcher,
+        proxy::ProxyRequestBody,
         proxy::{h3::Http3MitmRelay, mitm::DefaultErrorResponse},
         server::HttpServer,
     },
     io::BridgeIo,
     layer::{AddInputExtensionLayer, ArcLayer, ConsumeErrLayer, MapInputLayer},
     net::{
-        address::{HostWithPort, ProxyAddress, ProxyPathTemplate, SocketAddress},
+        address::{HostWithPort, ProxyAddress, ProxyPathTemplate, ProxyProtocol, SocketAddress},
         client::{
             ConnectRequest, ConnectionError, ConnectorTarget, EstablishedClientConnection,
             EstablishedProxyRoute, ProxyDialer, ProxyRoute,
@@ -519,13 +520,18 @@ fn masque_proxies(scope: WeakScope, transport: TransportConfig, quic: QuicTls) -
         .with_quic_tls_provider(quic.client())
         .with_default_http_connector::<Body>()
         .with_default_connection_pool()
-        .with_every_method()
+        .with_all_proxy_protocols()
         .build()
 }
 
 type ProxyStream = TlsConnector<DnsConnector<TcpConnector>>;
-type MasqueProxyHttpConnector = HttpPooledConnector<
-    HttpConnector<HttpTransportConnector<ProxyStream, DnsConnector<Http3Connector>>, Body>,
+type MasqueProxyHttpConnector = ProxyServiceConnector<
+    HttpPooledConnector<
+        HttpConnector<
+            HttpTransportConnector<ProxyStream, DnsConnector<Http3Connector>>,
+            ProxyRequestBody<Body>,
+        >,
+    >,
 >;
 type MasqueTunnels = ProxyConnectUdpMethod<MasqueProxyHttpConnector>;
 type MasqueProxies = ProxyConnector<
@@ -600,7 +606,7 @@ async fn open_tunnel(
     version: Version,
 ) -> Result<ConnectUdpSocket, ConnectionError> {
     let connector = masque_tunnels(scope);
-    let proxy = proxy.clone().with_http_version(version);
+    let proxy = with_version(proxy.clone(), version);
     let request = ConnectRequest::new(target.into());
     request.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
     let EstablishedClientConnection { conn, .. } = connector.serve(request).await?;
@@ -712,7 +718,7 @@ async fn tunnels_share_one_connection_except_on_http1() {
                 carrier != Carrier::Http3Capsule,
             )
             .await;
-            let proxy = proxy_address("h3+udp://", proxy).with_http_version(carrier.version());
+            let proxy = with_version(proxy_address("h3+udp://", proxy), carrier.version());
             let scope = WeakScope::detached();
             let connector = masque_tunnels(scope);
             let mut sockets = Vec::new();
@@ -1224,7 +1230,7 @@ async fn http3_runs_through_a_masque_proxy_on_every_carrier() {
                 carrier != Carrier::Http3Capsule,
             )
             .await;
-            let proxy = proxy_address("h3+udp://", proxy).with_http_version(carrier.version());
+            let proxy = with_version(proxy_address("h3+udp://", proxy), carrier.version());
             let client = tunneling_client(WeakScope::detached());
             for host in [origin.to_string(), format!("localhost:{}", origin.port)] {
                 assert_eq!(
@@ -1286,7 +1292,15 @@ async fn the_masque_builder_step_tunnels_masque_routes_only() {
         let stats = proxy_tasks.proxy.clone().unwrap();
         let scope = WeakScope::detached();
         let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-        let client = DefaultHttpWebClient::default_using_boringssl(scope, tls.clone(), tls).boxed();
+        let client = EasyHttpWebClient::connector_builder(scope.clone())
+            .with_default_transport_connector()
+            .with_default_dns_connector()
+            .with_proxy_support(ProxyConnector::default_using_tls(scope, tls.clone()))
+            .with_tls_support_using_boringssl(tls)
+            .with_default_http_connector()
+            .with_default_connection_pool()
+            .build_client()
+            .boxed();
 
         let masque = proxy_address("h3+udp://", proxy);
         let body = get_through(&client, &origin.to_string(), &masque).await;
@@ -1371,7 +1385,7 @@ async fn quic_relay(
         DatagramForwardService::new(NonZeroUsize::new(kib(64)).unwrap(), EcnPolicy::Discard)
             .with_packet_errors(PacketErrorPolicy::DropPacketLocal);
     let bridge = DatagramToProxyBridge::new(forward, target).with_connector(connector);
-    let service = AddInputExtensionLayer::new(ProxyRoute::Proxy(proxy.with_http_version(outer)))
+    let service = AddInputExtensionLayer::new(ProxyRoute::Proxy(with_version(proxy, outer)))
         .into_layer(bridge);
     let demux = DatagramDemux::new(socket, demux_config());
     let task = tokio::spawn(async move {
@@ -1492,9 +1506,8 @@ async fn quic_mitm_with(
             forward.serve(input).await.map_err(BoxError::from)
         }),
     );
-    let association =
-        AddInputExtensionLayer::new(ProxyRoute::Proxy(proxy.with_http_version(outer)))
-            .into_layer(DatagramToProxyBridge::new(inspect, upstream).with_connector(tunnels));
+    let association = AddInputExtensionLayer::new(ProxyRoute::Proxy(with_version(proxy, outer)))
+        .into_layer(DatagramToProxyBridge::new(inspect, upstream).with_connector(tunnels));
     let socket = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
@@ -1741,4 +1754,15 @@ async fn a_custom_relay_gets_the_tunnel_with_its_target() {
     })
     .await
     .unwrap();
+}
+
+fn with_version(mut proxy: ProxyAddress, version: Version) -> ProxyAddress {
+    let ProxyProtocol::Http {
+        version: pinned, ..
+    } = &mut proxy.protocol
+    else {
+        panic!("only an HTTP proxy speaks an HTTP version");
+    };
+    *pinned = Some(version);
+    proxy
 }

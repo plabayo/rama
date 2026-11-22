@@ -3,7 +3,7 @@
 
 use super::{
     Carrier, DEADLINE, ProxyAuth, QuicTls, Tasks, assert_carrier, echo, masque_proxy_limited,
-    masque_proxy_on, masque_tunnels, open_tunnel, proxy_address, udp_echo,
+    masque_proxy_on, masque_tunnels, open_tunnel, proxy_address, udp_echo, with_version,
 };
 use rama::net::client::MaybeProxied;
 use rama::proxy::masque::budget::{DatagramRate, PrincipalBudget};
@@ -616,9 +616,10 @@ async fn measure(
         let mut sockets = Vec::new();
         for target in [echo_target, sink] {
             let request = ConnectRequest::new(HostWithPort::from(target));
-            request.extensions.insert(ProxyRoute::Proxy(
-                anonymous.clone().with_http_version(carrier.version()),
-            ));
+            request.extensions.insert(ProxyRoute::Proxy(with_version(
+                anonymous.clone(),
+                carrier.version(),
+            )));
             let EstablishedClientConnection { conn, .. } = connector.serve(request).await.unwrap();
             let MaybeProxied::Proxied { conn: socket } = conn else {
                 panic!("{carrier:?}: a MASQUE route must tunnel");

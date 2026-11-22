@@ -23,7 +23,7 @@ const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP
 
 #[test]
 fn http1_request_is_a_get_upgrade() {
-    let request = connect_udp_request::<Body>(
+    let request = connect_udp_request(
         &proxy("h3+udp://user:pass@proxy.example:4443"),
         &target("2001:db8::42", 443),
         Version::HTTP_11,
@@ -48,7 +48,7 @@ fn http1_request_is_a_get_upgrade() {
 #[test]
 fn http2_and_http3_requests_use_extended_connect() {
     for version in [Version::HTTP_2, Version::HTTP_3] {
-        let request = connect_udp_request::<Body>(
+        let request = connect_udp_request(
             &proxy("h3://proxy.example/masque?h={target_host}&p={target_port}"),
             &target("192.0.2.6", 53),
             version,
@@ -81,14 +81,13 @@ fn refuses_proxies_without_connect_udp_and_old_versions() {
         "h3://proxy.example",
     ] {
         assert_eq!(
-            connect_udp_request::<Body>(&proxy(proxy_address), &t, Version::HTTP_2).unwrap_err(),
+            connect_udp_request(&proxy(proxy_address), &t, Version::HTTP_2).unwrap_err(),
             ConnectUdpRequestError::NoConnectUdp,
             "{proxy_address}"
         );
     }
     assert_eq!(
-        connect_udp_request::<Body>(&proxy("h3+udp://proxy.example"), &t, Version::HTTP_10)
-            .unwrap_err(),
+        connect_udp_request(&proxy("h3+udp://proxy.example"), &t, Version::HTTP_10).unwrap_err(),
         ConnectUdpRequestError::UnsupportedVersion(Version::HTTP_10)
     );
 }
@@ -111,8 +110,7 @@ fn built_requests_match_on_the_proxy() {
         for host in ["192.0.2.6", "2001:db8::42", "example.org"] {
             let target = target(host, 4433);
             for version in VERSIONS {
-                let request =
-                    connect_udp_request::<Body>(&proxy(proxy_address), &target, version).unwrap();
+                let request = connect_udp_request(&proxy(proxy_address), &target, version).unwrap();
                 assert_eq!(
                     matcher.match_request(&request),
                     Ok(target.clone()),

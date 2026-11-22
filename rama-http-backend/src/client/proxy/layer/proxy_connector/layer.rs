@@ -30,7 +30,7 @@ impl HttpConnectProxyConnectorLayer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 

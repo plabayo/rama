@@ -13,7 +13,7 @@ use rama::{
     extensions::ExtensionsRef as _,
     graceful::WeakScope,
     http::{
-        Request, Response, Version, client::EasyHttpConnectorBuilder, conn::TargetHttpVersion,
+        Request, Response, Version, client::EasyHttpWebClient, conn::TargetHttpVersion,
         layer::alt_svc::AltSvcCache,
     },
     net::address::SocketAddress,
@@ -144,7 +144,7 @@ async fn boring_stream_policy_is_independent_of_rustls_quic() {
     let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_tcp_connector()
         .with_custom_quic_connector(SharedQuicEndpoint::supplied(
             endpoint.clone(),
@@ -184,7 +184,7 @@ async fn rustls_stream_policy_is_independent_of_boring_quic() {
     let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_tcp_connector()
         .with_custom_quic_connector(SharedQuicEndpoint::supplied(
             endpoint.clone(),
@@ -213,7 +213,7 @@ async fn conditional_ech_reliance_uses_each_selected_backend_capability() {
         let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
             .await
             .unwrap();
-        let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
             .with_default_tcp_connector()
             .with_custom_quic_connector(SharedQuicEndpoint::supplied(
                 endpoint.clone(),

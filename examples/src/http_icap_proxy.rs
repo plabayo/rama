@@ -78,7 +78,7 @@ use rama::{
     graceful::Scope,
     http::{
         HeaderValue,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, ProxyConnector},
         layer::{
             error_handling::ErrorHandlerLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -171,6 +171,10 @@ async fn main() -> Result<(), BoxError> {
         .with_options_cache(options)
         .with_response_service(endpoint.clone());
 
+    let proxies = ProxyConnector::default_with_scope(weak_scope.clone())
+        .with_isolate_forward_proxy_auth_error(true);
+    let client = EasyHttpWebClient::default_using_proxies(weak_scope.clone(), proxies);
+
     // A non-CONNECT request selects its origin per request. The web client
     // derives that origin and acquires a matching upstream connection.
     let direct = (
@@ -179,9 +183,7 @@ async fn main() -> Result<(), BoxError> {
         adaptation.clone(),
         RemoveResponseHeaderLayer::hop_by_hop(),
     )
-        .into_layer(EasyHttpWebClient::default_for_proxy_with_scope(
-            weak_scope.clone(),
-        ));
+        .into_layer(client);
 
     // CONNECT already owns its egress socket. Peek/Relay preserves that
     // socket while applying the same ICAP layer to intercepted HTTP.

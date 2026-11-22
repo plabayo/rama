@@ -1,23 +1,26 @@
 use rama::net::client::MaybeProxied;
 use rama::{
-    error::ErrorExt as _,
+    error::{ErrorExt as _, extra::OpaqueError},
     http::{
-        Version,
+        Body, Version,
         client::{
-            DefaultHttpWebClient, DefaultProxyConnector, EasyHttpWebClient, ProxyConnector,
-            masque_quic_transport,
+            EasyHttpWebClient, Http3Connector, HttpConnector, ProxyConnector, masque_quic_transport,
         },
         conn::TargetHttpVersion,
         core::h3::connection::Config as H3Config,
+        proxy::ProxyRequestBody,
     },
     net::{
-        address::{Host, HostWithPort, ProxyAddress},
-        client::{ConnectorService, ConnectorTarget, EstablishedClientConnection, ProxyRoute},
+        address::{Host, HostWithPort, ProxyAddress, ProxyProtocol},
+        client::{
+            ConnectorService, ConnectorTarget, EstablishedClientConnection, MaybeProxiedConnector,
+            ProxiedRoute, ProxyRoute,
+        },
         socket::opts::SocketOptions,
         stream::Socket as _,
         tls::ApplicationProtocol,
     },
-    proxy::masque::connect_udp::ConnectUdpSocket,
+    proxy::masque::connect_udp::{ConnectUdpSocket, HttpConnectUdpProxyConnector},
     quic::{
         Connection, ConnectionError, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, NegotiatedTlsParameters,
         ServerConfig, TransportConfig,
@@ -27,6 +30,7 @@ use rama::{
     },
     tls::{
         SecureTransport,
+        boring::client::TlsConnector,
         client::{ClientHello, ClientHelloExtension},
     },
     ua::{
@@ -38,7 +42,7 @@ use rama::{
     },
     udp::{
         DatagramSenderExt as _, DatagramSocket as _, DatagramSocketExt as _, SendDatagram,
-        UdpPacketSocket, UdpSocketConfig,
+        UdpPacketSocket, UdpSocketConfig, proxy::UdpConnector,
     },
 };
 use tokio::{net::UdpSocket, sync::mpsc};
@@ -76,10 +80,39 @@ async fn udp_echo() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     (address, task)
 }
 
-/// A client to a MASQUE proxy with a self-signed certificate.
-fn masque_client() -> DefaultProxyConnector {
+/// The CONNECT-UDP tunnels of a client to a MASQUE proxy with a self-signed certificate,
+/// over HTTP/1.1 or HTTP/2 on TLS, or HTTP/3.
+fn masque_tunnels()
+-> impl ConnectorService<ConnectRequest, Connection = MaybeProxied<UdpPacketSocket, ConnectUdpSocket>>
++ Clone {
+    let scope = WeakScope::detached();
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    ProxyConnector::default_using_tls(WeakScope::detached(), tls)
+    let h3 = Http3Connector::builder(scope.clone())
+        .with_endpoints(SharedQuicEndpoint::managed(scope.clone()))
+        .with_tls_config(tls.clone())
+        .with_transport(masque_quic_transport())
+        .build_lazy()
+        .unwrap();
+    let tls_over_tcp = TlsConnector::auto(TcpConnector::new()).with_base_config(tls);
+    let http = HttpConnector::<_, ProxyRequestBody<Body>>::new(tls_over_tcp, scope.clone())
+        .with_http3_connector(h3);
+    MaybeProxiedConnector::new(
+        UdpConnector::new(),
+        HttpConnectUdpProxyConnector::new(http, scope),
+        ProxiedRoute::new(),
+    )
+}
+
+fn with_version(proxy: &str, version: Version) -> ProxyAddress {
+    let mut proxy = proxy.parse::<ProxyAddress>().unwrap();
+    let ProxyProtocol::Http {
+        version: pinned, ..
+    } = &mut proxy.protocol
+    else {
+        panic!("a MASQUE proxy speaks HTTP");
+    };
+    *pinned = Some(version);
+    proxy
 }
 
 /// A CONNECT-UDP tunnel to `target` through `proxy` over `version`.
@@ -88,16 +121,12 @@ async fn tunnel(
     target: std::net::SocketAddr,
     version: Version,
 ) -> Result<ConnectUdpSocket, BoxError> {
-    let connector = masque_client().into_parts().connect_udp;
     let request = ConnectRequest::new(HostWithPort::from(target));
-    request.extensions.insert(ProxyRoute::Proxy(
-        proxy
-            .parse::<ProxyAddress>()
-            .unwrap()
-            .with_http_version(version),
-    ));
+    request
+        .extensions
+        .insert(ProxyRoute::Proxy(with_version(proxy, version)));
     let EstablishedClientConnection { conn, .. } =
-        timeout(Duration::from_secs(10), connector.serve(request)).await??;
+        timeout(Duration::from_secs(10), masque_tunnels().connect(request)).await??;
     match conn {
         MaybeProxied::Proxied { conn: socket } => Ok(socket),
         MaybeProxied::Direct { .. } => Err(BoxError::from_static_str("not tunneled")),
@@ -780,10 +809,7 @@ async fn bind_dual_stack_http3(tls: &TlsServerConfig) -> Endpoint {
 fn tunneling_endpoints() -> QuicEndpointConnector<
     impl ConnectorService<ConnectRequest, Connection = MaybeProxied<UdpPacketSocket, ConnectUdpSocket>>,
 > {
-    QuicEndpointConnector::new(
-        masque_client().into_parts().connect_udp,
-        WeakScope::detached(),
-    )
+    QuicEndpointConnector::new(masque_tunnels(), WeakScope::detached())
 }
 
 /// A QUIC connection to the origin, directly or through `proxy`, keeping the peer's chain.
@@ -833,11 +859,23 @@ async fn origin_leaf(port: u16, proxy: Option<&str>) -> Vec<u8> {
     leaf
 }
 
+/// A default client which trusts the self-signed test servers, origin and proxy alike.
+fn insecure_client() -> impl Service<Request, Output = Response, Error = OpaqueError> {
+    let scope = WeakScope::detached();
+    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
+    EasyHttpWebClient::connector_builder(scope.clone())
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_proxy_support(ProxyConnector::default_using_tls(scope, tls.clone()))
+        .with_tls_support_using_boringssl(tls)
+        .with_default_http_connector()
+        .with_default_connection_pool()
+        .build_client()
+}
+
 /// GET the origin over HTTP/3 through `proxy`.
 async fn h3_get_through(port: u16, proxy: &str) -> Bytes {
-    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let client =
-        DefaultHttpWebClient::default_using_boringssl(WeakScope::detached(), tls.clone(), tls);
+    let client = insecure_client();
     let request = Request::builder()
         .version(Version::HTTP_3)
         .uri(format!("https://localhost:{port}/"))
@@ -959,9 +997,7 @@ async fn mitm_inspector_records_and_exports_tunneled_http3_with_its_quic_hello()
     let (proxy, inspector) = start_proxy(&shutdown, cli.proxy).await;
     let inspector = inspector.unwrap();
 
-    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let client =
-        DefaultHttpWebClient::default_using_boringssl(WeakScope::detached(), tls.clone(), tls);
+    let client = insecure_client();
     let request = Request::builder()
         .version(Version::HTTP_3)
         .uri(format!("https://localhost:{port}/"))

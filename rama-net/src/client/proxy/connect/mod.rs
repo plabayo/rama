@@ -5,25 +5,19 @@ use rama_core::{
 use rama_utils::macros::define_inner_service_accessors;
 
 use crate::{
-    address::ProxyAddress,
+    address::{ProxyAddress, ProxyProtocol},
     client::{
         ConnectRequest, ConnectionError, ConnectorService, ConnectorTarget,
         ConnectorTransportProtocol, EstablishedClientConnection, ProxyRoute, pool::PoolPartition,
     },
     http::{FallbackHttpVersion, HttpRequestVersion, TargetHttpVersion, Version},
     stream::DefaultExtensionsTransfer,
+    tls::TlsRequired,
     transport::TransportProtocol,
 };
 
 mod extensions;
 pub use extensions::{ProxyConnectionExtensions, ProxyConnectionExtensionsTransfer};
-
-mod per_credential;
-use per_credential::credential_partition;
-pub use per_credential::{
-    ProxyConnectionPerCredential, ProxyConnectionPerCredentialLayer,
-    ProxyConnectionPerCredentialService,
-};
 
 /// Create the request to establish the connection to `proxy` itself.
 ///
@@ -32,16 +26,16 @@ pub use per_credential::{
 /// own writes stay local.
 ///
 /// The origin's connection facts, such as its [`TargetHttpVersion`], do not carry over:
-/// this request writes its own [`ConnectorTarget`], [`ConnectorTransportProtocol`] and a
-/// direct [`ProxyRoute`]. An HTTP proxy whose address names no version negotiates one,
+/// this request writes its own [`ConnectorTarget`] and [`ConnectorTransportProtocol`], and
+/// a direct [`ProxyRoute`] unless the bag routes this hop through another proxy. An HTTP proxy whose address names no version negotiates one,
 /// whatever the origin request asks.
 ///
 /// A TLS input belongs to the connection it configures, so the origin's stop at this
 /// boundary. The hop's own identity and ALPN follow from the route: its address is the
 /// authority the TLS connector names, its protocol and version the ALPN that connector
 /// offers. Anything else this hop needs comes from [`ProxyConnectionExtensions`], whose
-/// contents land on this request's own level. The route still decides where the dial
-/// goes: this writes its own route, target and transport after that.
+/// contents land on this request's own level. The route to `proxy` still decides where
+/// the dial goes: this writes its own target and transport after that.
 #[must_use]
 pub fn proxy_request(proxy: &ProxyAddress, origin: &Extensions) -> ConnectRequest {
     let version = proxy.protocol.http_version();
@@ -50,9 +44,15 @@ pub fn proxy_request(proxy: &ProxyAddress, origin: &Extensions) -> ConnectReques
         _ => TransportProtocol::Tcp,
     };
 
-    let extensions =
-        origin.fork_connection(&DefaultExtensionsTransfer.and(ProxyConnectionExtensionsTransfer));
-    extensions.insert(ProxyRoute::Direct);
+    let extensions = origin.fork_connection(
+        &DefaultExtensionsTransfer::new().and(ProxyConnectionExtensionsTransfer::new()),
+    );
+    let routed_by_bag = origin
+        .get_ref::<ProxyConnectionExtensions>()
+        .is_some_and(|bag| bag.0.contains::<ProxyRoute>());
+    if !routed_by_bag {
+        extensions.insert(ProxyRoute::Direct);
+    }
     extensions.insert(ConnectorTarget(proxy.address.clone()));
     extensions.insert(ConnectorTransportProtocol(transport_protocol));
     if let Some(version) = version {
@@ -61,7 +61,10 @@ pub fn proxy_request(proxy: &ProxyAddress, origin: &Extensions) -> ConnectReques
         extensions.insert(HttpRequestVersion(Version::HTTP_11));
         extensions.insert(FallbackHttpVersion(Version::HTTP_11));
     }
-    if let Some(partition) = leg_partition(proxy, origin, &extensions) {
+    if matches!(proxy.protocol, ProxyProtocol::Socks5 { secure: true, .. }) {
+        extensions.insert(TlsRequired::new());
+    }
+    if let Some(partition) = leg_partition(origin, &extensions) {
         extensions.insert(partition);
     }
 
@@ -70,28 +73,17 @@ pub fn proxy_request(proxy: &ProxyAddress, origin: &Extensions) -> ConnectReques
         .with_transport_protocol(transport_protocol)
 }
 
-fn leg_partition(
-    proxy: &ProxyAddress,
-    origin: &Extensions,
-    leg: &Extensions,
-) -> Option<PoolPartition> {
+fn leg_partition(origin: &Extensions, leg: &Extensions) -> Option<PoolPartition> {
     let origin_partition = origin.get_ref::<PoolPartition>();
     // The hop's own crossed onto the connection to the proxy, where it shadows the origin's.
     let hop_partition = leg
         .get_ref::<PoolPartition>()
         .filter(|partition| Some(*partition) != origin_partition);
-    let narrowed = match (origin_partition, hop_partition) {
+    match (origin_partition, hop_partition) {
         (Some(origin), Some(hop)) => Some(origin.and(hop)),
         (Some(partition), None) | (None, Some(partition)) => Some(partition.clone()),
         (None, None) => None,
-    };
-    let Some(credential) = credential_partition(proxy, leg) else {
-        return narrowed;
-    };
-    Some(match narrowed {
-        Some(narrowed) => narrowed.and(&credential),
-        None => credential,
-    })
+    }
 }
 
 /// What a [`ProxyDialer`] dials: the connection to `proxy`, for the origin request
@@ -141,6 +133,7 @@ where
                 let conn = established.conn;
                 let partition = established.input.extensions().get_ref::<PoolPartition>();
                 conn.extensions().insert(DialedProxyConnection {
+                    proxy: request.proxy.clone(),
                     partition: partition.cloned(),
                 });
                 // The version spoken over this connection, as a fact of it: the one the
@@ -169,7 +162,16 @@ where
 
 /// Wraps a connector towards proxies in a [`ProxyDialer`].
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct ProxyDialerLayer;
+
+impl ProxyDialerLayer {
+    /// Create a new [`ProxyDialerLayer`].
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl<S> Layer<S> for ProxyDialerLayer {
     type Service = ProxyDialer<S>;
@@ -179,12 +181,29 @@ impl<S> Layer<S> for ProxyDialerLayer {
     }
 }
 
-/// Marks a connection to a proxy made by a [`ProxyDialer`], for
-/// [`proxy_connection_reuse`](super::proxy_connection_reuse).
+/// Marks a connection to a proxy made by a [`ProxyDialer`], naming the proxy it was dialed to.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(net, proxy), scope(connection))]
-pub(crate) struct DialedProxyConnection {
+pub struct DialedProxyConnection {
+    pub(super) proxy: ProxyAddress,
     pub(super) partition: Option<PoolPartition>,
+}
+
+impl DialedProxyConnection {
+    /// Mark a connection as dialed to `proxy`, outside any pool partition.
+    #[must_use]
+    pub const fn new(proxy: ProxyAddress) -> Self {
+        Self {
+            proxy,
+            partition: None,
+        }
+    }
+
+    /// The proxy this connection was dialed to.
+    #[must_use]
+    pub const fn proxy(&self) -> &ProxyAddress {
+        &self.proxy
+    }
 }
 
 #[cfg(test)]
@@ -193,12 +212,16 @@ mod tests {
     use crate::{
         ConnectorTargetInputExt as _, ConnectorTransportProtocolInputExt as _, Protocol,
         ProtocolInputExt as _, TargetHttpVersionInputExt as _, TransportProtocolInputExt as _,
-        address::HostWithPort,
+        address::HostWithPort, client::pool::ReuseKey,
     };
-    use rama_core::extensions::{Extension, ExtensionsRef};
+    use rama_core::extensions::Extension;
 
     #[derive(Debug, Extension, PartialEq)]
     struct OriginMarker(u8);
+
+    #[derive(Debug, Extension, PartialEq)]
+    #[extension(scope(connection))]
+    struct HopMarker(u8);
 
     fn socks_proxy() -> ProxyAddress {
         "socks5://user:secret@proxy.example:1080".parse().unwrap()
@@ -226,10 +249,66 @@ mod tests {
         assert_eq!(request.transport_protocol(), Some(TransportProtocol::Tcp));
     }
 
+    fn hop(address: &str) -> ProxyAddress {
+        format!("http://{address}:8080").parse().unwrap()
+    }
+
+    fn reached_through(route: ProxyRoute, bag: Extensions) -> Extensions {
+        let origin = Extensions::new();
+        origin.insert(ProxyRoute::Proxy(hop("proxy-b.example")));
+        bag.insert(route);
+        origin.insert(ProxyConnectionExtensions(bag));
+        proxy_request(&hop("proxy-b.example"), &origin).extensions
+    }
+
+    #[test]
+    fn a_route_in_the_bag_decides_how_the_proxy_is_reached() {
+        let leg = reached_through(ProxyRoute::Proxy(hop("proxy-a.example")), Extensions::new());
+        assert_eq!(
+            leg.get_ref::<ProxyRoute>(),
+            Some(&ProxyRoute::Proxy(hop("proxy-a.example"))),
+        );
+    }
+
+    #[test]
+    fn the_bag_configures_only_the_next_hop() {
+        let bag = Extensions::new();
+        bag.insert(HopMarker(1));
+        let to_b = reached_through(ProxyRoute::Proxy(hop("proxy-a.example")), bag);
+        let to_a = proxy_request(&hop("proxy-a.example"), &to_b).extensions;
+
+        assert_eq!(to_a.get_ref::<ProxyRoute>(), Some(&ProxyRoute::Direct));
+        assert!(!to_a.contains::<HopMarker>());
+    }
+
+    #[test]
+    fn a_bag_in_the_bag_configures_the_hop_after() {
+        let inner = Extensions::new();
+        inner.insert(HopMarker(2));
+        let bag = Extensions::new();
+        bag.insert(ProxyConnectionExtensions(inner));
+        let to_b = reached_through(ProxyRoute::Proxy(hop("proxy-a.example")), bag);
+        let to_a = proxy_request(&hop("proxy-a.example"), &to_b).extensions;
+
+        assert_eq!(to_a.get_ref::<HopMarker>(), Some(&HopMarker(2)));
+    }
+
+    #[test]
+    fn only_a_secure_socks5_proxy_requires_tls_on_its_connection() {
+        for (scheme, required) in [("socks5", false), ("socks5+tls", true)] {
+            let proxy: ProxyAddress = format!("{scheme}://proxy.example:1080").parse().unwrap();
+            let request = proxy_request(&proxy, &Extensions::new());
+            assert_eq!(
+                request.extensions.contains::<TlsRequired>(),
+                required,
+                "{scheme}"
+            );
+        }
+    }
+
     #[test]
     fn an_http3_proxy_is_dialed_over_udp_with_its_version() {
-        let proxy: ProxyAddress = "https://proxy.example:443".parse().unwrap();
-        let proxy = proxy.with_http_version(Version::HTTP_3);
+        let proxy: ProxyAddress = "h3://proxy.example:443".parse().unwrap();
         let request = proxy_request(&proxy, &Extensions::new());
 
         assert_eq!(request.transport_protocol(), Some(TransportProtocol::Udp));
@@ -306,73 +385,35 @@ mod tests {
         assert_eq!(leg_partition(&credentialed("bob"), &origin), None);
     }
 
-    #[test]
-    fn a_leg_per_credential_separates_the_credentials_and_shares_the_rest() {
+    fn with_hop_partition(user: &str) -> Extensions {
         let origin = Extensions::new();
-        origin.insert(ProxyConnectionPerCredential);
-
-        let alice = leg_partition(&credentialed("alice"), &origin);
-        let bob = leg_partition(&credentialed("bob"), &origin);
-        assert!(alice.is_some());
-        assert_ne!(alice, bob);
-        assert_eq!(alice, leg_partition(&credentialed("alice"), &origin));
-
-        let anonymous: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
-        assert_eq!(leg_partition(&anonymous, &origin), None);
+        let bag = Extensions::new();
+        bag.insert(PoolPartition::new(ReuseKey::new(user.to_owned())));
+        origin.insert(ProxyConnectionExtensions(bag));
+        origin
     }
 
     #[test]
-    fn a_credential_partition_narrows_the_one_the_request_has() {
-        let origin = Extensions::new();
-        origin.insert(ProxyConnectionPerCredential);
+    fn a_partition_per_credential_in_the_bag_separates_the_credentials() {
+        let alice = leg_partition(&credentialed("alice"), &with_hop_partition("alice"));
+        let bob = leg_partition(&credentialed("bob"), &with_hop_partition("bob"));
+        assert!(alice.is_some());
+        assert_ne!(alice, bob);
+        assert_eq!(
+            alice,
+            leg_partition(&credentialed("alice"), &with_hop_partition("alice"))
+        );
+    }
+
+    #[test]
+    fn a_partition_in_the_bag_narrows_the_one_the_request_has() {
+        let origin = with_hop_partition("alice");
         let plain = leg_partition(&credentialed("alice"), &origin);
 
         origin.insert(PoolPartition::of::<ProxyRoute>());
         let narrowed = leg_partition(&credentialed("alice"), &origin);
         assert_ne!(narrowed, plain);
         assert_ne!(narrowed, Some(PoolPartition::of::<ProxyRoute>()));
-    }
-
-    #[test]
-    fn a_credential_partition_never_debugs_the_secret() {
-        let origin = Extensions::new();
-        origin.insert(ProxyConnectionPerCredential);
-        let partition = leg_partition(&credentialed("alice"), &origin).expect("a partition");
-        let debug = format!("{partition:?}");
-        assert!(!debug.contains("secret"), "{debug}");
-        assert!(!debug.contains("alice"), "{debug}");
-    }
-
-    #[tokio::test]
-    async fn the_layer_asks_for_a_leg_per_credential() {
-        use rama_core::{Layer as _, Service as _, service::service_fn};
-
-        let proxy = credentialed("alice");
-        let partition = {
-            let proxy = proxy.clone();
-            service_fn(move |input: ConnectRequest| {
-                let proxy = proxy.clone();
-                async move {
-                    Ok::<_, std::convert::Infallible>(
-                        proxy_request(&proxy, input.extensions())
-                            .extensions
-                            .get_ref::<PoolPartition>()
-                            .cloned(),
-                    )
-                }
-            })
-        };
-
-        let input = || ConnectRequest::new(HostWithPort::example_domain_http());
-        assert_eq!(partition.serve(input()).await.unwrap(), None);
-        assert!(
-            ProxyConnectionPerCredentialLayer
-                .into_layer(partition)
-                .serve(input())
-                .await
-                .unwrap()
-                .is_some()
-        );
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Extension)]
@@ -418,16 +459,6 @@ mod tests {
     }
 
     #[test]
-    fn a_bagged_marker_asks_for_a_leg_per_credential() {
-        let origin = Extensions::new();
-        let bag = Extensions::new();
-        bag.insert(ProxyConnectionPerCredential);
-        origin.insert(ProxyConnectionExtensions(bag));
-
-        assert!(leg_partition(&credentialed("alice"), &origin).is_some());
-    }
-
-    #[test]
     fn the_route_decides_the_legs_http_version() {
         let origin = Extensions::new();
         let bag = Extensions::new();
@@ -435,7 +466,7 @@ mod tests {
         origin.insert(ProxyConnectionExtensions(bag));
 
         let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
-        let request = proxy_request(&proxy.with_http_version(Version::HTTP_11), &origin);
+        let request = proxy_request(&proxy, &origin);
         assert_eq!(request.target_http_version(), Some(Version::HTTP_11));
     }
 

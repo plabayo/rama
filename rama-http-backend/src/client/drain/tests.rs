@@ -168,7 +168,7 @@ fn scripted_origin(
     let script: Script = Arc::new(script);
     let mock = MockConnectorService::new({
         let accepted = accepted.clone();
-        move |_| {
+        move || {
             let conn = accepted.fetch_add(1, Ordering::SeqCst);
             let script = script.clone();
             service_fn(move |socket: MockSocket| {
@@ -1164,7 +1164,7 @@ async fn http2_abandoned_body_keeps_its_connection_without_draining() {
     let accepted = Arc::new(AtomicUsize::new(0));
     let mock = MockConnectorService::new({
         let accepted = accepted.clone();
-        move |_| {
+        move || {
             let conn = accepted.fetch_add(1, Ordering::SeqCst);
             HttpServer::auto(WeakScope::detached()).service(service_fn(
                 move |_request: Request| async move {

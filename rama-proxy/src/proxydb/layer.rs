@@ -8,10 +8,9 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_net::{
-    Protocol, TransportProtocolInputExt,
+    TransportProtocolInputExt,
     address::{ProxyAddress, ProxyProtocol},
     client::{ProxyRoute, ProxyRoutes},
-    http::Version,
     transport::TransportProtocol,
     user::ProxyCredential,
 };
@@ -217,83 +216,17 @@ fn prepare_proxy<F: UsernameFormatter>(
     })
 }
 
+/// The first protocol of `proxy` that carries `transport`: the order of
+/// [`Proxy::protocols`] is the order of preference, a custom protocol included.
 fn select_protocol(
     proxy: &Proxy,
     transport_protocol: TransportProtocol,
 ) -> Result<ProxyProtocol, BoxError> {
-    let speaks = |candidates: &[ProxyProtocol]| {
-        candidates
-            .iter()
-            .find(|protocol| proxy.protocols.contains(protocol))
-            .cloned()
-    };
-    let http = |version: Option<Version>, secure: bool| {
-        speaks(&[ProxyProtocol::Http {
-            version,
-            secure,
-            path_template: None,
-        }])
-    };
-    // A CONNECT-UDP element carries its own template, so it is matched instead of built.
-    let connect_udp = |version: Option<Version>| {
-        proxy
-            .protocols
-            .iter()
-            .find(|protocol| {
-                protocol.is_http()
-                    && protocol.http_version() == version
-                    && record_transport(protocol) == Some(TransportProtocol::Udp)
-            })
-            .cloned()
-    };
-    let socks5 = |remote_dns: bool| {
-        proxy
-            .protocols
-            .iter()
-            .find(|protocol| {
-                matches!(protocol, ProxyProtocol::Socks5 { remote_dns: r, .. } if *r == remote_dns)
-                    && record_transport(protocol) == Some(transport_protocol)
-            })
-            .cloned()
-    };
-
-    let known = match transport_protocol {
-        TransportProtocol::Udp => socks5(false)
-            .or_else(|| socks5(true))
-            .or_else(|| connect_udp(Some(Version::HTTP_3)))
-            .or_else(|| connect_udp(Some(Version::HTTP_2)))
-            .or_else(|| connect_udp(None))
-            .or_else(|| connect_udp(Some(Version::HTTP_11))),
-        TransportProtocol::Tcp => {
-            let by_port = match proxy.address.port {
-                Protocol::HTTP_DEFAULT_PORT | Protocol::HTTP_ALT_PORT => {
-                    http(None, false).or_else(|| http(Some(Version::HTTP_11), false))
-                }
-                Protocol::HTTPS_DEFAULT_PORT | Protocol::HTTPS_ALT_PORT => {
-                    http(None, true).or_else(|| http(Some(Version::HTTP_11), true))
-                }
-                _ => None,
-            };
-            by_port
-                .or_else(|| socks5(false))
-                .or_else(|| socks5(true))
-                .or_else(|| http(None, false))
-                .or_else(|| http(Some(Version::HTTP_11), false))
-                .or_else(|| http(Some(Version::HTTP_2), false))
-                .or_else(|| http(None, true))
-                .or_else(|| http(Some(Version::HTTP_11), true))
-                .or_else(|| http(Some(Version::HTTP_2), true))
-                .or_else(|| http(Some(Version::HTTP_3), true))
-        }
-    };
-    known
-        .or_else(|| {
-            proxy
-                .protocols
-                .iter()
-                .find(|protocol| matches!(protocol, ProxyProtocol::Custom(_)))
-                .cloned()
-        })
+    proxy
+        .protocols
+        .iter()
+        .find(|protocol| record_transport(protocol) == Some(transport_protocol))
+        .cloned()
         .ok_or_else(|| {
             BoxError::from_static_str(
                 "selected proxy does not have a valid protocol available (db bug?!)",
@@ -629,7 +562,7 @@ mod tests {
     use super::*;
     #[cfg(feature = "memory-db")]
     use crate::MemoryProxyDB;
-    use crate::{Proxy, ProxyProtocols, ProxyType};
+    use crate::{IpCategory, Proxy, ProxyProtocols};
     #[cfg(all(feature = "memory-db", feature = "csv"))]
     use crate::{ProxyCsvRowReader, StringFilter};
     #[cfg(all(feature = "memory-db", feature = "csv"))]
@@ -673,7 +606,7 @@ mod tests {
             address,
             credential,
             protocols: ProxyProtocols::from([ProxyProtocol::HTTP]),
-            kind: ProxyType::Datacenter,
+            ip_category: IpCategory::Datacenter,
             pool_id: None,
             continent: None,
             country: None,
@@ -690,14 +623,8 @@ mod tests {
         proxy.protocols = [
             http.then_some(ProxyProtocol::HTTP),
             https.then_some(ProxyProtocol::HTTPS),
-            socks5.then_some(ProxyProtocol::Socks5 {
-                remote_dns: false,
-                transport: Some(TransportProtocol::Tcp),
-            }),
-            socks5h.then_some(ProxyProtocol::Socks5 {
-                remote_dns: true,
-                transport: Some(TransportProtocol::Tcp),
-            }),
+            socks5.then_some(ProxyProtocol::SOCKS5_TCP),
+            socks5h.then_some(ProxyProtocol::SOCKS5H_TCP),
         ]
         .into_iter()
         .flatten()
@@ -720,44 +647,27 @@ mod tests {
     }
 
     #[test]
-    fn known_ports_prefer_only_supported_protocols() {
-        for (port, capabilities, expected) in [
-            (
-                Protocol::HTTP_DEFAULT_PORT,
-                (true, false, true, false),
-                Protocol::HTTP,
-            ),
-            (
-                Protocol::HTTP_ALT_PORT,
-                (false, false, true, false),
-                Protocol::SOCKS5,
-            ),
-            (
-                Protocol::HTTPS_DEFAULT_PORT,
-                (false, true, true, false),
-                Protocol::HTTPS,
-            ),
-            (
-                Protocol::HTTPS_ALT_PORT,
-                (false, false, true, false),
-                Protocol::SOCKS5,
-            ),
-            (
-                Protocol::SOCKS5_DEFAULT_PORT,
-                (false, false, true, true),
-                Protocol::SOCKS5,
-            ),
-            (
-                Protocol::SOCKS5_DEFAULT_PORT,
-                (false, false, false, true),
-                Protocol::SOCKS5H,
-            ),
+    fn the_port_does_not_change_which_protocol_is_preferred() {
+        for (capabilities, expected) in [
+            ((true, false, true, false), Protocol::HTTP),
+            ((false, false, true, false), Protocol::SOCKS5),
+            ((false, true, true, false), Protocol::HTTPS),
+            ((false, false, true, true), Protocol::SOCKS5),
+            ((false, false, false, true), Protocol::SOCKS5H),
         ] {
-            assert_eq!(
-                inferred_protocol(port, capabilities),
-                expected,
-                "port {port}"
-            );
+            for port in [
+                Protocol::HTTP_DEFAULT_PORT,
+                Protocol::HTTP_ALT_PORT,
+                Protocol::HTTPS_DEFAULT_PORT,
+                Protocol::HTTPS_ALT_PORT,
+                Protocol::SOCKS5_DEFAULT_PORT,
+            ] {
+                assert_eq!(
+                    inferred_protocol(port, capabilities),
+                    expected,
+                    "port {port} {capabilities:?}"
+                );
+            }
         }
     }
 
@@ -783,46 +693,35 @@ mod tests {
         proxy
     }
 
-    fn connect_udp(version: Version) -> ProxyProtocol {
-        ProxyProtocol::try_from_scheme("h3+udp")
-            .unwrap()
-            .with_http_version(version)
-    }
-
     fn h2c() -> ProxyProtocol {
-        ProxyProtocol::HTTP.with_http_version(Version::HTTP_2)
+        ProxyProtocol::H2C
     }
 
     fn h2() -> ProxyProtocol {
-        ProxyProtocol::HTTPS.with_http_version(Version::HTTP_2)
+        ProxyProtocol::H2
     }
 
     fn h3() -> ProxyProtocol {
-        ProxyProtocol::HTTPS.with_http_version(Version::HTTP_3)
+        ProxyProtocol::H3
     }
 
     #[test]
-    fn tcp_prefers_the_lowest_http_version() {
+    fn tcp_takes_the_first_protocol_that_carries_tcp() {
         for (protocols, expected) in [
             (vec![h2c()], h2c()),
             (vec![h2(), h3()], h2()),
+            (vec![h3(), h2()], h3()),
             (vec![h3()], h3()),
             (
-                vec![ProxyProtocol::HTTPS, connect_udp(Version::HTTP_3)],
+                vec![
+                    ProxyProtocol::HTTPS,
+                    ProxyProtocol::connect_udp(Version::HTTP_3),
+                ],
                 ProxyProtocol::HTTPS,
             ),
             (
-                vec![
-                    ProxyProtocol::Socks5 {
-                        remote_dns: true,
-                        transport: Some(TransportProtocol::Tcp),
-                    },
-                    h2c(),
-                ],
-                ProxyProtocol::Socks5 {
-                    remote_dns: true,
-                    transport: Some(TransportProtocol::Tcp),
-                },
+                vec![ProxyProtocol::SOCKS5H_TCP, h2c()],
+                ProxyProtocol::SOCKS5H_TCP,
             ),
         ] {
             let proxy = speaking_proxy(protocols);
@@ -836,11 +735,8 @@ mod tests {
 
     #[test]
     fn a_udp_protocol_carries_no_tcp() {
-        let socks5_udp = ProxyProtocol::Socks5 {
-            remote_dns: false,
-            transport: Some(TransportProtocol::Udp),
-        };
-        let proxy = speaking_proxy([socks5_udp, connect_udp(Version::HTTP_3)]);
+        let socks5_udp = ProxyProtocol::SOCKS5_UDP;
+        let proxy = speaking_proxy([socks5_udp, ProxyProtocol::connect_udp(Version::HTTP_3)]);
         prepare_proxy(
             &(),
             proxy,
@@ -852,34 +748,41 @@ mod tests {
     }
 
     #[test]
-    fn udp_prefers_socks5_and_then_the_newest_connect_udp_version() {
-        let socks5_udp = ProxyProtocol::Socks5 {
-            remote_dns: false,
-            transport: Some(TransportProtocol::Udp),
-        };
+    fn udp_takes_the_first_protocol_that_carries_udp() {
+        let socks5_udp = ProxyProtocol::SOCKS5_UDP;
         for (protocols, expected) in [
             (
-                vec![socks5_udp.clone(), connect_udp(Version::HTTP_3)],
+                vec![
+                    socks5_udp.clone(),
+                    ProxyProtocol::connect_udp(Version::HTTP_3),
+                ],
                 socks5_udp,
             ),
             (
-                vec![connect_udp(Version::HTTP_11), connect_udp(Version::HTTP_3)],
-                connect_udp(Version::HTTP_3),
+                vec![
+                    ProxyProtocol::connect_udp(Version::HTTP_11),
+                    ProxyProtocol::connect_udp(Version::HTTP_3),
+                ],
+                ProxyProtocol::connect_udp(Version::HTTP_11),
             ),
             (
-                vec![connect_udp(Version::HTTP_2)],
-                connect_udp(Version::HTTP_2),
+                vec![
+                    ProxyProtocol::connect_udp(Version::HTTP_3),
+                    ProxyProtocol::SOCKS5_UDP,
+                ],
+                ProxyProtocol::connect_udp(Version::HTTP_3),
+            ),
+            (
+                vec![ProxyProtocol::connect_udp(Version::HTTP_2)],
+                ProxyProtocol::connect_udp(Version::HTTP_2),
             ),
             // SOCKS5 without UDP ASSOCIATE carries no UDP, CONNECT-UDP does.
             (
                 vec![
-                    ProxyProtocol::Socks5 {
-                        remote_dns: false,
-                        transport: Some(TransportProtocol::Tcp),
-                    },
-                    connect_udp(Version::HTTP_11),
+                    ProxyProtocol::SOCKS5_TCP,
+                    ProxyProtocol::connect_udp(Version::HTTP_11),
                 ],
-                connect_udp(Version::HTTP_11),
+                ProxyProtocol::connect_udp(Version::HTTP_11),
             ),
         ] {
             let proxy = speaking_proxy(protocols);
@@ -892,30 +795,20 @@ mod tests {
     }
 
     #[test]
-    fn a_protocol_rama_does_not_support_is_only_picked_without_another() {
+    fn a_custom_protocol_keeps_its_place_in_the_order() {
         let warp = ProxyProtocol::Custom(SmolStr::new_static("warp"));
-        let socks5_udp = ProxyProtocol::Socks5 {
-            remote_dns: false,
-            transport: Some(TransportProtocol::Udp),
-        };
-        let proxy = speaking_proxy([
-            warp.clone(),
-            ProxyProtocol::Socks5 {
-                remote_dns: false,
-                transport: Some(TransportProtocol::Tcp),
-            },
-            socks5_udp.clone(),
-        ]);
+        let socks5_udp = ProxyProtocol::SOCKS5_UDP;
+        let proxy = speaking_proxy([warp.clone(), ProxyProtocol::SOCKS5_TCP, socks5_udp.clone()]);
         assert_eq!(
             selected_protocol(proxy.clone(), TransportProtocol::Tcp),
-            ProxyProtocol::Socks5 {
-                remote_dns: false,
-                transport: Some(TransportProtocol::Tcp),
-            }
+            warp
         );
         assert_eq!(selected_protocol(proxy, TransportProtocol::Udp), socks5_udp);
-        let proxy = speaking_proxy([warp.clone()]);
-        assert_eq!(selected_protocol(proxy, TransportProtocol::Tcp), warp);
+        let proxy = speaking_proxy([ProxyProtocol::SOCKS5_TCP, warp]);
+        assert_eq!(
+            selected_protocol(proxy, TransportProtocol::Tcp),
+            ProxyProtocol::SOCKS5_TCP
+        );
     }
 
     #[test]
@@ -975,10 +868,7 @@ mod tests {
     async fn default_mode_retries_candidates_and_records_selected_proxy() {
         let first = test_proxy("first", "first:secret@a.example:8080");
         let mut second = test_proxy("second", "second:secret@b.example:1080");
-        second.protocols = ProxyProtocols::from([ProxyProtocol::Socks5 {
-            remote_dns: false,
-            transport: Some(TransportProtocol::Tcp),
-        }]);
+        second.protocols = ProxyProtocols::from([ProxyProtocol::SOCKS5_TCP]);
 
         let db = OrderedProxyDB(NonEmptyVec::from((first, vec![second.clone()])));
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -1354,8 +1244,7 @@ mod tests {
     #[cfg(feature = "memory-db")]
     async fn udp_connections_select_masque_proxies() {
         let mut masque = test_proxy("masque", "proxy.example:443");
-        masque.protocols =
-            ProxyProtocols::from([ProxyProtocol::try_from_scheme("h3+udp").unwrap()]);
+        masque.protocols = ProxyProtocols::from([ProxyProtocol::connect_udp(Version::HTTP_3)]);
         let http = test_proxy("http", "proxy.example:8080");
         let db = Arc::new(MemoryProxyDB::try_from_iter([masque, http]).unwrap());
 
@@ -1377,7 +1266,7 @@ mod tests {
             let proxy_address = selected_proxy_address(&established.input).unwrap();
             assert_eq!(
                 proxy_address.protocol,
-                ProxyProtocol::try_from_scheme("h3+udp").unwrap(),
+                ProxyProtocol::connect_udp(Version::HTTP_3),
             );
         }
 
@@ -1408,18 +1297,12 @@ mod tests {
                 address: "12.34.12.34:8080".parse().unwrap(),
                 credential: None,
                 protocols: ProxyProtocols::from([
-                    ProxyProtocol::Socks5 {
-                        remote_dns: false,
-                        transport: Some(TransportProtocol::Udp),
-                    },
-                    ProxyProtocol::Socks5 {
-                        remote_dns: true,
-                        transport: Some(TransportProtocol::Udp),
-                    },
+                    ProxyProtocol::SOCKS5_UDP,
+                    ProxyProtocol::SOCKS5H_UDP,
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,
                 ]),
-                kind: ProxyType::Mobile,
+                ip_category: IpCategory::Mobile,
                 pool_id: None,
                 continent: Some("*".into()),
                 country: Some("*".into()),
@@ -1433,7 +1316,7 @@ mod tests {
                 address: "12.34.12.35:8080".parse().unwrap(),
                 credential: None,
                 protocols: ProxyProtocols::from([ProxyProtocol::HTTP, ProxyProtocol::HTTPS]),
-                kind: ProxyType::Datacenter,
+                ip_category: IpCategory::Datacenter,
                 pool_id: None,
                 continent: Some("americas".into()),
                 country: Some("US".into()),
@@ -1461,7 +1344,7 @@ mod tests {
 
         req.extensions().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
-            kind: Some(vec![ProxyType::Mobile]),
+            ip_category: Some(vec![IpCategory::Mobile]),
             ..Default::default()
         });
 
@@ -1496,18 +1379,12 @@ mod tests {
             address: "12.34.12.34:8080".parse().unwrap(),
             credential: None,
             protocols: ProxyProtocols::from([
-                ProxyProtocol::Socks5 {
-                    remote_dns: false,
-                    transport: Some(TransportProtocol::Udp),
-                },
-                ProxyProtocol::Socks5 {
-                    remote_dns: true,
-                    transport: Some(TransportProtocol::Udp),
-                },
+                ProxyProtocol::SOCKS5_UDP,
+                ProxyProtocol::SOCKS5H_UDP,
                 ProxyProtocol::HTTP,
                 ProxyProtocol::HTTPS,
             ]),
-            kind: ProxyType::Mobile,
+            ip_category: IpCategory::Mobile,
             pool_id: None,
             continent: Some("*".into()),
             country: Some("*".into()),
@@ -1531,7 +1408,7 @@ mod tests {
 
         req.extensions().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
-            kind: Some(vec![ProxyType::Mobile]),
+            ip_category: Some(vec![IpCategory::Mobile]),
             ..Default::default()
         });
 
@@ -1558,18 +1435,12 @@ mod tests {
             address: "12.34.12.34:8080".parse().unwrap(),
             credential: Some(basic!("john", "secret").into()),
             protocols: ProxyProtocols::from([
-                ProxyProtocol::Socks5 {
-                    remote_dns: false,
-                    transport: Some(TransportProtocol::Udp),
-                },
-                ProxyProtocol::Socks5 {
-                    remote_dns: true,
-                    transport: Some(TransportProtocol::Udp),
-                },
+                ProxyProtocol::SOCKS5_UDP,
+                ProxyProtocol::SOCKS5H_UDP,
                 ProxyProtocol::HTTP,
                 ProxyProtocol::HTTPS,
             ]),
-            kind: ProxyType::Mobile,
+            ip_category: IpCategory::Mobile,
             pool_id: Some("routers".into()),
             continent: Some("*".into()),
             country: Some("*".into()),
@@ -1616,7 +1487,7 @@ mod tests {
 
         req.extensions().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
-            kind: Some(vec![ProxyType::Mobile]),
+            ip_category: Some(vec![IpCategory::Mobile]),
             ..Default::default()
         });
 
@@ -1637,18 +1508,12 @@ mod tests {
                 address: "12.34.12.34:8080".parse().unwrap(),
                 credential: None,
                 protocols: ProxyProtocols::from([
-                    ProxyProtocol::Socks5 {
-                        remote_dns: false,
-                        transport: Some(TransportProtocol::Udp),
-                    },
-                    ProxyProtocol::Socks5 {
-                        remote_dns: true,
-                        transport: Some(TransportProtocol::Udp),
-                    },
+                    ProxyProtocol::SOCKS5_UDP,
+                    ProxyProtocol::SOCKS5H_UDP,
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,
                 ]),
-                kind: ProxyType::Mobile,
+                ip_category: IpCategory::Mobile,
                 pool_id: None,
                 continent: Some("*".into()),
                 country: Some("*".into()),
@@ -1662,7 +1527,7 @@ mod tests {
                 address: "12.34.12.35:8080".parse().unwrap(),
                 credential: None,
                 protocols: ProxyProtocols::from([ProxyProtocol::HTTP, ProxyProtocol::HTTPS]),
-                kind: ProxyType::Datacenter,
+                ip_category: IpCategory::Datacenter,
                 pool_id: None,
                 continent: Some("americas".into()),
                 country: Some("US".into()),
@@ -1686,7 +1551,7 @@ mod tests {
 
         req.extensions().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
-            kind: Some(vec![ProxyType::Mobile]),
+            ip_category: Some(vec![IpCategory::Mobile]),
             ..Default::default()
         });
 
@@ -1776,7 +1641,7 @@ mod tests {
             (
                 Some(ProxyFilter {
                     country: Some(vec![StringFilter::new("BE")]),
-                    kind: Some(vec![ProxyType::Mobile]),
+                    ip_category: Some(vec![IpCategory::Mobile]),
                     ..Default::default()
                 }),
                 Some("140.249.154.18:5800"),
@@ -1821,7 +1686,7 @@ mod tests {
             (
                 Some(ProxyFilter {
                     country: Some(vec![StringFilter::new("BE")]),
-                    kind: Some(vec![ProxyType::Mobile]),
+                    ip_category: Some(vec![IpCategory::Mobile]),
                     ..Default::default()
                 }),
                 "140.249.154.18:5800",
@@ -1861,7 +1726,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Fallback(ProxyFilter {
-                kind: Some(vec![ProxyType::Datacenter]),
+                ip_category: Some(vec![IpCategory::Datacenter]),
                 ..Default::default()
             }))
             .with_single_proxy(true)
@@ -1876,7 +1741,7 @@ mod tests {
             (
                 Some(ProxyFilter {
                     country: Some(vec![StringFilter::new("BE")]),
-                    kind: Some(vec![ProxyType::Mobile]),
+                    ip_category: Some(vec![IpCategory::Mobile]),
                     ..Default::default()
                 }),
                 "140.249.154.18:5800",
@@ -1933,7 +1798,7 @@ mod tests {
             (
                 Some(ProxyFilter {
                     country: Some(vec![StringFilter::new("BE")]),
-                    kind: Some(vec![ProxyType::Mobile]),
+                    ip_category: Some(vec![IpCategory::Mobile]),
                     ..Default::default()
                 }),
                 Some("140.249.154.18:5800"),
@@ -1961,7 +1826,7 @@ mod tests {
                 Some(ProxyFilter {
                     id: Some(non_empty_str!("1316455915")),
                     country: Some(vec![StringFilter::new("BE")]),
-                    kind: Some(vec![ProxyType::Mobile]),
+                    ip_category: Some(vec![IpCategory::Mobile]),
                     ..Default::default()
                 }),
                 None,
@@ -2002,7 +1867,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Required)
             .with_single_proxy(true)
-            .with_select_predicate(|proxy: &Proxy| proxy.kind == ProxyType::Mobile)
+            .with_select_predicate(|proxy: &Proxy| proxy.ip_category == IpCategory::Mobile)
             .into_layer(service_fn(async |req: Request| Ok::<_, Infallible>(req)));
 
         for (filter, expected, req) in [
@@ -2019,7 +1884,7 @@ mod tests {
             (
                 Some(ProxyFilter {
                     country: Some(vec![StringFilter::new("BE")]),
-                    kind: Some(vec![ProxyType::Mobile]),
+                    ip_category: Some(vec![IpCategory::Mobile]),
                     ..Default::default()
                 }),
                 Some("140.249.154.18:5800"),
@@ -2047,7 +1912,7 @@ mod tests {
                 Some(ProxyFilter {
                     id: Some(non_empty_str!("1316455915")),
                     country: Some(vec![StringFilter::new("BE")]),
-                    kind: Some(vec![ProxyType::Mobile]),
+                    ip_category: Some(vec![IpCategory::Mobile]),
                     ..Default::default()
                 }),
                 None,

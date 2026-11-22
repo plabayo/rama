@@ -57,7 +57,7 @@ impl Socks5ConnectProxyConnectorLayer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
             #[cfg(feature = "dns")]
             dns_resolver: None,
         }
@@ -173,7 +173,7 @@ impl<S> Socks5ConnectProxyConnector<S> {
     pub fn from_dialer(dialer: S) -> Self {
         Self {
             inner: dialer,
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
             #[cfg(feature = "dns")]
             dns_resolver: None,
         }
@@ -583,7 +583,7 @@ mod tests {
             }
         });
         let connector = Socks5ConnectProxyConnector::new(inner)
-            .with_extensions_transfer(DefaultExtensionsTransfer.and(carry_fact));
+            .with_extensions_transfer(DefaultExtensionsTransfer::new().and(carry_fact));
         let input = ConnectRequest::new(HostWithPort::example_domain_http())
             .with_application_protocol(Protocol::HTTP);
         input.extensions.insert(ProxyRoute::Proxy(selected));

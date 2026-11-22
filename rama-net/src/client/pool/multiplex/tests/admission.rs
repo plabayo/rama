@@ -308,7 +308,9 @@ async fn admission_is_the_connections_own_not_an_ancestors() {
     let (outer, state) = admission_connection(&pool, 0);
     let inner = Conn {
         serial: 2,
-        extensions: outer.extensions.fork_connection(&NoExtensionsTransfer),
+        extensions: outer
+            .extensions
+            .fork_connection(&NoExtensionsTransfer::new()),
     };
     let input = Extensions::new();
     tokio::time::timeout(

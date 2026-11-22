@@ -309,6 +309,11 @@ path = "src/http_sse_datastar_test_suite.rs"
 required-features = ["http-full"]
 
 [[bin]]
+name = "masque_proxy_chain"
+path = "src/masque_proxy_chain.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
 name = "https_connect_proxy"
 path = "src/https_connect_proxy.rs"
 required-features = ["http-full", "rustls", "aws-lc"]

@@ -11,20 +11,34 @@ use rama_net::{
 /// A forwarded request has no tunnel to its origin, so a transport-level router keeps it on
 /// its direct side; the connector above the HTTP connections serves it.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct HttpTunnelRoute;
+
+impl HttpTunnelRoute {
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl<Input> ProxySelector<Input> for HttpTunnelRoute
 where
     Input: ProtocolInputExt + ExtensionsRef,
 {
     fn is_proxied(&self, input: &Input) -> bool {
-        ProxiedRoute.is_proxied(input) && forwarding_proxy(input).is_none()
+        ProxiedRoute::new().is_proxied(input) && forwarding_proxy(input).is_none()
     }
 }
 
 /// Selects the inputs an HTTP proxy forwards, as [`forwarding_proxy`] decides.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct HttpForwardRoute;
+
+impl HttpForwardRoute {
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl<Input> ProxySelector<Input> for HttpForwardRoute
 where
@@ -140,14 +154,14 @@ mod tests {
                 "proxy",
             ),
         ] {
-            assert_eq!(selected(HttpTunnelRoute, input).await, Arm(expected));
+            assert_eq!(selected(HttpTunnelRoute::new(), input).await, Arm(expected));
         }
     }
 
     #[tokio::test]
     async fn a_forwarded_request_is_never_tunneled() {
         let input = plaintext(Some("http://proxy.example:8080"), None);
-        assert_eq!(selected(HttpTunnelRoute, input).await, Arm("direct"));
+        assert_eq!(selected(HttpTunnelRoute::new(), input).await, Arm("direct"));
     }
 
     #[tokio::test]
@@ -167,7 +181,10 @@ mod tests {
                 "direct",
             ),
         ] {
-            assert_eq!(selected(HttpForwardRoute, input).await, Arm(expected));
+            assert_eq!(
+                selected(HttpForwardRoute::new(), input).await,
+                Arm(expected)
+            );
         }
     }
 }

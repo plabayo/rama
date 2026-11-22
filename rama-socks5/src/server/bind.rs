@@ -101,7 +101,7 @@ impl<A, S> Binder<A, S> {
             service,
             bind_address: None,
             accept_timeout: None,
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 }

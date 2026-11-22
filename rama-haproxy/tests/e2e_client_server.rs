@@ -57,7 +57,7 @@ where
     // `MockConnectorService::new` takes a Fn that produces the server-side
     // Service<MockSocket> each time a connection is "dialled". The mock
     // connector creates a duplex pair internally and spawns the server task.
-    let connector = MockConnectorService::new(move |_| {
+    let connector = MockConnectorService::new(move || {
         let captured = captured_clone.clone();
         ServerService::new(service_fn(move |stream| {
             let captured = captured.clone();
@@ -112,9 +112,10 @@ where
 {
     // The server side never actually receives a header in this path, so we
     // can use a tiny no-op inner.
-    let connector = MockConnectorService::new(|_| {
-        ServerService::new(service_fn(|_stream| async move { Ok::<_, BoxError>(()) }))
-    });
+    let connector =
+        MockConnectorService::new(ServerService::new(service_fn(|_stream| async move {
+            Ok::<_, BoxError>(())
+        })));
     let client_svc = configure_client(ClientLayer::tcp()).layer(connector);
     let input = ConnectRequest::new(HostWithPort::example_domain_http());
     input.extensions().insert(SocketInfo::new(None, SRC));

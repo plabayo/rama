@@ -27,7 +27,7 @@ pub struct DpiProxyCredential(pub ProxyCredential);
 /// Proxy credentials.
 ///
 /// Written as the value of a `Proxy-Authorization` header: `Basic <base64(user:pass)>`
-/// or `Bearer <token>`. Parsing also takes `Basic user:pass` and a bare `user:pass`.
+/// or `Bearer <token>`. Parsing reads what [`Display`](fmt::Display) writes.
 pub enum ProxyCredential {
     /// [`Basic`]` credentials.
     Basic(Basic),
@@ -68,19 +68,12 @@ impl FromStr for ProxyCredential {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // A scheme never contains ':', so a space after one belongs to the password.
-        let Some((scheme, value)) = s
-            .split_once(' ')
-            .filter(|(scheme, _)| !scheme.contains(':'))
-        else {
-            return basic_user_pass(s).context("parse bare basic credential");
-        };
+        let (scheme, value) = s.split_once(' ').ok_or_else(|| {
+            BoxError::from_static_str("a proxy credential is written as <scheme> <value>")
+        })?;
         match_ignore_ascii_case_str! {
             match(scheme) {
-                "basic" => if value.contains(':') {
-                    // base64 never contains ':', so such a value is still plaintext
-                    basic_user_pass(value)
-                } else {
+                "basic" => {
                     let bytes = STANDARD.decode(value).map_err(|err| {
                         BoxError::from_static_str("basic credential is not base64")
                             .context_debug_field("error", err)
@@ -95,15 +88,6 @@ impl FromStr for ProxyCredential {
             }
         }
     }
-}
-
-fn basic_user_pass(s: &str) -> Result<ProxyCredential, BoxError> {
-    if !s.contains(':') {
-        return Err(BoxError::from_static_str(
-            "a basic proxy credential is written as user:pass",
-        ));
-    }
-    Ok(ProxyCredential::Basic(s.parse()?))
 }
 
 impl_serde_str!(display ProxyCredential);
@@ -131,29 +115,15 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_user_pass_is_basic() {
-        assert_eq!(
-            "john:secret".parse::<ProxyCredential>().unwrap(),
-            ProxyCredential::from(basic!("john", "secret")),
-        );
-        assert_eq!(
-            "john:my secret".parse::<ProxyCredential>().unwrap(),
-            ProxyCredential::from(basic!("john", "my secret")),
-        );
-    }
-
-    #[test]
-    fn a_basic_value_with_a_colon_is_plaintext() {
+    fn a_plaintext_user_pass_is_refused() {
         for text in [
+            "john:secret",
+            "john:my secret",
             "basic john:secret",
             "Basic john:secret",
             "BASIC john:secret",
         ] {
-            assert_eq!(
-                text.parse::<ProxyCredential>().unwrap(),
-                ProxyCredential::from(basic!("john", "secret")),
-                "{text}"
-            );
+            assert!(text.parse::<ProxyCredential>().is_err(), "{text}");
         }
     }
 

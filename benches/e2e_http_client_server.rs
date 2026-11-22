@@ -383,21 +383,21 @@ fn get_inner_client(
     http: HttpVersion,
     tls: Tls,
 ) -> impl Service<Request, Output = Response, Error = OpaqueError> {
+    let proxies = ProxyConnector::builder(WeakScope::detached())
+        .with_custom_tcp_connector(TcpConnector::new().with_connector(transport_socket()))
+        .without_dns_connector()
+        .without_tls_support()
+        .with_default_http_connector()
+        .without_connection_pool()
+        .with_socks5()
+        .with_http_connect()
+        .with_http_forward()
+        .build();
+
     let b = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_custom_tcp_connector(TcpConnector::new().with_connector(transport_socket()))
         .without_dns_connector()
-        .with_proxy_support(
-            ProxyConnector::builder(WeakScope::detached())
-                .with_custom_tcp_connector(TcpConnector::new().with_connector(transport_socket()))
-                .without_dns_connector()
-                .without_tls_support()
-                .with_default_http_connector()
-                .without_connection_pool()
-                .with_socks5()
-                .with_http_connect()
-                .with_http_forward()
-                .build(),
-        );
+        .with_proxy_support(proxies);
 
     let proto = match http {
         HttpVersion::Http1 => ApplicationProtocol::HTTP_11,

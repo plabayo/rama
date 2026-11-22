@@ -19,7 +19,7 @@ use rama::{
     graceful::{Scope, WeakScope, default_signal},
     http::{
         Body, Method, Request, Response, Version, body::util::BodyExt as _,
-        client::EasyHttpConnectorBuilder, server::HttpServer, service::client::HttpClientExt as _,
+        client::EasyHttpWebClient, server::HttpServer, service::client::HttpClientExt as _,
     },
     net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
@@ -169,7 +169,7 @@ async fn main() -> Result<(), BoxError> {
             let anchors = CertificateDer::pem_file_iter(ca)?.collect::<Result<Vec<_>, _>>()?;
             let tls = TlsClientConfig::new().try_with_server_trust_anchors(anchors)?;
             // This client speaks HTTP/3 only, with no byte stream to fall back to.
-            let client = EasyHttpConnectorBuilder::new(scope.clone())
+            let client = EasyHttpWebClient::connector_builder(scope.clone())
                 .with_default_quic_connector()
                 .with_default_dns_connector()
                 .with_default_proxy_support()

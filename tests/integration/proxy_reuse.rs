@@ -19,10 +19,10 @@ use rama::{
     layer::MapInputLayer,
     net::{
         Protocol,
-        address::ProxyAddress,
+        address::{ProxyAddress, ProxyProtocol},
         client::{
-            ConnectRequest, ProxyConnectionExtensions, ProxyConnectionPerCredential, ProxyRoute,
-            ProxyRoutes, ProxyRoutesLayer, pool::PoolPartition,
+            ConnectRequest, ProxyConnectionExtensions, ProxyRoute, ProxyRoutes, ProxyRoutesLayer,
+            pool::{PoolPartition, ReuseKey},
         },
         proxy::IoForwardService,
         test_utils::client::{MockConnectorService, MockSocket},
@@ -585,11 +585,11 @@ impl Route {
         };
         let user = self.credential();
         let (scheme, authority) = address.split_once("://").unwrap();
-        Some(
+        Some(with_version(
             ProxyAddress::try_from(format!("{scheme}://{user}:secret@{authority}").as_str())
-                .unwrap()
-                .with_http_version(version),
-        )
+                .unwrap(),
+            version,
+        ))
     }
 
     fn credential(self) -> &'static str {
@@ -617,6 +617,10 @@ struct Case {
 struct TenantA;
 struct TenantB;
 struct HopPartition;
+
+fn credential_partition(user: &str) -> PoolPartition {
+    PoolPartition::new(ReuseKey::new(user.to_owned()))
+}
 
 #[derive(Debug, Clone, Copy, Extension)]
 struct HopMarker;
@@ -673,11 +677,13 @@ impl Case {
                 bag.insert(TlsServerVerify(mode));
             }
             Bag::PerCredential => {
-                bag.insert(ProxyConnectionPerCredential);
+                bag.insert(credential_partition(self.route.credential()));
             }
             Bag::PerCredentialAndPartition => {
-                bag.insert(ProxyConnectionPerCredential);
-                bag.insert(PoolPartition::of::<HopPartition>());
+                bag.insert(
+                    credential_partition(self.route.credential())
+                        .and(&PoolPartition::of::<HopPartition>()),
+                );
             }
         }
         Some(bag)
@@ -758,7 +764,7 @@ impl Fixture {
 
         let origin_transport = MockConnectorService::new({
             let origins = Arc::clone(&origins);
-            move |_: &ConnectRequest| {
+            move || {
                 origins.fetch_add(1, Ordering::Relaxed);
                 origin_server()
             }
@@ -767,7 +773,7 @@ impl Fixture {
         let quic_leg = MockQuicConnectorService::new(quic_server_config(), {
             let seen = Seen::new(&tunnels, &origins);
             let legs = Arc::clone(&legs);
-            move |_: &ConnectRequest| {
+            move || {
                 legs.fetch_add(1, Ordering::Relaxed);
                 h3_proxy_server(seen.clone())
             }
@@ -874,7 +880,7 @@ fn proxy_service(
             scope.clone(),
             HttpProxyConnectMatcher::new(),
             EagerHttpProxyConnector::new(
-                MockConnectorService::new(move |_: &ConnectRequest| {
+                MockConnectorService::new(move || {
                     origins.fetch_add(1, Ordering::Relaxed);
                     origin_server()
                 }),
@@ -925,4 +931,15 @@ fn proxy_server(secure: bool, seen: Seen) -> BoxService<MockSocket, (), BoxError
             .service(service)
             .boxed()
     }
+}
+
+fn with_version(mut proxy: ProxyAddress, version: Version) -> ProxyAddress {
+    let ProxyProtocol::Http {
+        version: pinned, ..
+    } = &mut proxy.protocol
+    else {
+        panic!("only an HTTP proxy speaks an HTTP version");
+    };
+    *pinned = Some(version);
+    proxy
 }

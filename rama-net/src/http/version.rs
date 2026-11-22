@@ -215,7 +215,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(TargetHttpVersion(Version::HTTP_2));
 
-        let origin = proxy.fork_connection(&NoExtensionsTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
         assert_eq!(origin.get_ref::<TargetHttpVersion>(), None);
         assert_eq!(
             proxy.get_ref::<TargetHttpVersion>(),

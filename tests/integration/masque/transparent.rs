@@ -119,11 +119,14 @@ async fn own_masque_sessions_survive_transparent_interception_and_passthrough() 
             .await;
             for intercepted in [false, true] {
                 let (front, front_tasks) = transparent(proxy, intercepted).await;
-                let address = ProxyAddress::try_from(
-                    format!("h3://john:secret@{front}/custom{{?target_host,target_port}}").as_str(),
-                )
-                .unwrap()
-                .with_http_version(carrier.version());
+                let address = with_version(
+                    ProxyAddress::try_from(
+                        format!("h3://john:secret@{front}/custom{{?target_host,target_port}}")
+                            .as_str(),
+                    )
+                    .unwrap(),
+                    carrier.version(),
+                );
                 for run in 0..10 {
                     eprintln!("carrier={carrier:?}, intercepted={intercepted}, run={run}");
                     let client = tunneling_client(WeakScope::detached());

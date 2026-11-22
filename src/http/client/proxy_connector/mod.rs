@@ -1,12 +1,14 @@
 mod builder;
+use builder::connect_udp_not_enabled;
 pub(crate) use builder::{
     DefaultProxyConnectMethod, DefaultProxyConnectUdpMethod, DefaultProxyForwardMethod,
     DefaultProxyHttpConnector, DefaultProxySocksMethod,
 };
 #[doc(inline)]
 pub use builder::{
-    DefaultProxyConnector, ProxyConnectUdpMethod, ProxyConnectUdpNotEnabled, ProxyConnectorBuilder,
-    ProxyHttpStage, ProxyMethodBuilder, ProxySocksMethod,
+    DefaultProxyConnector, ProxyAltSvcConnectionLayer, ProxyConnectUdpMethod,
+    ProxyConnectUdpNotEnabled, ProxyConnectorBuilder, ProxyHttpStage, ProxyMethodBuilder,
+    ProxyServiceConnector, ProxySocksMethod,
 };
 
 mod forward;
@@ -65,8 +67,7 @@ impl ProxyConnector {
                 scope: impl Into<WeakScope>,
             ) -> DefaultProxyConnector<TcpConnector, Body>
             where
-                Body: Default
-                    + StreamingBody<Data: Send + 'static, Error: Into<BoxError>>
+                Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>>
                     + Unpin
                     + Send
                     + 'static,
@@ -80,8 +81,7 @@ impl ProxyConnector {
                 tls: TlsClientConfig,
             ) -> DefaultProxyConnector<TcpConnector, Body>
             where
-                Body: Default
-                    + StreamingBody<Data: Send + 'static, Error: Into<BoxError>>
+                Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>>
                     + Unpin
                     + Send
                     + 'static,
@@ -92,7 +92,7 @@ impl ProxyConnector {
                     .with_default_tls_support(tls)
                     .with_default_http_connector()
                     .with_default_connection_pool()
-                    .with_every_method()
+                    .with_all_proxy_protocols()
                     .build()
             }
         }
@@ -105,8 +105,7 @@ impl ProxyConnector {
                 scope: impl Into<WeakScope>,
             ) -> DefaultProxyConnector<TcpConnector, Body>
             where
-                Body: Default
-                    + StreamingBody<Data: Send + 'static, Error: Into<BoxError>>
+                Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>>
                     + Unpin
                     + Send
                     + 'static,
@@ -117,15 +116,69 @@ impl ProxyConnector {
                     .without_tls_support()
                     .with_default_http_connector()
                     .with_default_connection_pool()
-                    .with_every_method()
+                    .with_all_proxy_protocols()
                     .build()
             }
         }
     }
 }
 
+impl
+    ProxyConnector<
+        ProxyMethodNotEnabled,
+        ProxyMethodNotEnabled,
+        ProxyConnectUdpNotEnabled<()>,
+        ProxyMethodNotEnabled,
+    >
+{
+    /// A [`ProxyConnector`] with no method yet: each one refuses its routes until it is
+    /// given with `with_*`, as its own stack of layers.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::from_methods(
+            ProxyMethodNotEnabled::SOCKS5,
+            ProxyMethodNotEnabled::HTTP_CONNECT,
+            connect_udp_not_enabled(&WeakScope::detached()),
+            ProxyMethodNotEnabled::HTTP_FORWARD,
+        )
+    }
+}
+
+impl Default
+    for ProxyConnector<
+        ProxyMethodNotEnabled,
+        ProxyMethodNotEnabled,
+        ProxyConnectUdpNotEnabled<()>,
+        ProxyMethodNotEnabled,
+    >
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<Socks, Connect, ConnectUdp, Forward> ProxyConnector<Socks, Connect, ConnectUdp, Forward> {
-    pub(in crate::http::client) const fn new(
+    /// Open a tunnel to the origin over a SOCKS5 proxy with `socks`.
+    pub fn with_socks<S>(self, socks: S) -> ProxyConnector<S, Connect, ConnectUdp, Forward> {
+        ProxyConnector::from_methods(socks, self.connect, self.connect_udp, self.forward)
+    }
+
+    /// Open a tunnel to the origin over an HTTP proxy with CONNECT, with `connect`.
+    pub fn with_connect<C>(self, connect: C) -> ProxyConnector<Socks, C, ConnectUdp, Forward> {
+        ProxyConnector::from_methods(self.socks, connect, self.connect_udp, self.forward)
+    }
+
+    /// Open a datagram tunnel to the origin with CONNECT-UDP, with `connect_udp`.
+    pub fn with_connect_udp<U>(self, connect_udp: U) -> ProxyConnector<Socks, Connect, U, Forward> {
+        ProxyConnector::from_methods(self.socks, self.connect, connect_udp, self.forward)
+    }
+
+    /// Have an HTTP proxy forward a plaintext request, with `forward`.
+    pub fn with_forward<F>(self, forward: F) -> ProxyConnector<Socks, Connect, ConnectUdp, F> {
+        ProxyConnector::from_methods(self.socks, self.connect, self.connect_udp, forward)
+    }
+
+    pub(in crate::http::client) const fn from_methods(
         socks: Socks,
         connect: Connect,
         connect_udp: ConnectUdp,

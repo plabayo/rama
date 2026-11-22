@@ -66,9 +66,9 @@ mod tests {
     use std::convert::Infallible;
 
     fn connector() -> DirectOnlyConnector<impl ConnectorService<ConnectRequest>> {
-        DirectOnlyConnector::new(MockConnectorService::new(|_| {
-            service_fn(async |_socket: MockSocket| Ok::<_, Infallible>(()))
-        }))
+        DirectOnlyConnector::new(MockConnectorService::new(service_fn(
+            async |_socket: MockSocket| Ok::<_, Infallible>(()),
+        )))
     }
 
     #[tokio::test]

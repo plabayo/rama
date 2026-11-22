@@ -5,7 +5,7 @@ use rama_core::{
     matcher::Matcher,
 };
 use rama_http::{
-    HeaderValue, Method, Request, Response, StatusCode, Version,
+    Body, HeaderValue, Method, Request, Response, StatusCode, Version,
     datagram::{
         ViolationPolicy,
         handshake::{
@@ -99,11 +99,11 @@ impl ConnectUdpRequestError {
 /// HTTP/1.1 gets `GET` with `Upgrade: connect-udp`, HTTP/2 and HTTP/3 Extended
 /// CONNECT (RFC 9298 §3.2, §3.4); both carry `Capsule-Protocol: ?1` and no
 /// content. Proxy credentials become `Proxy-Authorization`.
-pub fn connect_udp_request<B: Default>(
+pub fn connect_udp_request(
     proxy: &ProxyAddress,
     target: &ConnectUdpTarget,
     version: Version,
-) -> Result<Request<B>, ConnectUdpRequestError> {
+) -> Result<Request<Body>, ConnectUdpRequestError> {
     let Some(template) = proxy.protocol.connect_udp_template() else {
         return Err(ConnectUdpRequestError::NoConnectUdp);
     };
@@ -118,7 +118,7 @@ pub fn connect_udp_request<B: Default>(
     let mut request = Request::builder()
         .version(version)
         .uri(uri.as_str())
-        .body(B::default())
+        .body(Body::empty())
         .map_err(|_error| ConnectUdpRequestError::InvalidUri)?;
     if version == Version::HTTP_11 {
         let host = HeaderValue::try_from(proxy.address.to_string())

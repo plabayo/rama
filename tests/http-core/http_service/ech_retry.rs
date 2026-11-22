@@ -13,6 +13,7 @@ use rama::{
             alt_svc::AltSvcCache, http_service::HttpServiceConnector,
             https_service::HttpsServiceLayer,
         },
+        proxy::ProxyRequestBody,
     },
     net::{
         Protocol,
@@ -192,9 +193,11 @@ async fn authenticated_retry_preserves_http_connect_and_socks5h_routes() {
             transport.clone(),
             ProxyStreamConnector::new(
                 Socks5ConnectProxyConnectorLayer::new().into_layer(transport.clone()),
-                HttpConnectProxyConnector::new(HttpConnector::<_, Body>::new(transport, scope)),
+                HttpConnectProxyConnector::new(HttpConnector::<_, ProxyRequestBody<Body>>::new(
+                    transport, scope,
+                )),
             ),
-            HttpTunnelRoute,
+            HttpTunnelRoute::new(),
         );
         let tls = TlsClientConfig::new()
             .with_encrypted_client_hello(true)

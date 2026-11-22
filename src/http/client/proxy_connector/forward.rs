@@ -48,7 +48,7 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        if HttpForwardRoute.is_proxied(&input) {
+        if HttpForwardRoute::new().is_proxied(&input) {
             tracing::trace!("maybe forwarded: a proxy forwards this request");
             let EstablishedClientConnection { input, conn } = self.forward.connect(input).await?;
             return Ok(EstablishedClientConnection {
@@ -135,11 +135,11 @@ mod tests {
         status: StatusCode,
     }
 
-    impl Service<Request> for Arrival {
+    impl<B: Send + 'static> Service<Request<B>> for Arrival {
         type Output = Response;
         type Error = Infallible;
 
-        async fn serve(&self, request: Request) -> Result<Self::Output, Self::Error> {
+        async fn serve(&self, request: Request<B>) -> Result<Self::Output, Self::Error> {
             let mut response = Response::builder()
                 .status(self.status)
                 .header("proxy-authenticate", "Basic realm=upstream")

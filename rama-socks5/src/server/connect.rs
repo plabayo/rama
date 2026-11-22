@@ -126,7 +126,7 @@ impl<C, S> Connector<C, S> {
             connector,
             service,
             hide_local_address: false,
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 
@@ -210,7 +210,7 @@ impl DefaultConnector {
             connector,
             service: IoForwardService::new(scope),
             hide_local_address: false,
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 }
@@ -347,7 +347,7 @@ impl<S> LazyConnector<S> {
     pub fn new(service: S) -> Self {
         Self {
             service,
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 

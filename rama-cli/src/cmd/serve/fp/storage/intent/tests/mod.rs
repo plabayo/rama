@@ -855,7 +855,7 @@ async fn wire_reports(version: Version) -> (CollectionQueue, CollectionReceiver)
             .with_store_client_hello(true)
             .into_layer(http.service(Arc::new(service))),
     );
-    let connector = MockConnectorService::new(move |_| server.clone());
+    let connector = MockConnectorService::new(server);
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
     let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_custom_tcp_connector(connector)

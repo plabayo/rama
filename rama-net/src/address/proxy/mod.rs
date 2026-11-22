@@ -18,7 +18,7 @@ use crate::{
     transport::TransportProtocol,
     user::ProxyCredential,
 };
-use rama_utils::{macros::generate_set_and_with, str::smol_str::SmolStr};
+use rama_utils::str::smol_str::SmolStr;
 pub use template::{ProxyPathProtocolTemplate, ProxyPathTemplate, ProxyPathTemplateError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -45,8 +45,9 @@ pub struct ProxyAddress {
 pub enum ProxyProtocol {
     /// An HTTP proxy: CONNECT for TCP, and MASQUE for UDP or IP when it has a template.
     Http {
-        /// The HTTP version spoken to it; `None` over TLS negotiates one with ALPN, and
-        /// means HTTP/1.1 in plaintext. A plaintext proxy with `None` is dialed the same
+        /// The HTTP version spoken to it. `None` over TLS lets the client pick one as it
+        /// does for an origin: HTTP/3 when the proxy advertises it (HTTPS record or
+        /// Alt-Svc), else ALPN over TCP. `None` in plaintext means HTTP/1.1. A plaintext proxy with `None` is dialed the same
         /// as [`ProxyProtocol::HTTP`] (`Some(HTTP_11)`), but does not compare equal to it.
         version: Option<Version>,
         /// TLS to the proxy itself (`https://`).
@@ -61,6 +62,9 @@ pub enum ProxyProtocol {
         /// Only CONNECT (`+tcp`) or only UDP ASSOCIATE (`+udp`); `None` is whichever
         /// the traffic needs.
         transport: Option<TransportProtocol>,
+        /// TLS to the proxy itself (`+tls`). With UDP ASSOCIATE this secures the TCP
+        /// control connection only: the UDP relay stays plaintext.
+        secure: bool,
     },
     /// A scheme rama does not interpret.
     Custom(SmolStr),
@@ -74,9 +78,37 @@ impl ProxyProtocol {
         path_template: None,
     };
 
-    /// An HTTP proxy over TLS, version negotiated with ALPN (`https://`).
+    /// An HTTP proxy over TLS, version picked as for an origin (`https://`).
     pub const HTTPS: Self = Self::Http {
         version: None,
+        secure: true,
+        path_template: None,
+    };
+
+    /// An HTTP/1.1 proxy over TLS (`h1://`).
+    pub const H1: Self = Self::Http {
+        version: Some(Version::HTTP_11),
+        secure: true,
+        path_template: None,
+    };
+
+    /// An HTTP/2 proxy over TLS (`h2://`).
+    pub const H2: Self = Self::Http {
+        version: Some(Version::HTTP_2),
+        secure: true,
+        path_template: None,
+    };
+
+    /// A plaintext HTTP/2 proxy (`h2c://`).
+    pub const H2C: Self = Self::Http {
+        version: Some(Version::HTTP_2),
+        secure: false,
+        path_template: None,
+    };
+
+    /// An HTTP/3 proxy over QUIC (`h3://`).
+    pub const H3: Self = Self::Http {
+        version: Some(Version::HTTP_3),
         secure: true,
         path_template: None,
     };
@@ -85,13 +117,97 @@ impl ProxyProtocol {
     pub const SOCKS5: Self = Self::Socks5 {
         remote_dns: false,
         transport: None,
+        secure: false,
     };
 
     /// A SOCKS5 proxy which resolves target names itself (`socks5h://`).
     pub const SOCKS5H: Self = Self::Socks5 {
         remote_dns: true,
         transport: None,
+        secure: false,
     };
+
+    /// A SOCKS5 proxy for CONNECT only (`socks5+tcp`).
+    pub const SOCKS5_TCP: Self = Self::Socks5 {
+        remote_dns: false,
+        transport: Some(TransportProtocol::Tcp),
+        secure: false,
+    };
+
+    /// A SOCKS5 proxy for UDP ASSOCIATE only (`socks5+udp`).
+    pub const SOCKS5_UDP: Self = Self::Socks5 {
+        remote_dns: false,
+        transport: Some(TransportProtocol::Udp),
+        secure: false,
+    };
+
+    /// A SOCKS5 proxy for CONNECT only, which resolves target names itself (`socks5h+tcp`).
+    pub const SOCKS5H_TCP: Self = Self::Socks5 {
+        remote_dns: true,
+        transport: Some(TransportProtocol::Tcp),
+        secure: false,
+    };
+
+    /// A SOCKS5 proxy for UDP ASSOCIATE only, which resolves target names itself
+    /// (`socks5h+udp`).
+    pub const SOCKS5H_UDP: Self = Self::Socks5 {
+        remote_dns: true,
+        transport: Some(TransportProtocol::Udp),
+        secure: false,
+    };
+
+    /// A SOCKS5 proxy over TLS (`socks5+tls`).
+    pub const SOCKS5_TLS: Self = Self::Socks5 {
+        remote_dns: false,
+        transport: None,
+        secure: true,
+    };
+
+    /// A SOCKS5 proxy over TLS, which resolves target names itself (`socks5h+tls`).
+    pub const SOCKS5H_TLS: Self = Self::Socks5 {
+        remote_dns: true,
+        transport: None,
+        secure: true,
+    };
+
+    /// A SOCKS5 proxy over TLS for CONNECT only (`socks5+tcp+tls`).
+    pub const SOCKS5_TCP_TLS: Self = Self::Socks5 {
+        remote_dns: false,
+        transport: Some(TransportProtocol::Tcp),
+        secure: true,
+    };
+
+    /// A SOCKS5 proxy over TLS for UDP ASSOCIATE only; the UDP relay stays plaintext (`socks5+udp+tls`).
+    pub const SOCKS5_UDP_TLS: Self = Self::Socks5 {
+        remote_dns: false,
+        transport: Some(TransportProtocol::Udp),
+        secure: true,
+    };
+
+    /// A SOCKS5 proxy over TLS for CONNECT only, which resolves target names itself (`socks5h+tcp+tls`).
+    pub const SOCKS5H_TCP_TLS: Self = Self::Socks5 {
+        remote_dns: true,
+        transport: Some(TransportProtocol::Tcp),
+        secure: true,
+    };
+
+    /// A SOCKS5 proxy over TLS for UDP ASSOCIATE only, which resolves target names itself; the UDP relay stays plaintext (`socks5h+udp+tls`).
+    pub const SOCKS5H_UDP_TLS: Self = Self::Socks5 {
+        remote_dns: true,
+        transport: Some(TransportProtocol::Udp),
+        secure: true,
+    };
+
+    /// An HTTP proxy over TLS speaking `version`, which offers CONNECT-UDP on the default
+    /// template (`h3+udp` for HTTP/3).
+    #[must_use]
+    pub fn connect_udp(version: Version) -> Self {
+        Self::Http {
+            version: Some(version),
+            secure: true,
+            path_template: Some(ProxyPathTemplate::connect_udp_default()),
+        }
+    }
 
     #[must_use]
     pub fn is_http(&self) -> bool {
@@ -106,7 +222,10 @@ impl ProxyProtocol {
     /// Whether the connection to the proxy itself is TLS.
     #[must_use]
     pub fn is_secure(&self) -> bool {
-        matches!(self, Self::Http { secure: true, .. })
+        matches!(
+            self,
+            Self::Http { secure: true, .. } | Self::Socks5 { secure: true, .. }
+        )
     }
 
     #[must_use]
@@ -159,25 +278,6 @@ impl ProxyProtocol {
         }
     }
 
-    generate_set_and_with! {
-        /// Speak `version` to this proxy, exactly: nothing negotiates it away.
-        ///
-        /// Ignored by a protocol that is not HTTP.
-        pub fn http_version(mut self, version: Version) -> Self {
-            if let Some(current) = self.http_version_mut() {
-                *current = Some(version);
-            }
-            self
-        }
-    }
-
-    fn http_version_mut(&mut self) -> Option<&mut Option<Version>> {
-        match self {
-            Self::Http { version, .. } => Some(version),
-            Self::Socks5 { .. } | Self::Custom(_) => None,
-        }
-    }
-
     /// The URI scheme naming this protocol, `None` for a [`Self::Custom`] one.
     #[must_use]
     pub fn as_protocol(&self) -> Option<Protocol> {
@@ -213,16 +313,6 @@ impl From<Protocol> for ProxyProtocol {
             Self::SOCKS5H
         } else {
             Self::Custom(SmolStr::new(protocol.as_str()))
-        }
-    }
-}
-
-impl ProxyAddress {
-    generate_set_and_with! {
-        /// Speak `version` to this proxy, exactly; see [`ProxyProtocol::with_http_version`].
-        pub fn http_version(mut self, version: Version) -> Self {
-            self.protocol.set_http_version(version);
-            self
         }
     }
 }
@@ -296,7 +386,7 @@ impl FromStr for ProxyAddress {
 
 impl Display for ProxyAddress {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}://", self.protocol.scheme())?;
+        write!(f, "{}://", self.protocol)?;
         if let Some(credential) = &self.credential {
             match credential {
                 ProxyCredential::Basic(basic) => {
@@ -652,18 +742,39 @@ mod tests {
     }
 
     #[test]
+    fn every_constant_prints_its_scheme() {
+        for (protocol, scheme) in [
+            (ProxyProtocol::HTTP, "http"),
+            (ProxyProtocol::HTTPS, "https"),
+            (ProxyProtocol::H1, "h1"),
+            (ProxyProtocol::H2, "h2"),
+            (ProxyProtocol::H2C, "h2c"),
+            (ProxyProtocol::H3, "h3"),
+            (ProxyProtocol::SOCKS5, "socks5"),
+            (ProxyProtocol::SOCKS5H, "socks5h"),
+            (ProxyProtocol::SOCKS5_TCP, "socks5+tcp"),
+            (ProxyProtocol::SOCKS5_UDP, "socks5+udp"),
+            (ProxyProtocol::SOCKS5H_TCP, "socks5h+tcp"),
+            (ProxyProtocol::SOCKS5H_UDP, "socks5h+udp"),
+            (ProxyProtocol::SOCKS5_TLS, "socks5+tls"),
+            (ProxyProtocol::SOCKS5H_TLS, "socks5h+tls"),
+            (ProxyProtocol::SOCKS5_TCP_TLS, "socks5+tcp+tls"),
+            (ProxyProtocol::SOCKS5_UDP_TLS, "socks5+udp+tls"),
+            (ProxyProtocol::SOCKS5H_TCP_TLS, "socks5h+tcp+tls"),
+            (ProxyProtocol::SOCKS5H_UDP_TLS, "socks5h+udp+tls"),
+            (ProxyProtocol::connect_udp(Version::HTTP_3), "h3+udp"),
+        ] {
+            assert_eq!(protocol.to_string(), scheme);
+            assert_eq!(ProxyProtocol::try_from_scheme(scheme).unwrap(), protocol);
+        }
+    }
+
+    #[test]
     fn an_unknown_scheme_is_kept_as_is() {
         let addr: ProxyAddress = "warp://proxy.example:80".parse().unwrap();
         assert_eq!(addr.protocol, ProxyProtocol::Custom(SmolStr::new("warp")));
         assert_eq!(addr.protocol.as_protocol(), None);
         assert_eq!(addr.to_string(), "warp://proxy.example:80");
-    }
-
-    #[test]
-    fn a_version_only_changes_on_the_address_when_it_speaks_http() {
-        let socks: ProxyAddress = "socks5://proxy.example:1080".parse().unwrap();
-        let unchanged = socks.clone().with_http_version(Version::HTTP_2);
-        assert_eq!(unchanged, socks);
     }
 
     #[test]

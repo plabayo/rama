@@ -23,7 +23,7 @@ use rama::{
     futures::{StreamExt as _, stream::FuturesUnordered},
     graceful::{Scope, WeakScope, default_signal},
     http::{
-        client::EasyHttpConnectorBuilder,
+        client::EasyHttpWebClient,
         layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
         service::web::Router,
@@ -103,7 +103,7 @@ async fn main() -> Result<(), BoxError> {
         Mode::Client { ca, url, messages } => {
             let anchors = CertificateDer::pem_file_iter(ca)?.collect::<Result<Vec<_>, _>>()?;
             let tls = TlsClientConfig::new().try_with_server_trust_anchors(anchors)?;
-            let client = EasyHttpConnectorBuilder::new(scope.clone())
+            let client = EasyHttpWebClient::connector_builder(scope.clone())
                 .with_default_transport_connector()
                 .with_default_dns_connector()
                 .with_default_proxy_support()

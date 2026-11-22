@@ -2227,7 +2227,7 @@ mod tests {
     async fn a_failure_resets_a_nested_connection_on_the_other_side() {
         let (left, left_counts) = side(ReadEnd::Fail(std::io::ErrorKind::ConnectionReset), true);
         let (right, right_counts) = side(ReadEnd::Pend, true);
-        let right = NestedConnection::new(right, &NoExtensionsTransfer);
+        let right = NestedConnection::new(right, &NoExtensionsTransfer::new());
         _ = IoForwardService::default()
             .serve(BridgeIo(left, right))
             .await;

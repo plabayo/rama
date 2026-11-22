@@ -240,7 +240,7 @@ mod tests {
         MaybeProxiedConnector::new(
             direct,
             ProxyStreamConnector::new(socks, connect),
-            HttpTunnelRoute,
+            HttpTunnelRoute::new(),
         )
     }
 

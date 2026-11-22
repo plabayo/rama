@@ -32,7 +32,7 @@ use rama_net::{
     TargetHttpVersionInputExt, TransportProtocolInputExt, UriInputExt,
     address::{Domain, Host, HostWithOptPort},
     forwarded::ForwardedClientExt as _,
-    http::TargetHttpVersion,
+    http::{FallbackHttpVersion, TargetHttpVersion},
     transport::TransportProtocol,
 };
 #[cfg(feature = "tls")]
@@ -243,8 +243,8 @@ impl TargetHttpVersionInputExt for Parts {
 }
 
 /// The target HTTP version determines the logical transport: HTTP/3 rides on
-/// UDP; every other HTTP version on TCP. Without an explicit target,
-/// `target_http_version()` returns the request's own version. Physical route
+/// UDP; every other HTTP version on TCP. Without an explicit target, a
+/// [`FallbackHttpVersion`] decides, and otherwise the request's own version. Physical route
 /// overrides remain the responsibility of `ConnectorTransportProtocolInputExt`.
 fn transport_protocol_for_http_version(version: Version) -> TransportProtocol {
     match version {
@@ -255,16 +255,22 @@ fn transport_protocol_for_http_version(version: Version) -> TransportProtocol {
 
 impl<Body> TransportProtocolInputExt for Request<Body> {
     fn transport_protocol(&self) -> Option<TransportProtocol> {
-        self.target_http_version()
+        self.target_http_version_with_fallback(fallback_http_version(self.extensions()))
             .map(transport_protocol_for_http_version)
     }
 }
 
 impl TransportProtocolInputExt for Parts {
     fn transport_protocol(&self) -> Option<TransportProtocol> {
-        self.target_http_version()
+        self.target_http_version_with_fallback(fallback_http_version(&self.extensions))
             .map(transport_protocol_for_http_version)
     }
+}
+
+fn fallback_http_version(extensions: &Extensions) -> Option<Version> {
+    extensions
+        .get_ref::<FallbackHttpVersion>()
+        .map(|fallback| fallback.0)
 }
 
 impl<Body> UriInputExt for Request<Body> {
@@ -633,6 +639,27 @@ mod tests {
                 assert_eq!(parts.transport_protocol(), expected);
             }
         }
+    }
+
+    #[test]
+    fn a_fallback_version_replaces_the_request_version_for_the_transport() {
+        let request = Request::builder()
+            .version(Version::HTTP_3)
+            .body(())
+            .unwrap();
+        request
+            .extensions()
+            .insert(FallbackHttpVersion(Version::HTTP_11));
+        assert_eq!(request.transport_protocol(), Some(TransportProtocol::Tcp));
+
+        request
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        assert_eq!(request.transport_protocol(), Some(TransportProtocol::Udp));
+
+        let (parts, _) = request.into_parts();
+        parts.extensions.insert(TargetHttpVersion(Version::HTTP_2));
+        assert_eq!(parts.transport_protocol(), Some(TransportProtocol::Tcp));
     }
 
     #[test]

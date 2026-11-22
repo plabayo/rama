@@ -103,7 +103,11 @@ fn route_with_version(
     version: Version,
 ) -> ProxyRoute {
     ProxyRoute::Proxy(ProxyAddress {
-        protocol: ProxyProtocol::HTTP.with_http_version(version),
+        protocol: ProxyProtocol::Http {
+            version: Some(version),
+            secure: false,
+            path_template: None,
+        },
         address: address.into(),
         credential: username
             .map(|name| Basic::new(name.parse().unwrap(), "secret".parse().unwrap()).into()),
@@ -550,7 +554,11 @@ async fn test_http_version_proxy() {
                 assert_proxy_status(&error, StatusCode::BAD_REQUEST);
             }
             let mut bearer_proxy = ProxyAddress {
-                protocol: ProxyProtocol::HTTP.with_http_version(outer),
+                protocol: ProxyProtocol::Http {
+                    version: Some(outer),
+                    secure: false,
+                    path_template: None,
+                },
                 address: proxy.into(),
                 credential: None,
             };

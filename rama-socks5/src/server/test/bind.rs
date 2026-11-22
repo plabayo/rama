@@ -359,7 +359,7 @@ async fn bind_tunnel_facts(transfer: impl ExtensionsTransfer) -> (bool, bool) {
 #[tokio::test]
 async fn bind_tunnel_keeps_flow_facts_and_drops_connection_facts() {
     assert_eq!(
-        bind_tunnel_facts(DefaultExtensionsTransfer).await,
+        bind_tunnel_facts(DefaultExtensionsTransfer::new()).await,
         (false, true)
     );
 }
@@ -372,7 +372,7 @@ async fn bind_tunnel_custom_transfer_carries_a_chosen_fact() {
         }
     };
     assert_eq!(
-        bind_tunnel_facts(DefaultExtensionsTransfer.and(carry)).await,
+        bind_tunnel_facts(DefaultExtensionsTransfer::new().and(carry)).await,
         (true, true)
     );
 }

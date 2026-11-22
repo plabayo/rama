@@ -6,7 +6,10 @@ use rama_core::{
 };
 use rama_http::layer::forward_proxy::HttpForwardProxyAuthRequired;
 use rama_http_headers::{HeaderMapExt as _, ProxyAuthorization};
-use rama_http_types::{HeaderMap, Request, Response, StatusCode, proxy::PlaintextHttpProxyMode};
+use rama_http_types::{
+    HeaderMap, Request, Response, StatusCode,
+    proxy::{PlaintextHttpProxyMode, ProxyRequestBody},
+};
 use rama_net::{
     ProtocolInputExt,
     address::ProxyAddress,
@@ -25,8 +28,9 @@ use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 /// Forwarding is for plaintext HTTP only, it is the request's to refuse with
 /// [`PlaintextHttpProxyMode::Tunnel`], and an explicitly selected endpoint rules it out:
 /// a forwarded request names its origin, it does not reach a chosen address. A request
-/// demanding another HTTP version than the one its proxy address names is tunneled,
-/// since a forwarded request travels in the version spoken to the proxy.
+/// pinning an HTTP version ([`TargetHttpVersion`]) is tunneled unless the proxy is known to
+/// speak that version, since a forwarded request travels in the version spoken to the
+/// proxy: an `https://` proxy without a version may negotiate any.
 pub fn forwarding_proxy<Input>(input: &Input) -> Option<&ProxyAddress>
 where
     Input: ProtocolInputExt + ExtensionsRef + ?Sized,
@@ -40,10 +44,11 @@ where
         .extensions()
         .get_ref::<TargetHttpVersion>()
         .map(|target| target.0);
-    let version_fits = match (demanded, proxy.protocol.http_version()) {
-        (Some(demanded), Some(spoken)) => demanded == spoken,
-        _ => true,
-    };
+    let spoken = proxy
+        .protocol
+        .http_version()
+        .or_else(|| (!proxy.protocol.is_secure()).then_some(Version::HTTP_11));
+    let version_fits = demanded.is_none_or(|demanded| spoken == Some(demanded));
     let forward = version_fits
         && !input.extensions().contains::<ConnectorTarget>()
         && input
@@ -118,21 +123,6 @@ impl<S> HttpForwardProxyConnector<S> {
     define_inner_service_accessors!();
 }
 
-fn check_forwarded_version(
-    demanded: Option<Version>,
-    proxy_version: Version,
-) -> Result<(), ConnectionError> {
-    match demanded {
-        Some(demanded) if demanded != proxy_version => Err(ConnectionError::local(
-            BoxError::from_static_str("a forward proxy cannot carry the requested HTTP version"),
-            ConnectionErrorKind::InvalidInput,
-        )
-        .context_debug_field("requested_version", demanded)
-        .context_debug_field("proxy_version", proxy_version)),
-        _ => Ok(()),
-    }
-}
-
 impl<S, Input> Service<Input> for HttpForwardProxyConnector<S>
 where
     S: ConnectorService<ProxyDialRequest>,
@@ -150,11 +140,6 @@ where
                 ConnectionErrorKind::InvalidInput,
             ));
         };
-        let demanded = input
-            .extensions()
-            .get_ref::<TargetHttpVersion>()
-            .map(|target| target.0);
-
         let conn = self
             .inner
             .connect(ProxyDialRequest {
@@ -168,7 +153,6 @@ where
             .get_ref::<TargetHttpVersion>()
             .map(|version| version.0)
             .unwrap_or(Version::HTTP_11);
-        check_forwarded_version(demanded, version)?;
 
         tracing::trace!(
             server.address = %proxy.address.host,
@@ -219,7 +203,8 @@ impl<S> HttpForwardProxyConnection<S> {
 
 impl<S, Body> Service<Request<Body>> for HttpForwardProxyConnection<S>
 where
-    S: Service<Request<Body>, Output = Response, Error: Into<BoxError>> + ExtensionsRef,
+    S: Service<Request<ProxyRequestBody<Body>>, Output = Response, Error: Into<BoxError>>
+        + ExtensionsRef,
     Body: Send + 'static,
 {
     type Output = Response;
@@ -246,7 +231,11 @@ where
                 .and_then(|proxy| proxy.credential.clone());
             authorize(request.headers_mut(), credential);
         }
-        let response = self.inner.serve(request).await.map_err(Into::into)?;
+        let response = self
+            .inner
+            .serve(request.map(ProxyRequestBody::forwarded))
+            .await
+            .map_err(Into::into)?;
         if self.isolate_auth_error && response.status() == StatusCode::PROXY_AUTHENTICATION_REQUIRED
         {
             tracing::debug!("isolating authentication challenge returned by HTTP forward proxy");
@@ -276,7 +265,7 @@ mod tests {
     };
     use rama_net::{
         ConnectorTransportProtocolInputExt as _, Protocol,
-        address::HostWithPort,
+        address::{HostWithPort, ProxyProtocol},
         client::{ConnectRequest, ConnectorService, ProxyDialer, ProxyRoute},
         http::HttpRequestVersion,
         transport::TransportProtocol,
@@ -296,11 +285,14 @@ mod tests {
         status: StatusCode,
     }
 
-    impl Service<Request> for ProxyConnection {
+    impl Service<Request<ProxyRequestBody<Body>>> for ProxyConnection {
         type Output = Response;
         type Error = Infallible;
 
-        async fn serve(&self, request: Request) -> Result<Self::Output, Self::Error> {
+        async fn serve(
+            &self,
+            request: Request<ProxyRequestBody<Body>>,
+        ) -> Result<Self::Output, Self::Error> {
             // The h1 encoder reads the route of the connection the request travels on.
             request.extensions().insert(Egress(self.extensions.clone()));
             let mut target = Vec::new();
@@ -486,12 +478,14 @@ mod tests {
             let connector = proxy_connector(StatusCode::OK, dialed.clone());
 
             let input = forwarded("http://proxy.example:8080");
-            input.extensions.insert(ProxyRoute::Proxy(
-                "http://proxy.example:8080"
-                    .parse::<ProxyAddress>()
-                    .unwrap()
-                    .with_http_version(version),
-            ));
+            input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
+                protocol: ProxyProtocol::Http {
+                    version: Some(version),
+                    secure: false,
+                    path_template: None,
+                },
+                ..ProxyAddress::try_from("http://proxy.example:8080").unwrap()
+            }));
             let established = connector.serve(input).await.unwrap();
 
             assert_eq!(
@@ -514,20 +508,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_version_the_proxy_cannot_speak_is_refused() {
-        let connector = proxy_connector(StatusCode::OK, Arc::default());
-        let input = forwarded("https://proxy.example:8443");
-        input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
-        let error = connector.serve(input).await.unwrap_err();
-
-        assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
-        assert!(
-            format!("{error:?}").contains("cannot carry the requested HTTP version"),
-            "{error:?}"
-        );
-    }
-
     #[test]
     fn a_version_the_forward_proxy_cannot_speak_is_tunneled() {
         let input = forwarded("http://proxy.example:8080");
@@ -535,6 +515,25 @@ mod tests {
 
         input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
         assert!(forwarding_proxy(&input).is_none());
+    }
+
+    #[test]
+    fn a_pinned_version_is_forwarded_only_to_a_proxy_known_to_speak_it() {
+        for (proxy, pinned, forwarded_to) in [
+            ("http://proxy.example:8080", Version::HTTP_11, true),
+            ("https://proxy.example:8443", Version::HTTP_11, false),
+            ("https://proxy.example:8443", Version::HTTP_2, false),
+            ("h1://proxy.example:8443", Version::HTTP_11, true),
+            ("h2://proxy.example:8443", Version::HTTP_2, true),
+        ] {
+            let input = forwarded(proxy);
+            input.extensions.insert(TargetHttpVersion(pinned));
+            assert_eq!(
+                forwarding_proxy(&input).is_some(),
+                forwarded_to,
+                "{proxy} {pinned:?}"
+            );
+        }
     }
 
     #[tokio::test]

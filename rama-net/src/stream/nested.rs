@@ -16,14 +16,22 @@ use crate::client::{ConnectionAttemptTransfer, pool::ConnectionReuse, proxy_conn
 ///
 /// This is the one that grows as more of the parent connection turns out to
 /// still constrain the child, so extend it rather than replace it:
-/// `DefaultExtensionsTransfer.and(mine)`.
+/// `DefaultExtensionsTransfer::new().and(mine)`.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct DefaultExtensionsTransfer;
+
+impl DefaultExtensionsTransfer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl ExtensionsTransfer for DefaultExtensionsTransfer {
     fn transfer(&self, parent: &Extensions, child: &Extensions) {
         ConnectionReuseTransfer
-            .and(ConnectionAttemptTransfer)
+            .and(ConnectionAttemptTransfer::new())
             .transfer(parent, child);
     }
 }
@@ -179,7 +187,7 @@ mod tests {
         proxy.extensions.insert(NegotiatedAlpn(2));
         proxy.extensions.insert(RetryBudget(3));
 
-        let nested = NestedConnection::new(proxy, &NoExtensionsTransfer);
+        let nested = NestedConnection::new(proxy, &NoExtensionsTransfer::new());
 
         assert_eq!(nested.extensions().get_ref::<NegotiatedAlpn>(), None);
         assert_eq!(
@@ -223,7 +231,8 @@ mod tests {
                 child.insert(*alpn);
             }
         };
-        let nested = NestedConnection::new(proxy, &DefaultExtensionsTransfer.and(carry_alpn));
+        let nested =
+            NestedConnection::new(proxy, &DefaultExtensionsTransfer::new().and(carry_alpn));
 
         assert_eq!(
             nested.extensions().get_ref::<NegotiatedAlpn>(),
@@ -269,7 +278,7 @@ mod tests {
             leg.insert(hop);
         }
         leg.insert(ConnectionReuse::new(SettingReuse(hop)));
-        leg.fork_connection(&DefaultExtensionsTransfer)
+        leg.fork_connection(&DefaultExtensionsTransfer::new())
     }
 
     #[test]
@@ -314,7 +323,7 @@ mod tests {
         };
         proxy.extensions.insert(NegotiatedAlpn(2));
 
-        let inner = NestedConnection::new(proxy, &NoExtensionsTransfer).into_inner();
+        let inner = NestedConnection::new(proxy, &NoExtensionsTransfer::new()).into_inner();
         assert_eq!(
             inner.extensions().get_ref::<NegotiatedAlpn>(),
             Some(&NegotiatedAlpn(2))
@@ -332,7 +341,7 @@ mod tests {
             move || aborted.store(true, Ordering::Release)
         }));
 
-        let nested = NestedConnection::new(proxy, &NoExtensionsTransfer);
+        let nested = NestedConnection::new(proxy, &NoExtensionsTransfer::new());
 
         let abort = nested
             .extensions()

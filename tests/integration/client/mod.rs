@@ -33,7 +33,7 @@ async fn h2_with_connection_pooling() {
         .expect("self-signed")
         .with_alpn_http_2();
     let server = TlsAcceptorLayer::new(tls_service_data).into_layer(http_server);
-    let direct_connection = MockConnectorService::new(move |_| server.clone());
+    let direct_connection = MockConnectorService::new(server);
 
     let tls_config = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
 
@@ -72,7 +72,7 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
         .expect("self-signed")
         .with_alpn_http_1();
     let server = TlsAcceptorLayer::new(tls_service_data).into_layer(http_server);
-    let direct_connection = MockConnectorService::new(move |_| server.clone());
+    let direct_connection = MockConnectorService::new(server);
 
     let tls_config = TlsClientConfig::default_http()
         .with_server_verify(rama_tls::client::ServerVerifyMode::Disable);
@@ -98,7 +98,7 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
 }
 
 async fn connection_pooling_detects_closed_connections(version: Version, delay: Option<Duration>) {
-    let direct_connection = MockConnectorService::new(move |_| {
+    let direct_connection = MockConnectorService::new(move || {
         let token = CancellationToken::new();
         let shutdown = Scope::new().with_signal(token.clone().cancelled_owned());
 
@@ -203,7 +203,7 @@ async fn h1_with_connection_pooling_does_not_reuse_abandoned_streaming_body_conn
     // the connection mid-message. An immediate follow-up request to the same origin
     // must dial fresh instead of being handed that connection by the pool (it used
     // to fail with `rama_http_core::Error(ChannelClosed)`).
-    let direct_connection = MockConnectorService::new(move |_| {
+    let direct_connection = MockConnectorService::new(move || {
         HttpServer::new_http1(WeakScope::detached()).service(service_fn(async |_req: Request| {
             // infinite SSE-like stream: never reaches end-of-stream
             let stream = rama::futures::stream::repeat_with(|| {

@@ -460,19 +460,12 @@ async fn forward_client_applies_icap_reqmod_and_respmod() {
         Some(Duration::from_secs(2)),
     )
     .unwrap();
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
-        har: HarController::default(),
-        portal: None,
+    let client = proxy_client(ProxyClientConfig {
         tcp_options,
         connect_timeout: Some(Duration::from_secs(2)),
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
-        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap,
-    })
-    .unwrap();
+        ..ProxyClientConfig::for_tests()
+    });
     let request = Request::builder()
         .method("POST")
         .uri(format!("http://{origin_address}/adapt"))
@@ -531,19 +524,10 @@ async fn forward_client_consumes_proxy_auth_without_icap() {
             },
         )),
     ));
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
-        har: HarController::default(),
-        portal: None,
-        tcp_options: Arc::new(SocketOptions::default_tcp()),
+    let client = proxy_client(ProxyClientConfig {
         connect_timeout: Some(Duration::from_secs(2)),
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
-        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
-        icap: None,
-    })
-    .unwrap();
+        ..ProxyClientConfig::for_tests()
+    });
     let response = client
         .serve(
             Request::builder()
@@ -596,19 +580,12 @@ async fn default_icap_directions_follow_single_method_capabilities() {
         Some(Duration::from_secs(2)),
     )
     .unwrap();
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
-        har: HarController::default(),
-        portal: None,
+    let client = proxy_client(ProxyClientConfig {
         tcp_options,
         connect_timeout: Some(Duration::from_secs(2)),
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
-        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap,
-    })
-    .unwrap();
+        ..ProxyClientConfig::for_tests()
+    });
 
     let response = timeout(
         Duration::from_secs(5),
@@ -656,19 +633,12 @@ async fn stalled_icap_options_is_bounded_for_all_waiters() {
         Some(Duration::from_secs(2)),
     )
     .unwrap();
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
-        har: HarController::default(),
-        portal: None,
+    let client = proxy_client(ProxyClientConfig {
         tcp_options,
         connect_timeout: Some(Duration::from_secs(2)),
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
-        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap,
-    })
-    .unwrap();
+        ..ProxyClientConfig::for_tests()
+    });
     let request = || {
         Request::builder()
             .uri("http://origin.test/bounded-options")

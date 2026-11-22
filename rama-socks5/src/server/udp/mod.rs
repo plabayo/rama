@@ -152,7 +152,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             relay_timeout: None,
             unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy::default(),
             declared_client_udp_address_policy: DeclaredClientUdpAddressPolicy::default(),
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 

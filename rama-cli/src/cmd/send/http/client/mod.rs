@@ -344,7 +344,7 @@ async fn new_inner_client(
         .with_tls_support_using_boringssl(proxy_tls_config.with_alpn_http_auto())
         .with_default_http_connector()
         .with_default_connection_pool()
-        .with_every_method();
+        .with_all_proxy_protocols();
     for HttpHeader { name, value } in &cfg.proxy_header {
         proxies = proxies.with_connect_custom_header(name.clone(), value.clone());
     }
@@ -364,37 +364,26 @@ async fn new_inner_client(
     };
 
     let uri = parse_user_uri(&cfg.req.uri)?;
+    let quic = uses_quic(cfg, &uri);
+    let compiler = captured
+        .then(|| QuicProfileCompiler::new(tls_config.clone(), Arc::new(BoringTlsProvider::new())));
     // Erase the deep transport futures before adding diagnostics and timeouts.
     // Otherwise constructing their combined future can exhaust a worker stack.
     // This boundary is only crossed for a new connection; pool hits bypass it.
-    let builder = if uses_quic(cfg, &uri) {
-        let compiler = captured.then(|| {
-            QuicProfileCompiler::new(tls_config.clone(), Arc::new(BoringTlsProvider::new()))
-        });
-        EasyHttpWebClient::connector_builder(scope.clone())
-            .with_default_transport_connector()
-            .with_default_dns_connector()
-            .with_proxy_support(proxies)
-            .with_tls_support_using_boringssl(tls_config.clone())
-            .map_connector(tcp_emulation)
-            .with_default_http_connector::<Body>()
-            .map_http3_connector(|h3| match compiler {
-                Some(compiler) => Either::A(
-                    ProfileEmulateHttpConnectModifier::new(h3).with_connection_compiler(compiler),
-                ),
-                None => Either::B(h3),
-            })
-            .map_connector(|connector| connector.boxed())
-    } else {
-        EasyHttpWebClient::connector_builder(scope.clone())
-            .with_default_tcp_connector()
-            .with_default_dns_connector()
-            .with_proxy_support(proxies)
-            .with_tls_support_using_boringssl(tls_config.clone())
-            .map_connector(tcp_emulation)
-            .with_default_http_connector::<Body>()
-            .map_connector(|connector| connector.boxed())
-    };
+    let builder = EasyHttpWebClient::connector_builder(scope.clone())
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_proxy_support(proxies)
+        .with_tls_support_using_boringssl(tls_config.clone())
+        .map_connector(tcp_emulation)
+        .with_default_http_connector::<Body>()
+        .map_http3_connector(|h3| match compiler {
+            Some(compiler) => Either::A(
+                ProfileEmulateHttpConnectModifier::new(h3).with_connection_compiler(compiler),
+            ),
+            None => Either::B(h3),
+        })
+        .map_connector(|connector| connector.boxed());
 
     let builder = builder
         .with_custom_connector(layer_fn(logger_l4::TransportConnInfoLogger))
@@ -409,10 +398,16 @@ async fn new_inner_client(
             },
         )
         .with_default_connection_pool();
-    let builder = if cfg.no_alt_svc {
+    // Without HTTP/3 for this request, nothing may discover it either.
+    let builder = if cfg.no_alt_svc || !quic {
         builder.without_alt_svc()
     } else {
         builder
+    };
+    let builder = if quic {
+        builder
+    } else {
+        builder.without_https_discovery()
     };
 
     let client = builder

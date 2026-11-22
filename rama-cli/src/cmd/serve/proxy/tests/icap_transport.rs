@@ -23,19 +23,12 @@ async fn peer_max_connections_clamps_concurrent_icap_transactions() {
         Some(Duration::from_secs(2)),
     )
     .unwrap();
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
-        har: HarController::default(),
-        portal: None,
+    let client = proxy_client(ProxyClientConfig {
         tcp_options,
         connect_timeout: Some(Duration::from_secs(2)),
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
-        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap,
-    })
-    .unwrap();
+        ..ProxyClientConfig::for_tests()
+    });
     let request = || {
         Request::builder()
             .uri(format!("http://{origin}/limited"))

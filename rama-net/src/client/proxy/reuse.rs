@@ -96,6 +96,7 @@ mod tests {
         let leg = proxy_request(proxy, origin).extensions;
         let connection = Extensions::new();
         connection.insert(DialedProxyConnection {
+            proxy: proxy.clone(),
             partition: leg.get_ref::<PoolPartition>().cloned(),
         });
         proxy_connection_reuse(&connection).expect("a connection to a proxy")
@@ -166,7 +167,7 @@ mod tests {
                     let conn = Tunnel {
                         extensions: connection
                             .extensions()
-                            .fork_connection(&DefaultExtensionsTransfer),
+                            .fork_connection(&DefaultExtensionsTransfer::new()),
                     };
                     Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
                 }

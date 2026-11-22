@@ -35,8 +35,8 @@ use rama::{
     layer::Layer,
     net::{address::ProxyProtocol, transport::TransportProtocol},
     proxy::{
-        MemoryProxyDB, Proxy, ProxyContext, ProxyDB, ProxyDBLayer, ProxyFilter, ProxyFilterMode,
-        ProxyID, ProxyProtocols, ProxyRuntimeColumn, ProxyType, socks5::Socks5Acceptor,
+        IpCategory, MemoryProxyDB, Proxy, ProxyContext, ProxyDB, ProxyDBLayer, ProxyFilter,
+        ProxyFilterMode, ProxyID, ProxyProtocols, ProxyRuntimeColumn, socks5::Socks5Acceptor,
     },
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -149,10 +149,8 @@ fn socks5_proxy(id: NonEmptyStr, address: &str) -> Proxy {
         id,
         address: address.parse().expect("valid proxy address"),
         credential: None,
-        protocols: ProxyProtocols::from([
-            ProxyProtocol::try_from_scheme("socks5+tcp").expect("valid proxy scheme")
-        ]),
-        kind: ProxyType::Datacenter,
+        protocols: ProxyProtocols::from([ProxyProtocol::SOCKS5_TCP]),
+        ip_category: IpCategory::Datacenter,
         pool_id: None,
         continent: None,
         country: None,

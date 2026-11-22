@@ -74,18 +74,9 @@ pub(super) fn connect_udp_service(
     let proxy_tls = upstream
         .proxy_tls_config()
         .unwrap_or_else(TlsClientConfig::default_http);
-    // Only CONNECT-UDP is used. Building `HttpConnectUdpProxyConnector` directly over an
-    // `EasyHttpWebClient` connector (with a `UdpConnector` for direct routes) works too;
-    // the builder just sets up TLS and the pool towards the proxy for us.
-    let upstream_proxies = ProxyConnector::builder(scope.clone())
-        .with_default_transport_connector()
-        .with_default_dns_connector()
-        .with_tls_support_using_boringssl(proxy_tls)
-        .with_default_http_connector::<Body>()
-        .with_default_connection_pool()
-        .with_http_connect_udp()
-        .build();
-    let tunnels = upstream_proxies.into_parts().connect_udp;
+    let tunnels = ProxyConnector::default_using_tls::<Body>(scope.clone(), proxy_tls)
+        .into_parts()
+        .connect_udp;
     Ok(ConnectUdpService::try_new(scope, template)?
         .with_policy(policy)
         .with_connector(upstream.connector_service(tunnels)))

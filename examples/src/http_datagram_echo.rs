@@ -23,7 +23,7 @@ use rama::{
     graceful::{Scope, WeakScope, default_signal},
     http::{
         Body, Request, Response, Version,
-        client::EasyHttpConnectorBuilder,
+        client::EasyHttpWebClient,
         datagram::{
             HttpDatagramSession, SessionEvent, ViolationPolicy,
             handshake::{
@@ -130,7 +130,7 @@ async fn client(
 ) -> Result<(), BoxError> {
     let anchors = CertificateDer::pem_file_iter(ca)?.collect::<Result<Vec<_>, _>>()?;
     let tls = TlsClientConfig::new().try_with_server_trust_anchors(anchors)?;
-    let client = EasyHttpConnectorBuilder::new(scope.clone())
+    let client = EasyHttpWebClient::connector_builder(scope.clone())
         .with_default_transport_connector()
         .with_default_dns_connector()
         .with_default_proxy_support()

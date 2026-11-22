@@ -346,9 +346,12 @@ impl Extensions {
     /// level it was forked from, oldest first, so the newest entry of a type in
     /// `other` is also the newest one here.
     ///
+    /// Use it to apply a bag of settings that may be a fork of shared defaults,
+    /// such as per-route settings forked from settings for every route: [`Self::extend`]
+    /// would copy only the bag's own level and drop the defaults it was forked from.
+    ///
     /// This flattens the chain onto this one level, across connection boundaries
-    /// too. Use it for a bag of settings, not for the extensions of a request or a
-    /// connection.
+    /// too, so it is not meant for the extensions of a request or a connection.
     pub fn extend_chain(&self, other: &Self) {
         if let Some(parent) = other.parent() {
             self.extend_chain(parent);
@@ -1164,7 +1167,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(RetryBudget(3));
 
-        let origin = proxy.fork_connection(&NoExtensionsTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
         assert_eq!(origin.get_ref::<RetryBudget>(), Some(&RetryBudget(3)));
         assert_eq!(
             origin.fork().get_ref::<RetryBudget>(),
@@ -1178,7 +1181,7 @@ mod tests {
         proxy.insert(NegotiatedAlpn(2));
         assert_eq!(proxy.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(2)));
 
-        let origin = proxy.fork_connection(&NoExtensionsTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), None);
         assert_eq!(origin.fork().get_ref::<NegotiatedAlpn>(), None);
     }
@@ -1188,7 +1191,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(NegotiatedAlpn(2));
 
-        let origin = proxy.fork_connection(&NoExtensionsTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
         origin.insert(NegotiatedAlpn(1));
 
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(1)));
@@ -1204,10 +1207,10 @@ mod tests {
         tcp.insert(NegotiatedAlpn(2));
         tcp.insert(RetryBudget(3));
 
-        let first_tunnel = tcp.fork_connection(&NoExtensionsTransfer);
+        let first_tunnel = tcp.fork_connection(&NoExtensionsTransfer::new());
         first_tunnel.insert(NegotiatedAlpn(1));
 
-        let second_tunnel = first_tunnel.fork_connection(&NoExtensionsTransfer);
+        let second_tunnel = first_tunnel.fork_connection(&NoExtensionsTransfer::new());
         assert_eq!(second_tunnel.get_ref::<NegotiatedAlpn>(), None);
         assert_eq!(
             second_tunnel.get_ref::<RetryBudget>(),
@@ -1220,10 +1223,10 @@ mod tests {
         let tcp = Extensions::new();
         tcp.insert(NegotiatedAlpn(3));
 
-        let first_tunnel = tcp.fork_connection(&NoExtensionsTransfer);
+        let first_tunnel = tcp.fork_connection(&NoExtensionsTransfer::new());
         first_tunnel.insert(NegotiatedAlpn(2));
 
-        let second_tunnel = first_tunnel.fork_connection(&NoExtensionsTransfer);
+        let second_tunnel = first_tunnel.fork_connection(&NoExtensionsTransfer::new());
         let origin = second_tunnel.fork();
         origin.insert(NegotiatedAlpn(1));
 
@@ -1242,10 +1245,10 @@ mod tests {
         let tcp = Extensions::new();
         tcp.insert(NegotiatedAlpn(3));
 
-        let first_tunnel = tcp.fork_connection(&NoExtensionsTransfer);
+        let first_tunnel = tcp.fork_connection(&NoExtensionsTransfer::new());
         first_tunnel.insert(NegotiatedAlpn(2));
 
-        let second_tunnel = first_tunnel.fork_connection(&NoExtensionsTransfer);
+        let second_tunnel = first_tunnel.fork_connection(&NoExtensionsTransfer::new());
         let origin = second_tunnel.fork();
         origin.insert(NegotiatedAlpn(1));
 
@@ -1269,7 +1272,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(NegotiatedAlpn(2));
 
-        let origin = proxy.fork_connection(&NoExtensionsTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
         origin.insert(NegotiatedAlpn(1));
 
         assert_eq!(
@@ -1302,7 +1305,7 @@ mod tests {
         proxy.insert(NegotiatedAlpn(2));
         proxy.insert(Reuse(true));
 
-        let origin = proxy.fork_connection(&NoExtensionsTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
 
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), None);
         assert!(origin.get_arc::<NegotiatedAlpn>().is_none());
@@ -1330,7 +1333,7 @@ mod tests {
         assert_eq!(view.reuse.as_deref(), Some(&Reuse(false)));
 
         let target = Extensions::new();
-        let fresh = proxy.fork_connection(&NoExtensionsTransfer);
+        let fresh = proxy.fork_connection(&NoExtensionsTransfer::new());
         assert!(fresh.clone_to::<NegotiatedAlpn>(&target).is_none());
         assert!(
             fresh
@@ -1352,7 +1355,7 @@ mod tests {
         below.insert(NegotiatedAlpn(2));
         below.insert(RetryBudget(3));
 
-        let origin = below.fork_connection(&NoExtensionsTransfer);
+        let origin = below.fork_connection(&NoExtensionsTransfer::new());
         origin.insert(Egress(peer));
 
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(7)));
@@ -1366,7 +1369,7 @@ mod tests {
         let tcp = Extensions::new();
         tcp.insert(NegotiatedAlpn(2));
         tcp.insert(RetryBudget(3));
-        let tunnel = tcp.fork_connection(&NoExtensionsTransfer);
+        let tunnel = tcp.fork_connection(&NoExtensionsTransfer::new());
 
         let req = Extensions::new();
         req.insert(Egress(tunnel));
@@ -1383,7 +1386,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(NegotiatedAlpn(2));
 
-        let origin = proxy.fork_connection(&NoExtensionsTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
         assert_eq!(origin.self_get_ref::<NegotiatedAlpn>(), None);
         assert_eq!(
             origin.self_get_ref_or_insert(|| NegotiatedAlpn(1)),
@@ -1403,7 +1406,7 @@ mod tests {
 
         let parent = Extensions::new();
         parent.insert(NegotiatedAlpn(1));
-        let origin = parent.fork_connection(&NoExtensionsTransfer);
+        let origin = parent.fork_connection(&NoExtensionsTransfer::new());
         let view = origin.with_base(&base);
 
         assert_eq!(view.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(2)));
@@ -1416,7 +1419,7 @@ mod tests {
             "the connection's own facts win over its defaults"
         );
 
-        let child = view.fork_connection(&NoExtensionsTransfer);
+        let child = view.fork_connection(&NoExtensionsTransfer::new());
         assert_eq!(
             child.get_ref::<NegotiatedAlpn>(),
             None,
@@ -1428,9 +1431,9 @@ mod tests {
     fn with_base_takes_only_what_its_base_answers_for_its_own_connection() {
         let base_parent = Extensions::new();
         base_parent.insert(NegotiatedAlpn(7));
-        let base = base_parent.fork_connection(&NoExtensionsTransfer);
+        let base = base_parent.fork_connection(&NoExtensionsTransfer::new());
 
-        let origin = Extensions::new().fork_connection(&NoExtensionsTransfer);
+        let origin = Extensions::new().fork_connection(&NoExtensionsTransfer::new());
         let view = origin.with_base(&base);
 
         assert_eq!(view.get_ref::<NegotiatedAlpn>(), None);
@@ -1557,7 +1560,7 @@ mod tests {
                     ext.insert(Ingress(random_chain(rng, depth - 1)));
                 }
                 2 if depth > 0 => ext = ext.fork(),
-                3 if depth > 0 => ext = ext.fork_connection(&NoExtensionsTransfer),
+                3 if depth > 0 => ext = ext.fork_connection(&NoExtensionsTransfer::new()),
                 _ => insert_filler(&ext, rng.next(), rng.next() as u32),
             }
         }
@@ -2102,7 +2105,7 @@ mod tests {
                 9 => {
                     let (ext, model) = &conns[a % conns.len()];
                     let forked = (
-                        ext.fork_connection(&NoExtensionsTransfer),
+                        ext.fork_connection(&NoExtensionsTransfer::new()),
                         model.fork_connection(),
                     );
                     conns.push(forked);
@@ -2111,7 +2114,7 @@ mod tests {
                 10 => {
                     let (ext, model) = &reqs[a % reqs.len()];
                     let forked = (
-                        ext.fork_connection(&NoExtensionsTransfer),
+                        ext.fork_connection(&NoExtensionsTransfer::new()),
                         model.fork_connection(),
                     );
                     reqs.push(forked);

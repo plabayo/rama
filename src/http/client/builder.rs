@@ -42,14 +42,7 @@ use rama_http::layer::{
 };
 use rama_net::http::{TargetHttpVersion, Version};
 use rama_utils::macros::generate_set_and_with;
-#[cfg(any(
-    feature = "boring",
-    all(
-        feature = "quic",
-        feature = "rustls",
-        any(feature = "aws-lc", feature = "ring")
-    )
-))]
+#[cfg(any(feature = "boring", all(feature = "quic", feature = "rustls")))]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -58,19 +51,7 @@ use crate::tls::boring::client as boring_client;
 
 #[cfg(all(feature = "boring", feature = "quic"))]
 use crate::quic::tls::BoringTlsProvider;
-#[cfg(all(
-    feature = "quic",
-    any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-    )
-))]
-use crate::quic::tls::QuicClientConfigProvider;
-#[cfg(all(
-    feature = "rustls",
-    feature = "quic",
-    any(feature = "boring", feature = "aws-lc", feature = "ring")
-))]
+#[cfg(all(feature = "rustls", feature = "quic"))]
 use crate::quic::tls::default_tls_provider;
 #[cfg(feature = "rustls")]
 use crate::tls::rustls::client as rustls_client;
@@ -79,6 +60,19 @@ use {
     crate::http::conn::FallbackHttpVersion, rama_core::layer::AddInputExtension,
     rama_tls::client::TlsClientConfig,
 };
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
+use {
+    crate::{
+        extensions::Extensions,
+        net::{address::Host, client::pool::ReuseKey},
+        quic::{
+            ClientConfig,
+            tls::{QuicClientConfigProvider, TlsConfigError, TlsOptions},
+        },
+    },
+    rama_crypto::pki_types::CertificateDer,
+    rama_tls::client::{TlsClientConfigProvider, TlsPoolId},
+};
 
 #[cfg(feature = "quic")]
 use crate::{
@@ -86,7 +80,7 @@ use crate::{
     http::layer::https_service::{HttpsService, HttpsServiceLayer},
 };
 
-#[cfg(feature = "quic")]
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
 use crate::{
     http::core::h3::connection::Config as Http3Config,
     quic::{
@@ -94,7 +88,11 @@ use crate::{
         client::{ClientEndpoint, SharedQuicEndpoint},
     },
 };
-#[cfg(all(feature = "masque", feature = "quic"))]
+#[cfg(all(
+    feature = "masque",
+    feature = "quic",
+    any(feature = "boring", feature = "rustls")
+))]
 use crate::{net::client::ProxiedRoute, quic::client::QuicEndpointConnector};
 
 /// Builder that is designed to easily create a connector for [`super::EasyHttpWebClient`] from most basic use cases
@@ -109,9 +107,20 @@ pub struct EasyHttpConnectorBuilder<C = (), S = (), D = (), F = ProxyMethodNotEn
 }
 
 #[derive(Debug, Clone)]
-struct HttpsDiscovery {
+pub(super) struct HttpsDiscovery {
     #[cfg(feature = "quic")]
-    layer: HttpsServiceLayer<BoxDnsResolver>,
+    pub(super) layer: HttpsServiceLayer<BoxDnsResolver>,
+}
+
+impl HttpsDiscovery {
+    pub(super) fn disabled() -> Self {
+        let discovery = Self::default();
+        #[cfg(feature = "quic")]
+        let discovery = Self {
+            layer: discovery.layer.with_enabled(false),
+        };
+        discovery
+    }
 }
 
 impl Default for HttpsDiscovery {
@@ -126,7 +135,7 @@ impl Default for HttpsDiscovery {
 
 #[cfg(any(feature = "boring", feature = "rustls"))]
 impl HttpsDiscovery {
-    fn with_tls(self, config: &TlsClientConfig, capable: bool) -> Self {
+    pub(super) fn with_tls(self, config: &TlsClientConfig, capable: bool) -> Self {
         #[cfg(feature = "quic")]
         {
             Self {
@@ -147,22 +156,20 @@ impl HttpsDiscovery {
 /// The QUIC leg of a builder stage: the endpoints HTTP/3 runs on, and the HTTP/3
 /// configuration of the built-in connector over them. `()` is no QUIC leg, and so no
 /// HTTP/3.
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
 #[derive(Debug, Clone)]
 pub struct QuicLeg<E> {
     pub(super) endpoints: E,
-    #[cfg(feature = "quic")]
     config: Option<Http3Config>,
-    #[cfg(feature = "quic")]
     pub(super) transport: Option<TransportConfig>,
 }
 
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
 impl<E> QuicLeg<E> {
     pub(super) fn new(endpoints: E) -> Self {
         Self {
             endpoints,
-            #[cfg(feature = "quic")]
             config: None,
-            #[cfg(feature = "quic")]
             transport: None,
         }
     }
@@ -174,7 +181,7 @@ pub struct TransportStage<Q = ()> {
     pub(super) quic: Q,
 }
 
-#[cfg(feature = "quic")]
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
 impl<T, E, F> EasyHttpConnectorBuilder<T, TransportStage<QuicLeg<E>>, (), F> {
     /// Configure the QUIC transport of the connections the QUIC leg dials, such as a
     /// larger initial MTU; HTTP/3 limits are applied on top. A request's `QuicProfile`
@@ -202,35 +209,17 @@ pub struct ProxyStage<const PROXY: bool = true, Q = ()> {
 #[derive(Debug, Default)]
 pub struct TlsStage<const PROXY: bool = true, Tls = (), Q = ()> {
     #[cfg_attr(
-        not(all(
-            feature = "quic",
-            any(
-                feature = "boring",
-                all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-            )
-        )),
+        not(all(feature = "quic", any(feature = "boring", feature = "rustls"))),
         expect(
             dead_code,
             reason = "only the built-in HTTP/3 transport reads it, which needs a QUIC TLS backend"
         )
     )]
     pub(super) tls: Tls,
-    #[cfg(all(
-        feature = "quic",
-        any(
-            feature = "boring",
-            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-        )
-    ))]
+    #[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
     pub(super) quic_tls: Option<Arc<dyn QuicClientConfigProvider>>,
     #[cfg_attr(
-        not(all(
-            feature = "quic",
-            any(
-                feature = "boring",
-                all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-            )
-        )),
+        not(all(feature = "quic", any(feature = "boring", feature = "rustls"))),
         expect(
             dead_code,
             reason = "only a build with a QUIC TLS backend hands the QUIC leg on to HTTP/3"
@@ -245,13 +234,7 @@ impl<const PROXY: bool, Q> TlsStage<PROXY, TlsClientConfig, Q> {
     pub(super) fn using_boring(tls: TlsClientConfig, quic: Q) -> Self {
         Self {
             tls,
-            #[cfg(all(
-                feature = "quic",
-                any(
-                    feature = "boring",
-                    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-                )
-            ))]
+            #[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
             quic_tls: Some(Arc::new(BoringTlsProvider::new())),
             quic,
         }
@@ -261,13 +244,7 @@ impl<const PROXY: bool, Q> TlsStage<PROXY, TlsClientConfig, Q> {
     pub(super) fn using_rustls(tls: TlsClientConfig, quic: Q) -> Self {
         Self {
             tls,
-            #[cfg(all(
-                feature = "quic",
-                any(
-                    feature = "boring",
-                    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-                )
-            ))]
+            #[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
             quic_tls: default_tls_provider().ok(),
             quic,
         }
@@ -278,16 +255,53 @@ impl<const PROXY: bool, Q> TlsStage<PROXY, (), Q> {
     pub(super) fn without_tls(quic: Q) -> Self {
         Self {
             tls: (),
-            #[cfg(all(
-                feature = "quic",
-                any(
-                    feature = "boring",
-                    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-                )
-            ))]
+            #[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
             quic_tls: None,
             quic,
         }
+    }
+}
+
+/// The QUIC TLS provider of a TLS stage which has none: every HTTP/3 dial fails with
+/// [`TlsConfigError::BackendUnavailable`].
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
+pub(crate) fn quic_tls_provider_or_unavailable(
+    provider: Option<Arc<dyn QuicClientConfigProvider>>,
+) -> Arc<dyn QuicClientConfigProvider> {
+    provider.unwrap_or_else(|| Arc::new(UnavailableQuicTls))
+}
+
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
+#[derive(Debug)]
+struct UnavailableQuicTls;
+
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
+impl TlsClientConfigProvider for UnavailableQuicTls {
+    fn pool_id(&self, _: &Extensions) -> Option<TlsPoolId> {
+        None
+    }
+
+    fn pool_classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
+    }
+
+    fn authenticates_server(&self, _: &Extensions) -> bool {
+        false
+    }
+}
+
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
+impl QuicClientConfigProvider for UnavailableQuicTls {
+    fn client_config(
+        &self,
+        _: &TlsClientConfig,
+        _: TlsOptions,
+    ) -> Result<ClientConfig, TlsConfigError> {
+        Err(TlsConfigError::BackendUnavailable)
+    }
+
+    fn peer_matches_name(&self, _: &Extensions, _: &CertificateDer<'_>, _: &Host) -> bool {
+        false
     }
 }
 
@@ -326,7 +340,7 @@ impl EasyHttpConnectorBuilder {
 
     /// Dial origins over TCP, and over QUIC for HTTP/3 where this build has a QUIC
     /// TLS backend.
-    #[cfg(feature = "quic")]
+    #[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
     #[must_use]
     pub fn with_default_transport_connector(
         self,
@@ -336,7 +350,7 @@ impl EasyHttpConnectorBuilder {
     }
 
     /// Dial origins over TCP.
-    #[cfg(not(feature = "quic"))]
+    #[cfg(not(all(feature = "quic", any(feature = "boring", feature = "rustls"))))]
     #[must_use]
     pub fn with_default_transport_connector(
         self,
@@ -347,7 +361,7 @@ impl EasyHttpConnectorBuilder {
     /// Dial origins over QUIC only: every request is sent over HTTP/3, whichever version
     /// it was built with. Only a request which explicitly targets another version, with a
     /// [`TargetHttpVersion`] of its own, fails: this client has no byte stream to carry it.
-    #[cfg(feature = "quic")]
+    #[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
     #[must_use]
     pub fn with_default_quic_connector(
         self,
@@ -379,7 +393,7 @@ impl EasyHttpConnectorBuilder {
     /// only transport leg, so every request is sent over HTTP/3. A TCP leg can be added
     /// with [`EasyHttpConnectorBuilder::with_custom_tcp_connector`], which then serves the
     /// requests that explicitly target another version.
-    #[cfg(feature = "quic")]
+    #[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
     pub fn with_custom_quic_connector<E>(
         self,
         endpoints: E,
@@ -392,7 +406,7 @@ impl EasyHttpConnectorBuilder {
 
     /// Dial over `quic` only: every request without a [`TargetHttpVersion`] of its own is
     /// sent over HTTP/3, as there is no TCP leg.
-    #[cfg(feature = "quic")]
+    #[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
     fn with_quic_transport<Q>(
         mut self,
         quic: Q,
@@ -418,7 +432,7 @@ impl EasyHttpConnectorBuilder {
     }
 }
 
-#[cfg(feature = "quic")]
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
 impl<T, Q, F> EasyHttpConnectorBuilder<T, TransportStage<Q>, (), F> {
     /// Run HTTP/3 over the QUIC endpoints `endpoints` hands out, instead of the built-in
     /// ones or none: on a builder which already has a transport this swaps the QUIC leg
@@ -616,7 +630,11 @@ impl<U> ProxiedQuicLeg<U> for () {
     fn with_connect_udp(self, _: U, _: &WeakScope) -> Self::Proxied {}
 }
 
-#[cfg(all(feature = "masque", feature = "quic"))]
+#[cfg(all(
+    feature = "masque",
+    feature = "quic",
+    any(feature = "boring", feature = "rustls")
+))]
 impl<E, U> ProxiedQuicLeg<U> for QuicLeg<E> {
     type Proxied = QuicLeg<
         MapEstablishedConnection<
@@ -631,7 +649,7 @@ impl<E, U> ProxiedQuicLeg<U> for QuicLeg<E> {
                 MaybeProxiedConnector::new(
                     self.endpoints,
                     QuicEndpointConnector::new(connect_udp, scope.clone()),
-                    ProxiedRoute,
+                    ProxiedRoute::new(),
                 ),
                 FlattenMaybeProxied,
             ),
@@ -641,7 +659,11 @@ impl<E, U> ProxiedQuicLeg<U> for QuicLeg<E> {
     }
 }
 
-#[cfg(all(feature = "quic", not(feature = "masque")))]
+#[cfg(all(
+    feature = "quic",
+    not(feature = "masque"),
+    any(feature = "boring", feature = "rustls")
+))]
 impl<E, U> ProxiedQuicLeg<U> for QuicLeg<E> {
     type Proxied = Self;
 
@@ -710,7 +732,7 @@ impl<T, Q, D, F> EasyHttpConnectorBuilder<T, DnsStage<Q>, D, F> {
             connector: MaybeProxiedConnector::new(
                 self.connector,
                 ProxyStreamConnector::new(socks, connect),
-                HttpTunnelRoute,
+                HttpTunnelRoute::new(),
             ),
             stage: ProxyStage { quic },
         }
@@ -741,11 +763,7 @@ impl<T, Q, D, F> EasyHttpConnectorBuilder<T, DnsStage<Q>, D, F> {
     >
     where
         Q: ProxiedQuicLeg<DefaultProxyConnectUdpMethod<TcpConnector, Body>>,
-        Body: Default
-            + StreamingBody<Data: Send + 'static, Error: Into<BoxError>>
-            + Unpin
-            + Send
-            + 'static,
+        Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     {
         let proxies = ProxyConnector::default_with_scope(self.scope.clone());
         self.with_proxy_support(proxies)
@@ -1080,31 +1098,7 @@ impl<T, D, F, const PROXY: bool>
     }
 }
 
-#[cfg(all(
-    feature = "rustls",
-    not(feature = "boring"),
-    feature = "quic",
-    not(any(feature = "aws-lc", feature = "ring"))
-))]
-impl<T, D, F, E, const PROXY: bool>
-    EasyHttpConnectorBuilder<T, TlsStage<PROXY, TlsClientConfig, QuicLeg<E>>, D, F>
-{
-    /// Speak HTTP/1.1 and HTTP/2 over the TCP leg; HTTP/3 over the QUIC leg needs a QUIC
-    /// TLS backend (boringssl, or rustls with `aws-lc` or `ring`).
-    pub fn with_default_http_connector<Body>(
-        self,
-    ) -> EasyHttpConnectorBuilder<HttpConnector<T, Body>, HttpStage<PROXY>, D, F> {
-        self.http_connector()
-    }
-}
-
-#[cfg(all(
-    feature = "quic",
-    any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-    )
-))]
+#[cfg(all(feature = "quic", any(feature = "boring", feature = "rustls")))]
 #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
 impl<T, D, F, E, const PROXY: bool>
     EasyHttpConnectorBuilder<T, TlsStage<PROXY, TlsClientConfig, QuicLeg<E>>, D, F>
@@ -1160,13 +1154,7 @@ impl<T, D, F, E, const PROXY: bool>
             forward,
             scope,
         } = self;
-        #[expect(
-            clippy::expect_used,
-            reason = "every TLS stage of a build with a QUIC TLS backend picks a provider"
-        )]
-        let provider = stage
-            .quic_tls
-            .expect("TLS stage without a QUIC TLS provider");
+        let provider = quic_tls_provider_or_unavailable(stage.quic_tls);
         let http3 = super::default_http3_builder(scope.clone(), stage.tls, provider)
             .with_endpoints(stage.quic.endpoints)
             .maybe_with_transport(stage.quic.transport);
@@ -1248,7 +1236,7 @@ where
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct AltSvcConnectionLayer {
-    cache: Option<AltSvcCache>,
+    pub(super) cache: Option<AltSvcCache>,
 }
 
 impl<S> Layer<S> for AltSvcConnectionLayer {
@@ -1493,6 +1481,20 @@ impl<T, Q, Body, D, F, const PROXY: bool>
         F,
     > {
         self.map_connector(|connector| connector.map_http3_connector(map))
+    }
+
+    /// Wrap the stream transport connector [`Self::with_default_http_connector`] built,
+    /// keeping the HTTP/3 one.
+    pub fn map_stream_connector<T2>(
+        self,
+        map: impl FnOnce(T) -> T2,
+    ) -> EasyHttpConnectorBuilder<
+        HttpConnector<super::HttpTransportConnector<T2, Q>, Body>,
+        HttpStage<PROXY>,
+        D,
+        F,
+    > {
+        self.map_connector(|connector| connector.map_stream_connector(map))
     }
 }
 
@@ -2085,6 +2087,7 @@ mod tests {
 
     #[tokio::test]
     async fn https_proxy_without_available_tls_support_is_rejected_before_dial() {
+        use rama_core::{ServiceInput, service::service_fn};
         use rama_net::{
             Protocol,
             address::HostWithPort,
@@ -2149,6 +2152,8 @@ mod tests {
     #[cfg(feature = "tls")]
     #[tokio::test]
     async fn a_refused_http3_alternative_is_served_over_the_stream_and_not_retried() {
+        use std::sync::Arc;
+
         let cache = AltSvcCache::default();
         let origin =
             HttpOrigin::new(Protocol::HTTPS, HostWithPort::example_domain_https()).unwrap();
@@ -2475,6 +2480,16 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn default_https_discovery_accepts_a_custom_resolver_and_can_be_disabled() {
+        use rama_core::futures::{Stream, stream};
+        use rama_net::address::Domain;
+        use std::{
+            net::{Ipv4Addr, Ipv6Addr},
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+        };
+
         #[derive(Clone, Default)]
         struct Resolver(Arc<AtomicUsize>, Arc<AtomicUsize>);
         impl DnsAddressResolver for Resolver {
@@ -2695,5 +2710,65 @@ mod tests {
                 .without_connection_pool()
                 .build_connector(),
         );
+    }
+
+    #[cfg(all(feature = "quic", feature = "boring"))]
+    #[tokio::test]
+    async fn a_tls_stage_without_quic_tls_provider_refuses_http3_explicitly() {
+        use crate::quic::{client::ClientEndpoint, tls::TlsConfigError};
+        use rama_core::{
+            error::{BoxError, error_chain},
+            service::service_fn,
+        };
+        use rama_net::client::ConnectionErrorKind;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let dials = Arc::new(AtomicUsize::new(0));
+        let mut builder = EasyHttpConnectorBuilder::new(WeakScope::detached())
+            .with_custom_quic_connector(service_fn({
+                let dials = dials.clone();
+                move |_: ConnectRequest| {
+                    dials.fetch_add(1, Ordering::Relaxed);
+                    async {
+                        Err::<EstablishedClientConnection<ClientEndpoint, ConnectRequest>, _>(
+                            ConnectionError::local(
+                                BoxError::from_static_str("the QUIC leg must not be dialed"),
+                                ConnectionErrorKind::Unavailable,
+                            ),
+                        )
+                    }
+                }
+            }))
+            .without_dns_connector()
+            .without_proxy_support()
+            .with_tls_support_using_boringssl(TlsClientConfig::new());
+        builder.stage.quic_tls = None;
+
+        let Err(error) = builder
+            .with_default_http_connector::<Body>()
+            .without_connection_pool()
+            .build_connector()
+            .serve(
+                Request::builder()
+                    .uri("https://127.0.0.1:4433/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+        else {
+            panic!("an HTTP/3 dial without a QUIC TLS provider must fail");
+        };
+
+        let unavailable = error_chain(&error).any(|error| {
+            matches!(
+                error.downcast_ref::<TlsConfigError>(),
+                Some(TlsConfigError::BackendUnavailable)
+            )
+        });
+        assert!(unavailable, "{error:?}");
+        assert_eq!(dials.load(Ordering::Relaxed), 0);
     }
 }

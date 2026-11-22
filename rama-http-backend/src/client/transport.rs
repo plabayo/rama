@@ -142,6 +142,14 @@ impl<S, Q> HttpTransportConnector<S, Q> {
             quic: map(self.quic),
         }
     }
+
+    /// Wrap the stream transport connector, keeping the QUIC one.
+    pub fn map_stream<S2>(self, map: impl FnOnce(S) -> S2) -> HttpTransportConnector<S2, Q> {
+        HttpTransportConnector {
+            stream: map(self.stream),
+            quic: self.quic,
+        }
+    }
 }
 
 #[cfg(feature = "quic")]

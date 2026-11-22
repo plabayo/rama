@@ -1,4 +1,4 @@
-use super::{ProxyFilter, ProxyType};
+use super::{IpCategory, ProxyFilter};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     error::{BoxError, ErrorExt},
@@ -15,17 +15,17 @@ use rama_utils::macros::match_ignore_ascii_case_str;
 ///
 /// The labels `id`, `pool`, `continent`, `country`, `state`, `city`, `carrier` and `asn`
 /// take the label after them as their value, and repeat to allow any of those values.
-/// A label naming a [`ProxyType`] selects that type and `!type` excludes it; any other
-/// label is ignored.
+/// A label naming an [`IpCategory`] selects that category; any other label is ignored.
 ///
-/// Naming several types selects a proxy of any of them. On older versions
-/// `datacenter-residential` required both at once, which is now the `isp` type.
+/// Naming several categories selects a proxy of any of them. On older versions
+/// `datacenter-residential` required both at once, which is now the `isp` category.
+/// Older versions also excluded a category with `!category`: such a label is refused,
+/// list the categories to allow instead.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct ProxyFilterUsernameParser {
     key: Option<ProxyFilterKey>,
     proxy_filter: ProxyFilter,
-    excluded_kinds: Vec<ProxyType>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,20 +150,19 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
                     "carrier" => ProxyFilterKey::Carrier,
                     "asn" => ProxyFilterKey::Asn,
                     _ => {
-                        let (label, excluded) = match label.strip_prefix('!') {
-                            Some(label) => (label, true),
-                            None => (label, false),
-                        };
-                        let Ok(kind) = label.parse::<ProxyType>() else {
+                        if label
+                            .strip_prefix('!')
+                            .is_some_and(|label| label.parse::<IpCategory>().is_ok())
+                        {
+                            tracing::trace!("abort username label parsing: excluding an ip category is not supported");
+                            return UsernameLabelState::Abort;
+                        }
+                        let Ok(category) = label.parse::<IpCategory>() else {
                             return UsernameLabelState::Ignored;
                         };
-                        let kinds = if excluded {
-                            &mut self.excluded_kinds
-                        } else {
-                            self.proxy_filter.kind.get_or_insert_default()
-                        };
-                        if !kinds.contains(&kind) {
-                            kinds.push(kind);
+                        let categories = self.proxy_filter.ip_category.get_or_insert_default();
+                        if !categories.contains(&category) {
+                            categories.push(category);
                         }
                         return UsernameLabelState::Used;
                     }
@@ -175,24 +174,12 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
         UsernameLabelState::Used
     }
 
-    fn build(mut self, ext: &Extensions) -> Result<(), Self::Error> {
+    fn build(self, ext: &Extensions) -> Result<(), Self::Error> {
         if let Some(key) = self.key {
             return Err(
                 BoxError::from_static_str("unused proxy filter username key")
                     .context_debug_field("key", key),
             );
-        }
-        if !self.excluded_kinds.is_empty() {
-            let kinds = self
-                .proxy_filter
-                .kind
-                .get_or_insert_with(|| ProxyType::ALL.to_vec());
-            kinds.retain(|kind| !self.excluded_kinds.contains(kind));
-            if kinds.is_empty() {
-                return Err(BoxError::from_static_str(
-                    "proxy filter username excludes every proxy type",
-                ));
-            }
         }
         if self.proxy_filter != ProxyFilter::default() {
             ext.insert(self.proxy_filter);
@@ -246,7 +233,7 @@ impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for ProxyFilter {
             }
         }
 
-        if let Some(kinds) = &self.kind {
+        if let Some(kinds) = &self.ip_category {
             for kind in kinds {
                 composer.write_label(kind.as_str())?;
             }
@@ -286,7 +273,7 @@ mod tests {
                 "john-datacenter",
                 String::from("john"),
                 Some(ProxyFilter {
-                    kind: Some(vec![ProxyType::Datacenter]),
+                    ip_category: Some(vec![IpCategory::Datacenter]),
                     ..Default::default()
                 }),
             ),
@@ -295,7 +282,7 @@ mod tests {
                 String::from("john"),
                 Some(ProxyFilter {
                     country: Some(vec!["us".into()]),
-                    kind: Some(vec![ProxyType::Datacenter]),
+                    ip_category: Some(vec![IpCategory::Datacenter]),
                     ..Default::default()
                 }),
             ),
@@ -304,7 +291,7 @@ mod tests {
                 String::from("john"),
                 Some(ProxyFilter {
                     city: Some(vec!["tokyo".into()]),
-                    kind: Some(vec![ProxyType::Residential]),
+                    ip_category: Some(vec![IpCategory::Residential]),
                     ..Default::default()
                 }),
             ),
@@ -314,7 +301,7 @@ mod tests {
                 Some(ProxyFilter {
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
-                    kind: Some(vec![ProxyType::Datacenter]),
+                    ip_category: Some(vec![IpCategory::Datacenter]),
                     ..Default::default()
                 }),
             ),
@@ -324,7 +311,7 @@ mod tests {
                 Some(ProxyFilter {
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
-                    kind: Some(vec![ProxyType::Datacenter, ProxyType::Residential]),
+                    ip_category: Some(vec![IpCategory::Datacenter, IpCategory::Residential]),
                     ..Default::default()
                 }),
             ),
@@ -334,10 +321,10 @@ mod tests {
                 Some(ProxyFilter {
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
-                    kind: Some(vec![
-                        ProxyType::Datacenter,
-                        ProxyType::Residential,
-                        ProxyType::Mobile,
+                    ip_category: Some(vec![
+                        IpCategory::Datacenter,
+                        IpCategory::Residential,
+                        IpCategory::Mobile,
                     ]),
                     ..Default::default()
                 }),
@@ -349,10 +336,10 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
-                    kind: Some(vec![
-                        ProxyType::Datacenter,
-                        ProxyType::Residential,
-                        ProxyType::Mobile,
+                    ip_category: Some(vec![
+                        IpCategory::Datacenter,
+                        IpCategory::Residential,
+                        IpCategory::Mobile,
                     ]),
                     ..Default::default()
                 }),
@@ -364,10 +351,10 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
-                    kind: Some(vec![
-                        ProxyType::Datacenter,
-                        ProxyType::Residential,
-                        ProxyType::Mobile,
+                    ip_category: Some(vec![
+                        IpCategory::Datacenter,
+                        IpCategory::Residential,
+                        IpCategory::Mobile,
                     ]),
                     carrier: Some(vec![StringFilter::from("bar")]),
                     ..Default::default()
@@ -380,10 +367,10 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    kind: Some(vec![
-                        ProxyType::Datacenter,
-                        ProxyType::Residential,
-                        ProxyType::Mobile,
+                    ip_category: Some(vec![
+                        IpCategory::Datacenter,
+                        IpCategory::Residential,
+                        IpCategory::Mobile,
                     ]),
                     ..Default::default()
                 }),
@@ -395,10 +382,10 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    kind: Some(vec![
-                        ProxyType::Datacenter,
-                        ProxyType::Residential,
-                        ProxyType::Mobile,
+                    ip_category: Some(vec![
+                        IpCategory::Datacenter,
+                        IpCategory::Residential,
+                        IpCategory::Mobile,
                     ]),
                     ..Default::default()
                 }),
@@ -410,10 +397,10 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    kind: Some(vec![
-                        ProxyType::Datacenter,
-                        ProxyType::Residential,
-                        ProxyType::Mobile,
+                    ip_category: Some(vec![
+                        IpCategory::Datacenter,
+                        IpCategory::Residential,
+                        IpCategory::Mobile,
                     ]),
                     ..Default::default()
                 }),
@@ -425,10 +412,10 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    kind: Some(vec![
-                        ProxyType::Datacenter,
-                        ProxyType::Residential,
-                        ProxyType::Mobile,
+                    ip_category: Some(vec![
+                        IpCategory::Datacenter,
+                        IpCategory::Residential,
+                        IpCategory::Mobile,
                     ]),
                     ..Default::default()
                 }),
@@ -440,31 +427,11 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    kind: Some(vec![
-                        ProxyType::Datacenter,
-                        ProxyType::Residential,
-                        ProxyType::Mobile,
+                    ip_category: Some(vec![
+                        IpCategory::Datacenter,
+                        IpCategory::Residential,
+                        IpCategory::Mobile,
                     ]),
-                    ..Default::default()
-                }),
-            ),
-            (
-                "john-!datacenter",
-                String::from("john"),
-                Some(ProxyFilter {
-                    kind: Some(vec![
-                        ProxyType::Residential,
-                        ProxyType::Mobile,
-                        ProxyType::Isp,
-                    ]),
-                    ..Default::default()
-                }),
-            ),
-            (
-                "john-!mobile-residential-mobile-!isp",
-                String::from("john"),
-                Some(ProxyFilter {
-                    kind: Some(vec![ProxyType::Residential]),
                     ..Default::default()
                 }),
             ),
@@ -544,6 +511,8 @@ mod tests {
             "john-!carrier-c",
             "john-!datacenter-!residential-!mobile-!isp",
             "john-mobile-!mobile",
+            "john-!datacenter",
+            "john-!mobile-residential-mobile-!isp",
         ] {
             let ext = Extensions::default();
 
@@ -568,14 +537,14 @@ mod tests {
                 id: Some(non_empty_str!("1")),
                 pool_id: Some(vec![StringFilter::from("1")]),
                 country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                kind: Some(vec![ProxyType::Residential, ProxyType::Mobile]),
+                ip_category: Some(vec![IpCategory::Residential, IpCategory::Mobile]),
                 ..Default::default()
             },
             ProxyFilter {
                 id: Some(non_empty_str!("1")),
                 pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                 country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                kind: Some(vec![ProxyType::Isp]),
+                ip_category: Some(vec![IpCategory::Isp]),
                 ..Default::default()
             },
             ProxyFilter {
@@ -593,7 +562,7 @@ mod tests {
                     StringFilter::from("bruxelles"),
                     StringFilter::from("gent"),
                 ]),
-                kind: Some(vec![ProxyType::Residential, ProxyType::Mobile]),
+                ip_category: Some(vec![IpCategory::Residential, IpCategory::Mobile]),
                 carrier: Some(vec![
                     StringFilter::from("at&t"),
                     StringFilter::from("orange"),

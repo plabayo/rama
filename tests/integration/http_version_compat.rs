@@ -946,7 +946,11 @@ async fn websockets_relay_across_versions_and_connect_tunnels() {
             let proxy = proxy(selected).await;
             for outer in [Version::HTTP_11, Version::HTTP_2] {
                 let route = ProxyRoute::Proxy(ProxyAddress {
-                    protocol: ProxyProtocol::HTTP.with_http_version(outer),
+                    protocol: ProxyProtocol::Http {
+                        version: Some(outer),
+                        secure: false,
+                        path_template: None,
+                    },
                     address: proxy.address.parse().unwrap(),
                     credential: None,
                 });
@@ -991,7 +995,7 @@ async fn websocket_failures_do_not_become_successful_tunnels() {
                     let builder = if inner == Version::HTTP_11 { web.websocket(url) } else { web.websocket_h2(url) };
                     let extensions = Extensions::new();
                     extensions.insert(ProxyRoute::Proxy(ProxyAddress {
-                        protocol: ProxyProtocol::HTTP.with_http_version(outer), address: proxy.address.parse().unwrap(), credential: None,
+                        protocol: ProxyProtocol::Http { version: Some(outer), secure: false, path_template: None }, address: proxy.address.parse().unwrap(), credential: None,
                     }));
                     let before = origin.requests.load(Ordering::SeqCst);
                     let error = builder.handshake(extensions).await.err().unwrap();

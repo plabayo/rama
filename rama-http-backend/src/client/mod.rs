@@ -20,7 +20,7 @@ pub(crate) use conn::ResponseLimits;
 #[doc(inline)]
 pub use conn::{
     HttpConnector, HttpConnectorLayer, HttpConnectorTransport, MaxInformationalResponses,
-    RefusedStreamBudget, http_connect, http2_eager_handshake,
+    NoHttp3Leg, RefusedStreamBudget, http_connect, http2_eager_handshake,
 };
 
 mod bind_body;

@@ -12,19 +12,41 @@ const H2: &str = "h2";
 const H2C: &str = "h2c";
 const H3: &str = "h3";
 const TCP: &str = "tcp";
+const TLS: &str = "tls";
 const UDP: &str = "udp";
 
 impl ProxyProtocol {
-    /// Parse the scheme of a proxy address, such as `https`, `h3` or `socks5h+udp`.
+    /// Parse the scheme of a proxy address, such as `https`, `h3+udp` or `socks5h+tls`.
     ///
-    /// The scheme names how a proxy is reached: `http` (HTTP/1.1) and `h2c` (HTTP/2) in
-    /// plaintext, `https` over TLS with the version negotiated by ALPN, and `h1`, `h2` or
-    /// `h3` over TLS with that version. An HTTP proxy is asked for CONNECT, and for
-    /// CONNECT-UDP or CONNECT-IP only when a path template says where its MASQUE tunnels
-    /// are; `+udp` is short for the default CONNECT-UDP template as that path.
+    /// A scheme is a base protocol, followed by options after `+` in any order:
     ///
-    /// A SOCKS5 proxy (`socks5`, `socks5h`) takes options: `+tcp` for CONNECT only and
-    /// `+udp` for UDP ASSOCIATE only.
+    /// | base | proxy |
+    /// |---|---|
+    /// | `http` | HTTP/1.1, plaintext |
+    /// | `h2c` | HTTP/2, plaintext |
+    /// | `https` | HTTP over TLS: HTTP/3 when the proxy advertises it, else ALPN over TCP |
+    /// | `h1`, `h2` | HTTP/1.1 or HTTP/2 over TLS, over TCP |
+    /// | `h3` | HTTP/3, over QUIC |
+    /// | `socks5` | SOCKS5, target names resolved locally |
+    /// | `socks5h` | SOCKS5, target names resolved by the proxy |
+    ///
+    /// | option | on | meaning |
+    /// |---|---|---|
+    /// | `+udp` | HTTP | also CONNECT-UDP, on the default template |
+    /// | `+udp` | SOCKS5 | UDP ASSOCIATE only |
+    /// | `+tcp` | SOCKS5 | CONNECT only |
+    /// | `+tls` | SOCKS5 | TLS to the proxy; with UDP ASSOCIATE only the control connection |
+    ///
+    /// A protocol with a secure name of its own uses that name, so an HTTP proxy has no
+    /// `+tls`: it is `https`, `h1`, `h2` or `h3`. An HTTP proxy carries TCP with CONNECT,
+    /// and UDP or IP with MASQUE only when its address says where the tunnels are: `+udp`,
+    /// or a path as the template (see [`Self::try_from_scheme_and_path`]).
+    ///
+    /// Any other scheme is a [`Self::Custom`] protocol, kept as is and not interpreted.
+    ///
+    /// Not every protocol round-trips through its scheme: a plaintext HTTP proxy with no
+    /// version prints as `http`, which parses back as HTTP/1.1, and a custom template
+    /// lives in the path of the address, not in its scheme.
     pub fn try_from_scheme(scheme: &str) -> Result<Self, BoxError> {
         Self::try_from_scheme_and_path(scheme, "")
     }
@@ -35,11 +57,13 @@ impl ProxyProtocol {
         let mut parts = scheme.split('+');
         let name = parts.next().unwrap_or_default();
         let mut only = None;
+        let mut tls = false;
         for option in parts {
             let duplicate = match_ignore_ascii_case_str! {
                 match(option) {
                     "tcp" => only.replace(TransportProtocol::Tcp).is_some(),
                     "udp" => only.replace(TransportProtocol::Udp).is_some(),
+                    "tls" => core::mem::replace(&mut tls, true),
                     _ => {
                         return Err(BoxError::from_static_str("unknown proxy scheme option")
                             .context_str_field("option", SmolStr::new(option)));
@@ -61,6 +85,10 @@ impl ProxyProtocol {
         };
 
         match Self::from_scheme_name(name)? {
+            Self::Http { .. } if tls => Err(BoxError::from_static_str(
+                "an HTTP proxy names TLS with its scheme: use https, h1, h2 or h3 instead of +tls",
+            )
+            .context_str_field("scheme", SmolStr::new(scheme))),
             Self::Http {
                 version, secure, ..
             } if only != Some(TransportProtocol::Tcp) => {
@@ -83,8 +111,9 @@ impl ProxyProtocol {
             Self::Socks5 { remote_dns, .. } if path_template.is_none() => Ok(Self::Socks5 {
                 remote_dns,
                 transport: only,
+                secure: tls,
             }),
-            Self::Custom(custom) if only.is_none() && path_template.is_none() => {
+            Self::Custom(custom) if only.is_none() && !tls && path_template.is_none() => {
                 Ok(Self::Custom(custom))
             }
             _ if path_template.is_some() => Err(BoxError::from_static_str(
@@ -122,20 +151,14 @@ impl ProxyProtocol {
             }
         })
     }
-
-    /// The scheme naming this protocol in a proxy address; see [`Self::try_from_scheme`].
-    #[must_use]
-    pub fn scheme(&self) -> impl Display {
-        Scheme(self)
-    }
 }
 
-struct Scheme<'a>(&'a ProxyProtocol);
-
-impl Display for Scheme<'_> {
+/// Writes the scheme naming this protocol in a proxy address; see
+/// [`ProxyProtocol::try_from_scheme`].
+impl Display for ProxyProtocol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            ProxyProtocol::Http {
+        match self {
+            Self::Http {
                 version,
                 secure,
                 path_template,
@@ -156,9 +179,10 @@ impl Display for Scheme<'_> {
                 }
                 Ok(())
             }
-            ProxyProtocol::Socks5 {
+            Self::Socks5 {
                 remote_dns,
                 transport,
+                secure,
             } => {
                 f.write_str(if *remote_dns {
                     Protocol::SOCKS5H_SCHEME
@@ -170,9 +194,12 @@ impl Display for Scheme<'_> {
                     Some(TransportProtocol::Udp) => write!(f, "+{UDP}")?,
                     None => {}
                 }
+                if *secure {
+                    write!(f, "+{TLS}")?;
+                }
                 Ok(())
             }
-            ProxyProtocol::Custom(scheme) => f.write_str(scheme),
+            Self::Custom(scheme) => f.write_str(scheme),
         }
     }
 }
@@ -193,6 +220,15 @@ mod tests {
         ProxyProtocol::Socks5 {
             remote_dns,
             transport,
+            secure: false,
+        }
+    }
+
+    fn socks5_tls(remote_dns: bool, transport: Option<TransportProtocol>) -> ProxyProtocol {
+        ProxyProtocol::Socks5 {
+            remote_dns,
+            transport,
+            secure: true,
         }
     }
 
@@ -210,6 +246,11 @@ mod tests {
             ("socks5+tcp", socks5(false, Some(TransportProtocol::Tcp))),
             ("socks5+udp", socks5(false, Some(TransportProtocol::Udp))),
             ("socks5h+udp", socks5(true, Some(TransportProtocol::Udp))),
+            ("socks5+tls", socks5_tls(false, None)),
+            (
+                "socks5h+udp+tls",
+                socks5_tls(true, Some(TransportProtocol::Udp)),
+            ),
             (
                 "h3+udp",
                 ProxyProtocol::Http {
@@ -224,7 +265,7 @@ mod tests {
                 protocol,
                 "{scheme}"
             );
-            assert_eq!(protocol.scheme().to_string(), scheme, "{scheme}");
+            assert_eq!(protocol.to_string(), scheme, "{scheme}");
         }
     }
 
@@ -257,16 +298,32 @@ mod tests {
     }
 
     #[test]
+    fn options_are_accepted_in_any_order() {
+        assert_eq!(
+            ProxyProtocol::try_from_scheme("socks5h+tls+udp").unwrap(),
+            socks5_tls(true, Some(TransportProtocol::Udp)),
+        );
+    }
+
+    #[test]
+    fn an_http_proxy_names_tls_with_its_scheme() {
+        for scheme in ["http+tls", "h2c+tls", "https+tls", "h3+tls"] {
+            let error = ProxyProtocol::try_from_scheme(scheme)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("https"), "{scheme}: {error}");
+        }
+    }
+
+    #[test]
     fn invalid_schemes_are_refused() {
         for scheme in [
             "https+h2",
             "h3+tcp",
             "h3+udp+udp",
-            "https+tls",
             "socks5+udp+udp",
             "socks5+tcp+udp",
-            "socks5+tls",
-            "socks5h+udp+tls",
+            "socks5+tls+tls",
             "socks5+h2",
             "warp+udp",
         ] {

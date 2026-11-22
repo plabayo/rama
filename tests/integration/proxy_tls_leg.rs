@@ -1,5 +1,5 @@
-//! TLS on the connection to a proxy whose address does not ask for it: connector-wide
-//! with `require_tls`, or per request and per route with `TlsRequired`.
+//! TLS on the connection to a proxy: from its address (`socks5+tls`), connector-wide with
+//! a secure TLS connector, or per request and per route with `TlsRequired`.
 //!
 //! Every server here runs in memory over a `MockConnectorService`, and each one speaks
 //! TLS exactly when its client is expected to: a client which disagrees fails the
@@ -21,7 +21,7 @@ use rama::{
     layer::MapErrLayer,
     net::{
         Protocol, ProtocolInputExt as _,
-        address::ProxyAddress,
+        address::{ProxyAddress, ProxyProtocol},
         client::{
             ConnectRequest, ProxyConnectionExtensions, ProxyRoute, ProxyRoutes, ProxyRoutesLayer,
         },
@@ -55,6 +55,7 @@ use tokio::time::timeout;
 const DEADLINE: Duration = Duration::from_secs(30);
 
 const SOCKS_PROXY: &str = "socks5h://socks-proxy.test:1080";
+const SECURE_SOCKS_PROXY: &str = "socks5h+tls://socks-proxy.test:1080";
 const OTHER_SOCKS_PROXY: &str = "socks5h://other-socks-proxy.test:1080";
 const HTTP_PROXY: &str = "http://http-proxy.test:8080";
 const H3_PROXY: &str = "https://127.0.0.1:443";
@@ -63,7 +64,7 @@ const PLAIN_ORIGIN: &str = "http://origin.test/";
 const SECURE_ORIGIN: &str = "https://origin.test/";
 
 #[tokio::test]
-async fn require_tls_secures_a_socks5_leg_end_to_end() {
+async fn a_secure_connector_secures_a_socks5_leg_end_to_end() {
     timeout(DEADLINE, async {
         let fixture = Fixture::start(LegTls::Required);
         fixture.get(Case::new(PLAIN_ORIGIN, SOCKS_PROXY)).await;
@@ -82,7 +83,28 @@ async fn require_tls_secures_a_socks5_leg_end_to_end() {
 }
 
 #[tokio::test]
-async fn require_tls_secures_a_leg_to_a_plaintext_http_proxy() {
+async fn a_socks5_tls_address_secures_its_leg_end_to_end() {
+    timeout(DEADLINE, async {
+        let fixture = Fixture::start(LegTls::PerRoute);
+        fixture
+            .get(Case::new(PLAIN_ORIGIN, SECURE_SOCKS_PROXY))
+            .await;
+
+        assert_eq!(
+            fixture.counts(),
+            Counts {
+                legs: 1,
+                secure_legs: 1,
+                origins: 1
+            }
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_secure_connector_secures_a_leg_to_a_plaintext_http_proxy() {
     timeout(DEADLINE, async {
         let fixture = Fixture::start(LegTls::Required);
         fixture.get(Case::new(SECURE_ORIGIN, HTTP_PROXY)).await;
@@ -101,7 +123,7 @@ async fn require_tls_secures_a_leg_to_a_plaintext_http_proxy() {
 }
 
 #[tokio::test]
-async fn require_tls_keeps_the_quic_leg_of_an_h3_proxy() {
+async fn a_secure_connector_keeps_the_quic_leg_of_an_h3_proxy() {
     timeout(DEADLINE, async {
         let fixture = Fixture::start(LegTls::Required);
         fixture
@@ -281,7 +303,8 @@ macro_rules! client_over {
 
 #[derive(Clone, Copy)]
 enum LegTls {
-    /// Every TCP connection to a proxy is secured, see `ProxyConnectorBuilder::require_tls`.
+    /// Every TCP connection to a proxy is secured, by mapping the TLS connector to its
+    /// secure kind.
     Required,
     /// Each connection to a proxy is secured when its own input asks for it.
     PerRoute,
@@ -317,7 +340,7 @@ impl Case {
     }
 
     fn with_http_version(mut self, version: Version) -> Self {
-        self.proxy = self.proxy.with_http_version(version);
+        self.proxy = with_version(self.proxy, version);
         self
     }
 
@@ -333,11 +356,11 @@ impl Case {
             .unwrap();
         let extensions = request.extensions();
         if self.asked == Asked::Request {
-            extensions.insert(TlsRequired);
+            extensions.insert(TlsRequired::new());
         }
         let bag = Extensions::new();
         if matches!(self.asked, Asked::Bag | Asked::Route) {
-            bag.insert(TlsRequired);
+            bag.insert(TlsRequired::new());
         }
         let bag = ProxyConnectionExtensions(bag);
         if self.asked == Asked::Route {
@@ -400,17 +423,15 @@ impl Fixture {
         let quic_leg = MockQuicConnectorService::new(quic_server_config(), {
             let legs = Arc::clone(&legs);
             let origins = Arc::clone(&origins);
-            move |_: &ConnectRequest| {
+            move || {
                 legs.fetch_add(1, Ordering::Relaxed);
                 h3_proxy_server(Arc::clone(&origins))
             }
         });
 
-        let no_direct_route = MockConnectorService::new(|_: &ConnectRequest| {
-            service_fn(async |_: MockSocket| {
-                Err::<(), BoxError>("this client reaches origins through a proxy only".into())
-            })
-        });
+        let no_direct_route = MockConnectorService::new(service_fn(async |_: MockSocket| {
+            Err::<(), BoxError>("this client reaches origins through a proxy only".into())
+        }));
 
         let proxy = ProxyConnector::builder(scope.clone())
             .with_custom_tcp_connector(leg_transport)
@@ -425,10 +446,10 @@ impl Fixture {
             LegTls::Required => {
                 let proxy = proxy
                     .with_tls_support_using_boringssl(tls.clone())
-                    .require_tls()
+                    .map_connector(|tls| tls.into_secure())
                     .with_default_http_connector::<Body>()
                     .with_default_connection_pool()
-                    .with_every_method()
+                    .with_all_proxy_protocols()
                     .build();
                 client_over!(client, proxy, tls)
             }
@@ -437,7 +458,7 @@ impl Fixture {
                     .with_tls_support_using_boringssl(tls.clone())
                     .with_default_http_connector::<Body>()
                     .with_default_connection_pool()
-                    .with_every_method()
+                    .with_all_proxy_protocols()
                     .build();
                 client_over!(client, proxy, tls)
             }
@@ -446,7 +467,7 @@ impl Fixture {
                     .without_tls_support()
                     .with_default_http_connector::<Body>()
                     .with_default_connection_pool()
-                    .with_every_method()
+                    .with_all_proxy_protocols()
                     .build();
                 client_over!(client, proxy, tls)
             }
@@ -512,8 +533,10 @@ fn origin_server(secure: bool) -> BoxService<MockSocket, (), BoxError> {
 
 fn origin_transport(
     origins: Arc<AtomicUsize>,
-) -> MockConnectorService<impl Fn(&ConnectRequest) -> BoxService<MockSocket, (), BoxError> + Clone>
-{
+) -> MockConnectorService<
+    impl Fn(&ConnectRequest) -> BoxService<MockSocket, (), BoxError> + Clone,
+    fn(&ConnectRequest) -> BoxService<MockSocket, (), BoxError>,
+> {
     MockConnectorService::new(move |input: &ConnectRequest| {
         origins.fetch_add(1, Ordering::Relaxed);
         origin_server(input.authority.port == 443)
@@ -588,4 +611,15 @@ fn h3_proxy_server(
     let mut h3 = HttpServer::new_http3(WeakScope::detached());
     h3.http3_mut().extended_connect = true;
     h3.service(connect_proxy_service(origins))
+}
+
+fn with_version(mut proxy: ProxyAddress, version: Version) -> ProxyAddress {
+    let ProxyProtocol::Http {
+        version: pinned, ..
+    } = &mut proxy.protocol
+    else {
+        panic!("only an HTTP proxy speaks an HTTP version");
+    };
+    *pinned = Some(version);
+    proxy
 }

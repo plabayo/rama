@@ -176,7 +176,15 @@ pub trait ExtensionsTransfer: Send + Sync + 'static {
 
 /// Keeps nothing: the child connection starts from the flow data alone.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct NoExtensionsTransfer;
+
+impl NoExtensionsTransfer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl ExtensionsTransfer for NoExtensionsTransfer {
     fn transfer(&self, _parent: &Extensions, _child: &Extensions) {}

@@ -11,17 +11,24 @@ use crate::{
     tls::TlsRequired,
 };
 
-/// Refuse to dial a secure proxy over a connector which has no TLS to secure it with.
+/// The TLS stage of a connector towards proxies that has no TLS: it refuses every proxy
+/// that asks for TLS, before anything is dialed.
 ///
-/// Credentials must not travel over a connection that cannot be encrypted. A connector
-/// towards proxies without a TLS stage knows that up front, so the proxy is never dialed
-/// at all; a connector which does have one secures the connection itself.
-///
-/// A proxy whose address does not ask for TLS is refused just the same once the request to it
-/// carries [`TlsRequired`]: asking for TLS where there is none is never answered with
-/// plaintext.
+/// In a stack with TLS, the TLS connector reads the proxy's protocol and [`TlsRequired`]
+/// and secures the connection. Without one, nothing below it does: a TCP connector dials
+/// whatever it is given, so an `https://` or `socks5+tls://` proxy would be reached in
+/// plaintext, credentials included. This layer takes that slot and refuses instead.
+/// `ProxyConnectorBuilder::without_tls_support` in `rama` installs it.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct PlaintextProxyOnlyLayer;
+
+impl PlaintextProxyOnlyLayer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl<S> Layer<S> for PlaintextProxyOnlyLayer {
     type Service = PlaintextProxyOnly<S>;
@@ -86,7 +93,7 @@ mod tests {
     #[tokio::test]
     async fn only_a_plaintext_proxy_is_dialed() {
         let connector =
-            PlaintextProxyOnlyLayer.into_layer(service_fn(async |input: ConnectRequest| {
+            PlaintextProxyOnlyLayer::new().into_layer(service_fn(async |input: ConnectRequest| {
                 Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn: () })
             }));
 
@@ -104,13 +111,13 @@ mod tests {
     #[tokio::test]
     async fn a_proxy_which_asks_for_tls_is_not_dialed_in_plaintext() {
         let connector =
-            PlaintextProxyOnlyLayer.into_layer(service_fn(async |input: ConnectRequest| {
+            PlaintextProxyOnlyLayer::new().into_layer(service_fn(async |input: ConnectRequest| {
                 Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn: () })
             }));
 
         let input = ConnectRequest::new(HostWithPort::try_from("proxy.example:1080").unwrap())
             .with_application_protocol(Protocol::SOCKS5);
-        input.extensions().insert(TlsRequired);
+        input.extensions().insert(TlsRequired::new());
         let error = connector.serve(input).await.unwrap_err();
         assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
     }

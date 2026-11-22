@@ -94,10 +94,9 @@ async fn check_connect_identity(expected: &'static str) -> Result<(), rama_core:
             Ok::<_, Infallible>(Response::new(Body::empty()))
         },
     ));
-    let connector =
-        HttpConnectProxyConnector::<_, Body>::new(HttpConnectorLayer::default().into_layer(
-            MockConnectorService::new(move |_: &ConnectRequest| server.clone()),
-        ));
+    let connector = HttpConnectProxyConnector::<_, Body>::new(
+        HttpConnectorLayer::default().into_layer(MockConnectorService::new(server)),
+    );
     let input = ConnectRequest::new(HostWithPort::example_domain_https())
         .with_application_protocol(Protocol::HTTPS);
     input

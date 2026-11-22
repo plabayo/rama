@@ -1,4 +1,4 @@
-use core::convert::Infallible;
+use core::{convert::Infallible, marker::PhantomData};
 
 use crate::{
     address::SocketAddress,
@@ -15,24 +15,79 @@ use rama_core::{
 
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
 
+/// What a mock connector makes the server of each connection with: a closure without
+/// arguments, a closure over the [`ConnectRequest`], or a [`Clone`] server of `Io`.
+pub trait MakeMockServer<Io, Marker> {
+    type Server;
+
+    fn make_server(&self, input: &ConnectRequest) -> Self::Server;
+}
+
+impl<Io, F, Server> MakeMockServer<Io, fn() -> Server> for F
+where
+    F: Fn() -> Server,
+{
+    type Server = Server;
+
+    fn make_server(&self, _: &ConnectRequest) -> Server {
+        self()
+    }
+}
+
+impl<Io, F, Server> MakeMockServer<Io, fn(&ConnectRequest) -> Server> for F
+where
+    F: Fn(&ConnectRequest) -> Server,
+{
+    type Server = Server;
+
+    fn make_server(&self, input: &ConnectRequest) -> Server {
+        self(input)
+    }
+}
+
+/// The [`MakeMockServer`] marker of a [`Clone`] server.
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct ServerClone;
+
+impl ServerClone {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl<Io, S> MakeMockServer<Io, ServerClone> for S
+where
+    S: Service<Io> + Clone,
+{
+    type Server = Self;
+
+    fn make_server(&self, _: &ConnectRequest) -> Self {
+        self.clone()
+    }
+}
+
 #[derive(Debug, Clone)]
 /// Mock connector can be used in tests to simulate connectors so we can test client and servers
 /// without opening actuall connections
-pub struct MockConnectorService<S> {
+pub struct MockConnectorService<S, M> {
     create_server: S,
     max_buffer_size: usize,
     scope: Option<WeakScope>,
+    _marker: PhantomData<M>,
 }
 
-impl<S> MockConnectorService<S> {
-    pub fn new<Server>(create_server: S) -> Self
+impl<S, M> MockConnectorService<S, M> {
+    pub fn new(create_server: S) -> Self
     where
-        S: Fn(&ConnectRequest) -> Server,
+        S: MakeMockServer<MockSocket, M>,
     {
         Self {
             create_server,
             max_buffer_size: 1024,
             scope: None,
+            _marker: PhantomData,
         }
     }
 
@@ -53,10 +108,13 @@ impl<S> MockConnectorService<S> {
     }
 }
 
-impl<S, Server> Service<ConnectRequest> for MockConnectorService<S>
+impl<S, M> Service<ConnectRequest> for MockConnectorService<S, M>
 where
-    S: Fn(&ConnectRequest) -> Server + Send + Sync + 'static,
-    Server: Service<MockSocket, Error: Into<BoxError>>,
+    S: MakeMockServer<MockSocket, M, Server: Service<MockSocket, Error: Into<BoxError>>>
+        + Send
+        + Sync
+        + 'static,
+    M: Send + Sync + 'static,
 {
     type Error = Infallible;
     type Output = EstablishedClientConnection<MockSocket, ConnectRequest>;
@@ -66,7 +124,7 @@ where
         let client_socket = MockSocket::new(client);
         let server_socket = MockSocket::new(server);
 
-        let server = (self.create_server)(&input);
+        let server = self.create_server.make_server(&input);
 
         let held = self.scope.clone().unwrap_or_default().try_hold();
         #[expect(

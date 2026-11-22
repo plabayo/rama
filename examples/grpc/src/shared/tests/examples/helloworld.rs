@@ -18,7 +18,7 @@ async fn hello_world_client_server_flow() {
     let server = HttpServer::auto(WeakScope::detached()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
-        super::mock_io_client(move |_| server.clone()),
+        super::mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     );
 
@@ -45,7 +45,7 @@ async fn hello_world_client_server_flow_with_compression_mismatch() {
     let server = HttpServer::auto(WeakScope::detached()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
-        super::mock_io_client(move |_| server.clone()),
+        super::mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(CompressionEncoding::Deflate)
@@ -74,7 +74,7 @@ async fn hello_world_client_server_flow_with_compression_mix() {
     let server = HttpServer::auto(WeakScope::detached()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
-        super::mock_io_client(move |_| server.clone()),
+        super::mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(CompressionEncoding::Gzip)
@@ -119,7 +119,7 @@ async fn hello_world_client_server_flow_with_compression(encoding: CompressionEn
     let server = HttpServer::auto(WeakScope::detached()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
-        super::mock_io_client(move |_| server.clone()),
+        super::mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(encoding)

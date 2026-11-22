@@ -66,6 +66,29 @@ pub(super) struct TestCli {
     pub(super) proxy: CliCommandProxy,
 }
 
+impl ProxyClientConfig {
+    fn for_tests() -> Self {
+        Self {
+            scope: WeakScope::detached(),
+            capture: None,
+            inspection: InspectionState::default(),
+            har: HarController::default(),
+            portal: None,
+            tcp_options: Arc::new(SocketOptions::default_tcp()),
+            connect_timeout: None,
+            mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+            upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+            icap: None,
+        }
+    }
+}
+
+fn proxy_client(
+    config: ProxyClientConfig,
+) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
+    new_proxy_client(config).unwrap()
+}
+
 fn with_local_address(request: Request, local_address: &str) -> Request {
     request.extensions().insert(SocketInfo::new(
         Some(local_address.parse().unwrap()),

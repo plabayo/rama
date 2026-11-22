@@ -36,9 +36,9 @@ mod str;
 #[doc(inline)]
 pub use str::StringFilter;
 
-mod proxy_type;
+mod ip_category;
 #[doc(inline)]
-pub use proxy_type::ProxyType;
+pub use ip_category::IpCategory;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
 #[extension(tags(proxy))]
@@ -123,9 +123,8 @@ pub struct ProxyFilter {
 
     /// The types of proxy to select from.
     ///
-    /// A proxy has one type, so naming several selects a proxy of any of them.
-    #[serde(rename = "type")]
-    pub kind: Option<Vec<ProxyType>>,
+    /// A proxy has one IP category, so naming several selects a proxy of any of them.
+    pub ip_category: Option<Vec<IpCategory>>,
 
     /// The mobile carrier desired.
     pub carrier: Option<Vec<StringFilter>>,
@@ -493,7 +492,7 @@ mod trait_tests {
             address: "proxy.example:8080".parse().unwrap(),
             credential: None,
             protocols: ProxyProtocols::from([ProxyProtocol::HTTP]),
-            kind: ProxyType::Datacenter,
+            ip_category: IpCategory::Datacenter,
             pool_id: None,
             continent: None,
             country: None,
@@ -721,8 +720,8 @@ mod memdb {
                 query.asn(asn);
             }
 
-            for kind in filter.kind.into_iter().flatten() {
-                query.kind(kind);
+            for kind in filter.ip_category.into_iter().flatten() {
+                query.ip_category(kind);
             }
 
             // Which proxy protocols carry the transport is known per proxy: see `supports_transport`.
@@ -1083,7 +1082,7 @@ mod memdb {
                 pool_id: Some(vec![StringFilter::new("poolF")]),
                 country: Some(vec![StringFilter::new("JP")]),
                 city: Some(vec![StringFilter::new("Yokohama")]),
-                kind: Some(vec![ProxyType::Mobile]),
+                ip_category: Some(vec![IpCategory::Mobile]),
                 carrier: Some(vec![StringFilter::new("Verizon")]),
                 ..Default::default()
             };
@@ -1141,17 +1140,17 @@ mod memdb {
                 },
                 ProxyFilter {
                     id: Some(non_empty_str!("3031533634")),
-                    kind: Some(vec![ProxyType::Datacenter]),
+                    ip_category: Some(vec![IpCategory::Datacenter]),
                     ..Default::default()
                 },
                 ProxyFilter {
                     id: Some(non_empty_str!("3031533634")),
-                    kind: Some(vec![ProxyType::Residential]),
+                    ip_category: Some(vec![IpCategory::Residential]),
                     ..Default::default()
                 },
                 ProxyFilter {
                     id: Some(non_empty_str!("3031533634")),
-                    kind: Some(vec![ProxyType::Isp]),
+                    ip_category: Some(vec![IpCategory::Isp]),
                     ..Default::default()
                 },
                 ProxyFilter {
@@ -1302,13 +1301,17 @@ mod memdb {
                 .get_proxies_if(
                     h2_proxy_context(),
                     ProxyFilter::default(),
-                    |proxy: &Proxy| proxy.kind == ProxyType::Mobile,
+                    |proxy: &Proxy| proxy.ip_category == IpCategory::Mobile,
                     None,
                 )
                 .await
                 .unwrap();
 
-            assert!(proxies.iter().all(|proxy| proxy.kind == ProxyType::Mobile));
+            assert!(
+                proxies
+                    .iter()
+                    .all(|proxy| proxy.ip_category == IpCategory::Mobile)
+            );
             assert!(proxies.len() < 50);
         }
 
@@ -1391,7 +1394,7 @@ mod memdb {
             let ctx = h3_proxy_context();
             let filter = ProxyFilter {
                 country: Some(vec!["BE".into()]),
-                kind: Some(vec![ProxyType::Mobile]),
+                ip_category: Some(vec![IpCategory::Mobile]),
                 ..Default::default()
             };
             for _ in 0..50 {
@@ -1505,18 +1508,12 @@ mod memdb {
                 address: "example.com:80".parse().unwrap(),
                 credential: None,
                 protocols: ProxyProtocols::from([
-                    ProxyProtocol::Socks5 {
-                        remote_dns: false,
-                        transport: Some(TransportProtocol::Udp),
-                    },
-                    ProxyProtocol::Socks5 {
-                        remote_dns: true,
-                        transport: Some(TransportProtocol::Udp),
-                    },
+                    ProxyProtocol::SOCKS5_UDP,
+                    ProxyProtocol::SOCKS5H_UDP,
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,
                 ]),
-                kind: ProxyType::Mobile,
+                ip_category: IpCategory::Mobile,
                 pool_id: Some("*".into()),
                 continent: Some("*".into()),
                 country: Some("*".into()),
@@ -1586,18 +1583,12 @@ mod memdb {
                 address: "example.com:80".parse().unwrap(),
                 credential: None,
                 protocols: ProxyProtocols::from([
-                    ProxyProtocol::Socks5 {
-                        remote_dns: false,
-                        transport: Some(TransportProtocol::Udp),
-                    },
-                    ProxyProtocol::Socks5 {
-                        remote_dns: true,
-                        transport: Some(TransportProtocol::Udp),
-                    },
+                    ProxyProtocol::SOCKS5_UDP,
+                    ProxyProtocol::SOCKS5H_UDP,
                     ProxyProtocol::HTTP,
                     ProxyProtocol::HTTPS,
                 ]),
-                kind: ProxyType::Mobile,
+                ip_category: IpCategory::Mobile,
                 pool_id: Some("hq".into()),
                 continent: Some("americas".into()),
                 country: Some("US".into()),
@@ -1672,18 +1663,12 @@ mod memdb {
                     address: "example.com:80".parse().unwrap(),
                     credential: None,
                     protocols: ProxyProtocols::from([
-                        ProxyProtocol::Socks5 {
-                            remote_dns: false,
-                            transport: Some(TransportProtocol::Udp),
-                        },
-                        ProxyProtocol::Socks5 {
-                            remote_dns: true,
-                            transport: Some(TransportProtocol::Udp),
-                        },
+                        ProxyProtocol::SOCKS5_UDP,
+                        ProxyProtocol::SOCKS5H_UDP,
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
                     ]),
-                    kind: ProxyType::Mobile,
+                    ip_category: IpCategory::Mobile,
                     pool_id: Some("a".into()),
                     continent: Some("americas".into()),
                     country: Some("US".into()),
@@ -1697,18 +1682,12 @@ mod memdb {
                     address: "example.com:80".parse().unwrap(),
                     credential: None,
                     protocols: ProxyProtocols::from([
-                        ProxyProtocol::Socks5 {
-                            remote_dns: false,
-                            transport: Some(TransportProtocol::Udp),
-                        },
-                        ProxyProtocol::Socks5 {
-                            remote_dns: true,
-                            transport: Some(TransportProtocol::Udp),
-                        },
+                        ProxyProtocol::SOCKS5_UDP,
+                        ProxyProtocol::SOCKS5H_UDP,
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
                     ]),
-                    kind: ProxyType::Mobile,
+                    ip_category: IpCategory::Mobile,
                     pool_id: Some("b".into()),
                     continent: Some("americas".into()),
                     country: Some("US".into()),
@@ -1722,18 +1701,12 @@ mod memdb {
                     address: "example.com:80".parse().unwrap(),
                     credential: None,
                     protocols: ProxyProtocols::from([
-                        ProxyProtocol::Socks5 {
-                            remote_dns: false,
-                            transport: Some(TransportProtocol::Udp),
-                        },
-                        ProxyProtocol::Socks5 {
-                            remote_dns: true,
-                            transport: Some(TransportProtocol::Udp),
-                        },
+                        ProxyProtocol::SOCKS5_UDP,
+                        ProxyProtocol::SOCKS5H_UDP,
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
                     ]),
-                    kind: ProxyType::Mobile,
+                    ip_category: IpCategory::Mobile,
                     pool_id: Some("b".into()),
                     continent: Some("americas".into()),
                     country: Some("US".into()),
@@ -1747,18 +1720,12 @@ mod memdb {
                     address: "example.com:80".parse().unwrap(),
                     credential: None,
                     protocols: ProxyProtocols::from([
-                        ProxyProtocol::Socks5 {
-                            remote_dns: false,
-                            transport: Some(TransportProtocol::Udp),
-                        },
-                        ProxyProtocol::Socks5 {
-                            remote_dns: true,
-                            transport: Some(TransportProtocol::Udp),
-                        },
+                        ProxyProtocol::SOCKS5_UDP,
+                        ProxyProtocol::SOCKS5H_UDP,
                         ProxyProtocol::HTTP,
                         ProxyProtocol::HTTPS,
                     ]),
-                    kind: ProxyType::Mobile,
+                    ip_category: IpCategory::Mobile,
                     pool_id: Some("c".into()),
                     continent: Some("americas".into()),
                     country: Some("US".into()),
@@ -1889,7 +1856,7 @@ mod memdb {
                 address: "127.0.0.1:8080".parse().unwrap(),
                 credential: None,
                 protocols: ProxyProtocols::from([ProxyProtocol::HTTP]),
-                kind: ProxyType::Datacenter,
+                ip_category: IpCategory::Datacenter,
                 pool_id: None,
                 continent: None,
                 country: None,

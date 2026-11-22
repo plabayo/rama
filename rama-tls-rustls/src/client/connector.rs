@@ -1282,7 +1282,7 @@ mod tests {
                 .with_alpn_http_2(),
         );
 
-        let leg = origin_tls_inputs().fork_connection(&NoExtensionsTransfer);
+        let leg = origin_tls_inputs().fork_connection(&NoExtensionsTransfer::new());
         let effective = connector.effective_extensions(&leg);
         let config = RustlsTlsConnectorConfig::from_extensions(&effective);
 
@@ -1364,7 +1364,7 @@ mod tests {
             let input = ConnectRequest::new(HostWithPort::new(Host::from_static("localhost"), 80))
                 .with_application_protocol(Protocol::HTTP);
             if asks {
-                input.extensions().insert(TlsRequired);
+                input.extensions().insert(TlsRequired::new());
             }
             let established = tokio::time::timeout(Duration::from_secs(5), connector.serve(input))
                 .await

@@ -11,7 +11,9 @@
 //!
 //! The proxy serves CONNECT-UDP next to ordinary CONNECT for TCP, on one port: TLS over TCP for
 //! HTTP/1.1 and HTTP/2, QUIC over UDP for HTTP/3. Port 0 gives each transport a port of its
-//! own; the client reaches the proxy over HTTP/3, so it takes the UDP one. Its certificate is self-signed, hence the
+//! own; the client reaches the proxy over HTTP/3, so it takes the UDP one. With
+//! `--proxy h2+udp://127.0.0.1:4433` it reaches the proxy over HTTP/2 on TCP instead, and
+//! its HTTP/3 to the origin runs in capsules there. Its certificate is self-signed, hence the
 //! client's `--insecure`, which skips certificate verification for local testing. Without it
 //! the client verifies both the proxy and the origin.
 
@@ -193,12 +195,10 @@ async fn exchange(
     insecure: bool,
     url: &str,
 ) -> Result<(), BoxError> {
-    let tls = TlsClientConfig::default_http();
-    let tls = if insecure {
-        tls.with_server_verify(ServerVerifyMode::Disable)
-    } else {
-        tls
-    };
+    let mut tls = TlsClientConfig::default_http();
+    if insecure {
+        tls.set_server_verify(ServerVerifyMode::Disable);
+    }
     // HTTP/3 through an HTTP proxy runs in a CONNECT-UDP tunnel, which the proxy methods of
     // this connector open: the QUIC leg dials the origin through the tunnel.
     let client = EasyHttpWebClient::connector_builder(scope.clone())

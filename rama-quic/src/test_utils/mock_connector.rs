@@ -1,9 +1,10 @@
-use std::{convert::Infallible, num::NonZeroUsize};
+use std::{convert::Infallible, marker::PhantomData, num::NonZeroUsize};
 
 use rama_core::{Service, error::BoxError, graceful::WeakScope};
 use rama_net::{
     address::SocketAddress,
     client::{ConnectRequest, EstablishedClientConnection},
+    test_utils::client::MakeMockServer,
 };
 use rama_udp::test_utils::MemoryDatagramSocket;
 
@@ -13,23 +14,25 @@ use crate::{Connection, Endpoint, ServerConfig, client::ClientEndpoint};
 /// opening an actual socket: every request gets an in-memory datagram pair with a
 /// server endpoint on the other side.
 #[derive(Debug, Clone)]
-pub struct MockQuicConnectorService<S> {
+pub struct MockQuicConnectorService<S, M> {
     create_server: S,
     server_config: ServerConfig,
     capacity: NonZeroUsize,
     scope: Option<WeakScope>,
+    _marker: PhantomData<M>,
 }
 
-impl<S> MockQuicConnectorService<S> {
-    pub fn new<Server>(server_config: ServerConfig, create_server: S) -> Self
+impl<S, M> MockQuicConnectorService<S, M> {
+    pub fn new(server_config: ServerConfig, create_server: S) -> Self
     where
-        S: Fn(&ConnectRequest) -> Server,
+        S: MakeMockServer<Connection, M>,
     {
         Self {
             create_server,
             server_config,
             capacity: NonZeroUsize::MIN,
             scope: None,
+            _marker: PhantomData,
         }
     }
 
@@ -50,10 +53,13 @@ impl<S> MockQuicConnectorService<S> {
     }
 }
 
-impl<S, Server> Service<ConnectRequest> for MockQuicConnectorService<S>
+impl<S, M> Service<ConnectRequest> for MockQuicConnectorService<S, M>
 where
-    S: Fn(&ConnectRequest) -> Server + Send + Sync + 'static,
-    Server: Service<Connection, Error: Into<BoxError>> + Clone,
+    S: MakeMockServer<Connection, M, Server: Service<Connection, Error: Into<BoxError>> + Clone>
+        + Send
+        + Sync
+        + 'static,
+    M: Send + Sync + 'static,
 {
     type Error = Infallible;
     type Output = EstablishedClientConnection<ClientEndpoint, ConnectRequest>;
@@ -88,7 +94,7 @@ where
             Err(err) => panic!("mock quic server endpoint has no address: {err}"),
         };
 
-        let service = PanicOnError((self.create_server)(&input));
+        let service = PanicOnError(self.create_server.make_server(&input));
         let serving = WeakScope::from(held.child());
         let client = match Endpoint::build(&held).with_datagram_socket(client_socket) {
             Ok(client) => client,

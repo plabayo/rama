@@ -78,7 +78,7 @@ async fn dns_lb_rotates_and_pool_reuses() {
 
     let created_connections = Arc::new(AtomicU8::new(0));
 
-    let mock = MockConnectorService::new(move |_| {
+    let mock = MockConnectorService::new(move || {
         let id = created_connections.fetch_add(1, Ordering::SeqCst);
         HttpServer::auto(WeakScope::detached()).service(GreeterServer::new(RamaGreeter {
             instance_id: Some(id),

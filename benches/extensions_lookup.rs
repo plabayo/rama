@@ -267,7 +267,7 @@ fn stack(nested: bool) -> Extensions {
     let ext = ext.fork();
     insert_all!(ext, Marker, 0; 20 21 22);
     if nested {
-        ext.fork_connection(&NoExtensionsTransfer)
+        ext.fork_connection(&NoExtensionsTransfer::new())
     } else {
         ext.fork()
     }

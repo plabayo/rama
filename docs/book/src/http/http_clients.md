@@ -181,17 +181,35 @@ origins. Pass one to `with_proxy_support(proxies)`, or take rama's defaults with
 `with_default_proxy_support()`. A client built with `without_proxy_support()`
 refuses a proxied route instead of connecting around it.
 
+`ProxyConnector::builder(scope)` builds one stage by stage. Its last step picks the proxy
+protocols it supports: `with_all_proxy_protocols()` for every one this build of rama has,
+or a subset with `with_socks5()`, `with_http_connect()`, `with_http_forward()` and
+`with_http_connect_udp()`. A route to a proxy whose protocol is not enabled is refused.
+
 Which proxy a request takes is its own `ProxyRoute`, or an ordered `ProxyRoutes` plan that
 is tried in order and may end in `ProxyRoute::Direct`. A proxy address names the protocol
-it speaks:
+it speaks, as a base protocol followed by options after `+` in any order:
 
-- `http://` and `https://` for an HTTP proxy, which tunnels with CONNECT and forwards
-  plaintext HTTP requests. Add `+h1`, `+h2` or `+h2c` to pin the version spoken to the
-  proxy itself, `h3://` for an HTTP/3 proxy over QUIC.
-- `+udp` (such as `https+udp://`) for a proxy which also opens datagram tunnels with
-  CONNECT-UDP, as HTTP/3 through a proxy needs. A plain HTTP proxy carries no UDP.
-- `socks5://` and `socks5h://`, the latter leaving the target's name to the proxy;
-  `+tcp` and `+udp` pin which flows the proxy serves.
+| base | proxy |
+|---|---|
+| `http` | HTTP/1.1, plaintext |
+| `h2c` | HTTP/2, plaintext |
+| `https` | HTTP over TLS: HTTP/3 when the proxy advertises it (HTTPS record or Alt-Svc), else ALPN over TCP |
+| `h1`, `h2` | HTTP/1.1 or HTTP/2 over TLS, over TCP |
+| `h3` | HTTP/3, over QUIC |
+| `socks5` | SOCKS5, target names resolved locally |
+| `socks5h` | SOCKS5, target names resolved by the proxy |
+
+| option | on | meaning |
+|---|---|---|
+| `+udp` | HTTP | also CONNECT-UDP on the default template, as HTTP/3 through a proxy needs |
+| `+udp` | SOCKS5 | UDP ASSOCIATE only |
+| `+tcp` | SOCKS5 | CONNECT only |
+| `+tls` | SOCKS5 | TLS to the proxy |
+
+An HTTP proxy tunnels with CONNECT and forwards plaintext HTTP requests; without `+udp`
+or a path template it carries no UDP. Any other scheme is kept as a custom protocol,
+which rama does not interpret.
 
 Credentials in the address, such as `http://user:secret@proxy.example:8080`, are sent to
 that proxy only: the route of a request is matched against the proxy its connection
@@ -199,39 +217,39 @@ actually reaches, and a connection to the origin never carries a `Proxy-Authoriz
 
 A proxy which answers `407` to a forwarded request answers the client with it. An
 intermediary should not hand its upstream's challenge to its own clients, so it isolates
-that answer into an error with
-`ProxyConnector::with_isolate_forward_proxy_auth_error(true)`, or takes the default client
-of a proxy with `EasyHttpWebClient::default_for_proxy()`.
+that answer into an error, on the connector towards proxies it hands to its client:
+
+```rust,ignore
+let proxies = ProxyConnector::default_with_scope(scope.clone())
+    .with_isolate_forward_proxy_auth_error(true);
+let client = EasyHttpWebClient::default_using_proxies(scope, proxies);
+```
 
 ### TLS to a proxy
 
-The scheme decides by default: `https://` and `h3://` reach the proxy over TLS, `http://`
-and `socks5://` in plaintext. For an HTTP proxy, name it with `https://` or `h3://`; that is
-the normal way and needs nothing else.
+The address decides. A protocol with a secure name of its own uses that name: `https`,
+`h1`, `h2` or `h3` for an HTTP proxy. A protocol without one takes `+tls`, such as
+`socks5h+tls://proxy.example:1080`. Over `+tls` with UDP ASSOCIATE, only the control
+connection to the SOCKS5 proxy is TLS; the UDP relay stays plaintext.
 
-To force TLS to every proxy of a connector, whatever its scheme, call `require_tls()` after
-its TLS stage. A proxy that already speaks TLS is unaffected, a plaintext one is reached
-over TLS anyway. It is meant for proxies whose scheme has no TLS form, such as a SOCKS5
-proxy or a custom protocol served behind TLS, not as a replacement for `https://`:
+A connection to a proxy over TLS is never shared with a plaintext one to the same address,
+and a client built without TLS support refuses a secure proxy instead of dialing it in
+plaintext.
+
+To secure every TCP connection to a proxy, whatever its address says, map the TLS connector
+to its secure kind after the TLS stage:
 
 ```rust,ignore
 let proxies = ProxyConnector::builder(scope)
     .with_default_transport_connector()
     .with_default_dns_connector()
     .with_default_tls_support(tls_config)
-    .require_tls()
+    .map_connector(|tls| tls.into_secure())
     .with_default_http_connector::<Body>()
     .with_default_connection_pool()
-    .with_every_method()
+    .with_all_proxy_protocols()
     .build();
 ```
-
-For one route only, put `TlsRequired` in that route's `ProxyConnectionExtensions` bag: the
-bag configures the connection to the proxy, not the one to the origin. A connection to a
-proxy over TLS is never shared with a plaintext one to the same address, and a client built
-without TLS support refuses such a route instead of dialing it in plaintext.
-
-[`ProxyConnector`]: https://ramaproxy.org/docs/rama/http/client/struct.ProxyConnector.html
 
 ## Server certificate pinning
 

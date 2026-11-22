@@ -9,12 +9,10 @@ mod bypass;
 pub use bypass::{BypassRules, ProxyBypassLayer, ProxyBypassService};
 
 mod connect;
-use connect::DialedProxyConnection;
 #[doc(inline)]
 pub use connect::{
-    ProxyConnectionExtensions, ProxyConnectionExtensionsTransfer, ProxyConnectionPerCredential,
-    ProxyConnectionPerCredentialLayer, ProxyConnectionPerCredentialService, ProxyDialRequest,
-    ProxyDialer, ProxyDialerLayer, proxy_request,
+    DialedProxyConnection, ProxyConnectionExtensions, ProxyConnectionExtensionsTransfer,
+    ProxyDialRequest, ProxyDialer, ProxyDialerLayer, proxy_request,
 };
 
 mod reuse;

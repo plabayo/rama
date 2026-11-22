@@ -261,7 +261,7 @@ impl<S, O> UpgradeService<S, O> {
             inner,
             scope,
             error_sink,
-            extensions_transfer: DefaultExtensionsTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 

@@ -51,7 +51,7 @@ use rama::{
         Body, HeaderMap, Method, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
         client::{
-            DefaultHttpWebClient, EasyHttpConnectorBuilder, Http3Connector, Http3Transport,
+            DefaultHttpWebClient, EasyHttpWebClient, Http3Connector, Http3Transport,
             HttpConnectorLayer, ProxyConnector, http_connect,
         },
         conn::{HttpOrigin, TargetHttpVersion},
@@ -394,7 +394,7 @@ fn client_with_transport(
     attempt_timeout: Option<Duration>,
     transport: impl TcpStreamConnector<Error: Into<BoxError>> + Clone,
 ) -> impl Service<Request, Output = Response, Error: Debug> {
-    let builder = EasyHttpConnectorBuilder::new(WeakScope::detached())
+    let builder = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_custom_tcp_connector(TcpConnector::new().with_connector(transport.clone()))
         .with_default_dns_connector()
         .with_proxy_support(
@@ -456,7 +456,7 @@ async fn client_with_http3_cache_and_timeout(
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let builder = EasyHttpConnectorBuilder::new(WeakScope::detached())
+    let builder = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_tcp_connector()
         .with_custom_quic_connector(SharedQuicEndpoint::supplied(
             endpoint.clone(),
@@ -1530,7 +1530,7 @@ async fn fixed_custom_tls_connector_reuses_connections() {
         #[cfg(feature = "boring")]
         let tls = tls.with_grease(true);
         let tls = tls.with_store_server_cert_chain(true);
-        let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
             .with_default_transport_connector()
             .with_default_dns_connector()
             .with_default_proxy_support()
@@ -1592,7 +1592,7 @@ async fn custom_http3_connector_publishes_its_own_pool_policy() {
         .unwrap();
     // The generic custom path receives only the connector. Pooling learns TLS
     // compatibility from its returned connection, without duplicate setup.
-    let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
         .without_proxy_support()

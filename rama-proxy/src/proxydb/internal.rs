@@ -1,4 +1,4 @@
-use super::{ProxyContext, ProxyFilter, ProxyType, StringFilter};
+use super::{IpCategory, ProxyContext, ProxyFilter, StringFilter};
 use rama_core::extensions::Extension;
 
 use rama_net::{
@@ -13,12 +13,89 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "memory-db")]
 use venndb::VennDB;
 
-#[expect(
-    clippy::disallowed_types,
-    reason = "the handful of protocols of one trusted record is no hash-DoS surface"
-)]
-/// The protocols a [`Proxy`] speaks.
-pub type ProxyProtocols = std::collections::HashSet<ProxyProtocol>;
+/// The protocols a [`Proxy`] speaks, in the order they are preferred in.
+///
+/// Each protocol appears once: adding one it already holds keeps its first place.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProxyProtocols(Vec<ProxyProtocol>);
+
+impl ProxyProtocols {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Add `protocol` last, unless it is already present; returns whether it was added.
+    pub fn insert(&mut self, protocol: ProxyProtocol) -> bool {
+        if self.0.contains(&protocol) {
+            return false;
+        }
+        self.0.push(protocol);
+        true
+    }
+
+    #[must_use]
+    pub fn contains(&self, protocol: &ProxyProtocol) -> bool {
+        self.0.contains(protocol)
+    }
+
+    pub fn iter(&self) -> core::slice::Iter<'_, ProxyProtocol> {
+        self.0.iter()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl FromIterator<ProxyProtocol> for ProxyProtocols {
+    fn from_iter<I: IntoIterator<Item = ProxyProtocol>>(iter: I) -> Self {
+        let mut protocols = Self::new();
+        for protocol in iter {
+            protocols.insert(protocol);
+        }
+        protocols
+    }
+}
+
+impl<const N: usize> From<[ProxyProtocol; N]> for ProxyProtocols {
+    fn from(protocols: [ProxyProtocol; N]) -> Self {
+        protocols.into_iter().collect()
+    }
+}
+
+impl IntoIterator for ProxyProtocols {
+    type Item = ProxyProtocol;
+    type IntoIter = std::vec::IntoIter<ProxyProtocol>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a ProxyProtocols {
+    type Item = &'a ProxyProtocol;
+    type IntoIter = core::slice::Iter<'a, ProxyProtocol>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+#[cfg(feature = "memory-db")]
+impl venndb::FilterSet for ProxyProtocols {
+    type Item = ProxyProtocol;
+
+    fn for_each_member(&self, f: impl FnMut(&ProxyProtocol)) {
+        self.0.iter().for_each(f);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Extension)]
 #[extension(tags(proxy))]
@@ -43,7 +120,8 @@ pub struct Proxy {
 
     #[cfg_attr(feature = "memory-db", venndb(filter, set))]
     #[serde(with = "protocol_tokens")]
-    /// Every protocol the proxy speaks, each one way to reach it and one kind of tunnel.
+    /// Every protocol the proxy speaks, each one way to reach it and one kind of tunnel,
+    /// in order of preference: a request uses the first that carries its transport.
     ///
     /// Outside of Rust each protocol is written as a proxy address scheme, optionally
     /// followed by a path (see [`ProxyProtocol::try_from_scheme_and_path`]):
@@ -61,8 +139,7 @@ pub struct Proxy {
 
     #[cfg_attr(feature = "memory-db", venndb(filter))]
     /// Where the IP of the proxy comes from.
-    #[serde(rename = "type")]
-    pub kind: ProxyType,
+    pub ip_category: IpCategory,
 
     #[cfg_attr(feature = "memory-db", venndb(filter, any = StringFilter::is_any))]
     /// Pool ID of the proxy.
@@ -175,9 +252,9 @@ impl Proxy {
             && strings_match(filter.carrier.as_deref(), self.carrier.as_ref())
             && column_matches(filter.asn.as_deref(), self.asn.as_ref(), Asn::is_any)
             && filter
-                .kind
+                .ip_category
                 .as_ref()
-                .is_none_or(|kinds| kinds.contains(&self.kind))
+                .is_none_or(|kinds| kinds.contains(&self.ip_category))
     }
 }
 
@@ -189,11 +266,8 @@ mod serde_tests {
 
     fn protocols() -> ProxyProtocols {
         ProxyProtocols::from([
-            ProxyProtocol::HTTPS.with_http_version(rama_net::http::Version::HTTP_2),
-            ProxyProtocol::Socks5 {
-                remote_dns: true,
-                transport: Some(TransportProtocol::Udp),
-            },
+            ProxyProtocol::H2,
+            ProxyProtocol::SOCKS5H_UDP,
             ProxyProtocol::Custom(SmolStr::new_static("warp")),
             protocol_token::parse("h3/m?h={target_host}&p={target_port}").unwrap(),
         ])
@@ -205,7 +279,7 @@ mod serde_tests {
             address: "proxy.example:443".parse().unwrap(),
             credential,
             protocols: protocols(),
-            kind: ProxyType::Datacenter,
+            ip_category: IpCategory::Datacenter,
             pool_id: None,
             continent: None,
             country: Some("be".into()),
@@ -233,16 +307,31 @@ mod serde_tests {
     }
 
     #[test]
-    fn protocols_serialize_as_sorted_tokens() {
+    fn protocols_serialize_as_tokens_in_their_order() {
         let json = serde_json::to_value(proxy(None)).unwrap();
         assert_eq!(
             json["protocols"],
             serde_json::json!([
                 "h2",
-                "h3/m?h={target_host}&p={target_port}",
                 "socks5h+udp",
                 "warp",
+                "h3/m?h={target_host}&p={target_port}",
             ]),
+        );
+    }
+
+    #[test]
+    fn a_repeated_protocol_keeps_its_first_place() {
+        let protocols: ProxyProtocols = [
+            ProxyProtocol::SOCKS5_TCP,
+            ProxyProtocol::H2,
+            ProxyProtocol::SOCKS5_TCP,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            Vec::from_iter(protocols),
+            [ProxyProtocol::SOCKS5_TCP, ProxyProtocol::H2]
         );
     }
 
@@ -250,31 +339,19 @@ mod serde_tests {
     fn a_protocol_token_names_one_protocol() {
         for (token, protocol) in [
             ("http", Some(ProxyProtocol::HTTP)),
-            (
-                "h1",
-                Some(ProxyProtocol::HTTPS.with_http_version(rama_net::http::Version::HTTP_11)),
-            ),
-            (
-                "h2c",
-                Some(ProxyProtocol::HTTP.with_http_version(rama_net::http::Version::HTTP_2)),
-            ),
+            ("h1", Some(ProxyProtocol::H1)),
+            ("h2c", Some(ProxyProtocol::H2C)),
             ("https", Some(ProxyProtocol::HTTPS)),
             (
                 "h3+udp",
-                Some(ProxyProtocol::try_from_scheme("h3+udp").unwrap()),
+                Some(ProxyProtocol::connect_udp(rama_net::http::Version::HTTP_3)),
             ),
             ("socks5", Some(ProxyProtocol::SOCKS5)),
             ("socks5h", Some(ProxyProtocol::SOCKS5H)),
-            (
-                "socks5+udp",
-                Some(ProxyProtocol::Socks5 {
-                    remote_dns: false,
-                    transport: Some(TransportProtocol::Udp),
-                }),
-            ),
+            ("socks5+udp", Some(ProxyProtocol::SOCKS5_UDP)),
             (
                 "h3/.well-known/masque/udp/{target_host}/{target_port}/",
-                Some(ProxyProtocol::try_from_scheme("h3+udp").unwrap()),
+                Some(ProxyProtocol::connect_udp(rama_net::http::Version::HTTP_3)),
             ),
             (
                 "warp",
@@ -550,7 +627,7 @@ pub(super) mod protocol_token {
 
     impl fmt::Display for Token {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            self.0.scheme().fmt(f)?;
+            self.0.fmt(f)?;
             if let Some(template) = self.0.path_template()
                 && !template.is_connect_udp_default()
             {
@@ -572,15 +649,9 @@ mod protocol_tokens {
         protocols: &ProxyProtocols,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        let mut tokens: Vec<_> = protocols
-            .iter()
-            .map(|protocol| protocol_token::display(protocol).to_string())
-            .collect();
-        // A set has no order of its own, and a record should serialize the same every time.
-        tokens.sort_unstable();
-        let mut sequence = serializer.serialize_seq(Some(tokens.len()))?;
-        for token in tokens {
-            sequence.serialize_element(&token)?;
+        let mut sequence = serializer.serialize_seq(Some(protocols.len()))?;
+        for protocol in protocols {
+            sequence.serialize_element(&protocol_token::display(protocol).to_string())?;
         }
         sequence.end()
     }

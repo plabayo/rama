@@ -19,10 +19,10 @@ use rama::{
         proxy::{HttpProxyConnectMatcher, PlaintextHttpProxyMode},
         server::HttpServer,
     },
-    layer::MapInputLayer,
+    layer::{MapInputLayer, MapOutputLayer},
     matcher::Matcher as _,
     net::{
-        address::{ProxyAddress, SocketAddress},
+        address::{ProxyAddress, ProxyProtocol, SocketAddress},
         client::ProxyRoute,
         proxy::IoForwardService,
         stream::SocketInfo,
@@ -214,10 +214,11 @@ async fn tunnels_share_a_connection(proxy_version: Version, connections: usize) 
         let proxy = Proxy::start().await;
         let client = client();
         for user in ["alice", "bob"] {
-            let address =
+            let address = with_version(
                 ProxyAddress::try_from(format!("https://{user}:secret@{}", proxy.address).as_str())
-                    .unwrap()
-                    .with_http_version(proxy_version);
+                    .unwrap(),
+                proxy_version,
+            );
             let request = get(&format!("https://{origin}/"), address);
             let response = client.serve(request).await.unwrap();
             assert_eq!(body(response).await, "HTTP/1.1 origin");
@@ -271,6 +272,52 @@ async fn forwards_share_a_connection(proxy_version: Version) {
             [(Method::GET, proxy_version), (Method::GET, proxy_version)],
         );
         assert_eq!(proxy.connections(), 1);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_proxy_advertising_h3_on_connect_gets_the_next_tunnel_over_h3() {
+    timeout(DEADLINE, async {
+        let (origin, _origin) = tls_origin(Version::HTTP_11).await;
+        let proxy = Proxy::advertising_h3().await;
+        let client = client_trusting(&proxy);
+        for _ in 0..2 {
+            let request = get(&format!("https://{origin}/"), proxy.localhost());
+            let response = client.serve(request).await.unwrap();
+            assert_eq!(body(response).await, "HTTP/1.1 origin");
+        }
+        assert_eq!(
+            proxy.seen(),
+            [
+                (Method::CONNECT, Version::HTTP_2),
+                (Method::CONNECT, Version::HTTP_3)
+            ],
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_proxy_without_alt_svc_keeps_its_tunnels_over_h2() {
+    timeout(DEADLINE, async {
+        let (origin, _origin) = tls_origin(Version::HTTP_11).await;
+        let proxy = Proxy::start().await;
+        let client = client_trusting(&proxy);
+        for _ in 0..2 {
+            let request = get(&format!("https://{origin}/"), proxy.localhost());
+            let response = client.serve(request).await.unwrap();
+            assert_eq!(body(response).await, "HTTP/1.1 origin");
+        }
+        assert_eq!(
+            proxy.seen(),
+            [
+                (Method::CONNECT, Version::HTTP_2),
+                (Method::CONNECT, Version::HTTP_2)
+            ],
+        );
     })
     .await
     .unwrap();
@@ -333,10 +380,11 @@ async fn forwards_of_two_users_share_a_connection(proxy_version: Version) {
         let proxy = Proxy::start().await;
         let client = client();
         for user in ["alice", "bob"] {
-            let address =
+            let address = with_version(
                 ProxyAddress::try_from(format!("https://{user}:secret@{}", proxy.address).as_str())
-                    .unwrap()
-                    .with_http_version(proxy_version);
+                    .unwrap(),
+                proxy_version,
+            );
             let request = get("http://origin.example/path", address);
             let response = client.serve(request).await.unwrap();
             assert_eq!(body(response).await, "forwarded http://origin.example/path");
@@ -393,6 +441,24 @@ fn tls_client_config() -> TlsClientConfig {
     TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable)
 }
 
+fn client_trusting(proxy: &Proxy) -> Client {
+    let scope = WeakScope::detached();
+    let tls = tls_client_config();
+    EasyHttpWebClient::connector_builder(scope.clone())
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_proxy_support(ProxyConnector::default_using_tls(
+            scope,
+            proxy.trust.clone(),
+        ))
+        .with_tls_support_using_boringssl(tls)
+        .with_default_http_connector()
+        .without_connection_pool()
+        .without_alt_svc()
+        .build_client()
+        .boxed()
+}
+
 fn client() -> Client {
     let scope = WeakScope::detached();
     let tls = tls_client_config();
@@ -411,12 +477,23 @@ fn client() -> Client {
 struct Proxy {
     address: SocketAddress,
     seen: Arc<Mutex<Vec<Seen>>>,
+    trust: TlsClientConfig,
     _tasks: Tasks,
 }
 
 impl Proxy {
     async fn start() -> Self {
+        Self::start_with(false).await
+    }
+
+    async fn advertising_h3() -> Self {
+        Self::start_with(true).await
+    }
+
+    async fn start_with(advertise_h3: bool) -> Self {
         let scope = WeakScope::detached();
+        let port = Arc::new(Mutex::new(0u16));
+        let advertised = port.clone();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorded = seen.clone();
         let connect_udp = Arc::new(
@@ -436,6 +513,15 @@ impl Proxy {
         });
         let service = Arc::new(
             (
+                MapOutputLayer::new(move |mut response: Response| {
+                    if advertise_h3 {
+                        let alt_svc = format!("h3=\":{}\"", advertised.lock());
+                        response
+                            .headers_mut()
+                            .insert(header::ALT_SVC, alt_svc.parse().unwrap());
+                    }
+                    response
+                }),
                 MapInputLayer::new(move |request: Request| {
                     recorded.lock().push(Seen {
                         method: request.method().clone(),
@@ -463,6 +549,7 @@ impl Proxy {
                 .into_layer(route),
         );
         let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+        let auth_chain = auth.cert_chain.clone();
 
         let tls = TlsServerConfig::new()
             .with_server_auth(auth.clone())
@@ -505,25 +592,37 @@ impl Proxy {
             }
         };
         let address = SocketAddress::from(listener.local_addr().unwrap());
+        *port.lock() = address.port;
+        let trust = TlsClientConfig::default_http()
+            .try_with_server_trust_anchors(auth_chain)
+            .unwrap()
+            .with_server_verify(ServerVerifyMode::Auto);
         let tcp_task = tokio::spawn(async move { listener.serve(tcp).await });
         let quic_task = tokio::spawn(endpoint.clone().serve(scope, h3.service(service)));
         Self {
             address,
             seen,
+            trust,
             _tasks: Tasks::new(vec![tcp_task, quic_task], Some(endpoint)),
         }
     }
 
     fn https(&self, version: Version) -> ProxyAddress {
-        ProxyAddress::try_from(format!("https://{}", self.address).as_str())
-            .unwrap()
-            .with_http_version(version)
+        with_version(
+            ProxyAddress::try_from(format!("https://{}", self.address).as_str()).unwrap(),
+            version,
+        )
+    }
+
+    fn localhost(&self) -> ProxyAddress {
+        ProxyAddress::try_from(format!("https://localhost:{}", self.address.port).as_str()).unwrap()
     }
 
     fn masque(&self, version: Version) -> ProxyAddress {
-        ProxyAddress::try_from(format!("h3+udp://{}", self.address).as_str())
-            .unwrap()
-            .with_http_version(version)
+        with_version(
+            ProxyAddress::try_from(format!("h3+udp://{}", self.address).as_str()).unwrap(),
+            version,
+        )
     }
 
     fn seen(&self) -> Vec<(Method, Version)> {
@@ -653,4 +752,15 @@ impl Drop for Tasks {
             task.abort();
         }
     }
+}
+
+fn with_version(mut proxy: ProxyAddress, version: Version) -> ProxyAddress {
+    let ProxyProtocol::Http {
+        version: pinned, ..
+    } = &mut proxy.protocol
+    else {
+        panic!("only an HTTP proxy speaks an HTTP version");
+    };
+    *pinned = Some(version);
+    proxy
 }

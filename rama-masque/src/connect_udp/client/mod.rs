@@ -15,6 +15,7 @@ use rama_core::{
 use rama_http::{
     Body, Request, Response, StatusCode, Version, conn::TargetHttpVersion,
     datagram::HttpDatagramSession, io::upgrade::handle_upgrade, proto::ext::HttpDatagrams,
+    proxy::ProxyRequestBody,
 };
 use rama_net::{
     address::{Host, ProxyAddress, SocketAddress},
@@ -62,15 +63,15 @@ pub const OUTER_IDLE_TIMEOUT: Duration = Duration::from_mins(3);
 /// connection when it can carry them. For HTTP/3 it needs an outer initial MTU of
 /// [`OUTER_INITIAL_MTU`].
 ///
-/// `B` is the body type of the connections towards the proxy, in which the CONNECT-UDP
-/// request is built: a client reaches its proxies with the body type it serves origins with.
+/// `B` is the body type of the connections towards the proxy: the CONNECT-UDP request
+/// carries its empty [`Default`] value.
 ///
 /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 /// [`MaybeProxiedConnector`]: rama_net::client::MaybeProxiedConnector
 /// [`ProxiedRoute`]: rama_net::client::ProxiedRoute
 /// [`ProxyDialer`]: rama_net::client::ProxyDialer
 #[derive(ExtensionsRef)]
-pub struct HttpConnectUdpProxyConnector<C, B = Body> {
+pub struct HttpConnectUdpProxyConnector<C, B = ProxyRequestBody<Body>> {
     inner: C,
     scope: WeakScope,
     socket: ConnectUdpSocketConfig,
@@ -172,7 +173,8 @@ where
             .map(|version| version.0)
             .unwrap_or(Version::HTTP_11);
         let request = connect_udp_request(proxy, &target, version)
-            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
+            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?
+            .map(|_empty| B::default());
         // The token defines datagram semantics (RFC 9297 §2): declare them for this request.
         request.extensions().insert(HttpDatagrams);
         request.extensions().insert(TargetHttpVersion(version));

@@ -11,7 +11,7 @@ use rama_core::service::service_fn;
 use rama_http::Version;
 use rama_net::{
     ConnectorTargetInputExt as _, TargetHttpVersionInputExt as _,
-    address::{HostWithPort, SocketAddress},
+    address::{HostWithPort, ProxyPathTemplate, ProxyProtocol, SocketAddress},
     client::{MaybeProxied, MaybeProxiedConnector, ProxiedRoute},
 };
 use rama_udp::test_utils::MemoryDatagramSocket;
@@ -35,11 +35,11 @@ struct RefusingConnection {
     extensions: Extensions,
 }
 
-impl Service<Request> for RefusingConnection {
+impl Service<Request<ProxyRequestBody<Body>>> for RefusingConnection {
     type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, _: Request) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, _: Request<ProxyRequestBody<Body>>) -> Result<Self::Output, Self::Error> {
         Err(BoxError::from_static_str("proxy connection refused"))
     }
 }
@@ -80,7 +80,7 @@ fn maybe_tunneled(
     MaybeProxiedConnector::new(
         counting_inner(connections),
         HttpConnectUdpProxyConnector::new(no_proxy(), WeakScope::detached()),
-        ProxiedRoute,
+        ProxiedRoute::new(),
     )
 }
 
@@ -142,11 +142,11 @@ struct AnsweringConnection {
     status: StatusCode,
 }
 
-impl Service<Request> for AnsweringConnection {
+impl Service<Request<ProxyRequestBody<Body>>> for AnsweringConnection {
     type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, _: Request) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, _: Request<ProxyRequestBody<Body>>) -> Result<Self::Output, Self::Error> {
         let mut response = Response::new(Body::empty());
         *response.status_mut() = self.status;
         Ok(response)
@@ -222,11 +222,14 @@ async fn a_tunnel_asks_the_proxy_connector_for_the_proxy_in_its_own_version() {
         let connector = HttpConnectUdpProxyConnector::new(proxy, WeakScope::detached());
 
         let input = request("example.com:443", None);
-        input.extensions.insert(ProxyRoute::Proxy(
-            ProxyAddress::try_from("h3+udp://proxy.example:443")
-                .unwrap()
-                .with_http_version(version),
-        ));
+        input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
+            protocol: ProxyProtocol::Http {
+                version: Some(version),
+                secure: true,
+                path_template: Some(ProxyPathTemplate::connect_udp_default()),
+            },
+            ..ProxyAddress::try_from("h3+udp://proxy.example:443").unwrap()
+        }));
         let error = connector.serve(input).await.unwrap_err();
 
         assert!(

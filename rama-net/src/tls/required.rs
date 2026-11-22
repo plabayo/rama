@@ -15,4 +15,12 @@ use rama_core::extensions::Extension;
 /// [`PlaintextProxyOnly`]: crate::client::PlaintextProxyOnly
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Extension)]
 #[extension(tags(net, tls), scope(connection))]
+#[non_exhaustive]
 pub struct TlsRequired;
+
+impl TlsRequired {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}

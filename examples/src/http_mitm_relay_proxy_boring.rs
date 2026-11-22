@@ -37,6 +37,7 @@
 //! curl -k -v -x http://127.0.0.1:12049 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 
+#![recursion_limit = "256"]
 #![expect(
     clippy::expect_used,
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
@@ -49,7 +50,7 @@ use rama::{
     graceful::Scope,
     http::{
         BodyLimitLayer, HeaderName, HeaderValue,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, ProxyConnector},
         layer::{
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
@@ -113,6 +114,9 @@ async fn main() -> Result<(), BoxError> {
             ),
             mitm_svc,
         );
+        let proxies = ProxyConnector::default_with_scope(weak_scope.clone())
+            .with_isolate_forward_proxy_auth_error(true);
+        let client = EasyHttpWebClient::default_using_proxies(weak_scope.clone(), proxies);
         let http_service = HttpServer::auto(weak_scope.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
@@ -138,7 +142,7 @@ async fn main() -> Result<(), BoxError> {
                     RemoveResponseHeaderLayer::hop_by_hop(),
                 ),
             )
-                .into_layer(EasyHttpWebClient::default_for_proxy_with_scope(weak_scope)),
+                .into_layer(client),
         ));
 
         tcp_service

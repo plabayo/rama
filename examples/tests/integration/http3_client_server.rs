@@ -10,7 +10,7 @@ use rama::{
     http::{
         Body, HeaderMap, Method, Request, Response, Version,
         body::{Frame, util::BodyExt as _},
-        client::EasyHttpConnectorBuilder,
+        client::EasyHttpWebClient,
         core::h3::{client as h3_client, connection::Config as H3Config},
         server::HttpServer,
         service::client::HttpClientExt as _,
@@ -255,7 +255,7 @@ async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<()
             let client_endpoint = Endpoint::build(WeakScope::detached())
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await?;
-            let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
+            let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
                 .with_default_tcp_connector()
                 .with_custom_quic_connector(SharedQuicEndpoint::supplied(
                     client_endpoint.clone(),
@@ -415,7 +415,7 @@ async fn http_client_preserves_explicit_tls_provider() -> Result<(), BoxError> {
             }
         });
     let transformed = Arc::new(Mutex::new(Vec::new()));
-    let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
         .with_default_proxy_support()

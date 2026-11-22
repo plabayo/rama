@@ -14,7 +14,7 @@ use rama::{
     extensions::Extensions,
     graceful::WeakScope,
     http::{
-        client::EasyHttpConnectorBuilder,
+        client::EasyHttpWebClient,
         conn::{HttpOrigin, HttpServiceCandidate, HttpServiceCandidates},
     },
     net::{
@@ -55,7 +55,7 @@ async fn main() -> Result<(), BoxError> {
         )],
     )
     .with_origin_fallback(false);
-    let client = EasyHttpConnectorBuilder::new(WeakScope::detached())
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .without_dns_connector()
         .without_proxy_support()

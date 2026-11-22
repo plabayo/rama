@@ -135,11 +135,12 @@ async fn exercise(version: Version, pooled: bool) {
         .with_default_connection_pool()
         .build_client()
         .boxed();
-    let quic = MockQuicConnectorService::new(quic_server_config(), |_: &ConnectRequest| {
+    let quic = MockQuicConnectorService::new(
+        quic_server_config(),
         HttpServer::new_http3(WeakScope::detached()).service(service_fn(|_: Request| async {
             Ok::<_, Infallible>(Response::new(Body::from("ok")))
-        }))
-    });
+        })),
+    );
     let quic = service_fn({
         let control = control.clone();
         let connections = connections.clone();

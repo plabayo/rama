@@ -29,7 +29,7 @@ use rama::{
     http::{
         Body, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
-        client::EasyHttpConnectorBuilder,
+        client::EasyHttpWebClient,
         conn::TargetHttpVersion,
         layer::{
             retry::{RetryBody, early_data::prepare_bodyless, managed::DoNotRetry},
@@ -120,7 +120,7 @@ async fn run(args: Args) -> Result<(), BoxError> {
     );
     let upstream = Arc::new(
         RewriteUriLayer::new(origin).into_layer(
-            EasyHttpConnectorBuilder::new(weak_scope.clone())
+            EasyHttpWebClient::connector_builder(weak_scope.clone())
                 .with_default_tcp_connector()
                 .without_dns_connector()
                 .without_proxy_support()
@@ -203,7 +203,7 @@ async fn run(args: Args) -> Result<(), BoxError> {
         Ok::<_, BoxError>(())
     });
 
-    let client = EasyHttpConnectorBuilder::new(weak_scope.clone())
+    let client = EasyHttpWebClient::connector_builder(weak_scope.clone())
         .with_default_quic_connector()
         .without_dns_connector()
         .without_proxy_support()

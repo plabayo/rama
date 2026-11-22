@@ -21,10 +21,7 @@ use rama::{
         grpc::{Status, codec::CompressionEncoding},
         layer::map_request_body::MapRequestBodyLayer,
     },
-    net::{
-        client::ConnectRequest,
-        test_utils::client::{MockConnectorService, MockSocket},
-    },
+    net::test_utils::client::{MakeMockServer, MockConnectorService, MockSocket},
     service::BoxService,
 };
 
@@ -144,10 +141,13 @@ pub(super) fn measure_request_body_size_layer(
 
 pub(super) type WebClient = BoxService<http::Request, http::Response, OpaqueError>;
 
-pub(super) fn mock_io_client<F, Server>(make_server: F) -> WebClient
+pub(super) fn mock_io_client<F, M>(make_server: F) -> WebClient
 where
-    F: Fn(&ConnectRequest) -> Server + Send + Sync + 'static,
-    Server: Service<MockSocket, Error: Into<BoxError>>,
+    F: MakeMockServer<MockSocket, M, Server: Service<MockSocket, Error: Into<BoxError>>>
+        + Send
+        + Sync
+        + 'static,
+    M: Send + Sync + 'static,
 {
     EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_custom_tcp_connector(MockConnectorService::new(make_server))

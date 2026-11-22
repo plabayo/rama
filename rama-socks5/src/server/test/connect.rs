@@ -597,19 +597,19 @@ fn carry_conn_fact(outer: &Extensions, nested: &Extensions) {
 #[tokio::test]
 async fn connect_tunnel_keeps_flow_facts_and_drops_connection_facts() {
     assert_eq!(
-        eager_tunnel_facts(DefaultExtensionsTransfer).await,
+        eager_tunnel_facts(DefaultExtensionsTransfer::new()).await,
         (false, true)
     );
     assert_eq!(
-        lazy_tunnel_facts(DefaultExtensionsTransfer).await,
+        lazy_tunnel_facts(DefaultExtensionsTransfer::new()).await,
         (false, true)
     );
 }
 
 #[tokio::test]
 async fn connect_tunnel_custom_transfer_carries_a_chosen_fact() {
-    let transfer = DefaultExtensionsTransfer.and(carry_conn_fact);
+    let transfer = DefaultExtensionsTransfer::new().and(carry_conn_fact);
     assert_eq!(eager_tunnel_facts(transfer).await, (true, true));
-    let transfer = DefaultExtensionsTransfer.and(carry_conn_fact);
+    let transfer = DefaultExtensionsTransfer::new().and(carry_conn_fact);
     assert_eq!(lazy_tunnel_facts(transfer).await, (true, true));
 }
