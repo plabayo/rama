@@ -127,7 +127,7 @@ compression-core = "0.4"
 const_format = "0.2"
 core-foundation = "0.10"
 csv = "1.4"
-dial9 = { version = "0.5.8", default-features = false, features = ["tokio"] }
+dial9 = { version = "0.5.9", default-features = false, features = ["tokio"] }
 dial9-trace-format = "0.5.5"
 divan = "0.1"
 fastbloom = { version = "0.17", default-features = false }
@@ -151,7 +151,7 @@ iri-string = "0.7"
 itertools = { version = "0.15", default-features = false }
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.7" }
-jiff = { version = "1.0.1", default-features = false, features = ["std", "serde", "perf-inline"] }
+jiff = { version = "1.0.2", default-features = false, features = ["std", "serde", "perf-inline"] }
 jni = "0.22"
 libc = "0.2"
 libfuzzer-sys = "0.4"
@@ -174,7 +174,7 @@ opentelemetry_sdk = { version = "0.33", default-features = false, features = ["t
 parking_lot = "0.13"
 percent-encoding = { version = "2.3", default-features = false }
 pin-project-lite = "0.2"
-postcard = { version = "1.1", default-features = false, features = ["alloc"] }
+postcard = { version = "1.2", default-features = false, features = ["alloc"] }
 prettyplease = "0.3"
 proc-macro-crate = "3.5"
 proc-macro2 = "1.0"
@@ -289,7 +289,7 @@ unicode-normalization = "0.1"
 uuid = "1.29"
 venndb = "0.7"
 want = "0.3.2"
-wasmtime = { version = "49.0.6", default-features = false }
+wasmtime = { version = "49.0.7", default-features = false }
 webpki-root-certs = "1.0"
 webpki-roots = "1.0.12"
 wildcard = "0.3"
@@ -474,10 +474,11 @@ tls = [
     "dep:base64",
     "dep:serde",
 ]
+native-certs = ["tls", "rama-tls/native-certs"]
 aws-lc = ["rama-crypto?/aws-lc", "rama-tls-rustls?/aws-lc", "rama-quic?/aws-lc"]
 ring = ["rama-crypto?/ring", "rama-tls-rustls?/ring", "rama-quic?/ring"]
-rustls = ["tls", "dep:rama-tls-rustls", "rama-quic?/rustls"]
-boring = ["tls", "dep:rama-tls-boring", "rama-quic?/boring"]
+rustls = ["native-certs", "dep:rama-tls-rustls", "rama-quic?/rustls"]
+boring = ["native-certs", "dep:rama-tls-boring", "rama-quic?/boring"]
 cli = [
     "std",
     "dep:base64",

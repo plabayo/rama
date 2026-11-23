@@ -64,6 +64,7 @@
 //! proxy must use a persistent CA trusted by its clients and an explicit
 //! interception policy.
 
+#![recursion_limit = "256"]
 #![expect(
     clippy::print_stdout,
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"

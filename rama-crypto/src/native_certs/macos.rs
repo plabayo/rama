@@ -1,10 +1,27 @@
 use ahash::HashMap;
-use security_framework::trust_settings::{Domain, TrustSettings, TrustSettingsForCertificate};
+use security_framework::{
+    base::Error as SecurityError,
+    trust_settings::{Domain, TrustSettings, TrustSettingsForCertificate},
+};
 
 use super::CertificateResult;
 use crate::pki_types::CertificateDer;
 
+#[derive(Clone, Copy)]
+enum LookupMode {
+    Static,
+    Reload,
+}
+
 pub(super) fn load_native_certs() -> CertificateResult {
+    load(LookupMode::Static)
+}
+
+pub(super) fn load_native_certs_for_validation() -> CertificateResult {
+    load(LookupMode::Reload)
+}
+
+fn load(mode: LookupMode) -> CertificateResult {
     // The various domains are designed to interact like this:
     //
     // "Per-user Trust Settings override locally administered Trust Settings,
@@ -21,36 +38,27 @@ pub(super) fn load_native_certs() -> CertificateResult {
         let iter = match ts.iter() {
             Ok(iter) => iter,
             Err(err) => {
-                result.os_error(
-                    err.into(),
-                    match domain {
-                        Domain::User => "failed to load user trust settings",
-                        Domain::Admin => "failed to load admin trust settings",
-                        Domain::System => "failed to load system trust settings",
-                    },
-                );
+                let context = match domain {
+                    Domain::User => "failed to load user trust settings",
+                    Domain::Admin => "failed to load admin trust settings",
+                    Domain::System => "failed to load system trust settings",
+                };
+                match mode {
+                    LookupMode::Static => result.os_error(err.into(), context),
+                    LookupMode::Reload => result.os_source_error(err.into(), context),
+                }
                 continue;
             }
         };
 
         for cert in iter {
-            let der = cert.to_der();
-
-            // If there are no specific trust settings, the default is to trust
-            // the certificate as a root cert. The docs say:
-            //
-            // "Note that an empty Trust Settings array means 'always trust this
-            //  cert, with a resulting kSecTrustSettingsResult of
-            //  kSecTrustSettingsResultTrustRoot'."
-            let trusted = match ts.tls_trust_settings_for_certificate(&cert) {
-                Ok(trusted) => trusted.unwrap_or(TrustSettingsForCertificate::TrustRoot),
-                Err(err) => {
-                    result.os_error(err.into(), "certificate not trusted");
-                    continue;
-                }
-            };
-
-            all_certs.entry(der).or_insert(trusted);
+            record_trust_setting(
+                &mut all_certs,
+                cert.to_der(),
+                ts.tls_trust_settings_for_certificate(&cert),
+                mode,
+                &mut result,
+            );
         }
     }
 
@@ -64,4 +72,70 @@ pub(super) fn load_native_certs() -> CertificateResult {
     }
 
     result
+}
+
+fn record_trust_setting(
+    all_certs: &mut HashMap<Vec<u8>, TrustSettingsForCertificate>,
+    der: Vec<u8>,
+    lookup: Result<Option<TrustSettingsForCertificate>, SecurityError>,
+    mode: LookupMode,
+    result: &mut CertificateResult,
+) {
+    // SecTrustSettingsCopyTrustSettings uses this status when a certificate
+    // has no settings in the requested domain, including concurrent removal.
+    const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+    let trusted = match (lookup, mode) {
+        // An empty trust settings array defaults to always trusting this root.
+        (Ok(trusted), _) => trusted.unwrap_or(TrustSettingsForCertificate::TrustRoot),
+        (Err(err), LookupMode::Static) => {
+            result.os_error(err.into(), "certificate not trusted");
+            return;
+        }
+        (Err(err), LookupMode::Reload) if err.code() == ERR_SEC_ITEM_NOT_FOUND => return,
+        (Err(err), LookupMode::Reload) => {
+            result.os_error(err.into(), "failed to read certificate trust settings");
+            // Do not accept this root from a later domain when overriding
+            // settings could not be determined.
+            TrustSettingsForCertificate::Deny
+        }
+    };
+
+    all_certs.entry(der).or_insert(trusted);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_reload_blocks_lower_domain_trust_after_an_item_lookup_failure() {
+        // errSecNotAvailable is a failed lookup, rather than a missing item.
+        const ERR_SEC_NOT_AVAILABLE: i32 = -25291;
+        for (mode, expected) in [
+            (LookupMode::Static, TrustSettingsForCertificate::TrustRoot),
+            (LookupMode::Reload, TrustSettingsForCertificate::Deny),
+        ] {
+            let der = vec![1, 2, 3];
+            let mut certs = HashMap::default();
+            let mut result = CertificateResult::default();
+            record_trust_setting(
+                &mut certs,
+                der.clone(),
+                Err(SecurityError::from_code(ERR_SEC_NOT_AVAILABLE)),
+                mode,
+                &mut result,
+            );
+            record_trust_setting(
+                &mut certs,
+                der.clone(),
+                Ok(Some(TrustSettingsForCertificate::TrustRoot)),
+                mode,
+                &mut result,
+            );
+            assert_eq!(certs.remove(&der), Some(expected));
+            assert_eq!(result.errors.len(), 1);
+            assert_eq!(result.source_error, None);
+        }
+    }
 }

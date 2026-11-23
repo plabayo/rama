@@ -28,15 +28,16 @@ use rama_tls::client::{
     resolve_target_ech,
 };
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
-use std::{fmt, sync::Arc};
+use std::{fmt, num::NonZeroUsize, sync::Arc};
 
 #[cfg(feature = "http")]
 use super::set_alpn_with_coupled_alps;
 use super::{
-    AutoTlsStream, BoringTlsClientConfigProvider, BoringTlsConnectorConfig, ServerAnswerRecorder,
-    TlsClientSessionStore, TlsConnectorData,
+    AutoTlsStream, BoringServerTrustCache, BoringTlsClientConfigProvider, BoringTlsConnectorConfig,
+    ServerAnswerRecorder, TlsClientSessionStore, TlsConnectorData,
     session::{ConnectorSessions, SessionStore},
     set_alpn_list_with_coupled_alps,
+    verification::DEFAULT_CACHE_CAPACITY,
 };
 
 use crate::{TlsStream, type_conversion::peer_certificate_chain};
@@ -57,6 +58,7 @@ use rama_tls::{
 pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
     base: Option<TlsClientConfig>,
     session_store: Option<SessionStore>,
+    server_trust_cache_capacity: NonZeroUsize,
     kind: PhantomData<K>,
 }
 
@@ -85,6 +87,14 @@ impl<K> TlsConnectorLayer<K> {
             self
         }
     );
+
+    generate_set_and_with!(
+        /// Set the derived server trust cache capacity of each new connector.
+        pub fn server_trust_cache_capacity(mut self, capacity: NonZeroUsize) -> Self {
+            self.server_trust_cache_capacity = capacity;
+            self
+        }
+    );
 }
 
 impl TlsConnectorLayer<ConnectorKindAuto> {
@@ -97,6 +107,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
         Self {
             base: None,
             session_store: None,
+            server_trust_cache_capacity: DEFAULT_CACHE_CAPACITY,
             kind: PhantomData,
         }
     }
@@ -110,6 +121,7 @@ impl TlsConnectorLayer<ConnectorKindSecure> {
         Self {
             base: None,
             session_store: None,
+            server_trust_cache_capacity: DEFAULT_CACHE_CAPACITY,
             kind: PhantomData,
         }
     }
@@ -123,6 +135,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
             inner,
             base_config: self.base.clone(),
             sessions: connector_sessions(self.session_store.clone()),
+            server_trust: BoringServerTrustCache::new(self.server_trust_cache_capacity),
             kind: PhantomData,
         }
     }
@@ -132,6 +145,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
             inner,
             base_config: self.base,
             sessions: connector_sessions(self.session_store),
+            server_trust: BoringServerTrustCache::new(self.server_trust_cache_capacity),
             kind: PhantomData,
         }
     }
@@ -155,6 +169,7 @@ pub struct TlsConnector<S, K = ConnectorKindAuto> {
     inner: S,
     base_config: Option<TlsClientConfig>,
     sessions: Option<Arc<ConnectorSessions>>,
+    server_trust: BoringServerTrustCache,
     kind: PhantomData<K>,
 }
 
@@ -171,6 +186,7 @@ impl<S, K> TlsConnector<S, K> {
             inner,
             base_config: None,
             sessions: None,
+            server_trust: BoringServerTrustCache::new(DEFAULT_CACHE_CAPACITY),
             kind: PhantomData,
         }
     }
@@ -200,6 +216,15 @@ impl<S, K> TlsConnector<S, K> {
             self
         }
     );
+
+    generate_set_and_with!(
+        /// Replace this connector's derived server trust cache with one of the given capacity.
+        /// Cloning the connector shares the cache. The default holds eight derived stores.
+        pub fn server_trust_cache_capacity(mut self, capacity: NonZeroUsize) -> Self {
+            self.server_trust = BoringServerTrustCache::new(capacity);
+            self
+        }
+    );
 }
 
 impl<S> TlsConnector<S, ConnectorKindAuto> {
@@ -219,6 +244,7 @@ impl<S> TlsConnector<S, ConnectorKindAuto> {
             inner: self.inner,
             base_config: self.base_config,
             sessions: self.sessions,
+            server_trust: self.server_trust,
             kind: PhantomData,
         }
     }
@@ -459,37 +485,41 @@ impl<S, K> TlsConnector<S, K> {
     {
         let mut retry_config: Option<EchRetryConfig> = None;
         loop {
-            let authority = input.target_authority().ok_or_else(|| {
-                ConnectionError::local(
-                    BoxError::from_static_str("TLS origin authority missing"),
-                    ConnectionErrorKind::InvalidInput,
-                )
-            })?;
-            let mut data = self
-                .connector_data(
-                    input.extensions(),
-                    input.target_protocol(),
-                    Some(&authority.host),
-                )
-                .map_err(|error| {
-                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+            let (data, scope) = {
+                let authority = input.target_authority().ok_or_else(|| {
+                    ConnectionError::local(
+                        BoxError::from_static_str("TLS origin authority missing"),
+                        ConnectionErrorKind::InvalidInput,
+                    )
                 })?;
-            let effective = self.effective_extensions(input.extensions());
-            if let Some(target) = &target {
-                if let Some(retry) = &retry_config {
-                    retry.apply(&effective, target.clone());
-                }
-                data.configure_target_ech(&effective, target)
+                let mut data = self
+                    .connector_data(
+                        input.extensions(),
+                        input.target_protocol(),
+                        Some(&authority.host),
+                    )
+                    .await
                     .map_err(|error| {
                         ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     })?;
-            }
-            let scope = Self::check_connection_identity(
-                &input,
-                data.server_verify_mode,
-                data.server_name.as_ref(),
-                &authority.host,
-            )?;
+                if let Some(target) = &target {
+                    let effective = self.effective_extensions(input.extensions());
+                    if let Some(retry) = &retry_config {
+                        retry.apply(&effective, target.clone());
+                    }
+                    data.configure_target_ech(&effective, target)
+                        .map_err(|error| {
+                            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                        })?;
+                }
+                let scope = Self::check_connection_identity(
+                    &input,
+                    data.server_verify_mode,
+                    data.server_name.as_ref(),
+                    &authority.host,
+                )?;
+                (data, scope)
+            };
             let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
             match handshake(data, conn).await {
                 Ok((stream, negotiated_params)) => {
@@ -523,13 +553,19 @@ impl<S, K> TlsConnector<S, K> {
         }
     }
 
-    fn build_connector_data(
+    async fn build_connector_data(
         &self,
-        config: BoringTlsConnectorConfig<'_>,
+        extensions: &Extensions,
     ) -> Result<TlsConnectorData, BoxError> {
+        let verification = self
+            .server_trust
+            .server_verification_async(extensions)
+            .await?;
+        let config = BoringTlsConnectorConfig::from_extensions(extensions);
+        let prepared = verification.as_ref();
         match &self.sessions {
-            Some(sessions) => sessions.connector_data(config),
-            None => TlsConnectorData::try_from(config),
+            Some(sessions) => sessions.connector_data(config, prepared),
+            None => TlsConnectorData::from_config(&config, prepared, Some(&self.server_trust)),
         }
     }
 
@@ -620,7 +656,7 @@ impl<S, K> TlsConnector<S, K> {
         Ok(scope)
     }
 
-    fn connector_data(
+    async fn connector_data(
         &self,
         request_extensions: &Extensions,
         application_protocol: Option<&Protocol>,
@@ -639,8 +675,7 @@ impl<S, K> TlsConnector<S, K> {
             request_extensions.get_ref::<TlsAlpn>(),
         )?;
 
-        let config = BoringTlsConnectorConfig::from_extensions(&extensions);
-        let mut data = self.build_connector_data(config)?;
+        let mut data = self.build_connector_data(&extensions).await?;
 
         // A configured server identity overrides the transport host.
         if data.server_name.is_none() {
@@ -971,6 +1006,47 @@ pub struct ConnectorKindSecure;
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn derived_server_verification_is_shared_only_by_connector_clones() -> Result<(), BoxError>
+    {
+        use rama_core::combinators::Either;
+
+        let config = TlsClientConfig::new().try_with_server_trust_anchors(
+            rama_crypto::native_certs::bundled_root_certs()[..1]
+                .iter()
+                .cloned(),
+        )?;
+        let policy = config.as_extensions();
+        let layer = TlsConnectorLayer::secure().with_server_trust_cache_capacity(NonZeroUsize::MIN);
+        let original_owner = layer.layer(());
+        let clone = original_owner.clone();
+        let other = layer.layer(());
+
+        let acquired = |connector: &TlsConnector<(), ConnectorKindSecure>| {
+            let result = connector.server_trust.server_verification(policy)?;
+            match result {
+                Some(Either::A(store)) => Ok(store),
+                _ => Err(BoxError::from_static_str("expected BoringSSL root store")),
+            }
+        };
+
+        let original = acquired(&original_owner)?;
+        assert!(Arc::ptr_eq(&original, &acquired(&clone)?));
+        assert!(!Arc::ptr_eq(&original, &acquired(&other)?));
+        let first = original_owner.build_connector_data(policy).await?;
+        let repeated = clone.build_connector_data(policy).await?;
+        let separate = other.build_connector_data(policy).await?;
+        assert!(std::ptr::eq(
+            first.config.ssl_context(),
+            repeated.config.ssl_context()
+        ));
+        assert!(!std::ptr::eq(
+            first.config.ssl_context(),
+            separate.config.ssl_context()
+        ));
+        Ok(())
+    }
+
     use super::*;
     use rama_core::extensions::NoExtensionsTransfer;
     #[cfg(feature = "http")]
@@ -1233,21 +1309,22 @@ mod tests {
         server_identity_for(&host).unwrap_err();
     }
 
-    #[test]
-    fn connector_data_keeps_transport_ip_as_server_identity() {
+    #[tokio::test]
+    async fn connector_data_keeps_transport_ip_as_server_identity() {
         let connector = TlsConnector::secure(());
         let extensions = Extensions::new();
         let host = Host::from(std::net::Ipv4Addr::LOCALHOST);
 
         let data = connector
             .connector_data(&extensions, None, Some(&host))
+            .await
             .expect("connector data");
 
         assert_eq!(data.server_name, Some(host));
     }
 
-    #[test]
-    fn request_ech_intent_overrides_the_connector_default() {
+    #[tokio::test]
+    async fn request_ech_intent_overrides_the_connector_default() {
         let shape = EchGrease::Shape {
             kdf_id: 1,
             aead_id: 3,
@@ -1267,6 +1344,7 @@ mod tests {
                 let data = TlsConnector::secure(())
                     .with_base_config(base)
                     .connector_data(request.as_extensions(), None, None)
+                    .await
                     .expect("connector data");
                 let outer = hello_from_data(data)
                     .extensions()

@@ -1,7 +1,6 @@
 use super::{IntoResponse, IntoResponseFailed};
 use crate::headers::ContentType;
 use crate::{Body, Response, StatusCode};
-use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::error::BoxError;
 use rama_utils::macros::impl_deref;
 use serde::Serialize;
@@ -69,9 +68,9 @@ where
 {
     fn into_response(self) -> Response {
         // Extracted into separate fn so it's only compiled once for all T.
-        fn make_response(buf: BytesMut, ser_result: serde_json::Result<()>) -> Response {
-            match ser_result {
-                Ok(()) => (Headers::single(ContentType::json()), buf.freeze()).into_response(),
+        fn make_response(result: serde_json::Result<Vec<u8>>) -> Response {
+            match result {
+                Ok(buf) => (Headers::single(ContentType::json()), buf).into_response(),
                 Err(err) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Headers::single(ContentType::text_utf8()),
@@ -81,11 +80,7 @@ where
                     .into_response(),
             }
         }
-        // Use a small initial capacity of 128 bytes like serde_json::to_vec
-        // https://docs.rs/serde_json/1.0.82/src/serde_json/ser.rs.html#2189
-        let mut buf = BytesMut::with_capacity(128).writer();
-        let res = serde_json::to_writer(&mut buf, &self.0);
-        make_response(buf.into_inner(), res)
+        make_response(serde_json::to_vec(&self.0))
     }
 }
 
@@ -96,12 +91,6 @@ where
     type Error = BoxError;
 
     fn try_from(json: Json<T>) -> Result<Self, Self::Error> {
-        // Use a small initial capacity of 128 bytes like serde_json::to_vec
-        // https://docs.rs/serde_json/1.0.82/src/serde_json/ser.rs.html#2189
-        let mut buf = BytesMut::with_capacity(128).writer();
-        match serde_json::to_writer(&mut buf, &json.0) {
-            Ok(()) => Ok(buf.into_inner().freeze().into()),
-            Err(err) => Err(BoxError::from(err)),
-        }
+        Ok(serde_json::to_vec(&json.0)?.into())
     }
 }

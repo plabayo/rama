@@ -591,7 +591,7 @@ mod tests {
         let window = cubic.window;
 
         // After ten days without a congestion event, w_cubic exceeds u64::MAX.
-        let later = now + Duration::from_secs(10 * 24 * 60 * 60);
+        let later = now + Duration::from_hours(10 * 24);
         for _ in 0..window / BASE_DATAGRAM_SIZE {
             cubic.on_ack(later, later, BASE_DATAGRAM_SIZE, false, &rtt);
         }

@@ -19,6 +19,13 @@ mod client;
 #[cfg(all(feature = "http-full", feature = "rustls", feature = "aws-lc"))]
 mod tls_close_notify;
 
+#[cfg(all(
+    feature = "boring",
+    feature = "rustls",
+    any(feature = "ring", feature = "aws-lc")
+))]
+mod native_trust_reload;
+
 #[cfg(all(feature = "dns", feature = "tcp"))]
 mod localhost;
 

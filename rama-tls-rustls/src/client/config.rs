@@ -114,7 +114,7 @@ impl RustlsTlsConnectorConfig<'_> {
             || self.server_cert_chain_policy.is_some()
             || self
                 .server_trust
-                .is_some_and(|trust| *trust.source() == ServerTrustSource::Platform)
+                .is_some_and(|trust| matches!(trust.source(), ServerTrustSource::Platform(_)))
             || self.server_cert_pins.is_some_and(|pins| {
                 pins.check(Some(name), leaf) == TlsServerCertPinCheck::Mismatched
             })
@@ -160,6 +160,9 @@ impl RustlsTlsConnectorConfig<'_> {
 
     /// Build a native TLS client configuration using the supplied cryptographic provider.
     ///
+    /// The resulting native config is pinned to the selected trust generation.
+    /// Use [`super::TlsConnector`] to apply reloadable policies on every connection.
+    ///
     /// This does not read or install the process-wide default provider. Certificate
     /// verification uses the same provider. The modify hook runs last and may replace
     /// the configuration, including its provider.
@@ -167,7 +170,18 @@ impl RustlsTlsConnectorConfig<'_> {
         self,
         provider: Arc<crate::dep::rustls::crypto::CryptoProvider>,
     ) -> Result<ClientConfig, BoxError> {
-        super::connector_data::build_client_config(&self, Some(provider))
+        super::connector_data::build_client_config(&self, Some(provider), None)
+    }
+
+    /// Build a native client configuration with the supplied server verification.
+    ///
+    /// Acquire the verifier or store for the same policy as this configuration.
+    pub fn try_into_client_config_with_verification(
+        self,
+        provider: Arc<crate::dep::rustls::crypto::CryptoProvider>,
+        verification: &super::RustlsServerVerification,
+    ) -> Result<ClientConfig, BoxError> {
+        super::connector_data::build_client_config(&self, Some(provider), Some(verification))
     }
 }
 

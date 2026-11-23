@@ -79,3 +79,5 @@ The `rama` CLI supports HTTP/3 too: `rama send --http3 <url>` requires it, and
   terminate HTTP/3 for selected server names and forward the rest.
 - [/examples/src/masque_connect_udp_proxy.rs](https://github.com/plabayo/rama/blob/main/examples/src/masque_connect_udp_proxy.rs):
   HTTP/3 through a CONNECT-UDP proxy.
+- [/examples/src/masque_proxy_chain.rs](https://github.com/plabayo/rama/blob/main/examples/src/masque_proxy_chain.rs):
+  a two-hop MASQUE proxy chain, each hop a tunnel inside the one before it.

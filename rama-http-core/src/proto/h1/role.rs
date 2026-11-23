@@ -1048,8 +1048,6 @@ impl Http1Transaction for Client {
 
             let mut headers =
                 HeaderMap::try_with_capacity(headers_len).map_err(|_error| Parse::TooLarge)?;
-            let mut resp_is_te_chunked = false;
-            let mut resp_has_cl = false;
             let mut saw_chunked = false;
 
             for header in &headers_indices[..headers_len] {
@@ -1076,11 +1074,6 @@ impl Http1Transaction for Client {
                         debug!("response: rejecting Transfer-Encoding with duplicate `chunked`");
                         return Err(Parse::transfer_encoding_invalid());
                     }
-                    if headers::is_chunked_(&value) {
-                        resp_is_te_chunked = true;
-                    }
-                } else if name == header::CONTENT_LENGTH {
-                    resp_has_cl = true;
                 }
 
                 headers
@@ -1088,15 +1081,9 @@ impl Http1Transaction for Client {
                     .map_err(|_error| Parse::TooLarge)?;
             }
 
-            // RFC 9112 §6.1: if a response carries both Content-Length and
-            // `Transfer-Encoding: chunked`, the recipient MUST process per
-            // Transfer-Encoding and the CL MUST NOT be forwarded. Strip it
-            // here so a downstream proxy hop cannot be desynced.
-            if resp_is_te_chunked && resp_has_cl {
-                let removed = headers.remove(&header::CONTENT_LENGTH).is_some() as usize;
-                debug!(
-                    "response: stripped {removed} Content-Length header(s) alongside Transfer-Encoding: chunked (RFC 9112 §6.1)"
-                );
+            // RFC 9112 §6.3: any transfer coding takes precedence over Content-Length.
+            if headers.contains_key(header::TRANSFER_ENCODING) {
+                headers.remove(header::CONTENT_LENGTH);
             }
 
             // Extensions are ready for use and don't need to do any special wrapping here
@@ -1329,7 +1316,7 @@ impl Client {
         }
 
         // HTTP/1.0 doesn't know about chunked
-        let can_chunked = head.version == Version::HTTP_11;
+        let can_chunked = matches!(head.version, Version::HTTP_11 | Version::HTTP_2);
         let headers = &mut head.headers;
         let connection_header_names = headers::connection_header_names(headers);
 
@@ -5051,6 +5038,10 @@ mod tests {
             .expect("parse ok")
             .expect("parse complete")
         }
+
+        let msg = parse("HTTP/1.1 200 OK\r\ntransfer-encoding: gzip\r\ncontent-length: 12\r\n\r\n");
+        assert_eq!(msg.decode, DecodedLength::CLOSE_DELIMITED);
+        assert!(!msg.head.headers.contains_key(header::CONTENT_LENGTH));
 
         // TE chunked before CL
         let msg = parse(

@@ -1,7 +1,7 @@
 """Check retained QPACK field metadata against raw, decrypted HEADERS bytes.
 
 The byte parser is independent of Rama. Tshark supplies decoded HTTP fields;
-explicitly blocked heads use independent ls-qpack with native encoder witnesses.
+blocked heads and retransmission-affected dynamic heads use independent ls-qpack.
 We read field-line prefixes, indexes, Huffman flags and never-index bits ourselves.
 Literal contents are discarded. This verifies capture accuracy, not equivalence
 between compression states on different connections. Replay policy additionally

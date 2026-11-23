@@ -43,14 +43,22 @@ To choose a certificate per connection:
 
 Clients verify servers against a `ServerTrustSource`:
 
-- `Native` (default): the operating system's root store, read once, with the
+- `Native` (default): a snapshot of the operating system's root store, with the
   `SSL_CERT_FILE` / `SSL_CERT_DIR` overrides. If no native roots are found, the bundled
-  WebPKI roots are used.
+  WebPKI roots are used when there are no replacement paths. Long-running clients
+  can opt into reloads for new handshakes. See the
+  [native trust policy API](https://ramaproxy.org/docs/rama/tls/client/struct.NativeTrustPolicy.html).
 - `WebPki`: the bundled Mozilla roots, independent of the host.
 - `Custom`: only the trust anchors you supply.
 - `Platform`: the operating system's verifier decides (Apple platforms, Windows and Android).
   This follows enterprise trust settings and the platform's distrust and revocation policy.
+  With reloading enabled, Rama refreshes only the application’s extra roots from
+  `SSL_CERT_EXTRA_FILE` and `SSL_CERT_EXTRA_DIR`. The OS continues to evaluate its own trust store.
+  On targets without an OS verifier, `Platform` falls back to the full native snapshot.
+  See the [platform trust policy](https://ramaproxy.org/docs/rama/tls/client/struct.PlatformTrustPolicy.html).
 
+The root crate’s `native-certs` feature exposes trust policy and root loading
+independently of the TLS backend. Both `rustls` and `boring` enable it.
 The loaders and the platform verifier live in
 [`rama::crypto`](https://ramaproxy.org/docs/rama/crypto/index.html) and work with both
 backends.

@@ -1629,6 +1629,49 @@ fn a_pending_attempt_survives_its_server_config_being_cleared() {
     pair.server.reject(incoming);
 }
 
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[test]
+fn server_reports_negotiated_alpn_after_hello_retry() {
+    use rama_tls_rustls::dep::rustls::NamedGroup;
+
+    let provider = crypto::rustls::configured_provider();
+    let mut server = (*provider).clone();
+    server
+        .kx_groups
+        .retain(|group| group.name() == NamedGroup::secp256r1);
+    let mut client = (*provider).clone();
+    client
+        .kx_groups
+        .retain(|group| matches!(group.name(), NamedGroup::X25519 | NamedGroup::secp256r1));
+    client
+        .kx_groups
+        .sort_by_key(|group| group.name() != NamedGroup::X25519);
+    let alpn = || Some(vec![b"h3".to_vec()]);
+    let server = server_crypto_with_provider(Arc::new(server), None, alpn());
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        ServerConfig::with_crypto(Arc::new(server)),
+    );
+    let client = client_crypto_with_provider(Arc::new(client), None, alpn());
+    pair.begin_connect(ClientConfig::new(Arc::new(client)));
+    let mut ready = false;
+    while pair.step() {
+        for conn in pair.server.connections.values_mut() {
+            while let Some(event) = conn.poll() {
+                if matches!(event, Event::HandshakeDataReady) {
+                    let summary = conn.crypto_session().handshake_summary().unwrap();
+                    assert_eq!(
+                        summary.application_layer_protocol,
+                        Some(rama_net::tls::ApplicationProtocol::from(&b"h3"[..]))
+                    );
+                    ready = true;
+                }
+            }
+        }
+    }
+    assert!(ready);
+}
+
 #[test]
 fn alpn_success() {
     let _guard = subscribe();

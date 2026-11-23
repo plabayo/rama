@@ -18,22 +18,10 @@ use rama_core::{
 ))]
 use rama_core::error::BoxErrorExt as _;
 
-#[cfg(any(
-    test,
-    target_vendor = "apple",
-    target_os = "android",
-    target_os = "windows",
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd",
-    target_os = "dragonfly"
-))]
-use crate::address::Host;
 use crate::{
     Protocol,
     address::{
-        HostPattern, HostRef,
+        Host, HostPattern, HostRef,
         ip::{IntoCanonicalIpAddr as _, ipnet::IpNet, parse_ip_net},
     },
     input_ext::{AuthorityInputExt, ProtocolInputExt},

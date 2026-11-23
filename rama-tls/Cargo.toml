@@ -29,10 +29,12 @@ default = []
 dns = ["dep:rama-dns"]
 inspect = ["dep:rama-inspect"]
 http = []
+native-certs = ["dep:arc-swap", "rama-crypto/native-certs", "tokio/rt", "tokio/signal"]
 dial9 = ["dep:dial9-trace-format", "rama-core/dial9"]
 
 [dependencies]
 ahash = { workspace = true }
+arc-swap = { workspace = true, optional = true }
 base64 = { workspace = true, default-features = true }
 bytes = { workspace = true, features = ["std"] }
 dial9-trace-format = { workspace = true, optional = true }

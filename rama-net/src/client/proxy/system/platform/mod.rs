@@ -17,6 +17,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use rama_core::error::BoxError;
 #[cfg(any(
     test,
     target_vendor = "apple",
@@ -28,8 +29,7 @@ use std::sync::{
     target_os = "openbsd",
     target_os = "dragonfly"
 ))]
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxErrorExt as _, ErrorContext};
 #[cfg(any(
     test,
     target_vendor = "apple",

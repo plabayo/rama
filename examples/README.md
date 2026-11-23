@@ -141,6 +141,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 - [`socks5_bind_proxy.rs`](./src/socks5_bind_proxy.rs) -
   SOCKS5 BIND proxy implementation showing how to run it from both client and server
 - [`masque_connect_udp_proxy.rs`](./src/masque_connect_udp_proxy.rs) - CONNECT-UDP proxy (RFC 9298, part of MASQUE) and client: HTTP/3 through its tunnels, next to ordinary CONNECT, on one port (executable end-to-end coverage in the integration suite)
+- [`masque_proxy_chain.rs`](./src/masque_proxy_chain.rs) - two-hop MASQUE proxy chain: the client reaches the origin through hop B, and hop B through hop A, each tunnel inside the one before it (executable end-to-end coverage in the integration suite)
 - [`socks5_udp_associate.rs`](./src/socks5_udp_associate.rs) -
   SOCKS5 UDP Associate client+server example w/ sync inspector added
 - [`socks5_udp_associate_framed.rs`](./src/socks5_udp_associate_framed.rs) -

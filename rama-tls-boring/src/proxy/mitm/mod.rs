@@ -19,9 +19,16 @@ use rama_tls::{
     server::SelfSignedCaConfig,
 };
 use rama_utils::str::any_submatch_ignore_ascii_case;
-use std::{fmt, num::NonZeroU64, slice, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    num::{NonZeroU64, NonZeroUsize},
+    slice,
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::certificate_compression::add_certificate_compressors;
+use crate::client::BoringServerTrustCache;
 use crate::core::ssl::{
     ExtensionType, SslAcceptor, SslMethod, SslOptions, SslRef, SslSessionCacheMode, SslVersion,
 };
@@ -104,6 +111,7 @@ pub struct TlsMitmRelay<Issuer> {
     grease_enabled: bool,
     keylog_intent: KeyLogIntent,
     egress_server_auth: Option<TlsMitmEgressServerAuth>,
+    egress_server_trust: BoringServerTrustCache,
     client_auth: Option<TlsMitmClientAuthPolicy>,
     handshake_timeout: Option<Duration>,
     acceptors: Option<Cache<AcceptorKey, SslAcceptor>>,
@@ -135,9 +143,19 @@ impl<Issuer> TlsMitmRelay<Issuer> {
             grease_enabled: true,
             keylog_intent: KeyLogIntent::Environment,
             egress_server_auth: None,
+            egress_server_trust: BoringServerTrustCache::default(),
             client_auth: None,
             handshake_timeout: Some(Duration::from_secs(30)),
             acceptors: Some(build_acceptor_cache(MitmAcceptorCacheConfig::default())),
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Replace the relay's derived egress trust cache with one of the given capacity.
+        /// Clones share the cache. The default holds eight derived stores.
+        pub fn server_trust_cache_capacity(mut self, capacity: NonZeroUsize) -> Self {
+            self.egress_server_trust = BoringServerTrustCache::new(capacity);
+            self
         }
     }
 

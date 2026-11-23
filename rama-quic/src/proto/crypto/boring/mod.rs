@@ -1,10 +1,15 @@
+use rama_core::combinators::Either;
+use rama_crypto::{dep::boring::x509::store::X509Store, platform_verifier::PlatformVerifier};
 use rama_quic_proto::{
     Side, Version,
     capture::{CaptureError, InitialKeys, KeyProvider},
     crypto::{HeaderKey, PacketKey},
 };
+use std::sync::Arc;
 
 use crate::{profile::capture, tls::BoringTlsProvider};
+
+pub(crate) type ServerVerification = Either<Arc<X509Store>, Arc<PlatformVerifier>>;
 
 mod config;
 #[cfg(test)]

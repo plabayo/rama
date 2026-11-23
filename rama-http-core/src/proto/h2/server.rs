@@ -405,7 +405,7 @@ where
                 if content_length.is_some_and(|len| len != 0) {
                     warn!("h2 connect request with non-zero body not supported");
                     respond.send_reset(Reason::INTERNAL_ERROR);
-                    return Poll::Ready(Ok(()));
+                    continue;
                 }
                 let extended = parts.extensions.contains::<Protocol>();
                 let (pending, upgrade) = upgrade::pending();

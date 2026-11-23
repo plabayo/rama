@@ -85,6 +85,8 @@
 //! notice that if you try to send for exampel plain-text HTTP traffic over it,
 //! that the connection will be simply aborted.
 
+#![recursion_limit = "256"]
+
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, extra::OpaqueError},

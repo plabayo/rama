@@ -169,6 +169,9 @@ impl Pair {
             .await
             .unwrap();
         let server = accept.await.unwrap();
+        // The server can finish before HANDSHAKE_DONE reaches the client.
+        // A ready pair must admit ordinary requests immediately.
+        client.handshake_confirmed().await.unwrap();
         Self {
             client_endpoint,
             server_endpoint,

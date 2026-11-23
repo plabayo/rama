@@ -174,6 +174,7 @@ def capture_tls(args):
                 try:
                     result = run_capture_flow(
                         browser, f"https://localhost:{port}", expected_protocol=args.protocol,
+                        wait_for_assets=True,
                     )
                     write_driver_result(root / "page-result.json", result)
                 finally:

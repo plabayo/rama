@@ -5,6 +5,7 @@ use rama_boring::{
 };
 use rama_core::bytes::Bytes;
 use rama_core::conversion::RamaFrom;
+use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, Extensions, FromExtensions};
 use rama_crypto::pki_types::CertificateDer;
 use rama_net::{
@@ -83,7 +84,68 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub max_version: Option<&'a BoringMaxVersion>,
 }
 
+#[derive(Clone, Eq, Hash, PartialEq)]
+enum VerificationScope {
+    Roots(TlsComponentIdentity<rama_boring::x509::store::X509Store>),
+    Platform(TlsComponentIdentity<rama_crypto::platform_verifier::PlatformVerifier>),
+}
+
+impl VerificationScope {
+    fn new(verification: &super::BoringServerVerification) -> Self {
+        match verification {
+            rama_core::combinators::Either::A(store) => {
+                Self::Roots(TlsComponentIdentity::shared(store))
+            }
+            rama_core::combinators::Either::B(verifier) => {
+                Self::Platform(TlsComponentIdentity::shared(verifier))
+            }
+        }
+    }
+}
+
+impl TlsPoolComponent for VerificationScope {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self::Identity {
+        self.clone()
+    }
+}
+
 impl BoringTlsConnectorConfig<'_> {
+    pub(super) fn acquire_verification(
+        &self,
+        verification: Option<&super::BoringServerVerification>,
+    ) -> Result<Option<super::BoringServerVerification>, BoxError> {
+        if !Self::uses_common_server_trust(self.verify, self.verify_cert_store.is_some()) {
+            return Ok(None);
+        }
+        if let Some(verification) = verification {
+            return Ok(Some(verification.clone()));
+        }
+        self.server_trust
+            .map(super::verification::acquire)
+            .transpose()
+    }
+
+    pub(super) fn common_server_trust(extensions: &Extensions) -> Option<&TlsServerTrust> {
+        if Self::uses_common_server_trust_in(extensions) {
+            extensions.get_ref::<TlsServerTrust>()
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn uses_common_server_trust_in(extensions: &Extensions) -> bool {
+        Self::uses_common_server_trust(
+            extensions.get_ref::<TlsServerVerify>(),
+            extensions.contains::<BoringServerVerifyCertStore>(),
+        )
+    }
+
+    fn uses_common_server_trust(verify: Option<&TlsServerVerify>, custom_store: bool) -> bool {
+        !custom_store && verify.is_none_or(|verify| verify.0 != ServerVerifyMode::Disable)
+    }
+
     /// Compact identity of request-level overrides, or `None` for the baseline.
     ///
     /// Explicit defaults remain distinct from absence. Equivalent settings compare
@@ -92,10 +154,14 @@ impl BoringTlsConnectorConfig<'_> {
     /// Connector defaults are fixed for the lifetime of the pool and must not
     /// be layered onto this request-only view.
     pub fn pool_id(&self) -> Option<TlsPoolId> {
-        self.pool_id_with_cipher_suites(self.cipher_suites.map(|value| value.0.as_slice()))
+        self.pool_id_with_cipher_suites(self.cipher_suites.map(|value| value.0.as_slice()), None)
     }
 
-    fn pool_id_with_cipher_suites(&self, ciphers: Option<&[CipherSuite]>) -> Option<TlsPoolId> {
+    fn pool_id_with_cipher_suites(
+        &self,
+        ciphers: Option<&[CipherSuite]>,
+        verification: Option<&super::BoringServerVerification>,
+    ) -> Option<TlsPoolId> {
         if self.is_empty() {
             return None;
         }
@@ -220,6 +286,13 @@ impl BoringTlsConnectorConfig<'_> {
         if let Some(alps) = alps {
             builder.set_alps(&alps.protocols, alps.new_codepoint);
         }
+        if let Some(verification) = verification
+            && server_trust
+                .and_then(super::verification::reload_source)
+                .is_some()
+        {
+            builder.set_component(&VerificationScope::new(verification));
+        }
         builder.build()
     }
 
@@ -228,16 +301,35 @@ impl BoringTlsConnectorConfig<'_> {
     /// settings, diagnostic sinks, chain retention and the separately keyed server
     /// name are not part of it, so sessions resume across those variants.
     pub fn session_scope(&self) -> Option<TlsPoolId> {
-        self.security_pool_id(None)
+        self.session_scope_with_verification(None)
+    }
+
+    pub(super) fn session_scope_with_verification(
+        &self,
+        verification: Option<&super::BoringServerVerification>,
+    ) -> Option<TlsPoolId> {
+        self.security_pool_id(None, verification)
     }
 
     /// What a native context is keyed by: the session scope and the keylog, the only
     /// context-level setting outside it. Wire settings are applied per connection.
+    #[cfg(test)]
     pub(crate) fn context_scope(&self) -> Option<TlsPoolId> {
-        self.security_pool_id(self.keylog)
+        self.context_scope_with_verification(None)
     }
 
-    fn security_pool_id(&self, keylog: Option<&TlsKeyLog>) -> Option<TlsPoolId> {
+    pub(super) fn context_scope_with_verification(
+        &self,
+        verification: Option<&super::BoringServerVerification>,
+    ) -> Option<TlsPoolId> {
+        self.security_pool_id(self.keylog, verification)
+    }
+
+    fn security_pool_id(
+        &self,
+        keylog: Option<&TlsKeyLog>,
+        verification: Option<&super::BoringServerVerification>,
+    ) -> Option<TlsPoolId> {
         let security = self.security_policy(keylog);
         let ciphers = security.cipher_suites.map(|value| value.0.as_slice());
         // GREASE cannot be negotiated. Its literal draw affects the wire and
@@ -252,7 +344,7 @@ impl BoringTlsConnectorConfig<'_> {
                     .filter(|value| !value.is_grease())
                     .collect::<Vec<_>>()
             });
-        security.pool_id_with_cipher_suites(filtered.as_deref().or(ciphers))
+        security.pool_id_with_cipher_suites(filtered.as_deref().or(ciphers), verification)
     }
 
     /// The security part only: wire settings are per connection, so sessions and native
@@ -372,7 +464,7 @@ impl BoringTlsConnectorConfig<'_> {
             || self.server_cert_chain_policy.is_some()
             || self
                 .server_trust
-                .is_some_and(|trust| *trust.source() == ServerTrustSource::Platform)
+                .is_some_and(|trust| matches!(trust.source(), ServerTrustSource::Platform(_)))
             || self.server_cert_pins.is_some_and(|pins| {
                 pins.check(Some(name), leaf) == TlsServerCertPinCheck::Mismatched
             })
@@ -1367,8 +1459,61 @@ mod pool_tests {
     use rama_boring::x509::store::X509StoreBuilder;
     use rama_core::extensions::Extensions;
     use rama_tls::ProtocolVersion;
-    use rama_tls::client::{ClientAuth, ServerVerifyMode, TlsServerCertPin, TlsServerTrustAnchors};
+    use rama_tls::client::{
+        ClientAuth, NativeTrustPolicy, PlatformTrustPolicy, ServerVerifyMode, TlsServerCertPin,
+        TlsServerTrustAnchors,
+    };
     use rama_tls::keylog::NoopKeyLogSink;
+
+    #[test]
+    fn static_session_scope_survives_rebuilding_native_verification() {
+        use rama_core::combinators::Either;
+        use rama_crypto::platform_verifier::PlatformVerifier;
+        use std::time::Duration;
+
+        let anchor = CertificateDer::from(vec![1]);
+        let custom =
+            TlsServerTrust::custom(TlsServerTrustAnchors::try_new([anchor.clone()]).unwrap());
+        let native = TlsServerTrust::native_roots()
+            .try_with_additional_anchors([anchor.clone()])
+            .unwrap();
+        let platform = TlsServerTrust::platform_verifier()
+            .try_with_additional_anchors([anchor])
+            .unwrap();
+
+        let first_roots = Either::A(Arc::new(X509StoreBuilder::new().unwrap().build()));
+        let second_roots = Either::A(Arc::new(X509StoreBuilder::new().unwrap().build()));
+        let first_platform = Either::B(Arc::new(PlatformVerifier::new()));
+        let second_platform = Either::B(Arc::new(PlatformVerifier::new()));
+        let scope = |trust, verification| {
+            let config = TlsClientConfig::new().with_server_trust(trust);
+            BoringTlsConnectorConfig::from_extensions(config.as_extensions())
+                .session_scope_with_verification(Some(verification))
+        };
+
+        for trust in [custom, native] {
+            assert_eq!(
+                scope(trust.clone(), &first_roots),
+                scope(trust, &second_roots)
+            );
+        }
+        assert_eq!(
+            scope(platform.clone(), &first_platform),
+            scope(platform, &second_platform),
+        );
+
+        let dynamic_native =
+            TlsServerTrust::from(NativeTrustPolicy::new().with_max_age(Duration::from_secs(60)));
+        let dynamic_platform =
+            TlsServerTrust::from(PlatformTrustPolicy::new().with_max_age(Duration::from_secs(60)));
+        for (trust, first, second) in [
+            (dynamic_native, &first_roots, &second_roots),
+            (dynamic_platform, &first_platform, &second_platform),
+        ] {
+            assert_eq!(scope(trust.clone(), first), scope(trust.clone(), first));
+            assert_ne!(scope(trust.clone(), first), scope(trust, second));
+        }
+    }
 
     #[test]
     fn every_comparable_override_preserves_presence_and_value() {

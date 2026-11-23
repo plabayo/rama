@@ -10,7 +10,9 @@ use rama_tls::{
 use rama_tls_rustls::{client::RustlsTlsConnectorConfig, server::RustlsTlsAcceptorConfig};
 
 use super::rustls::client::Resumption;
-use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
+use super::{
+    QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, ServerVerification, rustls,
+};
 use crate::proto::ServerCrypto;
 pub(crate) use crate::proto::crypto::config::{
     ClientSessionPolicy, ServerSessionPolicy, TlsConfigError, TlsOptions,
@@ -46,6 +48,15 @@ impl QuicClientConfig {
         provider: Arc<rustls::crypto::CryptoProvider>,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
+        Self::from_rama_with_verification(config, provider, options, None)
+    }
+
+    pub(crate) fn from_rama_with_verification(
+        config: &TlsClientConfig,
+        provider: Arc<rustls::crypto::CryptoProvider>,
+        options: TlsOptions,
+        verification: Option<&ServerVerification>,
+    ) -> Result<Self, TlsConfigError> {
         // Initial packets always use AES-128-GCM, independently of the TLS cipher
         // suites an application's native hook chooses to offer.
         let fallback_initial = super::initial_suite_from_provider(&provider);
@@ -56,7 +67,12 @@ impl QuicClientConfig {
         pieces.versions = Some(&versions);
         let modify = pieces.modify.take();
         let handshake = pieces.client_handshake.copied().unwrap_or_default();
-        let mut native = pieces.try_into_client_config_with_provider(provider)?;
+        let mut native = match verification {
+            Some(verification) => {
+                pieces.try_into_client_config_with_verification(provider, verification)?
+            }
+            None => pieces.try_into_client_config_with_provider(provider)?,
+        };
         native.enable_early_data = options.early_data;
         if let Some(modify) = modify {
             native = (modify.0)(native)?;

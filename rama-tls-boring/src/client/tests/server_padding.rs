@@ -30,7 +30,7 @@ fn server_padding_wire_values_and_pool_policy_stay_independent_per_ssl() {
         assert!(pools.iter().all(|previous| *previous != pool));
         pools.push(pool);
         for _ in 0..2 {
-            let hello = hello_from_data(context.configure_variant(&view).unwrap());
+            let hello = hello_from_data(context.configure_variant(&view, None).unwrap());
             assert_eq!(request(&hello), bytes);
         }
     }

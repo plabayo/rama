@@ -27,6 +27,8 @@ ring = ["dep:ring", "rcgen/ring", "x509-parser/verify"]
 boring = ["dep:rama-boring"]
 native-certs = [
     "dep:webpki-root-certs",
+    "dep:tokio",
+    "tokio/rt",
     "dep:security-framework",
     "dep:core-foundation",
     "dep:schannel",
@@ -53,7 +55,7 @@ security-framework = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 schannel = { workspace = true, optional = true }
-windows-sys = { workspace = true, optional = true, features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { workspace = true, optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_Threading"] }
 
 [dependencies]
 aws-lc-rs = { workspace = true, optional = true }

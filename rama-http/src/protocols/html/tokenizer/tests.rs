@@ -681,6 +681,30 @@ fn svg_html_integration_point_restores_html_rules() {
 }
 
 #[test]
+fn foreign_breakout_and_nested_integration_points_restore_html_text_modes() {
+    for input in [
+        b"<svg><svg><p><style><b></style>".as_slice(),
+        b"<svg><desc><desc></desc><style><b></style>",
+    ] {
+        let expected = coalesce(events(input));
+        assert!(expected.contains(&Event::Text("<b>".to_owned())));
+        for split in 0..=input.len() {
+            assert_eq!(coalesce(streamed_events(input, split)), expected);
+        }
+    }
+}
+
+#[test]
+fn standalone_foreign_ancestry_is_bounded() {
+    let input = format!("<svg><desc>{}", "<section>".repeat(100));
+    let mut tokenizer = Tokenizer::new().with_max_buffered_bytes(1024);
+    assert!(matches!(
+        tokenizer.tokenize(input.as_bytes(), &mut Collect::default()),
+        Err(TokenizerError::MemoryLimit(_))
+    ));
+}
+
+#[test]
 fn foreign_content_identity() {
     for input in [
         &b"<svg><![CDATA[x<y]]></svg>"[..],

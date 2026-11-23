@@ -51,7 +51,9 @@ to speak: `h3://` is HTTP/3 over QUIC, `h2://` and `h1://` are HTTP/2 and HTTP/1
 TLS on TCP, and `https://` uses HTTP/3 when the proxy advertises it (HTTPS record or
 Alt-Svc) and otherwise negotiates its version with ALPN over TCP. The full scheme reference is
 in [HTTP clients](../http/http_clients.md#proxies). See `rama send --help` and `rama serve proxy --help` for configuration options. The
-[`masque_connect_udp_proxy` example][example] shows a client and server in Rust.
+[`masque_connect_udp_proxy` example][example] shows a client and server in Rust, and the
+[`masque_proxy_chain` example][chain-example] runs a two-hop chain where each hop is a
+tunnel inside the one before it.
 The CLI currently exposes CONNECT-UDP; CONNECT-IP is available as a library API.
 
 ## CONNECT-UDP
@@ -148,6 +150,7 @@ For protocol details, see [CONNECT-UDP (RFC 9298)][rfc-udp],
 [CONNECT-IP (RFC 9484)][rfc-ip] and [HTTP Datagrams and Capsules (RFC 9297)][rfc-datagram].
 
 [example]: https://github.com/plabayo/rama/blob/main/examples/src/masque_connect_udp_proxy.rs
+[chain-example]: https://github.com/plabayo/rama/blob/main/examples/src/masque_proxy_chain.rs
 [connect-udp]: https://ramaproxy.org/docs/rama/proxy/masque/connect_udp/index.html
 [connect-ip]: https://ramaproxy.org/docs/rama/proxy/masque/connect_ip/index.html
 [datagram]: https://ramaproxy.org/docs/rama/http/datagram/index.html

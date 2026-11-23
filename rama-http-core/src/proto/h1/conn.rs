@@ -772,10 +772,11 @@ where
                 // to do only speak HTTP/1.0 as well.
                 head.version = Version::HTTP_10;
             }
-            Version::HTTP_11 => {
-                if matches!(self.state.keep_alive.status(), KA::Disabled) {
-                    headers::connection_set_close(&mut head.headers);
-                }
+            Version::HTTP_11
+                if matches!(self.state.keep_alive.status(), KA::Disabled)
+                    && !T::accepts_upgrade(&head.subject, self.state.method.as_ref()) =>
+            {
+                headers::connection_set_close(&mut head.headers);
             }
             _ => (),
         }

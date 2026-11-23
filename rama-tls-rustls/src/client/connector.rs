@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 #[cfg(feature = "http")]
 use rama_net::tls::AlpnPolicy;
 
-use super::{AutoTlsStream, RustlsTlsStream, TlsConnectorData, TlsStream};
+use super::{AutoTlsStream, RustlsServerTrustCache, RustlsTlsStream, TlsConnectorData, TlsStream};
 use crate::client::config::{RustlsTlsClientConfigProvider, RustlsTlsConnectorConfig};
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use rama_core::conversion::{RamaFrom, RamaInto, RamaTryFrom};
@@ -29,6 +29,7 @@ use rama_tls::client::{
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+use std::num::NonZeroUsize;
 
 #[cfg(all(test, feature = "http"))]
 use rama_net::http::Version;
@@ -46,10 +47,19 @@ use rama_tls::{
 #[derive(Debug, Clone)]
 pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
     base_config: Option<TlsClientConfig>,
+    server_trust_cache_capacity: NonZeroUsize,
     kind: PhantomData<K>,
 }
 
 impl<K> TlsConnectorLayer<K> {
+    generate_set_and_with! {
+        /// Set the capacity of the derived server trust cache for new connectors.
+        pub fn server_trust_cache_capacity(mut self, capacity: NonZeroUsize) -> Self {
+            self.server_trust_cache_capacity = capacity;
+            self
+        }
+    }
+
     generate_set_and_with! {
         /// Define the base [`TlsClientConfig`] for this [`TlsConnectorLayer`].
         ///
@@ -71,6 +81,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
     pub fn auto() -> Self {
         Self {
             base_config: None,
+            server_trust_cache_capacity: RustlsServerTrustCache::DEFAULT_CAPACITY,
             kind: PhantomData,
         }
     }
@@ -83,6 +94,7 @@ impl TlsConnectorLayer<ConnectorKindSecure> {
     pub fn secure() -> Self {
         Self {
             base_config: None,
+            server_trust_cache_capacity: RustlsServerTrustCache::DEFAULT_CAPACITY,
             kind: PhantomData,
         }
     }
@@ -95,6 +107,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
         TlsConnector {
             inner,
             base_config: self.base_config.clone(),
+            server_trust_cache: RustlsServerTrustCache::new(self.server_trust_cache_capacity),
             kind: PhantomData,
         }
     }
@@ -103,6 +116,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
         TlsConnector {
             inner,
             base_config: self.base_config,
+            server_trust_cache: RustlsServerTrustCache::new(self.server_trust_cache_capacity),
             kind: PhantomData,
         }
     }
@@ -125,17 +139,30 @@ impl Default for TlsConnectorLayer<ConnectorKindAuto> {
 pub struct TlsConnector<S, K = ConnectorKindAuto> {
     inner: S,
     base_config: Option<TlsClientConfig>,
+    server_trust_cache: RustlsServerTrustCache,
     kind: PhantomData<K>,
 }
 
 impl<S, K> TlsConnector<S, K> {
     define_inner_service_accessors!();
 
+    generate_set_and_with! {
+        /// Replace this connector's derived server trust cache with a new cache.
+        /// Subsequent clones share the replacement cache.
+        pub fn server_trust_cache_capacity(mut self, capacity: NonZeroUsize) -> Self {
+            self.server_trust_cache = RustlsServerTrustCache::new(capacity);
+            self
+        }
+    }
+
     /// Creates a new [`TlsConnector`].
     pub const fn new(inner: S) -> Self {
         Self {
             inner,
             base_config: None,
+            server_trust_cache: RustlsServerTrustCache::new(
+                RustlsServerTrustCache::DEFAULT_CAPACITY,
+            ),
             kind: PhantomData,
         }
     }
@@ -168,6 +195,7 @@ impl<S> TlsConnector<S, ConnectorKindAuto> {
         TlsConnector {
             inner: self.inner,
             base_config: self.base_config,
+            server_trust_cache: self.server_trust_cache,
             kind: PhantomData,
         }
     }
@@ -236,6 +264,7 @@ where
 
         let connector_data = self
             .connector_data(input.extensions(), app_protocol)
+            .await
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(auto): build connector configuration")
@@ -324,6 +353,7 @@ where
         let app_protocol = input.target_protocol();
         let connector_data = self
             .connector_data(input.extensions(), app_protocol)
+            .await
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(secure): build connector configuration")
@@ -450,7 +480,7 @@ impl<S, K> TlsConnector<S, K> {
         Ok(scope)
     }
 
-    fn connector_data(
+    async fn connector_data(
         &self,
         request_extensions: &Extensions,
         application_protocol: Option<&Protocol>,
@@ -468,8 +498,11 @@ impl<S, K> TlsConnector<S, K> {
             request_extensions.get_ref::<TlsAlpn>(),
         )?;
 
-        let config = RustlsTlsConnectorConfig::from_extensions(&extensions);
-        TlsConnectorData::try_from(config)
+        let verification = self
+            .server_trust_cache
+            .server_verification_async(&extensions)
+            .await?;
+        TlsConnectorData::from_extensions(&extensions, verification.as_ref())
     }
 
     async fn handshake<T>(
@@ -678,6 +711,34 @@ pub struct ConnectorKindSecure;
 mod tests {
     use super::*;
     use rama_core::extensions::NoExtensionsTransfer;
+
+    #[test]
+    fn layered_connectors_own_independent_caches_and_clones_share() {
+        use std::sync::Arc;
+
+        let layer = TlsConnectorLayer::secure()
+            .with_server_trust_cache_capacity(NonZeroUsize::new(2).unwrap());
+        let first = layer.layer(());
+        let clone = first.clone();
+        let second = layer.layer(());
+        let config = TlsClientConfig::new()
+            .try_with_server_trust_anchors([
+                rama_crypto::native_certs::bundled_root_certs()[0].clone()
+            ])
+            .unwrap();
+        let resolve = |connector: &TlsConnector<_, _>| match connector
+            .server_trust_cache
+            .server_verification(config.as_extensions())
+            .unwrap()
+        {
+            Some(rama_core::combinators::Either::A(roots)) => roots,
+            _ => panic!("expected a rustls root store"),
+        };
+        let roots = resolve(&first);
+        assert!(Arc::ptr_eq(&roots, &resolve(&clone)));
+        assert!(!Arc::ptr_eq(&roots, &resolve(&second)));
+    }
+
     #[cfg(feature = "http")]
     use rama_tls::ProtocolVersion;
 

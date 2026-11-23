@@ -76,6 +76,33 @@ async fn go_away(mut origin: Origin, reason: Reason) {
     _ = poll_fn(|cx| origin.poll_closed(cx)).await;
 }
 
+#[tokio::test]
+async fn head_response_preserves_content_length_and_reports_an_empty_body() {
+    use rama_http_types::StreamingBody as _;
+
+    let (client, mut origin, _driver) = connect().await;
+    let response = send(&client, "HEAD", "");
+    let (_, mut reply) = next_stream(&mut origin).await;
+    reply
+        .send_response(
+            Response::builder()
+                .header("content-length", "123")
+                .body(())
+                .unwrap(),
+            true,
+        )
+        .unwrap();
+    let origin = tokio::spawn(async move { while origin.accept().await.is_some() {} });
+    let response = timeout(Duration::from_secs(5), response)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.headers()["content-length"], "123");
+    assert_eq!(response.body().size_hint().exact(), Some(0));
+    origin.abort();
+}
+
 async fn assert_refused(
     resp: JoinHandle<rama_http_core::Result<Response<Incoming>>>,
     refused: bool,

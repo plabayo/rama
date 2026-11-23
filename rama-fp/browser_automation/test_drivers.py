@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 from selenium.common.exceptions import SessionNotCreatedException, WebDriverException
 from urllib3.exceptions import ReadTimeoutError
 
-from browser_automation.drivers import device_session, local_session
+from browser_automation.drivers import device_options, device_session, local_session
 
 
 class SessionTests(unittest.TestCase):
@@ -90,6 +90,15 @@ class SessionTests(unittest.TestCase):
             firefox["androidIntentArguments"][-3:], ["--ez", "performancetest", "true"]
         )
         start.return_value.quit.assert_called_once()
+
+    def test_simulator_selection(self):
+        with patch.dict(os.environ, {"RAMA_FP_IOS_SIMULATOR_UDID": "target"}):
+            caps = device_options("ios-simulator", "26.0.1").to_capabilities()
+            self.assertEqual(caps["safari:deviceUDID"], "target")
+            self.assertNotIn("safari:platformVersion", caps)
+            del os.environ["RAMA_FP_IOS_SIMULATOR_UDID"]
+            caps = device_options("ios-simulator", "26.0.1").to_capabilities()
+            self.assertEqual(caps["safari:platformVersion"], "26.0.1")
 
     def test_simulator_safari_gets_time_to_launch(self):
         slow = SessionNotCreatedException("timed out while connecting to a Safari instance")

@@ -44,7 +44,7 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-crypto = { workspace = true, features = ["native-certs"] }
 rama-net = { workspace = true, features = ["std"] }
-rama-tls = { workspace = true }
+rama-tls = { workspace = true, features = ["native-certs"] }
 rama-utils = { workspace = true, features = ["std"] }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }

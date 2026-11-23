@@ -2246,7 +2246,6 @@ mod tests {
     #[derive(Clone)]
     struct RecordingResolver {
         calls: Arc<AtomicUsize>,
-        loopback: bool,
     }
 
     #[cfg(all(
@@ -2265,7 +2264,7 @@ mod tests {
         ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
             assert_eq!(domain.as_str(), "private.invalid");
             self.calls.fetch_add(1, Ordering::Relaxed);
-            stream::iter(self.loopback.then_some(Ok(Ipv4Addr::LOCALHOST)))
+            stream::empty()
         }
 
         fn lookup_ipv6(
@@ -2274,7 +2273,7 @@ mod tests {
         ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
             assert_eq!(domain.as_str(), "private.invalid");
             self.calls.fetch_add(1, Ordering::Relaxed);
-            stream::iter(self.loopback.then_some(Ok(Ipv6Addr::LOCALHOST)))
+            stream::empty()
         }
     }
 
@@ -2405,7 +2404,6 @@ mod tests {
             .with_dns_connector(RecordingDnsLayer {
                 resolver: RecordingResolver {
                     calls: calls.clone(),
-                    loopback: false,
                 },
                 applied: applied.clone(),
             })
@@ -2451,26 +2449,46 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let connector = DnsConnector::with_resolver(
-            connector,
-            RecordingResolver {
-                calls: calls.clone(),
-                loopback: true,
-            },
+        // Supply the incompatible candidate first, independent of DNS scheduling.
+        struct LoopbackCandidates(Domain);
+
+        impl rama_net::client::AddressCandidates for LoopbackCandidates {
+            fn domain(&self) -> &Domain {
+                &self.0
+            }
+
+            fn stream<'a>(
+                &'a self,
+                _: &'a rama_core::extensions::Extensions,
+            ) -> stream::BoxStream<'a, Result<std::net::IpAddr, BoxError>> {
+                Box::pin(stream::iter([
+                    Ok(Ipv6Addr::LOCALHOST.into()),
+                    Ok(Ipv4Addr::LOCALHOST.into()),
+                ]))
+            }
+        }
+
+        let domain = Domain::from_static("private.invalid");
+        let target = HostWithPort::new(
+            domain.clone().into(),
+            blackhole.local_addr().unwrap().port(),
         );
-        let input = ConnectRequest::new(
-            format!("private.invalid:{}", blackhole.local_addr().unwrap().port())
-                .parse()
-                .unwrap(),
-        )
-        .with_application_protocol(Protocol::HTTPS);
+        let input = ConnectRequest::new(target.clone()).with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions
+            .insert(rama_net::client::ConnectorTargetStream::new(
+                target,
+                LoopbackCandidates(domain),
+            ));
         let attempt = Arc::new(HttpServiceAttempt::default());
         input.extensions.insert_arc(attempt.clone());
-        tokio::time::timeout(Duration::from_millis(500), connector.serve(input))
-            .await
-            .unwrap_err();
-        assert!(calls.load(Ordering::Relaxed) >= 2);
+        let mut packet = [0; 1500];
+        tokio::select! {
+            _ = connector.serve(input) => panic!("QUIC connection finished before the IPv4 dial"),
+            result = tokio::time::timeout(Duration::from_secs(10), blackhole.recv(&mut packet)) => {
+                assert!(result.expect("no IPv4 QUIC packet").unwrap() > 0);
+            }
+        }
         assert!(
             !attempt.failed(),
             "a mismatched candidate family must not turn the IPv4 timeout into an authentication failure"

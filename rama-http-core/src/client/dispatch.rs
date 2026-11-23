@@ -1,6 +1,5 @@
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
-use std::sync::atomic::{self, AtomicBool};
 use std::task::{Context, Poll, ready};
 
 use pin_project_lite::pin_project;
@@ -28,13 +27,15 @@ pub struct TrySendError<T> {
 
 pub(crate) fn channel<T, U>() -> (Sender<T, U>, Receiver<T, U>) {
     let (tx, rx) = mpsc::unbounded_channel();
-    let (giver, taker) = want::new();
-    let tx = Sender {
-        buffered_once: AtomicBool::new(false),
-        giver,
-        inner: tx,
+    let (giver, mut taker) = want::new();
+    // Allow the first request before the connection task is polled.
+    taker.want();
+    let tx = Sender { giver, inner: tx };
+    let rx = Receiver {
+        inner: rx,
+        taker,
+        wanting: true,
     };
-    let rx = Receiver { inner: rx, taker };
     (tx, rx)
 }
 
@@ -43,16 +44,8 @@ pub(crate) fn channel<T, U>() -> (Sender<T, U>, Receiver<T, U>) {
 /// While the inner sender is unbounded, the Giver is used to determine
 /// if the Receiver is ready for another request.
 pub(crate) struct Sender<T, U> {
-    /// One message is always allowed, even if the Receiver hasn't asked
-    /// for it yet. This boolean keeps track of whether we've sent one
-    /// without notice.
-    buffered_once: AtomicBool,
-    /// The Giver helps watch that the Receiver side has been polled
-    /// when the queue is empty. This helps us know when a request and
-    /// response have been fully processed, and a connection is ready
-    /// for more.
+    /// Each request consumes the single permit granted by the receiver.
     giver: want::Giver,
-    /// Actually bounded by the Giver, plus `buffered_once`.
     inner: mpsc::UnboundedSender<Envelope<T, U>>,
 }
 
@@ -81,17 +74,9 @@ impl<T, U> Sender<T, U> {
         self.giver.is_canceled()
     }
 
-    fn can_send(&self) -> bool {
-        // If the receiver is ready *now*, then of course we can send.
-        //
-        // If the receiver isn't ready yet, but we don't have anything
-        // in the channel yet, then allow one message.
-        self.giver.give() || !self.buffered_once.swap(true, atomic::Ordering::AcqRel)
-    }
-
     #[expect(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn try_send(&mut self, val: T) -> Result<RetryPromise<T, U>, T> {
-        if !self.can_send() {
+        if !self.giver.give() {
             return Err(val);
         }
         let (tx, rx) = oneshot::channel();
@@ -102,7 +87,7 @@ impl<T, U> Sender<T, U> {
     }
 
     pub(crate) fn send(&self, val: T) -> Result<Promise<U>, T> {
-        if !self.can_send() {
+        if !self.giver.give() {
             return Err(val);
         }
         let (tx, rx) = oneshot::channel();
@@ -159,22 +144,21 @@ impl<T, U> Clone for UnboundedSender<T, U> {
 pub(crate) struct Receiver<T, U> {
     inner: mpsc::UnboundedReceiver<Envelope<T, U>>,
     taker: want::Taker,
+    wanting: bool,
 }
 
 impl<T, U> Receiver<T, U> {
     pub(crate) fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<(T, Callback<T, U>)>> {
-        match self.inner.poll_recv(cx) {
-            Poll::Ready(item) => {
-                // A want signaled on an empty or budget-starved poll can outlive the message
-                // taken here and report the busy connection as ready.
-                self.taker.unwant();
-                Poll::Ready(item.map(|env| env.into_inner()))
-            }
-            Poll::Pending => {
-                self.taker.want();
-                Poll::Pending
-            }
+        if !self.wanting {
+            self.taker.want();
+            self.wanting = true;
         }
+        self.inner.poll_recv(cx).map(|item| {
+            // A cooperative yield can return Pending with a request already queued.
+            // Grant the next permit only after consuming the current one.
+            self.wanting = false;
+            item.map(Envelope::into_inner)
+        })
     }
 
     pub(crate) fn close(&mut self) {
