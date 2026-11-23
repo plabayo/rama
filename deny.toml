@@ -1,10 +1,6 @@
 [advisories]
 version = 2
-# pin-utils only reaches the build through loom's `futures` feature, a cfg(loom)
-# dev-dependency of rama-utils; remove once loom drops it.
-ignore = [
-    { id = "RUSTSEC-2026-0441", reason = "Unmaintained only; loom uses pin_mut! in cfg(loom) dev builds and no loom release drops it." },
-]
+unused-ignored-advisory = "deny"
 
 [licenses]
 confidence-threshold = 0.93

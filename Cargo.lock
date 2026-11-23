@@ -1295,7 +1295,7 @@ dependencies = [
  "cranelift-entity",
  "cranelift-isle",
  "gimli 0.33.0",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "libm",
  "log",
  "postcard",
@@ -1357,7 +1357,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf37a38d982d45fe2c065d55e4de76e596b443b6acceb3ca726c2072c8ba6d7b"
 dependencies = [
  "cranelift-codegen",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "log",
  "smallvec",
  "target-lexicon",
@@ -2469,7 +2469,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1033caf0b349c518623b5396bfb2cf0bddf44f0306d543a250e5743297aafd10"
 dependencies = [
  "fnv",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "indexmap",
  "stable_deref_trait",
 ]
@@ -2558,9 +2558,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.17.1"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+checksum = "735eaa21a6a5ffb2e84362faaeb90c05ba8e19797ca30428478cb6ea3a4921bc"
 dependencies = [
  "allocator-api2",
  "equivalent",
@@ -2926,7 +2926,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "serde",
  "serde_core",
 ]
@@ -2977,9 +2977,9 @@ dependencies = [
 
 [[package]]
 name = "iri-string"
-version = "0.7.14"
+version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1663ee7d8cf2900cc1414b1e1eec9f348d6eaa3bcab07579f4726a4b8499f447"
+checksum = "5c7e416dac88ecbabfd77afe2078006bd868aef4b90ef85aedbcb52fa1c7ba13"
 dependencies = [
  "memchr",
  "serde",
@@ -3042,12 +3042,12 @@ dependencies = [
 
 [[package]]
 name = "jiff"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5d126d72eb017f10b302e73bdeca446bea405ee449af4d9e7866d6b082d83e"
+checksum = "c5e77cbfb9fff4798e283c2d69dff39fc2c45e7da017e5ce95b654e46ea41236"
 dependencies = [
  "jiff-core 1.0.1",
- "jiff-static 1.0.1",
+ "jiff-static 1.0.2",
  "jiff-tzdb-platform 1.0.0",
  "log",
  "portable-atomic",
@@ -3088,9 +3088,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0127e9bde3c6130d6169e7d8d68676e4be69c4bf7573c308b6f960a5089c428"
+checksum = "e9067a0b23e5be3147d56b2dcf652b18e6b1364caca93fb157653b6fbcab23a9"
 dependencies = [
  "jiff-core 1.0.1",
  "proc-macro2",
@@ -3204,7 +3204,7 @@ version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f14c90e40a6133f4805b83542a7ed7364f56070b447f56e7f4e90297122209"
 dependencies = [
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "portable-atomic",
  "thiserror 2.0.21",
 ]
@@ -3373,7 +3373,7 @@ version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef9ac18847474e638e3702b76c65d4eb93428471a74778ef0f1be711717f89b5"
 dependencies = [
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
 ]
 
 [[package]]
@@ -3863,7 +3863,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
 dependencies = [
  "crc32fast",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "indexmap",
  "memchr",
 ]
@@ -4542,9 +4542,9 @@ checksum = "263a3f48f01e7309e857138bd47f785585b4a005e8e56c6d2824ce91195999c3"
 
 [[package]]
 name = "psl"
-version = "2.1.260"
+version = "2.1.261"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "829dd76b95abcb73c39c45efb2f68f201ad70a2ade8fbee6cc3cd586390cfe27"
+checksum = "3058f918351d1ee290ff4e70243e419b33269dcb83bc8cd46c5afa8a97a90012"
 dependencies = [
  "psl-types",
 ]
@@ -4787,7 +4787,7 @@ dependencies = [
  "flate2",
  "hickory-resolver",
  "itertools 0.15.0",
- "jiff 1.0.1",
+ "jiff 1.0.2",
  "mimalloc",
  "parking_lot 0.13.0",
  "rama",
@@ -4931,7 +4931,7 @@ dependencies = [
  "indexmap",
  "itertools 0.15.0",
  "itoa",
- "jiff 1.0.1",
+ "jiff 1.0.2",
  "libc",
  "parking_lot 0.13.0",
  "pin-project-lite",
@@ -5074,7 +5074,7 @@ dependencies = [
  "http-range-header",
  "iri-string",
  "itertools 0.15.0",
- "jiff 1.0.1",
+ "jiff 1.0.2",
  "memchr",
  "mime_guess",
  "moka",
@@ -5176,7 +5176,7 @@ dependencies = [
  "ahash",
  "base64 0.23.1",
  "const_format",
- "jiff 1.0.1",
+ "jiff 1.0.2",
  "rama-core",
  "rama-http-types",
  "rama-macros",
@@ -5266,7 +5266,7 @@ dependencies = [
 name = "rama-inspect"
 version = "0.5.0"
 dependencies = [
- "jiff 1.0.1",
+ "jiff 1.0.2",
  "parking_lot 0.13.0",
  "rama-core",
  "rama-utils",
@@ -5363,7 +5363,7 @@ dependencies = [
  "ipnet",
  "itertools 0.15.0",
  "itoa",
- "jiff 1.0.1",
+ "jiff 1.0.2",
  "jni",
  "libc",
  "lru-slab",
@@ -5435,7 +5435,7 @@ version = "0.5.0"
 dependencies = [
  "ahash",
  "arc-swap",
- "jiff 1.0.1",
+ "jiff 1.0.2",
  "parking_lot 0.13.0",
  "rama-core",
  "rama-dns",
@@ -5476,7 +5476,7 @@ dependencies = [
  "dial9",
  "dial9-trace-format",
  "fastbloom",
- "jiff 1.0.1",
+ "jiff 1.0.2",
  "lru-slab",
  "parking_lot 0.13.0",
  "pin-project-lite",
@@ -5562,7 +5562,7 @@ dependencies = [
  "bytes",
  "dial9-trace-format",
  "flume",
- "jiff 1.0.1",
+ "jiff 1.0.2",
  "md5",
  "nom 8.0.0",
  "parking_lot 0.13.0",
@@ -5777,7 +5777,7 @@ dependencies = [
  "base64 0.23.1",
  "dial9-trace-format",
  "flate2",
- "jiff 1.0.1",
+ "jiff 1.0.2",
  "parking_lot 0.13.0",
  "pin-project-lite",
  "rama-core",
@@ -5919,7 +5919,7 @@ dependencies = [
  "bitflags 2.13.2",
  "compact_str",
  "critical-section",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "itertools 0.14.0",
  "kasuari",
  "lru",
@@ -5982,7 +5982,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66e3d19bcc9130ca376277d93b60767ff121ace3be06f5f95f81dd68956407d1"
 dependencies = [
  "bitflags 2.13.2",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "indoc",
  "instability",
  "itertools 0.14.0",
@@ -6006,9 +6006,9 @@ dependencies = [
 
 [[package]]
 name = "rawzip"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac9999039f74cd73c03158cddfe4362991703c74efe5ce5c8073026f80a5e48c"
+checksum = "ebe3170012078772481d436f07d89252ed3334a1173de1ea99247459a2931313"
 
 [[package]]
 name = "rayon"
@@ -6082,7 +6082,7 @@ checksum = "34f923657880712029496c2e68bb40bef163806b2011adde559b28bbcedc82ea"
 dependencies = [
  "allocator-api2",
  "bumpalo",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "log",
  "rustc-hash",
  "serde",
@@ -7737,7 +7737,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe9269dd817e0e7021bf534ccd9761bc2d64778b6708e41228b8439d75eaa0b1"
 dependencies = [
  "bitflags 2.13.2",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "indexmap",
  "semver",
  "serde",
@@ -7810,7 +7810,7 @@ dependencies = [
  "cranelift-bitset",
  "cranelift-entity",
  "gimli 0.33.0",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "indexmap",
  "log",
  "object 0.40.0",
@@ -7876,7 +7876,7 @@ version = "49.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e13ab3aa598d863643ef9ec043d63fde7effca4465270446d5b868936b27a6"
 dependencies = [
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "libm",
  "serde",
 ]
@@ -8401,7 +8401,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72a2127663dcf3ee16614fb0e3c33d5c6c66fec9dad317a8b0fdd3869487a533"
 dependencies = [
  "anyhow",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "id-arena",
  "indexmap",
  "log",
