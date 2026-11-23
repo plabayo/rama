@@ -1,9 +1,9 @@
-"""Resolve explicitly blocked tshark request or response heads with independent ls-qpack.
+"""Resolve blocked heads and retransmitted QPACK encoder state with independent ls-qpack.
 
 Only decrypted PDML bytes are admitted. Encoder events retain packet order;
 blocked heads resume under their original packet/connection/stream identity.
-Already decoded heads must agree with ls-qpack. This compensates for tshark's
-cached blocked-header result, not missing packets, keys or native observations.
+A repeated encoder instruction can corrupt tshark's dynamic table for later
+heads on that connection. The independent decoder consumes each byte once.
 """
 
 import pylsqpack
@@ -115,14 +115,29 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
     ambiguous identities and malformed or excessive observations fail closed.
     Values stay transient inside this verifier and are never diagnostic text.
     """
-    if not any(
-        blocked(frame)
-        and number(packet, "udp.srcport" if from_server else "udp.dstport") == server_port
-        for packet in packets
-        for frame in nodes(packet, "http3.frame")
-    ):
+    # Keep the fast path for ordinary captures. Tshark may dissect repeated
+    # encoder STREAM bytes twice without marking a later dynamic head blocked.
+    seen = {}
+    for packet in packets:
+        streams = nodes(packet, "quic.stream.stream_id")
+        frames = nodes(packet, "http3.frame")
+        if not streams and not frames:
+            continue
+        if number(packet, "udp.srcport" if from_server else "udp.dstport") != server_port:
+            continue
+        if any(blocked(frame) for frame in frames):
+            break
+        uni_role = 3 if from_server else 2
+        if any(int(node.get("show")) & 3 == uni_role for node in streams):
+            repeated = retransmitted_streams(packet, seen)
+            if any(stream & 3 == uni_role for stream in repeated) and nodes(
+                packet, "http3.qpack.encoder"
+            ):
+                break
+    else:
         return ResolvedHeaders({}, frozenset())
 
+    repeated_encoder_at = {}
     decoders, witnesses, encoder_streams = {}, {}, {}
     sections, pending, resolved, recovered = {}, {}, {}, set()
     previous_packet = 0
@@ -143,12 +158,20 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
         except UnicodeDecodeError:
             raise ValueError("QPACK header text is not UTF-8") from None
         frame = sections[key]
+        displayed = displayed_headers(frame)
         if blocked(frame):
-            if displayed_headers(frame):
+            if displayed:
                 raise ValueError("partially decoded blocked QPACK head")
             recovered.add(key)
-        elif displayed_headers(frame) != headers:
-            raise ValueError("independent QPACK/tshark header mismatch")
+        elif displayed != headers:
+            ordinal, connection, _stream = key
+            repeat = repeated_encoder_at.get(connection)
+            payload = raw(single(frame, "http3.frame_payload"))
+            # A nonzero Encoded Required Insert Count identifies a dynamic
+            # section. Static sections stay comparable even after a duplicate.
+            if repeat is None or ordinal < repeat or not payload[0] or not displayed:
+                raise ValueError("independent QPACK/tshark header mismatch")
+            recovered.add(key)
         resolved[key] = headers
 
     try:
@@ -227,6 +250,7 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
                         raise ValueError("ambiguous native QPACK encoder stream")
                     stream_key = stream_keys[0]
                     if stream_key[1] in repeated:
+                        repeated_encoder_at.setdefault(connection, packet_number)
                         continue
                     encoder_streams[connection] = stream_key
                     witness = witnesses[stream_key]
@@ -298,6 +322,4 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
         kind, payload = witness.verify()
         if kind != 2 or payload != bytes(witness.decoded):
             raise ValueError("QPACK encoder/native byte mismatch")
-    if not recovered:
-        raise ValueError("blocked QPACK head has no independent resolution")
     return ResolvedHeaders(resolved, frozenset(recovered))

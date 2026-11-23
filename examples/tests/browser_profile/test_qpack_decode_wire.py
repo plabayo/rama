@@ -243,6 +243,23 @@ class BlockedQpackTests(unittest.TestCase):
         self.assertEqual(result.recovered, {(2, 7, 0)})
         self.assertEqual(result.headers[(2, 7, 0)], (("a", "b"),))
 
+    def test_repeated_encoder_can_corrupt_later_dynamic_display_without_blocking(self):
+        root = ET.Element("pdml")
+        setup = packet(root, 1)
+        native_encoder(setup, b"\x02" + CAPACITY)
+        encoder(setup, CAPACITY)
+        for ordinal in (2, 3):
+            insert = packet(root, ordinal)
+            native_encoder(insert, INSERT, offset=1 + len(CAPACITY))
+            encoder(insert, INSERT)
+        head(packet(root, 4), 0, DYNAMIC, blocked=False, decoded=(("wrong", "entry"),))
+        frames = parse_pdml(ET.tostring(root), "h3", 443)
+        self.assertEqual(frames[0].headers, (("a", "b"),))
+        self.assertEqual(frames[0].header_decoder, "ls-qpack")
+        head(packet(root, 5), 4, b"\x00\x00\xd1", blocked=False, decoded=((":method", "POST"),))
+        with self.assertRaisesRegex(ValueError, "header mismatch"):
+            resolve(root)
+
     def test_retransmitted_blocked_head_is_one_section(self):
         root = fixture()
         packets = root.findall("packet")
