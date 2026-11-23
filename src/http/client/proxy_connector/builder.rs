@@ -470,10 +470,11 @@ impl<T, Q, D> ProxyConnectorBuilder<T, (), DnsStage<Q>, D> {
 impl<T: Clone, Tls, Q, D> ProxyConnectorBuilder<T, (), TlsStage<false, Tls, Q>, D> {
     fn http_connector<B>(
         self,
+        discovery: HttpsDiscovery,
     ) -> ProxyConnectorBuilder<T, HttpConnector<T, ProxyRequestBody<B>>, ProxyHttpStage<B>, D> {
         let stream = self.stream.clone();
         let scope = self.scope.clone();
-        self.into_stage(ProxyHttpStage::new(HttpsDiscovery::disabled()), move |()| {
+        self.into_stage(ProxyHttpStage::new(discovery), move |()| {
             HttpConnector::new(stream, scope)
         })
     }
@@ -490,7 +491,7 @@ impl<T: Clone, Tls, Q, D> ProxyConnectorBuilder<T, (), TlsStage<false, Tls, Q>, 
         connector_layer: L,
     ) -> ProxyConnectorBuilder<T, L::Service, ProxyHttpStage<B>, D> {
         let stream = self.stream.clone();
-        self.into_stage(ProxyHttpStage::new(HttpsDiscovery::disabled()), move |()| {
+        self.into_stage(ProxyHttpStage::new(HttpsDiscovery::default()), move |()| {
             connector_layer.into_layer(stream)
         })
     }
@@ -506,7 +507,7 @@ impl<T: Clone, Q, D> ProxyConnectorBuilder<T, (), TlsStage<false, (), Q>, D> {
     pub fn with_default_http_connector<B>(
         self,
     ) -> ProxyConnectorBuilder<T, HttpConnector<T, ProxyRequestBody<B>>, ProxyHttpStage<B>, D> {
-        self.http_connector()
+        self.http_connector(HttpsDiscovery::default())
     }
 }
 
@@ -521,7 +522,8 @@ impl<T: Clone, D> ProxyConnectorBuilder<T, (), TlsStage<false, TlsClientConfig, 
     pub fn with_default_http_connector<B>(
         self,
     ) -> ProxyConnectorBuilder<T, HttpConnector<T, ProxyRequestBody<B>>, ProxyHttpStage<B>, D> {
-        self.http_connector()
+        let discovery = HttpsDiscovery::default().with_tls(&self.stage.tls, false);
+        self.http_connector(discovery)
     }
 }
 

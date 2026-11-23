@@ -112,17 +112,6 @@ pub(super) struct HttpsDiscovery {
     pub(super) layer: HttpsServiceLayer<BoxDnsResolver>,
 }
 
-impl HttpsDiscovery {
-    pub(super) fn disabled() -> Self {
-        let discovery = Self::default();
-        #[cfg(feature = "quic")]
-        let discovery = Self {
-            layer: discovery.layer.with_enabled(false),
-        };
-        discovery
-    }
-}
-
 impl Default for HttpsDiscovery {
     fn default() -> Self {
         Self {

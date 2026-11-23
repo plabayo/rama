@@ -5,16 +5,12 @@
 //! Hop B sees where the client goes, but only that hop A asks for it. Neither knows both.
 //! This is the idea behind Apple's iCloud Private Relay.
 //!
-//! Every tunnel runs inside the one before it:
+//! The client sets this up in three steps, each inside the tunnel of the one before:
 //!
-//! ```text
-//! QUIC to hop A
-//! └─ CONNECT-UDP to hop B
-//!    └─ QUIC to hop B
-//!       └─ CONNECT (for TCP) or CONNECT-UDP (for QUIC) to the origin
-//!          └─ TLS or QUIC to the origin
-//!             └─ HTTP request
-//! ```
+//! 1. QUIC to hop A, and through it a CONNECT-UDP tunnel to hop B.
+//! 2. QUIC to hop B inside that tunnel, and through it a tunnel to the origin: CONNECT
+//!    for TCP, CONNECT-UDP for QUIC.
+//! 3. TLS or QUIC to the origin inside that tunnel, carrying the HTTP request.
 //!
 //! Each hop is the proxy of the `masque_connect_udp_proxy` example.
 //!
@@ -119,12 +115,14 @@ async fn main() -> Result<(), BoxError> {
     scope.spawn_task(serve_origin_over_quic(weak.clone(), origin_quic));
 
     let client = chain_client(weak)?;
+    let hop_a = format!("h3+udp://{HOP_A}");
+    let hop_b = format!("h3+udp://{HOP_B}");
 
     // HTTP to the origin: TLS end to end, in a CONNECT tunnel through hop B.
     let request = Request::builder()
         .uri(format!("https://{ORIGIN}/"))
         .body(Body::empty())?;
-    through_chain(&request, &format!("h3://{HOP_B}"))?;
+    through_chain(&request, &hop_a, &hop_b)?;
     print_answer(&client, request).await?;
 
     // HTTP/3 to the origin: QUIC end to end, in a CONNECT-UDP tunnel through hop B.
@@ -135,24 +133,23 @@ async fn main() -> Result<(), BoxError> {
     request
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_3));
-    through_chain(&request, &format!("h3+udp://{HOP_B}"))?;
+    through_chain(&request, &hop_a, &hop_b)?;
     print_answer(&client, request).await?;
 
     Ok(())
 }
 
-/// Route `request` through hop B at `hop_b`, and its connection to hop B through hop A.
-fn through_chain(request: &Request, hop_b: &str) -> Result<(), BoxError> {
-    let to_hop_b = Extensions::new();
-    to_hop_b.insert(ProxyRoute::Proxy(ProxyAddress::try_from(
-        format!("h3+udp://{HOP_A}").as_str(),
-    )?));
-    request
-        .extensions()
-        .insert(ProxyRoute::Proxy(ProxyAddress::try_from(hop_b)?));
-    request
-        .extensions()
-        .insert(ProxyConnectionExtensions(to_hop_b));
+/// Route `request` through hop B, and its connection to hop B through hop A.
+fn through_chain(request: &Request, hop_a: &str, hop_b: &str) -> Result<(), BoxError> {
+    let hop_a = ProxyAddress::try_from(hop_a)?;
+    let hop_b = ProxyAddress::try_from(hop_b)?;
+
+    let connection_to_hop_b = Extensions::new();
+    connection_to_hop_b.insert(ProxyRoute::Proxy(hop_a));
+
+    let extensions = request.extensions();
+    extensions.insert(ProxyRoute::Proxy(hop_b));
+    extensions.insert(ProxyConnectionExtensions(connection_to_hop_b));
     Ok(())
 }
 
