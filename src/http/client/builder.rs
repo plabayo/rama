@@ -198,10 +198,10 @@ pub struct ProxyStage<const PROXY: bool = true, Q = ()> {
 #[derive(Debug, Default)]
 pub struct TlsStage<const PROXY: bool = true, Tls = (), Q = ()> {
     #[cfg_attr(
-        not(all(feature = "quic", any(feature = "boring", feature = "rustls"))),
+        not(any(feature = "boring", feature = "rustls")),
         expect(
             dead_code,
-            reason = "only the built-in HTTP/3 transport reads it, which needs a QUIC TLS backend"
+            reason = "only a TLS backend reads it, for HTTPS discovery and HTTP/3"
         )
     )]
     pub(super) tls: Tls,
