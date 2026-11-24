@@ -1,7 +1,7 @@
 use rama_core::extensions::Extensions;
 use std::sync::Arc;
 
-use super::{DialedProxyConnection, hop_chain, proxy_request};
+use super::{DialedProxyConnection, ProxyLeg};
 use crate::{
     address::ProxyAddress,
     client::{
@@ -15,7 +15,7 @@ use crate::{
 /// forwarding proxy. `None` if `connection` is not a connection to a proxy.
 ///
 /// Its rules describe that connection, so a pool checks them against each
-/// origin request as [`proxy_request`] turns it into a request to the proxy.
+/// origin request as [`proxy_request`](super::proxy_request) turns it into a request to the proxy.
 /// The pool partition of the connection to the proxy is one of them.
 #[must_use]
 pub fn proxy_connection_reuse(connection: &Extensions) -> Option<ConnectionReuse> {
@@ -29,7 +29,7 @@ pub fn proxy_connection_reuse(connection: &Extensions) -> Option<ConnectionReuse
 
 /// The rules a connection to a proxy was published with, the proxies it went through
 /// and the pool partition it was dialed under, checked against each origin request as
-/// [`proxy_request`] turns it into a request to that proxy.
+/// [`proxy_request`](super::proxy_request) turns it into a request to that proxy.
 #[derive(Debug)]
 struct ProxyConnectionReuse {
     rules: Option<ConnectionReuse>,
@@ -69,11 +69,12 @@ impl ConnectionReusePolicy for ProxyConnectionReuse {
 
     fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
         let proxy = input.get_ref::<ProxyRoute>()?.proxy_address()?;
-        let view = proxy_request(proxy, input).extensions;
-        let leg = Self::leg_key(&hop_chain(proxy, input), view.get_ref::<PoolPartition>());
+        let leg = ProxyLeg::new(proxy, input);
+        let view = leg.extensions();
+        let key = Self::leg_key(&leg.hops(), view.get_ref::<PoolPartition>());
         match &self.rules {
-            Some(rules) => Some(leg.and(rules.request_key(&view)?)),
-            None => Some(leg),
+            Some(rules) => Some(key.and(rules.request_key(view)?)),
+            None => Some(key),
         }
     }
 }
@@ -104,12 +105,12 @@ mod tests {
     }
 
     fn tunnel_over(proxy: &ProxyAddress, origin: &Extensions) -> ConnectionReuse {
-        let leg = proxy_request(proxy, origin).extensions;
+        let leg = ProxyLeg::new(proxy, origin);
         let connection = Extensions::new();
         connection.insert(DialedProxyConnection {
             proxy: proxy.clone(),
-            hops: hop_chain(proxy, origin),
-            partition: leg.get_ref::<PoolPartition>().cloned(),
+            hops: leg.hops(),
+            partition: leg.extensions().get_ref::<PoolPartition>().cloned(),
         });
         proxy_connection_reuse(&connection).expect("a connection to a proxy")
     }

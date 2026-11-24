@@ -76,21 +76,41 @@ pub fn proxy_request(proxy: &ProxyAddress, origin: &Extensions) -> ConnectReques
         .with_transport_protocol(transport_protocol)
 }
 
-/// The proxies the connection to `proxy` goes through, nearest first, as the bags in
-/// `origin` route it.
-pub(super) fn hop_chain(proxy: &ProxyAddress, origin: &Extensions) -> Arc<[ProxyAddress]> {
-    let mut hops = Vec::new();
-    let mut leg = proxy_request(proxy, origin);
-    while let Some(hop) = leg
-        .extensions
-        .get_ref::<ProxyRoute>()
-        .and_then(ProxyRoute::proxy_address)
-        .cloned()
-    {
-        leg = proxy_request(&hop, &leg.extensions);
-        hops.push(hop);
+/// The request to a proxy, as [`proxy_request`] makes it, with the hops the bags route it
+/// through.
+pub(super) struct ProxyLeg(ConnectRequest);
+
+impl ProxyLeg {
+    pub(super) fn new(proxy: &ProxyAddress, origin: &Extensions) -> Self {
+        Self(proxy_request(proxy, origin))
     }
-    hops.into()
+
+    pub(super) fn extensions(&self) -> &Extensions {
+        &self.0.extensions
+    }
+
+    /// The proxies this connection goes through, nearest first.
+    pub(super) fn hops(&self) -> Arc<[ProxyAddress]> {
+        let mut hops = Vec::new();
+        let mut next: Option<Self> = None;
+        loop {
+            let level = next.as_ref().unwrap_or(self);
+            let Some(hop) = level
+                .extensions()
+                .get_ref::<ProxyRoute>()
+                .and_then(ProxyRoute::proxy_address)
+                .cloned()
+            else {
+                return hops.into();
+            };
+            next = Some(Self::new(&hop, level.extensions()));
+            hops.push(hop);
+        }
+    }
+
+    pub(super) fn into_request(self) -> ConnectRequest {
+        self.0
+    }
 }
 
 fn leg_partition(origin: &Extensions, leg: &Extensions) -> Option<PoolPartition> {
@@ -144,16 +164,12 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, request: ProxyDialRequest) -> Result<Self::Output, Self::Error> {
-        let leg = proxy_request(&request.proxy, &request.origin);
-        let hop = leg
-            .extensions
-            .get_ref::<ProxyRoute>()
-            .and_then(ProxyRoute::proxy_address)
-            .cloned();
-        match self.inner.connect(leg).await {
+        let leg = ProxyLeg::new(&request.proxy, &request.origin);
+        let hops = leg.hops();
+        match self.inner.connect(leg.into_request()).await {
             Ok(established) => {
                 let conn = established.conn;
-                if let Some(hop) = hop {
+                if let Some(hop) = hops.first() {
                     let taken = conn
                         .extensions()
                         .get_ref::<EstablishedProxyRoute>()
@@ -168,13 +184,13 @@ where
                             ConnectionErrorKind::Unavailable,
                         )
                         .context_field("address", request.proxy.address)
-                        .context_field("hop", hop.address));
+                        .context_field("hop", hop.address.clone()));
                     }
                 }
                 let partition = established.input.extensions().get_ref::<PoolPartition>();
                 conn.extensions().insert(DialedProxyConnection {
                     proxy: request.proxy.clone(),
-                    hops: hop_chain(&request.proxy, &request.origin),
+                    hops,
                     partition: partition.cloned(),
                 });
                 // The version spoken over this connection, as a fact of it: the one the
