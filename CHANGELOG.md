@@ -836,8 +836,8 @@ as a compiled, compressed binary, so loading it only decodes.
   * Added JSON-LD (`JsonLd`, `JsonLdScript`, extraction from HTML) (#1134),
     typed DCMI relationships for RSS and Atom (#1133), and current Datastar
     protocol support with the typed `Datastar-Request` header and embedded
-    client 1.0.4 (#1132, #1199; embedded client updates #1164 and #1214 by
-    Abdelkader Boudih).
+    client 1.0.5 (#1132, #1199; embedded client updates #1164 and #1214 by
+    Abdelkader Boudih, and #1375).
   * Added a push-driven SSE `EventDecoder` with line and event limits and a
     lenient resync mode, usable by proxies that inspect a stream while
     forwarding it (#1184, #1190).
