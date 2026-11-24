@@ -33,17 +33,16 @@ async fn h2_with_connection_pooling() {
         .expect("self-signed")
         .with_alpn_http_2();
     let server = TlsAcceptorLayer::new(tls_service_data).into_layer(http_server);
-    let direct_connection = MockConnectorService::new(move || server.clone());
+    let direct_connection = MockConnectorService::new(server);
 
     let tls_config = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
 
-    let client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(direct_connection)
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(direct_connection)
         .without_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
 
@@ -73,18 +72,17 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
         .expect("self-signed")
         .with_alpn_http_1();
     let server = TlsAcceptorLayer::new(tls_service_data).into_layer(http_server);
-    let direct_connection = MockConnectorService::new(move || server.clone());
+    let direct_connection = MockConnectorService::new(server);
 
     let tls_config = TlsClientConfig::default_http()
         .with_server_verify(rama_tls::client::ServerVerifyMode::Disable);
 
-    let client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(direct_connection)
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(direct_connection)
         .without_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
 
@@ -138,13 +136,12 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
     let tls_config = TlsClientConfig::default_http()
         .with_server_verify(rama_tls::client::ServerVerifyMode::Disable);
 
-    let client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(direct_connection)
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(direct_connection)
         .without_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
 
@@ -216,13 +213,12 @@ async fn h1_with_connection_pooling_does_not_reuse_abandoned_streaming_body_conn
         }))
     });
 
-    let client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(direct_connection)
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(direct_connection)
         .without_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
 

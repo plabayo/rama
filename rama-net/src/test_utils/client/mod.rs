@@ -1,2 +1,2 @@
 mod mock_connector;
-pub use mock_connector::{MockConnectorService, MockSocket};
+pub use mock_connector::{MakeMockServer, MockConnectorService, MockSocket, ServerClone};

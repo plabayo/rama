@@ -1,8 +1,6 @@
 use std::{io, time::Duration};
 
-use rama_core::extensions::{
-    ExtensionsRef, NestedConnectionTransfer, SharedNestedConnectionTransfer,
-};
+use rama_core::extensions::{ExtensionsRef, ExtensionsTransfer, SharedExtensionsTransfer};
 use rama_core::graceful::WeakScope;
 use rama_core::io::BridgeIo;
 use rama_core::telemetry::tracing::{self, Instrument};
@@ -12,7 +10,7 @@ use rama_net::{
     address::SocketAddress,
     proxy::IoForwardService,
     socket::SocketService,
-    stream::{DefaultConnectionTransfer, NestedConnection},
+    stream::{DefaultExtensionsTransfer, NestedConnection},
 };
 use rama_tcp::{TcpStream, server::TcpListener};
 use rama_utils::macros::generate_set_and_with;
@@ -78,7 +76,7 @@ pub type DefaultBinder = Binder<DefaultTimeout<DefaultAcceptorFactory>, IoForwar
 /// and [`Binder::with_service`].
 ///
 /// The original request stream is handed to the service as a [`NestedConnection`]
-/// on the SOCKS5 connection, see [`Binder::set_nested_connection_transfer`].
+/// on the SOCKS5 connection, see [`Binder::set_extensions_transfer`].
 #[derive(Debug, Clone)]
 pub struct Binder<A, S> {
     acceptor: A,
@@ -88,7 +86,7 @@ pub struct Binder<A, S> {
 
     accept_timeout: Option<Duration>,
 
-    nested_connection_transfer: SharedNestedConnectionTransfer,
+    extensions_transfer: SharedExtensionsTransfer,
 }
 
 impl<A, S> Binder<A, S> {
@@ -103,7 +101,7 @@ impl<A, S> Binder<A, S> {
             service,
             bind_address: None,
             accept_timeout: None,
-            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 }
@@ -118,7 +116,7 @@ impl<A, S> Binder<A, S> {
             service: self.service,
             bind_address: self.bind_address,
             accept_timeout: self.accept_timeout,
-            nested_connection_transfer: self.nested_connection_transfer,
+            extensions_transfer: self.extensions_transfer,
         }
     }
 
@@ -136,7 +134,7 @@ impl<A, S> Binder<A, S> {
             service,
             bind_address: self.bind_address,
             accept_timeout: self.accept_timeout,
-            nested_connection_transfer: self.nested_connection_transfer,
+            extensions_transfer: self.extensions_transfer,
         }
     }
 
@@ -174,11 +172,11 @@ impl<A, S> Binder<A, S> {
         /// Set what the original request stream keeps from the SOCKS5 connection
         /// it is nested on.
         ///
-        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
-        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// Defaults to [`DefaultExtensionsTransfer`]. Chain transfers with
+        /// [`ExtensionsTransfer::and`] to also carry your own connection-scoped
         /// extension types into the tunnel.
-        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
-            self.nested_connection_transfer = transfer.into_shared();
+        pub fn extensions_transfer(mut self, transfer: impl ExtensionsTransfer) -> Self {
+            self.extensions_transfer = transfer.into_shared();
             self
         }
     }
@@ -394,8 +392,7 @@ where
             "socks5 server @ {bind_address}: bind: ready to serve from {incoming_addr}",
         );
 
-        let ingress_stream =
-            NestedConnection::new(ingress_stream, &self.nested_connection_transfer);
+        let ingress_stream = NestedConnection::new(ingress_stream, &self.extensions_transfer);
         self.service
             .serve(BridgeIo(ingress_stream, incoming_stream))
             .instrument(tracing::trace_span!("socks5::bind::serve"))

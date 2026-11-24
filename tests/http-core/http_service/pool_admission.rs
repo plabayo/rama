@@ -11,7 +11,7 @@ use rama::{
     http::{
         Body, Method, Request, StatusCode, Version,
         body::util::BodyExt as _,
-        client::{EasyHttpConnectorBuilder, HttpPooledConnectorConfig},
+        client::{EasyHttpWebClient, HttpPooledConnectorConfig},
         conn::TargetHttpVersion,
         header::SEC_WEBSOCKET_VERSION,
         io::upgrade::handle_upgrade,
@@ -119,17 +119,16 @@ impl Drop for OneStreamServer {
 macro_rules! client {
     ($tls:expr) => {{
         let tls = $tls;
-        let builder = EasyHttpConnectorBuilder::new()
+        let builder = EasyHttpWebClient::connector_builder(WeakScope::detached())
             .with_default_transport_connector()
             .with_default_dns_connector()
-            .without_tls_proxy_support()
-            .with_http_proxy_support();
+            .with_default_proxy_support();
         #[cfg(feature = "boring")]
         let builder = builder.with_tls_support_using_boringssl(tls);
         #[cfg(not(feature = "boring"))]
         let builder = builder.with_tls_support_using_rustls(tls);
         builder
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .with_connection_pool(HttpPooledConnectorConfig {
                 max_connections_total: NonZeroUsize::new(2),
                 ..Default::default()

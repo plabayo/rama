@@ -10,7 +10,7 @@ use rama_utils::str::arcstr::ArcStr;
 /// session nor changes reuse of an established connection. A backend must reject
 /// a mode it cannot support rather than silently changing the offer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub enum ClientHandshake {
     /// Offer a compatible cached session when the backend has one.
     #[default]
@@ -29,7 +29,7 @@ pub enum ClientHandshake {
 /// Keep this identity fixed across the profile's connection draws; including
 /// a drawn extension order prevents otherwise compatible sessions from resuming.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsSessionProfileScope(pub ArcStr);
 
 impl TlsPoolComponent for TlsSessionProfileScope {

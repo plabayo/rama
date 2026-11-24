@@ -149,7 +149,7 @@ def start_peer_proxy(processes, peer, output):
 def rama_client_cell(processes, args, output):
     origin = start_peer_origin(processes, args.peer, output)
     template = start_peer_proxy(processes, args.peer, output)
-    proxy = template.replace("https://", "masque://", 1)
+    proxy = template.replace("https://", "h3://", 1)
     runs = []
     for run in range(1, args.runs + 1):
         payload = (f"independent-tunnel-{run}-" * 5000).encode()

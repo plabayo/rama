@@ -51,7 +51,7 @@ async fn health_server_via_router() {
     // hello world capabilities
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
-        super::mock_io_client(move || server.clone()),
+        super::mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     );
 

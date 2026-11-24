@@ -1,6 +1,4 @@
-use rama_core::extensions::{
-    ExtensionsRef, NestedConnectionTransfer, SharedNestedConnectionTransfer,
-};
+use rama_core::extensions::{ExtensionsRef, ExtensionsTransfer, SharedExtensionsTransfer};
 use rama_core::graceful::WeakScope;
 use rama_core::io::BridgeIo;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
@@ -17,7 +15,7 @@ use rama_net::client::{ConnectRequest, ConnectorService, ConnectorTarget};
 use rama_net::{
     client::EstablishedClientConnection,
     proxy::IoForwardService,
-    stream::{DefaultConnectionTransfer, NestedConnection, SocketInfo},
+    stream::{DefaultExtensionsTransfer, NestedConnection, SocketInfo},
 };
 use rama_tcp::client::service::TcpConnector;
 use rama_tcp::proxy::IoToProxyBridgeIo;
@@ -104,7 +102,7 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 /// in [`TimeoutLayer`] when its connection attempts should be bounded.
 ///
 /// The ingress stream is handed to the service as a [`NestedConnection`] on the
-/// SOCKS5 connection, see [`Connector::set_nested_connection_transfer`].
+/// SOCKS5 connection, see [`Connector::set_extensions_transfer`].
 #[derive(Debug, Clone)]
 pub struct Connector<C, S> {
     connector: C,
@@ -114,7 +112,7 @@ pub struct Connector<C, S> {
     // instead of the actual local address used to connect
     hide_local_address: bool,
 
-    nested_connection_transfer: SharedNestedConnectionTransfer,
+    extensions_transfer: SharedExtensionsTransfer,
 }
 
 impl<C, S> Connector<C, S> {
@@ -128,7 +126,7 @@ impl<C, S> Connector<C, S> {
             connector,
             service,
             hide_local_address: false,
-            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 
@@ -145,11 +143,11 @@ impl<C, S> Connector<C, S> {
         /// Set what the tunnelled stream keeps from the SOCKS5 connection it is
         /// nested on.
         ///
-        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
-        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// Defaults to [`DefaultExtensionsTransfer`]. Chain transfers with
+        /// [`ExtensionsTransfer::and`] to also carry your own connection-scoped
         /// extension types into the tunnel.
-        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
-            self.nested_connection_transfer = transfer.into_shared();
+        pub fn extensions_transfer(mut self, transfer: impl ExtensionsTransfer) -> Self {
+            self.extensions_transfer = transfer.into_shared();
             self
         }
     }
@@ -174,7 +172,7 @@ impl<C, S> Connector<C, S> {
             connector,
             service: self.service,
             hide_local_address: self.hide_local_address,
-            nested_connection_transfer: self.nested_connection_transfer,
+            extensions_transfer: self.extensions_transfer,
         }
     }
 
@@ -191,7 +189,7 @@ impl<C, S> Connector<C, S> {
             connector: self.connector,
             service,
             hide_local_address: self.hide_local_address,
-            nested_connection_transfer: self.nested_connection_transfer,
+            extensions_transfer: self.extensions_transfer,
         }
     }
 }
@@ -212,7 +210,7 @@ impl DefaultConnector {
             connector,
             service: IoForwardService::new(scope),
             hide_local_address: false,
-            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 }
@@ -309,8 +307,7 @@ where
             "socks5 server w/ destination {destination}: connect: reply sent, start serving source-target pipe: {egress_addr_local} <-> {egress_addr:?}",
         );
 
-        let ingress_stream =
-            NestedConnection::new(ingress_stream, &self.nested_connection_transfer);
+        let ingress_stream = NestedConnection::new(ingress_stream, &self.extensions_transfer);
         self.service
             .serve(BridgeIo(ingress_stream, egress_stream))
             .instrument(trace_span!("socks5::connect::proxy::serve"))
@@ -335,11 +332,11 @@ where
 /// ready for piping between the incoming and established streams.
 ///
 /// The stream is handed to the service as a [`NestedConnection`] on the
-/// SOCKS5 connection, see [`LazyConnector::set_nested_connection_transfer`].
+/// SOCKS5 connection, see [`LazyConnector::set_extensions_transfer`].
 #[derive(Debug, Clone)]
 pub struct LazyConnector<S> {
     service: S,
-    nested_connection_transfer: SharedNestedConnectionTransfer,
+    extensions_transfer: SharedExtensionsTransfer,
 }
 
 impl<S> LazyConnector<S> {
@@ -350,7 +347,7 @@ impl<S> LazyConnector<S> {
     pub fn new(service: S) -> Self {
         Self {
             service,
-            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 
@@ -358,11 +355,11 @@ impl<S> LazyConnector<S> {
         /// Set what the tunnelled stream keeps from the SOCKS5 connection it is
         /// nested on.
         ///
-        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
-        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// Defaults to [`DefaultExtensionsTransfer`]. Chain transfers with
+        /// [`ExtensionsTransfer::and`] to also carry your own connection-scoped
         /// extension types into the tunnel.
-        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
-            self.nested_connection_transfer = transfer.into_shared();
+        pub fn extensions_transfer(mut self, transfer: impl ExtensionsTransfer) -> Self {
+            self.extensions_transfer = transfer.into_shared();
             self
         }
     }
@@ -406,7 +403,7 @@ where
             "socks5 server w/ destination {destination}: lazy connect: reply sent, delegate to inner stream service",
         );
 
-        let stream = NestedConnection::new(stream, &self.nested_connection_transfer);
+        let stream = NestedConnection::new(stream, &self.extensions_transfer);
         stream.extensions().insert(ConnectorTarget(destination));
 
         self.service

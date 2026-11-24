@@ -4,13 +4,14 @@
 //! [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 
 use clap::ValueEnum;
+use rama::net::client::MaybeProxied;
 use rama::{
     Service,
     dns::client::GlobalDnsResolver,
     error::BoxError,
     extensions::ExtensionsRef,
     graceful::WeakScope,
-    http::client::DefaultHttpWebClient,
+    http::{Body, client::ProxyConnector},
     io::BridgeIo,
     net::{
         Protocol,
@@ -18,12 +19,10 @@ use rama::{
         client::{ConnectRequest, ConnectorService},
         stream::SocketAddresses,
     },
-    proxy::masque::connect_udp::{
-        ConnectUdpConnector, ConnectUdpService, DestinationScopePolicy, MaybeTunneledSocket,
-    },
+    proxy::masque::connect_udp::{ConnectUdpService, ConnectUdpSocket, DestinationScopePolicy},
     quic::{Connection, proxy::InputWithQuicClientHello},
     tls::client::TlsClientConfig,
-    udp::{UdpPacketSocket, proxy::UdpConnector},
+    udp::UdpPacketSocket,
 };
 
 use super::{
@@ -58,8 +57,10 @@ pub(super) fn connect_udp_service(
     ConnectUdpService<
         DestinationScopePolicy,
         GlobalDnsResolver,
-        impl ConnectorService<ConnectRequest, Connection = MaybeTunneledSocket<UdpPacketSocket>>
-        + Clone
+        impl ConnectorService<
+            ConnectRequest,
+            Connection = MaybeProxied<UdpPacketSocket, ConnectUdpSocket>,
+        > + Clone
         + use<>,
     >,
     BoxError,
@@ -72,14 +73,10 @@ pub(super) fn connect_udp_service(
     // The client sending CONNECT-UDP requests to a MASQUE upstream proxy.
     let proxy_tls = upstream
         .proxy_tls_config()
-        .map_or_else(TlsClientConfig::default_http, |tls| {
-            tls.with_alpn_http_auto()
-        });
-    let upstream_client = DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(
-        scope.clone(),
-        proxy_tls,
-    )?;
-    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), upstream_client, scope.clone());
+        .unwrap_or_else(TlsClientConfig::default_http);
+    let tunnels = ProxyConnector::default_using_tls::<Body>(scope.clone(), proxy_tls)
+        .into_parts()
+        .connect_udp;
     Ok(ConnectUdpService::try_new(scope, template)?
         .with_policy(policy)
         .with_connector(upstream.connector_service(tunnels)))

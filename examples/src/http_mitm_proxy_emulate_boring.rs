@@ -262,17 +262,16 @@ fn error_response(status: StatusCode) -> Response {
 fn new_emulating_client(database: Arc<UserAgentDatabase>, scope: WeakScope) -> EmulatingClient {
     // The selected profile supplies ALPN and every other ClientHello field.
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let client = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
+    let client = EasyHttpWebClient::connector_builder(scope)
+        .with_default_tcp_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config.clone())
         .map_connector(|connector| {
             ProfileEmulateHttpConnectModifier::new(connector)
                 .with_connection_compiler(ConnectionProfileCompiler::new(tls_config))
         })
-        .with_default_http_connector(scope)
+        .with_default_http_connector()
         // Erase the deep emulating connector type before pooling it.
         .map_connector(|connector| connector.boxed())
         .with_default_connection_pool()

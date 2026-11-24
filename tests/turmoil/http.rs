@@ -53,13 +53,12 @@ async fn start_server(
 
 async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std::error::Error>> {
     let client = TraceLayer::new_for_http().into_layer(
-        EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(TurmoilTcpConnector)
+        EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(TurmoilTcpConnector)
             .without_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .without_connection_pool()
             .build_client(),
     );

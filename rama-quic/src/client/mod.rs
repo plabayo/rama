@@ -81,9 +81,7 @@ const MAX_IN_FLIGHT_CONNECT_ATTEMPTS: usize = 2;
 /// candidates of an outer DNS connector, each attempt on its own endpoint from `E` with that
 /// address as its [`ConnectorTarget`]. A request on a proxy route is not resolved here: `E`
 /// must establish the route (publishing [`EstablishedProxyRoute`]) or the request is refused
-/// before any attempt, so an explicit proxy is never bypassed. A request addressed to its own
-/// MASQUE proxy ([`ProxyRoute::addresses_proxy`]) goes straight to the proxy and is published
-/// as [`EstablishedProxyRoute::Forward`].
+/// before any attempt, so an explicit proxy is never bypassed.
 pub struct QuicConnector<E> {
     endpoints: E,
     tls: TlsClientConfig,
@@ -197,6 +195,10 @@ impl<E> QuicConnector<E> {
 
     /// The TLS configuration a connection for `input` is established with: the defaults with
     /// the request's overrides, its ALPN offer kept within what the connections serve.
+    ///
+    /// A TLS input belongs to the connection it configures, so the request's chain answers
+    /// none of them past a connection boundary, such as the request that dials a
+    /// proxy. This connector's own configuration still answers for that connection.
     #[must_use]
     pub fn tls_config_for(&self, input: &ConnectRequest) -> TlsClientConfig {
         let mut tls = self.tls.clone().with_overrides(input.extensions());
@@ -593,10 +595,6 @@ where
         // Keep QUIC address-race and handshake state out of enclosing pool and
         // service-selection futures.
         let (connection, established) = match (&route, proxy) {
-            (Some(route), Some(proxy)) if route.addresses_proxy(&input.authority) => (
-                Box::pin(self.connect_direct(input, &prepared)).await?,
-                Some(EstablishedProxyRoute::Forward(proxy)),
-            ),
             (_, Some(proxy)) => {
                 let (connection, route) =
                     Box::pin(self.connect_through(input, &prepared, &proxy)).await?;

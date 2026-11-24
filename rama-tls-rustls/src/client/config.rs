@@ -227,7 +227,7 @@ impl RustlsClientConfigExt for TlsClientConfig {
 }
 
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 /// A custom rustls server certificate verifier
 pub struct RustlsServerCertVerifier(pub Arc<dyn ServerCertVerifier>);
 
@@ -240,7 +240,7 @@ impl TlsPoolComponent for RustlsServerCertVerifier {
 }
 
 #[derive(Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 /// Escape hatch: take over the final rustls [`ClientConfig`] build.
 ///
 /// Rama builds the config from the common [`TlsClientConfig`] pieces and hands

@@ -78,7 +78,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_send_compressed(encoding)

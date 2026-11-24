@@ -31,10 +31,10 @@
 
 use rama::{
     Layer, Service,
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     http::{
         Body, BodyLimitLayer, Request, Response, StatusCode,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, ProxyConnector},
         layer::{
             proxy_auth::ProxyAuthLayer,
             trace::TraceLayer,
@@ -136,7 +136,10 @@ async fn main() {
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
-    let client = EasyHttpWebClient::default().with_isolate_forward_proxy_auth_error(true);
+    let scope = WeakScope::detached();
+    let proxies = ProxyConnector::default_with_scope(scope.clone())
+        .with_isolate_forward_proxy_auth_error(true);
+    let client = EasyHttpWebClient::default_using_proxies(scope, proxies);
     let uri = req.uri().clone();
     tracing::debug!(
         url.full = %req.uri(),

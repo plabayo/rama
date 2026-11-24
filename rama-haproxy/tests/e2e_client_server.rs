@@ -17,8 +17,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rama_core::{
-    Layer, Service, ServiceInput, bytes::Bytes, error::BoxError, extensions::ExtensionsRef,
-    service::service_fn,
+    Layer, Service, bytes::Bytes, error::BoxError, extensions::ExtensionsRef, service::service_fn,
 };
 use rama_haproxy::{
     client::{HaProxyLayer as ClientLayer, protocol as client_protocol, version as client_version},
@@ -26,8 +25,8 @@ use rama_haproxy::{
     server::{HaProxyCommand, HaProxyService as ServerService, HaProxyTlvs},
 };
 use rama_net::{
-    address::{Domain, SocketAddress},
-    client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind},
+    address::{Domain, HostWithPort, SocketAddress},
+    client::{ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind},
     forwarded::{Forwarded, ForwardedElement, ForwardedSelectionPolicy, NodeId},
     stream::SocketInfo,
     test_utils::client::MockConnectorService,
@@ -80,7 +79,7 @@ where
     // Input carries the original source socket address via `SocketInfo`,
     // which is what the client layer reads to build the `for=` of the PROXY
     // header.
-    let input: ServiceInput<()> = ServiceInput::new(());
+    let input = ConnectRequest::new(HostWithPort::example_domain_http());
     input.extensions().insert(SocketInfo::new(None, SRC));
 
     // Driving the client triggers the connector, which spawns the server,
@@ -113,11 +112,12 @@ where
 {
     // The server side never actually receives a header in this path, so we
     // can use a tiny no-op inner.
-    let connector = MockConnectorService::new(|| {
-        ServerService::new(service_fn(|_stream| async move { Ok::<_, BoxError>(()) }))
-    });
+    let connector =
+        MockConnectorService::new(ServerService::new(service_fn(|_stream| async move {
+            Ok::<_, BoxError>(())
+        })));
     let client_svc = configure_client(ClientLayer::tcp()).layer(connector);
-    let input: ServiceInput<()> = ServiceInput::new(());
+    let input = ConnectRequest::new(HostWithPort::example_domain_http());
     input.extensions().insert(SocketInfo::new(None, SRC));
     client_svc
         .serve(input)

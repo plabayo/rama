@@ -1,10 +1,11 @@
+use std::marker::PhantomData;
+
 #[cfg(feature = "http")]
 use rama_net::tls::AlpnPolicy;
 
 use super::{AutoTlsStream, RustlsServerTrustCache, RustlsTlsStream, TlsConnectorData, TlsStream};
 use crate::client::config::{RustlsTlsClientConfigProvider, RustlsTlsConnectorConfig};
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
-use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaFrom, RamaInto, RamaTryFrom};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -19,13 +20,12 @@ use rama_net::client::{
 use rama_net::extensions::StreamTransformed;
 use rama_net::{
     AuthorityInputExt, ConnectorTargetInputExt, Protocol, ProtocolInputExt,
-    tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
+    tls::{ApplicationProtocol, TlsAlpn, TlsRequired, default_tls_alpn},
 };
 use rama_tls::client::{
     EchRequirement, NegotiatedTlsAlgorithms, NegotiatedTlsParameters, TlsClientConfig,
-    TlsConnectionReuse, resolve_target_ech,
+    TlsConnectionReuse, publish_tls_required, resolve_target_ech,
 };
-use rama_tls::{TlsTunnelMode, resolve_tls_tunnel};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
@@ -48,7 +48,7 @@ use rama_tls::{
 pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
     base_config: Option<TlsClientConfig>,
     server_trust_cache_capacity: NonZeroUsize,
-    kind: K,
+    kind: PhantomData<K>,
 }
 
 impl<K> TlsConnectorLayer<K> {
@@ -63,9 +63,8 @@ impl<K> TlsConnectorLayer<K> {
     generate_set_and_with! {
         /// Define the base [`TlsClientConfig`] for this [`TlsConnectorLayer`].
         ///
-        /// Auto and secure connectors layer per-request TLS pieces on top of this
-        /// base. Tunnel connectors intentionally use only this base plus the
-        /// proxy-scoped [`TlsTunnel`] fields.
+        /// Per-request TLS pieces of the connection being established layer on
+        /// top of this base; the pieces of a connection underneath never do.
         pub fn base_config(mut self, base: Option<TlsClientConfig>) -> Self {
             self.base_config = base;
             self
@@ -83,7 +82,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
         Self {
             base_config: None,
             server_trust_cache_capacity: RustlsServerTrustCache::DEFAULT_CAPACITY,
-            kind: ConnectorKindAuto,
+            kind: PhantomData,
         }
     }
 }
@@ -96,20 +95,7 @@ impl TlsConnectorLayer<ConnectorKindSecure> {
         Self {
             base_config: None,
             server_trust_cache_capacity: RustlsServerTrustCache::DEFAULT_CAPACITY,
-            kind: ConnectorKindSecure,
-        }
-    }
-}
-
-impl TlsConnectorLayer<ConnectorKindTunnel> {
-    /// Creates a new [`TlsConnectorLayer`] which will establish
-    /// a secure connection if the request is to be tunneled.
-    #[must_use]
-    pub fn tunnel(host: Option<Host>) -> Self {
-        Self {
-            base_config: None,
-            server_trust_cache_capacity: RustlsServerTrustCache::DEFAULT_CAPACITY,
-            kind: ConnectorKindTunnel { host },
+            kind: PhantomData,
         }
     }
 }
@@ -122,7 +108,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
             inner,
             base_config: self.base_config.clone(),
             server_trust_cache: RustlsServerTrustCache::new(self.server_trust_cache_capacity),
-            kind: self.kind.clone(),
+            kind: PhantomData,
         }
     }
 
@@ -131,7 +117,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
             inner,
             base_config: self.base_config,
             server_trust_cache: RustlsServerTrustCache::new(self.server_trust_cache_capacity),
-            kind: self.kind,
+            kind: PhantomData,
         }
     }
 }
@@ -154,7 +140,7 @@ pub struct TlsConnector<S, K = ConnectorKindAuto> {
     inner: S,
     base_config: Option<TlsClientConfig>,
     server_trust_cache: RustlsServerTrustCache,
-    kind: K,
+    kind: PhantomData<K>,
 }
 
 impl<S, K> TlsConnector<S, K> {
@@ -170,23 +156,22 @@ impl<S, K> TlsConnector<S, K> {
     }
 
     /// Creates a new [`TlsConnector`].
-    pub const fn new(inner: S, kind: K) -> Self {
+    pub const fn new(inner: S) -> Self {
         Self {
             inner,
             base_config: None,
             server_trust_cache: RustlsServerTrustCache::new(
                 RustlsServerTrustCache::DEFAULT_CAPACITY,
             ),
-            kind,
+            kind: PhantomData,
         }
     }
 
     generate_set_and_with! {
         /// Define the base [`TlsClientConfig`] for this [`TlsConnector`].
         ///
-        /// Auto and secure connectors layer per-request TLS pieces on top of this
-        /// base. Tunnel connectors intentionally use only this base plus the
-        /// proxy-scoped [`TlsTunnel`] fields.
+        /// Per-request TLS pieces of the connection being established layer on
+        /// top of this base; the pieces of a connection underneath never do.
         pub fn base_config(mut self, base: Option<TlsClientConfig>) -> Self {
             self.base_config = base;
             self
@@ -200,7 +185,19 @@ impl<S> TlsConnector<S, ConnectorKindAuto> {
     /// forwards the inner connection. The logical authority remains the default
     /// server identity.
     pub fn auto(inner: S) -> Self {
-        Self::new(inner, ConnectorKindAuto)
+        Self::new(inner)
+    }
+
+    /// Turn this connector into one which always handshakes, see [`TlsConnector::secure`],
+    /// keeping its base configuration.
+    #[must_use]
+    pub fn into_secure(self) -> TlsConnector<S, ConnectorKindSecure> {
+        TlsConnector {
+            inner: self.inner,
+            base_config: self.base_config,
+            server_trust_cache: self.server_trust_cache,
+            kind: PhantomData,
+        }
     }
 }
 
@@ -208,16 +205,15 @@ impl<S> TlsConnector<S, ConnectorKindSecure> {
     /// Creates a new [`TlsConnector`] which will always
     /// establish a secure connection regardless of the request it is for.
     pub fn secure(inner: S) -> Self {
-        Self::new(inner, ConnectorKindSecure)
+        Self::new(inner)
     }
 }
 
-impl<S> TlsConnector<S, ConnectorKindTunnel> {
-    /// Creates a new [`TlsConnector`] which will establish
-    /// a secure connection if the request is to be tunneled.
-    pub fn tunnel(inner: S, host: Option<Host>) -> Self {
-        Self::new(inner, ConnectorKindTunnel { host })
-    }
+/// Whether the connection to establish is to be secured: its protocol is a secure one,
+/// or its input asks for TLS whatever the protocol.
+fn secure_requested(input: &(impl ProtocolInputExt + ExtensionsRef)) -> bool {
+    input.target_protocol().is_some_and(Protocol::is_secure)
+        || input.extensions().get_ref::<TlsRequired>().is_some()
 }
 
 // this way we do not need a hacky macro... however is there a way to do this without needing to hacK?!?!
@@ -231,10 +227,7 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        self.check_attempt_policy(
-            &input,
-            input.target_protocol().is_some_and(Protocol::is_secure),
-        )?;
+        self.check_attempt_policy(&input, secure_requested(&input))?;
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
         let authority = input.target_authority().ok_or_else(|| {
@@ -245,7 +238,7 @@ where
         })?;
         let app_protocol = input.target_protocol();
 
-        if !app_protocol.is_some_and(Protocol::is_secure) {
+        if !secure_requested(&input) {
             self.check_attempt_policy(&input, false)?;
             tracing::trace!(
                 server.address = %authority.host,
@@ -253,6 +246,7 @@ where
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
 
+            publish_tls_required(conn.extensions(), false);
             return Ok(EstablishedClientConnection {
                 input,
                 conn: AutoTlsStream::plain(conn),
@@ -317,6 +311,9 @@ where
         })?;
 
         reuse.publish(conn.extensions(), self.base_config.as_ref());
+        if !input.target_protocol().is_some_and(Protocol::is_secure) {
+            publish_tls_required(conn.extensions(), true);
+        }
         conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -405,102 +402,13 @@ where
     }
 }
 
-impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindTunnel>
-where
-    S: ConnectorService<Input, Connection: Io + Unpin>,
-    Input: Send + ExtensionsRef + 'static,
-{
-    type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
-    type Error = ConnectionError;
-
-    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
-
-        let tunnel = TlsTunnel::from_extensions(input.extensions()).cloned();
-        let reuse = TlsConnectionReuse::tunnel(RustlsTlsClientConfigProvider, input.extensions());
-
-        let TlsTunnelMode::Tls(maybe_server_host) =
-            resolve_tls_tunnel(tunnel.as_ref(), self.kind.host.as_ref())
-        else {
-            tracing::trace!(
-                "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
-            );
-
-            reuse.publish(conn.extensions(), None);
-            return Ok(EstablishedClientConnection {
-                input,
-                conn: AutoTlsStream::plain(conn),
-            });
-        };
-
-        let tunnel_protocol = tunnel
-            .as_ref()
-            .and_then(|tunnel| tunnel.application_protocol.as_ref());
-        let connector_data = self
-            .tunnel_connector_data(tunnel.as_ref(), tunnel_protocol)
-            .await
-            .map_err(|error| {
-                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                    .context("TlsConnector(tunnel): build connector configuration")
-            })?;
-
-        let (conn, negotiated_params) = self
-            .handshake(connector_data, maybe_server_host, conn)
-            .await
-            .map_err(|error| {
-                ConnectionError::transport(error, ConnectionErrorKind::Protocol)
-                    .context("TlsConnector(tunnel): TLS handshake")
-            })?;
-        let conn = AutoTlsStream::secure(conn);
-
-        reuse.publish(conn.extensions(), None);
-        conn.extensions().insert(negotiated_params);
-        conn.extensions().insert(StreamTransformed {
-            by: "rama-tls-rustls::TlsConnector",
-        });
-        tracing::trace!("TlsConnector(tunnel): connection secured");
-        Ok(EstablishedClientConnection { input, conn })
-    }
-}
-
 impl<S, K> TlsConnector<S, K> {
-    async fn tunnel_connector_data(
-        &self,
-        tunnel: Option<&TlsTunnel>,
-        application_protocol: Option<&Protocol>,
-    ) -> Result<TlsConnectorData, BoxError> {
-        let effective = self.tunnel_config_extensions(tunnel, application_protocol);
-
-        let verification = self
-            .server_trust_cache
-            .server_verification_async(&effective)
-            .await?;
-        TlsConnectorData::from_extensions(&effective, verification.as_ref())
-    }
-
     /// Request extensions resolved over the connector base, local to the caller.
     fn effective_extensions(&self, request: &Extensions) -> Extensions {
         match &self.base_config {
             Some(base) => base.overlay(request),
             None => request.fork(),
         }
-    }
-
-    fn tunnel_config_extensions(
-        &self,
-        tunnel: Option<&TlsTunnel>,
-        application_protocol: Option<&Protocol>,
-    ) -> Extensions {
-        let effective = Extensions::new();
-        if let Some(base) = &self.base_config {
-            effective.extend(base.as_extensions());
-        }
-        if let Some(alpn) = tunnel.and_then(|tunnel| tunnel.alpn.clone()) {
-            effective.insert(alpn);
-        }
-
-        apply_default_alpn(&effective, application_protocol);
-        effective
     }
 
     /// Reject an incompatible discovery policy before dialing. Ordinary connections
@@ -534,25 +442,16 @@ impl<S, K> TlsConnector<S, K> {
             return attempt.check_policy(scope, None);
         }
 
-        let merged;
-        let extensions = match (&self.base_config, !request.is_empty()) {
-            (Some(base), true) => {
-                merged = input.extensions().fork().with_base(base.as_extensions());
-                &merged
-            }
-            (Some(base), false) => base.as_extensions(),
-            (None, _) => input.extensions(),
-        };
-        let effective = RustlsTlsConnectorConfig::from_extensions(extensions);
-        if !effective.authenticates_server() {
+        let config = RustlsTlsConnectorConfig::from_extensions(&effective);
+        if !config.authenticates_server() {
             return attempt.check_policy(scope, None);
         }
-        let authority = effective
+        let authority = config
             .server_name
             .is_none()
             .then(|| input.target_authority())
             .flatten();
-        let peer = effective
+        let peer = config
             .server_name
             .map(|name| &name.0)
             .or_else(|| authority.as_ref().map(|authority| &authority.host));
@@ -808,22 +707,10 @@ pub struct ConnectorKindAuto;
 /// regardless of the scheme of the request URI.
 pub struct ConnectorKindSecure;
 
-#[derive(Debug, Clone)]
-/// A connector which can be used to use this connector to support
-/// secure tls tunnel connections.
-///
-/// TLS is requested when [`TlsTunnel`] is present or a hardcoded server
-/// identity is configured. A dedicated base-config identity takes precedence,
-/// followed by the tunnel identity and then this connector fallback.
-///
-/// [`TlsTunnel`]: rama_tls::TlsTunnel
-pub struct ConnectorKindTunnel {
-    host: Option<Host>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::extensions::NoExtensionsTransfer;
 
     #[test]
     fn layered_connectors_own_independent_caches_and_clones_share() {
@@ -856,7 +743,6 @@ mod tests {
     use rama_tls::ProtocolVersion;
 
     use rama_net::client::pool::ConnectionReuse;
-    use std::assert_matches;
 
     use rama_core::{ServiceInput, service::service_fn};
     use rama_net::{
@@ -878,32 +764,6 @@ mod tests {
             ConnectionAttempt::new().with_authenticated_peer(Host::from_static("origin.example")),
         );
         input
-    }
-
-    #[tokio::test]
-    async fn plaintext_tunnel_bypass_rejects_later_tls_activation() {
-        let transport = service_fn(async |input: ServiceInput<()>| {
-            let (stream, _peer) = tokio::io::duplex(64);
-            Ok::<_, ConnectionError>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(stream),
-            })
-        });
-        let connector = TlsConnector::tunnel(transport, None);
-        let established = connector.serve(ServiceInput::new(())).await.unwrap();
-        let reuse = established
-            .conn
-            .extensions()
-            .get_ref::<ConnectionReuse>()
-            .unwrap();
-        let next = Extensions::new();
-        assert!(reuse.matches(&next));
-        next.insert(TlsTunnel {
-            server_identity: Some(Host::from_static("proxy.example")),
-            application_protocol: Some(Protocol::HTTPS),
-            alpn: None,
-        });
-        assert!(!reuse.matches(&next));
     }
 
     #[tokio::test]
@@ -1203,308 +1063,6 @@ mod tests {
     }
 
     #[test]
-    fn tunnel_config_uses_only_base_and_explicit_tunnel_policy() {
-        use rama_net::tls::TlsAlpn;
-        use rama_tls::client::{ServerVerifyMode, TlsServerName, TlsServerVerify};
-
-        let base_name = Host::from_static("proxy-cert.example");
-        let connector = TlsConnector::tunnel((), None).with_base_config(
-            TlsClientConfig::new()
-                .with_alpn_http_2()
-                .with_server_name(base_name.clone())
-                .with_server_verify(ServerVerifyMode::Disable),
-        );
-        let tunnel = TlsTunnel {
-            server_identity: Some(Host::from_static("proxy-route.example")),
-            application_protocol: Some(Protocol::HTTPS),
-            alpn: Some(TlsAlpn::http_1()),
-        };
-
-        let effective = connector.tunnel_config_extensions(Some(&tunnel), Some(&Protocol::HTTPS));
-        assert_eq!(
-            effective.get_ref::<TlsAlpn>().cloned(),
-            Some(TlsAlpn::http_1())
-        );
-        assert_eq!(
-            effective
-                .get_ref::<TlsServerName>()
-                .map(|server_name| server_name.0.clone()),
-            Some(base_name)
-        );
-        assert_eq!(
-            effective
-                .get_ref::<TlsServerVerify>()
-                .map(|verify| verify.0),
-            Some(ServerVerifyMode::Disable)
-        );
-    }
-
-    #[tokio::test]
-    async fn tunnel_config_isolates_all_origin_tls_extensions() {
-        use crate::client::{ModifyRustlsClientConfig, RustlsClientConfigExt as _};
-        use rama_crypto::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
-        use rama_tls::{
-            KeyLogIntent, ProtocolVersion, TlsKeyLog,
-            client::{
-                ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientAuth, TlsServerCertPinCheck,
-                TlsServerCertPins, TlsServerTrust,
-            },
-        };
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        };
-
-        let base_modifier_used = Arc::new(AtomicBool::new(false));
-        let base_modifier_flag = base_modifier_used.clone();
-        let base_name = Host::from_static("proxy-cert.example");
-        let base_pin = CertificateDer::from(vec![1, 2, 3]);
-        let base_pins = TlsServerCertPins::new(base_pin.clone());
-        let base_trust = TlsServerTrust::webpki_roots();
-        let base = TlsClientConfig::new()
-            .with_alpn_http_2()
-            .with_server_name(base_name.clone())
-            .with_server_verify(ServerVerifyMode::Disable)
-            .with_server_cert_pins(base_pins)
-            .with_server_trust(base_trust.clone())
-            .with_supported_versions(vec![ProtocolVersion::TLSv1_3])
-            .with_keylog(KeyLogIntent::Disabled)
-            .with_client_auth(ClientAuth::SelfSigned)
-            .with_store_server_cert_chain(true)
-            .with_modify_rustls_config(move |config| {
-                base_modifier_flag.store(true, Ordering::SeqCst);
-                Ok(config)
-            });
-        let connector = TlsConnector::tunnel((), None).with_base_config(base);
-
-        let origin = Extensions::new();
-        TlsClientConfig::new()
-            .with_alpn_http_1()
-            .with_server_name(Host::from_static("origin.example"))
-            .with_server_verify(ServerVerifyMode::Auto)
-            .with_server_cert_pins(TlsServerCertPins::new(CertificateDer::from(vec![9])))
-            .with_server_trust(TlsServerTrust::native_roots())
-            .with_supported_versions(vec![ProtocolVersion::TLSv1_2])
-            .with_keylog(KeyLogIntent::Environment)
-            .with_client_auth(ClientAuth::Single(ClientAuthData {
-                cert_chain: vec![CertificateDer::from(vec![8])],
-                private_key: PrivatePkcs8KeyDer::from(vec![7]).into(),
-            }))
-            .with_store_server_cert_chain(false)
-            .write_to(&origin);
-        origin.insert(ModifyRustlsClientConfig::new(|_| {
-            panic!("origin rustls modifier leaked into proxy TLS")
-        }));
-        origin.insert(TlsTunnel {
-            server_identity: Some(Host::from_static("proxy-route.example")),
-            application_protocol: Some(Protocol::HTTPS),
-            alpn: None,
-        });
-
-        let tunnel = origin.get_ref::<TlsTunnel>();
-        let effective = connector.tunnel_config_extensions(tunnel, Some(&Protocol::HTTPS));
-        let config = RustlsTlsConnectorConfig::from_extensions(&effective);
-
-        assert_eq!(config.alpn.cloned(), Some(TlsAlpn::http_2()));
-        assert_eq!(
-            config.server_name.map(|name| name.0.clone()),
-            Some(base_name.clone())
-        );
-        assert_eq!(
-            config.verify.map(|verify| verify.0),
-            Some(ServerVerifyMode::Disable)
-        );
-        assert_eq!(config.server_trust, Some(&base_trust));
-        assert_eq!(
-            config.versions.map(|versions| versions.0.as_slice()),
-            Some([ProtocolVersion::TLSv1_3].as_slice())
-        );
-        assert_matches!(config.keylog, Some(TlsKeyLog(KeyLogIntent::Disabled)));
-        assert_matches!(
-            config.client_auth,
-            Some(TlsClientAuth(ClientAuth::SelfSigned)),
-        );
-        assert_eq!(config.store_chain.map(|store| store.0), Some(true));
-        assert_eq!(
-            config
-                .server_cert_pins
-                .expect("base pins")
-                .check(Some(&base_name), &base_pin),
-            TlsServerCertPinCheck::Matched
-        );
-        assert!(config.modify.is_some());
-
-        let data = connector
-            .tunnel_connector_data(tunnel, Some(&Protocol::HTTPS))
-            .await
-            .expect("resolved tunnel connector data");
-        assert!(base_modifier_used.load(Ordering::SeqCst));
-        assert_eq!(data.server_name, Some(base_name));
-        assert!(data.store_server_certificate_chain);
-        assert_eq!(
-            data.client_config.alpn_protocols,
-            vec![ApplicationProtocol::HTTP_2.as_bytes().to_vec()]
-        );
-    }
-
-    #[test]
-    fn explicit_empty_tunnel_alpn_overrides_base() {
-        use rama_net::tls::TlsAlpn;
-
-        let connector = TlsConnector::tunnel((), None)
-            .with_base_config(TlsClientConfig::new().with_alpn_http_auto());
-        let tunnel = TlsTunnel {
-            server_identity: None,
-            application_protocol: Some(Protocol::HTTPS),
-            alpn: Some(TlsAlpn::empty()),
-        };
-
-        let effective = connector.tunnel_config_extensions(Some(&tunnel), Some(&Protocol::HTTPS));
-        assert_eq!(
-            effective.get_ref::<TlsAlpn>().cloned(),
-            Some(TlsAlpn::empty())
-        );
-    }
-
-    #[tokio::test]
-    async fn tunnel_handshake_uses_proxy_base_and_keeps_version_scoped() {
-        use rama_core::{ServiceInput, service::service_fn};
-        use rama_crypto::{cert::generate_server_auth, pki_types::CertificateDer};
-        use rama_net::{client::EstablishedClientConnection, stream::service::EchoService};
-        use rama_tls::{
-            ProtocolVersion,
-            client::{ServerVerifyMode, TlsServerCertPins},
-            server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
-        };
-        use std::sync::Arc;
-
-        let (cert_chain, private_key) =
-            generate_server_auth(GeneratedServerAuthConfig::default()).expect("server auth");
-        let trust_anchor = cert_chain.last().expect("trust anchor").clone();
-        let server_pin = cert_chain.first().expect("leaf certificate").clone();
-        let server = crate::server::TlsAcceptorLayer::new(
-            TlsServerConfig::new()
-                .with_single_cert(ServerAuthData {
-                    cert_chain,
-                    private_key,
-                    ocsp: None,
-                })
-                .with_alpn_http_2(),
-        )
-        .into_layer(EchoService::new());
-
-        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-        let server_task =
-            tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
-        let client_io = Arc::new(tokio::sync::Mutex::new(Some(client_io)));
-        let transport = service_fn(move |input: ServiceInput<()>| {
-            let client_io = client_io.clone();
-            async move {
-                let conn =
-                    ServiceInput::new(client_io.lock().await.take().expect("one connection"));
-                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
-            }
-        });
-        let proxy_base = TlsClientConfig::new()
-            .with_alpn_http_2()
-            .with_server_name(Host::from_static("localhost"))
-            .with_server_cert_pins(TlsServerCertPins::new(server_pin))
-            .with_server_verify(ServerVerifyMode::Auto)
-            .try_with_server_trust_anchors([trust_anchor])
-            .expect("proxy trust")
-            .with_supported_versions(vec![ProtocolVersion::TLSv1_3]);
-        let connector = TlsConnector::tunnel(transport, None).with_base_config(proxy_base);
-
-        let input = ServiceInput::new(());
-        input.extensions().insert(
-            ConnectionAttempt::new().with_authenticated_peer(Host::from_static("origin.example")),
-        );
-        TlsClientConfig::new()
-            .with_alpn_http_1()
-            .with_server_name(Host::from_static("origin.example"))
-            .with_server_verify(ServerVerifyMode::Disable)
-            .with_server_cert_pins(TlsServerCertPins::new(CertificateDer::from(vec![9])))
-            .write_to(input.extensions());
-        #[cfg(feature = "http")]
-        input
-            .extensions()
-            .insert(TargetHttpVersion(Version::HTTP_11));
-        input.extensions().insert(TlsTunnel {
-            server_identity: Some(Host::from_static("proxy-route.example")),
-            application_protocol: Some(Protocol::HTTPS),
-            alpn: None,
-        });
-
-        let established = connector.serve(input).await.expect("proxy TLS handshake");
-        let reuse = established
-            .conn
-            .extensions()
-            .get_ref::<ConnectionReuse>()
-            .expect("proxy TLS connector publishes reuse policy");
-        let next_origin = Extensions::new();
-        next_origin.insert(TlsServerName(Host::from_static("another-origin.example")));
-        next_origin.insert(TlsServerVerify(ServerVerifyMode::Disable));
-        assert!(reuse.is_reusable());
-        assert!(!reuse.matches(&next_origin));
-        next_origin.insert(
-            established
-                .input
-                .extensions()
-                .get_ref::<TlsTunnel>()
-                .unwrap()
-                .clone(),
-        );
-        assert!(reuse.matches(&next_origin));
-        next_origin.insert(TlsTunnel {
-            server_identity: None,
-            application_protocol: None,
-            alpn: None,
-        });
-        assert!(!reuse.matches(&next_origin));
-        assert_eq!(
-            established
-                .input
-                .extensions()
-                .get_ref::<ConnectionAttempt>()
-                .unwrap()
-                .policy_scope(),
-            ConnectionPolicyScope::Unknown,
-        );
-        assert!(
-            !established
-                .conn
-                .extensions()
-                .contains::<ConnectionPolicyScope>()
-        );
-        let negotiated = established
-            .conn
-            .extensions()
-            .get_ref::<NegotiatedTlsParameters>()
-            .expect("proxy TLS parameters");
-        assert_eq!(negotiated.resumed, Some(false));
-        assert_eq!(negotiated.server_name, None);
-        assert_eq!(
-            negotiated.application_layer_protocol,
-            Some(ApplicationProtocol::HTTP_2)
-        );
-        #[cfg(feature = "http")]
-        assert!(
-            established
-                .conn
-                .extensions()
-                .get_ref::<TargetHttpVersion>()
-                .is_none()
-        );
-        drop(established);
-        // The client is dropped immediately after the handshake assertions,
-        // so the TLS server may finish with an EOF/close-notify error.
-        let _server_result = tokio::time::timeout(std::time::Duration::from_secs(5), server_task)
-            .await
-            .expect("server shutdown")
-            .expect("server task");
-    }
-
-    #[test]
     fn assert_send() {
         use rama_utils::test_helpers::assert_send;
 
@@ -1758,5 +1316,206 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn origin_tls_inputs() -> Extensions {
+        let origin = Extensions::new();
+        TlsClientConfig::new()
+            .with_alpn_http_1()
+            .with_server_name(Host::from_static("origin.example"))
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_ech_requirement(EchRequirement::Required)
+            .write_to(&origin);
+        origin
+    }
+
+    /// The input that dials a proxy, as the proxy connectors build it.
+    fn nested_leg(origin: &Extensions) -> ConnectRequest {
+        rama_net::client::proxy_request(&"https://localhost:443".parse().unwrap(), origin)
+    }
+
+    #[test]
+    fn a_nested_leg_takes_its_tls_config_from_the_connector() {
+        let proxy_name = Host::from_static("proxy.example");
+        let connector = TlsConnector::auto(()).with_base_config(
+            TlsClientConfig::new()
+                .with_server_name(proxy_name.clone())
+                .with_alpn_http_2(),
+        );
+
+        let leg = origin_tls_inputs().fork_connection(&NoExtensionsTransfer::new());
+        let effective = connector.effective_extensions(&leg);
+        let config = RustlsTlsConnectorConfig::from_extensions(&effective);
+
+        let http_2 = TlsAlpn::http_2();
+        assert_eq!(config.server_name.map(|name| &name.0), Some(&proxy_name));
+        assert_eq!(
+            config.alpn.map(|alpn| alpn.0.as_slice()),
+            Some(http_2.0.as_slice())
+        );
+        assert!(
+            config.verify.is_none(),
+            "origin verify mode reached the connection to the proxy"
+        );
+        assert!(
+            config.ech_requirement.is_none(),
+            "origin ECH requirement reached the connection to the proxy"
+        );
+    }
+
+    #[test]
+    fn a_request_input_still_overrides_the_connector_config() {
+        let connector = TlsConnector::auto(())
+            .with_base_config(TlsClientConfig::new().with_alpn(Default::default()));
+
+        let request = Extensions::new();
+        request.insert(TlsAlpn::http_1());
+        let effective = connector.effective_extensions(&request);
+        let config = RustlsTlsConnectorConfig::from_extensions(&effective);
+
+        let http_1 = TlsAlpn::http_1();
+        assert_eq!(
+            config.alpn.map(|alpn| alpn.0.as_slice()),
+            Some(http_1.0.as_slice())
+        );
+    }
+
+    #[test]
+    fn an_origin_ech_requirement_is_not_the_policy_of_a_nested_leg() {
+        let connector = TlsConnector::auto(()).with_base_config(
+            TlsClientConfig::new().with_server_name(Host::from_static("proxy.example")),
+        );
+
+        connector
+            .check_attempt_policy(&nested_leg(&origin_tls_inputs()), true)
+            .expect("the origin's ECH requirement is not the proxy connection's");
+    }
+
+    fn leg_transport(
+        io: tokio::io::DuplexStream,
+    ) -> impl ConnectorService<ConnectRequest, Connection: Io + Unpin> {
+        let io = Arc::new(tokio::sync::Mutex::new(Some(io)));
+        service_fn(move |input: ConnectRequest| {
+            let io = io.clone();
+            async move {
+                let conn = ServiceInput::new(io.lock().await.take().expect("one proxy connection"));
+                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn auto_handshakes_when_the_input_asks_for_tls() {
+        for asks in [false, true] {
+            let auth =
+                ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).expect("auth");
+            let base = TlsClientConfig::new()
+                .with_server_name(Host::from_static("localhost"))
+                .try_with_server_trust_anchors(auth.cert_chain.clone())
+                .expect("trust anchor");
+            let server =
+                crate::server::TlsAcceptorLayer::new(TlsServerConfig::new().with_server_auth(auth))
+                    .into_layer(EchoService::new());
+            let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+            let server_task =
+                tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
+
+            let connector = TlsConnector::auto(leg_transport(client_io)).with_base_config(base);
+            // A plaintext protocol: only the input's own ask can secure this connection.
+            let input = ConnectRequest::new(HostWithPort::new(Host::from_static("localhost"), 80))
+                .with_application_protocol(Protocol::HTTP);
+            if asks {
+                input.extensions().insert(TlsRequired::new());
+            }
+            let established = tokio::time::timeout(Duration::from_secs(5), connector.serve(input))
+                .await
+                .expect("handshake timeout")
+                .expect("connection");
+            assert_eq!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<NegotiatedTlsParameters>()
+                    .is_some(),
+                asks,
+            );
+            drop(established);
+            server_task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_nested_leg_handshake_ignores_origin_tls_inputs() {
+        let (cert_chain, private_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("server auth");
+        let trust_anchor = cert_chain.last().expect("trust anchor").clone();
+        let server = crate::server::TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_single_cert(ServerAuthData {
+                    cert_chain,
+                    private_key,
+                    ocsp: None,
+                })
+                .with_alpn_http_2(),
+        )
+        .into_layer(EchoService::new());
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let server_task =
+            tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
+        let connector = TlsConnector::auto(leg_transport(client_io)).with_base_config(
+            TlsClientConfig::new()
+                .with_alpn_http_2()
+                .with_server_name(Host::from_static("localhost"))
+                .try_with_server_trust_anchors([trust_anchor])
+                .expect("proxy trust"),
+        );
+
+        let established = connector
+            .serve(nested_leg(&origin_tls_inputs()))
+            .await
+            .expect("the proxy handshake uses the connector's own config");
+        assert_eq!(
+            established
+                .conn
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .expect("proxy TLS parameters")
+                .application_layer_protocol,
+            Some(ApplicationProtocol::HTTP_2),
+        );
+        drop(established);
+        drop(server_task.await);
+    }
+
+    #[tokio::test]
+    async fn an_origin_verify_off_does_not_authenticate_the_peer_of_a_nested_leg() {
+        let (cert_chain, private_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("server auth");
+        let server = crate::server::TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(
+            ServerAuthData {
+                cert_chain,
+                private_key,
+                ocsp: None,
+            },
+        ))
+        .into_layer(EchoService::new());
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let server_task =
+            tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
+        // No trust anchor for the generated certificate: the connection to the proxy must refuse it.
+        let connector = TlsConnector::auto(leg_transport(client_io)).with_base_config(
+            TlsClientConfig::new().with_server_name(Host::from_static("localhost")),
+        );
+
+        let origin = Extensions::new();
+        origin.insert(TlsServerVerify(ServerVerifyMode::Disable));
+
+        assert!(
+            connector.serve(nested_leg(&origin)).await.is_err(),
+            "an origin verify-off must not reach the connection to the proxy"
+        );
+        drop(server_task.await);
     }
 }

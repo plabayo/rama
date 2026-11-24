@@ -62,13 +62,12 @@ async fn main() {
     tokio::spawn(run_server(ADDRESS, ready_tx));
     ready_rx.await.unwrap();
 
-    let client = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_tcp_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
+        .with_default_proxy_support()
         .without_tls_support()
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         // The pool works out of the box with `HttpPooledConnectorConfig::default()`.
         // We override a single field here only to show the config is tunable.
         // `max_streams_per_connection` caps how many requests one connection

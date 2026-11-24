@@ -34,16 +34,26 @@ Run a CONNECT-UDP proxy on loopback and send an HTTP/3 request through it:
 
 ```sh
 rama serve proxy --bind 127.0.0.1:8443 --protocol masque
-rama send -v --http3 -x masque://127.0.0.1:8443 --proxy-insecure https://cloudflare-quic.com/
+rama send -v --http3 -x h3+udp://127.0.0.1:8443 --proxy-insecure https://cloudflare-quic.com/
 ```
 
 The proxy generates a certificate for this local example, hence
 `--proxy-insecure`. For a deployed proxy, use a trusted certificate or configure
 its CA with `--proxy-cacert FILE`.
 
-A proxy address can include credentials and a custom URI template. See
-`rama send --help` and `rama serve proxy --help` for configuration options. The
-[`masque_connect_udp_proxy` example][example] shows a client and server in Rust.
+A proxy address only carries UDP when it says where its tunnels are: `+udp` is the
+RFC 9298 default template, and a path is a template of your own, such as
+`h3://127.0.0.1:8443/masque?h={target_host}&p={target_port}`. A plain `h3://` proxy is
+asked for `CONNECT` and refused for HTTP/3.
+
+A proxy address can include credentials, a custom URI template and the HTTP version
+to speak: `h3://` is HTTP/3 over QUIC, `h2://` and `h1://` are HTTP/2 and HTTP/1.1 over
+TLS on TCP, and `https://` uses HTTP/3 when the proxy advertises it (HTTPS record or
+Alt-Svc) and otherwise negotiates its version with ALPN over TCP. The full scheme reference is
+in [HTTP clients](../http/http_clients.md#proxies). See `rama send --help` and `rama serve proxy --help` for configuration options. The
+[`masque_connect_udp_proxy` example][example] shows a client and server in Rust, and the
+[`masque_proxy_chain` example][chain-example] runs a two-hop chain where each hop is a
+tunnel inside the one before it.
 The CLI currently exposes CONNECT-UDP; CONNECT-IP is available as a library API.
 
 ## CONNECT-UDP
@@ -53,15 +63,17 @@ that destination and checks its access policy before accepting traffic. Rama's
 default destination policy rejects private, loopback and link-local addresses;
 applications can explicitly allow the networks they intend to expose.
 
-For an HTTP client, a `masque://` proxy lets HTTP/3 use CONNECT-UDP while HTTP/1.1
-and HTTP/2 use ordinary TCP `CONNECT`. A proxy serving both can therefore carry
-all three HTTP versions. Proxies can also be chained through a MASQUE upstream.
+For an HTTP client, an HTTP proxy with a CONNECT-UDP template carries UDP targets with
+CONNECT-UDP and TCP ones with ordinary `CONNECT`, both over the connection its scheme
+asks for: HTTP/3 over QUIC for `h3://`, and TLS over TCP for `h2://`, `h1://` and
+`https://`, the last with its version negotiated.
+Proxies can also be chained through a MASQUE upstream.
 
 Start with [`rama::proxy::masque::connect_udp`][connect-udp]:
-`ConnectUdpConnector` opens a tunnel as a UDP socket, and `ConnectUdpService`
+`HttpConnectUdpProxyConnector` opens a tunnel as a UDP socket, and `ConnectUdpService`
 serves tunnels with configurable destination policy and forwarding. For web
-requests, `DefaultHttpWebClient::default_masque_with_scope` provides the
-integrated client.
+requests, `DefaultHttpWebClient::default_with_scope` already speaks every proxy
+method rama has, CONNECT-UDP among them.
 
 ## CONNECT-IP
 
@@ -138,6 +150,7 @@ For protocol details, see [CONNECT-UDP (RFC 9298)][rfc-udp],
 [CONNECT-IP (RFC 9484)][rfc-ip] and [HTTP Datagrams and Capsules (RFC 9297)][rfc-datagram].
 
 [example]: https://github.com/plabayo/rama/blob/main/examples/src/masque_connect_udp_proxy.rs
+[chain-example]: https://github.com/plabayo/rama/blob/main/examples/src/masque_proxy_chain.rs
 [connect-udp]: https://ramaproxy.org/docs/rama/proxy/masque/connect_udp/index.html
 [connect-ip]: https://ramaproxy.org/docs/rama/proxy/masque/connect_ip/index.html
 [datagram]: https://ramaproxy.org/docs/rama/http/datagram/index.html

@@ -6,14 +6,16 @@
 //! ```sh
 //! cargo run -p rama-examples --bin masque_connect_udp_proxy --features http-full,boring -- proxy --listen 127.0.0.1:4433
 //! cargo run -p rama-examples --bin masque_connect_udp_proxy --features http-full,boring -- client \
-//!     --proxy masque://127.0.0.1:4433 --insecure --url https://cloudflare-quic.com/
+//!     --proxy h3+udp://127.0.0.1:4433 --insecure --url https://cloudflare-quic.com/
 //! ```
 //!
 //! The proxy serves CONNECT-UDP next to ordinary CONNECT for TCP, on one port: TLS over TCP for
 //! HTTP/1.1 and HTTP/2, QUIC over UDP for HTTP/3. Port 0 gives each transport a port of its
-//! own; the client reaches the proxy over HTTP/3, so it takes the UDP one. Its certificate is self-signed, hence the
+//! own; the client reaches the proxy over HTTP/3, so it takes the UDP one. With
+//! `--proxy h2+udp://127.0.0.1:4433` it reaches the proxy over HTTP/2 on TCP instead, and
+//! its HTTP/3 to the origin runs in capsules there. Its certificate is self-signed, hence the
 //! client's `--insecure`, which skips certificate verification for local testing. Without it
-//! the client is `DefaultHttpWebClient::default_masque_with_scope`, verifying both.
+//! the client verifies both the proxy and the origin.
 
 use clap::{Parser, Subcommand};
 use rama::{
@@ -25,7 +27,7 @@ use rama::{
     http::{
         Body, Request, Version,
         body::util::BodyExt as _,
-        client::{DefaultHttpWebClient, masque_quic_transport},
+        client::{EasyHttpWebClient, ProxyConnector, masque_quic_transport},
         conn::TargetHttpVersion,
         layer::upgrade::{EagerHttpProxyConnector, UpgradeLayer},
         proxy::HttpProxyConnectMatcher,
@@ -69,7 +71,7 @@ enum Command {
     },
     /// GET `url` over HTTP/3 through a CONNECT-UDP proxy.
     Client {
-        /// The proxy, such as `masque://user:pass@proxy.example:443`.
+        /// The proxy, such as `h3+udp://user:pass@proxy.example:443`.
         #[arg(long)]
         proxy: ProxyAddress,
         /// Skip certificate verification of the proxy and the origin, for local testing.
@@ -193,12 +195,20 @@ async fn exchange(
     insecure: bool,
     url: &str,
 ) -> Result<(), BoxError> {
-    let client = if insecure {
-        let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-        DefaultHttpWebClient::try_default_masque_using_boringssl(scope, tls.clone(), tls)?
-    } else {
-        DefaultHttpWebClient::default_masque_with_scope(scope)
-    };
+    let mut tls = TlsClientConfig::default_http();
+    if insecure {
+        tls.set_server_verify(ServerVerifyMode::Disable);
+    }
+    // HTTP/3 through an HTTP proxy runs in a CONNECT-UDP tunnel, which the proxy methods of
+    // this connector open: the QUIC leg dials the origin through the tunnel.
+    let client = EasyHttpWebClient::connector_builder(scope.clone())
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_proxy_support(ProxyConnector::default_using_tls(scope, tls.clone()))
+        .with_default_tls_support(tls)
+        .with_default_http_connector()
+        .with_default_connection_pool()
+        .build_client();
 
     let request = Request::builder()
         .version(Version::HTTP_3)

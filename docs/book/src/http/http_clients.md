@@ -150,13 +150,13 @@ Custom connectors use these contracts:
 | --- | --- |
 | `HttpServiceSelection` | Request-local advertisement snapshot, index and lookup route plan; never store it on a pooled connection. |
 | `EstablishedHttpService` | Verified connection endpoint and logical origin; selection alone proves neither. |
-| `TlsTunnel::from_extensions` | Resolve routing-supplied tunnel settings before caller settings; preserve their distinct reuse scopes. |
+| `proxy_request` | Build the input that dials a proxy; its TLS follows the route, never the origin's TLS inputs. |
 | `TargetHttpVersion` | Honor the requested version; report the established version. |
 | `ConnectorTarget` / `ConnectorTargetStream` | Dial the selected endpoint using matching DNS results, preserving the origin. |
 | `TlsServerAuthentication` / `NegotiatedTlsParameters` | Report verified origin identity and actual ALPN; missing proof prevents alternative use. |
 | `ConnectionReuse` | Publish endpoint reuse rules after connecting; pools check them against each request. |
 | `AltSvcObserverExtension` | Install before H2 handshake; authorize origins and process frames promptly. |
-| `ConnectionAttempt` / `ConnectionPolicyScope` | Check peer requirements and restrict request-specific DNS/TLS policy; preserve failure scope across timeouts and pool hits. |
+| `ConnectionAttempt` / `ConnectionPolicyScope` | Check peer requirements and restrict request-specific DNS/TLS policy; preserve failure scope across timeouts and pool hits. Both belong to one connection: a connection to a proxy neither answers them nor records into them. |
 
 TLS configuration stays in its connector. Built-in connectors publish reuse rules
 automatically. Custom components publish owned `TlsPoolComponent::Identity`
@@ -172,6 +172,84 @@ The CLI enables command-local discovery by default; `--http3` requires H3
 directly. `--no-alt-svc` disables advertisement learning and use, independently
 of HTTPS DNS discovery.
 Disk persistence is not implemented.
+
+## Proxies
+
+A client reaches proxies over connections of its own: a [`ProxyConnector`] with its own
+transport, DNS, TLS and connection pool, which share nothing with the connections to
+origins. Pass one to `with_proxy_support(proxies)`, or take rama's defaults with
+`with_default_proxy_support()`. A client built with `without_proxy_support()`
+refuses a proxied route instead of connecting around it.
+
+`ProxyConnector::builder(scope)` builds one stage by stage. Its last step picks the proxy
+protocols it supports: `with_all_proxy_protocols()` for every one this build of rama has,
+or a subset with `with_socks5()`, `with_http_connect()`, `with_http_forward()` and
+`with_http_connect_udp()`. A route to a proxy whose protocol is not enabled is refused.
+
+Which proxy a request takes is its own `ProxyRoute`, or an ordered `ProxyRoutes` plan that
+is tried in order and may end in `ProxyRoute::Direct`. A proxy address names the protocol
+it speaks, as a base protocol followed by options after `+` in any order:
+
+| base | proxy |
+|---|---|
+| `http` | HTTP/1.1, plaintext |
+| `h2c` | HTTP/2, plaintext |
+| `https` | HTTP over TLS: HTTP/3 when the proxy advertises it (HTTPS record or Alt-Svc), else ALPN over TCP |
+| `h1`, `h2` | HTTP/1.1 or HTTP/2 over TLS, over TCP |
+| `h3` | HTTP/3, over QUIC |
+| `socks5` | SOCKS5, target names resolved locally |
+| `socks5h` | SOCKS5, target names resolved by the proxy |
+
+| option | on | meaning |
+|---|---|---|
+| `+udp` | HTTP | also CONNECT-UDP on the default template, as HTTP/3 through a proxy needs |
+| `+udp` | SOCKS5 | UDP ASSOCIATE only |
+| `+tcp` | SOCKS5 | CONNECT only |
+| `+tls` | SOCKS5 | TLS to the proxy |
+
+An HTTP proxy tunnels with CONNECT and forwards plaintext HTTP requests; without `+udp`
+or a path template it carries no UDP. Any other scheme is kept as a custom protocol,
+which rama does not interpret.
+
+Credentials in the address, such as `http://user:secret@proxy.example:8080`, are sent to
+that proxy only: the route of a request is matched against the proxy its connection
+actually reaches, and a connection to the origin never carries a `Proxy-Authorization`.
+
+A proxy which answers `407` to a forwarded request answers the client with it. An
+intermediary should not hand its upstream's challenge to its own clients, so it isolates
+that answer into an error, on the connector towards proxies it hands to its client:
+
+```rust,ignore
+let proxies = ProxyConnector::default_with_scope(scope.clone())
+    .with_isolate_forward_proxy_auth_error(true);
+let client = EasyHttpWebClient::default_using_proxies(scope, proxies);
+```
+
+### TLS to a proxy
+
+The address decides. A protocol with a secure name of its own uses that name: `https`,
+`h1`, `h2` or `h3` for an HTTP proxy. A protocol without one takes `+tls`, such as
+`socks5h+tls://proxy.example:1080`. Over `+tls` with UDP ASSOCIATE, only the control
+connection to the SOCKS5 proxy is TLS; the UDP relay stays plaintext.
+
+A connection to a proxy over TLS is never shared with a plaintext one to the same address,
+and a client built without TLS support refuses a secure proxy instead of dialing it in
+plaintext.
+
+To secure every TCP connection to a proxy, whatever its address says, map the TLS connector
+to its secure kind after the TLS stage:
+
+```rust,ignore
+let proxies = ProxyConnector::builder(scope)
+    .with_default_transport_connector()
+    .with_default_dns_connector()
+    .with_default_tls_support(tls_config)
+    .map_connector(|tls| tls.into_secure())
+    .with_default_http_connector::<Body>()
+    .with_default_connection_pool()
+    .with_all_proxy_protocols()
+    .build();
+```
 
 ## Server certificate pinning
 

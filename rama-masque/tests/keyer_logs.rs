@@ -44,7 +44,7 @@ async fn a_keyers_error_never_reaches_the_logs() {
     let service = ConnectUdpService::try_new(WeakScope::detached(), None)
         .unwrap()
         .with_limits(limits);
-    let proxy = ProxyAddress::try_from("masque://proxy.example:443").unwrap();
+    let proxy = ProxyAddress::try_from("h3+udp://proxy.example:443").unwrap();
     let target = ConnectUdpTarget::new(Host::LOCALHOST_IPV4, NonZeroU16::MIN);
     let request = connect_udp_request(&proxy, &target, Version::HTTP_2).unwrap();
 

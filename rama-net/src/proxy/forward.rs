@@ -1240,7 +1240,7 @@ mod tests {
     use super::*;
 
     use crate::stream::NestedConnection;
-    use rama_core::{ServiceInput, extensions::NoConnectionTransfer, graceful::attach_scope};
+    use rama_core::{ServiceInput, extensions::NoExtensionsTransfer, graceful::attach_scope};
 
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex},
@@ -2227,7 +2227,7 @@ mod tests {
     async fn a_failure_resets_a_nested_connection_on_the_other_side() {
         let (left, left_counts) = side(ReadEnd::Fail(std::io::ErrorKind::ConnectionReset), true);
         let (right, right_counts) = side(ReadEnd::Pend, true);
-        let right = NestedConnection::new(right, &NoConnectionTransfer);
+        let right = NestedConnection::new(right, &NoExtensionsTransfer::new());
         _ = IoForwardService::default()
             .serve(BridgeIo(left, right))
             .await;

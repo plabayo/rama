@@ -7,11 +7,11 @@ use crate::server::*;
 use rama_core::{
     ServiceInput,
     error::BoxError,
-    extensions::{Extension, Extensions, ExtensionsRef, NestedConnectionTransfer},
+    extensions::{Extension, Extensions, ExtensionsRef, ExtensionsTransfer},
     service::service_fn,
 };
 use rama_net::address::{HostWithPort, SocketAddress};
-use rama_net::stream::{DefaultConnectionTransfer, SocketInfo};
+use rama_net::stream::{DefaultExtensionsTransfer, SocketInfo};
 use rama_net::user::credentials::basic;
 use rama_utils::str::non_empty_str;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -246,7 +246,7 @@ struct ControlFlowFact;
 
 /// Which of (connection fact, flow fact) of the SOCKS5 connection the inspector
 /// of an association sees on a relayed datagram.
-async fn inspector_facts(transfer: impl NestedConnectionTransfer) -> (bool, bool) {
+async fn inspector_facts(transfer: impl ExtensionsTransfer) -> (bool, bool) {
     let (mut client, server_io) = tokio::io::duplex(1024);
     let stream = ServiceInput::new(server_io);
     stream.extensions().insert(ControlConnFact);
@@ -267,7 +267,7 @@ async fn inspector_facts(transfer: impl NestedConnectionTransfer) -> (bool, bool
         DefaultUdpRelay::default()
             .with_bind_address(SocketAddress::local_ipv4(0))
             .with_async_inspector(inspector)
-            .with_nested_connection_transfer(transfer),
+            .with_extensions_transfer(transfer),
     );
 
     let exchange = async {
@@ -315,13 +315,13 @@ fn carry_control_conn_fact(outer: &Extensions, nested: &Extensions) {
 #[tokio::test]
 async fn udp_associate_inspector_keeps_flow_facts_and_drops_connection_facts() {
     assert_eq!(
-        inspector_facts(DefaultConnectionTransfer).await,
+        inspector_facts(DefaultExtensionsTransfer::new()).await,
         (false, true)
     );
 }
 
 #[tokio::test]
 async fn udp_associate_custom_transfer_carries_a_chosen_fact() {
-    let transfer = DefaultConnectionTransfer.and(carry_control_conn_fact);
+    let transfer = DefaultExtensionsTransfer::new().and(carry_control_conn_fact);
     assert_eq!(inspector_facts(transfer).await, (true, true));
 }

@@ -21,8 +21,7 @@
 
 use std::borrow::Cow;
 
-use rama_core::extensions::{Extension, Extensions};
-use rama_net::Protocol;
+use rama_core::extensions::Extension;
 
 pub mod alpn;
 mod enums;
@@ -46,150 +45,14 @@ mod dial9;
 
 /// Keylog intent (e.g. `SSLKEYLOGFILE`) for the connection.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsKeyLog(pub KeyLogIntent);
 
 /// Supported protocol versions, as a list (backends derive min/max as needed,
 /// preserving any GREASE entries in the wire list).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsSupportedVersions(pub Vec<ProtocolVersion>);
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
-/// Requests TLS from a tunnel connector with proxy-scoped identity and ALPN.
-///
-/// Tunnel connectors combine these explicit fields with only their dedicated
-/// base configuration. Final-destination TLS request extensions are isolated
-/// from the tunnel-side handshake.
-pub struct TlsTunnel {
-    /// Server identity used for certificate verification and, for DNS names, SNI.
-    pub server_identity: Option<rama_net::address::Host>,
-    /// Application protocol spoken inside the TLS tunnel.
-    ///
-    /// This is distinct from the final destination protocol. For example, an
-    /// ICAPS connection through a TLS-protected HTTP proxy speaks HTTP to the
-    /// proxy before the CONNECT tunnel carries ICAP.
-    pub application_protocol: Option<Protocol>,
-    /// ALPN protocols to offer for this tunnel-side TLS handshake.
-    ///
-    /// This is distinct from the final destination's ALPN offer. `None` uses
-    /// the tunnel connector's base policy or the tunnel protocol's default;
-    /// `Some(TlsAlpn::empty())` explicitly omits ALPN.
-    pub alpn: Option<rama_net::tls::TlsAlpn>,
-}
-
-impl TlsTunnel {
-    /// Effective tunnel settings, with routing policy taking precedence over
-    /// request settings. Keep the request value intact so pools can compare
-    /// subsequent requests before routing runs again.
-    pub fn from_extensions(extensions: &Extensions) -> Option<&Self> {
-        extensions
-            .get_ref::<TlsTunnelRoute>()
-            .map(|route| &route.0)
-            .or_else(|| extensions.get_ref::<Self>())
-    }
-}
-
-/// TLS tunnel settings selected by a routing connector for an intermediary.
-///
-/// Route-derived settings take precedence over request [`TlsTunnel`] settings.
-/// Keep them separate: connection pools see request settings before routing,
-/// while the route key and fixed connector policy identify these settings.
-/// Custom tunnel connectors should use [`TlsTunnel::from_extensions`] to honor
-/// both sources. This extension belongs to the connection attempt, not to the
-/// logical origin's TLS policy.
-#[derive(Debug, Clone, PartialEq, Eq, Extension)]
-#[extension(tags(tls))]
-pub struct TlsTunnelRoute(pub TlsTunnel);
-
-/// Whether a tunnel connector should use plaintext or TLS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TlsTunnelMode<'a> {
-    /// No tunnel context or fallback identity requested TLS.
-    Plain,
-    /// TLS was requested, with an optional server certificate identity.
-    Tls(Option<&'a rama_net::address::Host>),
-}
-
-/// Resolve tunnel activation and server identity consistently across TLS backends.
-#[must_use]
-pub fn resolve_tls_tunnel<'a>(
-    tunnel: Option<&'a TlsTunnel>,
-    fallback_server_identity: Option<&'a rama_net::address::Host>,
-) -> TlsTunnelMode<'a> {
-    match tunnel {
-        Some(tunnel) => {
-            TlsTunnelMode::Tls(tunnel.server_identity.as_ref().or(fallback_server_identity))
-        }
-        None => fallback_server_identity.map_or(TlsTunnelMode::Plain, |identity| {
-            TlsTunnelMode::Tls(Some(identity))
-        }),
-    }
-}
-
-#[cfg(test)]
-mod tunnel_tests {
-    use rama_net::{address::Host, tls::TlsAlpn};
-
-    use super::*;
-
-    #[test]
-    fn route_tunnel_policy_preserves_request_settings() {
-        let extensions = Extensions::new();
-        let request = TlsTunnel {
-            server_identity: Some(Host::from_static("request.example")),
-            application_protocol: Some(Protocol::HTTPS),
-            alpn: None,
-        };
-        extensions.insert(request.clone());
-        assert_eq!(TlsTunnel::from_extensions(&extensions), Some(&request));
-        let route = TlsTunnel {
-            server_identity: Some(Host::from_static("proxy.example")),
-            application_protocol: Some(Protocol::HTTPS),
-            alpn: Some(TlsAlpn::http_2()),
-        };
-        extensions.insert(TlsTunnelRoute(route.clone()));
-        assert_eq!(TlsTunnel::from_extensions(&extensions), Some(&route));
-        assert_eq!(extensions.get_ref::<TlsTunnel>(), Some(&request));
-    }
-
-    #[test]
-    fn hardcoded_identity_enables_tls_without_context() {
-        let identity = Host::from_static("example.com");
-        assert_eq!(
-            resolve_tls_tunnel(None, Some(&identity)),
-            TlsTunnelMode::Tls(Some(&identity))
-        );
-    }
-
-    #[test]
-    fn empty_context_falls_back_to_hardcoded_identity() {
-        let tunnel = TlsTunnel {
-            server_identity: None,
-            application_protocol: None,
-            alpn: None,
-        };
-        let identity = Host::from_static("example.com");
-        assert_eq!(
-            resolve_tls_tunnel(Some(&tunnel), Some(&identity)),
-            TlsTunnelMode::Tls(Some(&identity))
-        );
-    }
-
-    #[test]
-    fn empty_context_without_fallback_still_requests_tls() {
-        let tunnel = TlsTunnel {
-            server_identity: None,
-            application_protocol: None,
-            alpn: None,
-        };
-        assert_eq!(
-            resolve_tls_tunnel(Some(&tunnel), None),
-            TlsTunnelMode::Tls(None)
-        );
-    }
-}
 
 #[derive(Debug, Clone, Default, Extension)]
 #[extension(tags(tls), scope(connection))]

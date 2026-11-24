@@ -2,7 +2,7 @@
 
 mod attempt;
 #[doc(inline)]
-pub use attempt::{ConnectionAttempt, ConnectionPolicyScope};
+pub use attempt::{ConnectionAttempt, ConnectionAttemptTransfer, ConnectionPolicyScope};
 
 mod conn;
 #[doc(inline)]
@@ -44,15 +44,20 @@ pub use connect_request::ConnectRequest;
 mod proxy;
 #[doc(inline)]
 pub use proxy::{
-    BypassRules, DEFAULT_SYSTEM_PROXY_CONFIG_TTL, EstablishedProxyRoute, LazyProxyAddressLayer,
-    LazyProxyAddressService, NoProxyEnvLayer, NoProxyEnvService, ProxyAddressLayer,
-    ProxyAddressService, ProxyBypassLayer, ProxyBypassService, ProxyEnvLayer, ProxyEnvService,
-    ProxyRoute, ProxyRouteConnectError, ProxyRouteContext, ProxyRouteFailureCache,
-    ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheLayer,
-    ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError, ProxyRouteIndex, ProxyRoutes,
-    ProxyRoutesConnector, ProxyRoutesConnectorLayer, ProxyRoutesLayer, ProxyRoutesService,
+    BypassRules, DEFAULT_SYSTEM_PROXY_CONFIG_TTL, DialedProxyConnection, DirectOnlyConnector,
+    DirectOnlyConnectorLayer, EstablishedProxyRoute, LazyProxyAddressLayer,
+    LazyProxyAddressService, MaybeProxied, MaybeProxiedConnector, NoProxyEnvLayer,
+    NoProxyEnvService, PlaintextProxyOnly, PlaintextProxyOnlyLayer, ProxiedRoute,
+    ProxyAddressLayer, ProxyAddressService, ProxyBypassLayer, ProxyBypassService,
+    ProxyConnectionExtensions, ProxyConnectionExtensionsTransfer, ProxyDialRequest, ProxyDialer,
+    ProxyDialerLayer, ProxyEnvLayer, ProxyEnvService, ProxyRoute, ProxyRouteConnectError,
+    ProxyRouteContext, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig,
+    ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheLayer, ProxyRouteFailureCacheScope,
+    ProxyRouteFailureCachedError, ProxyRouteIndex, ProxyRoutes, ProxyRoutesConnector,
+    ProxyRoutesConnectorLayer, ProxyRoutesLayer, ProxyRoutesService, ProxySelector,
     SystemProxyConfig, SystemProxyConnectLayer, SystemProxyConnectService,
     SystemProxyInvalidBypassRulePolicy, SystemProxyLayer, SystemProxyPacDisabled,
     SystemProxyPacDisabledResolver, SystemProxyPacRequest, SystemProxyPacResolver,
-    SystemProxyPacService, SystemProxyService, proxy_request_uri,
+    SystemProxyPacService, SystemProxyService, proxy_connection_reuse, proxy_request,
+    proxy_request_uri,
 };

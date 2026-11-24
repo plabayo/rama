@@ -73,7 +73,7 @@ use rama::{
     graceful::{Scope, WeakScope},
     http::{
         Body, BodyLimitLayer, Request, Response, StatusCode, Version,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, ProxyConnector},
         layer::{
             compression::{CompressionLayer, MirrorDecompressed},
             decompression::DecompressionLayer,
@@ -228,16 +228,17 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     let state = req.extensions().get_ref::<State>().unwrap();
     let scope = state.scope.clone();
 
-    let client = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
+    let client = EasyHttpWebClient::connector_builder(scope.clone())
+        .with_default_tcp_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_rustls()
-        .with_proxy_support()
+        .with_proxy_support(
+            ProxyConnector::default_with_scope(scope.clone())
+                .with_isolate_forward_proxy_auth_error(true),
+        )
         .with_tls_support_using_rustls_and_default_http_version(tls_config, Version::HTTP_11)
-        .with_default_http_connector(scope)
+        .with_default_http_connector()
         .without_connection_pool()
-        .build_client()
-        .with_isolate_forward_proxy_auth_error(true);
+        .build_client();
 
     let client = (
         MapResponseBodyLayer::new_boxed_streaming_body(),

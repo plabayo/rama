@@ -207,7 +207,7 @@ async fn explicit_target_and_ech_knowledge_bypass_dns() {
         if target {
             request
                 .extensions()
-                .insert(ConnectorTarget(request.authority.clone()));
+                .insert(ConnectorTarget("elsewhere.example:443".parse().unwrap()));
         } else {
             request.extensions().insert(TargetEchConfig::new(
                 request.authority.clone(),

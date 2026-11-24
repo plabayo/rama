@@ -77,7 +77,7 @@ async fn test_masque_connect_udp_proxy() {
             .args([
                 "client",
                 "--proxy",
-                &format!("masque://{address}"),
+                &format!("h3+udp://{address}"),
                 "--insecure",
                 "--url",
                 &format!("https://127.0.0.1:{origin_port}/"),

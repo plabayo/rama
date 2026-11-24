@@ -70,7 +70,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_send_compressed(encoding);
@@ -115,7 +115,7 @@ async fn client_disabled_server_enabled(encoding: CompressionEncoding) {
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     );
 
@@ -142,7 +142,7 @@ async fn client_enabled_server_disabled(encoding: CompressionEncoding) {
     let server = { HttpServer::auto(WeakScope::detached()).service(svc) };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_send_compressed(encoding);
@@ -190,7 +190,7 @@ async fn compressing_response_from_client_stream(encoding: CompressionEncoding) 
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(encoding);

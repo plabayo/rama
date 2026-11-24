@@ -116,13 +116,9 @@ where
             || extensions.contains::<ConnectIpMode>()
             || extensions.contains::<DnsResolveIpMode>()
         {
-            if let Some(attempt) = extensions.get_ref::<ConnectionAttempt>() {
-                attempt.restrict_to_request_policy();
-            } else {
-                let attempt = ConnectionAttempt::new();
-                attempt.restrict_to_request_policy();
-                extensions.insert(attempt);
-            }
+            extensions
+                .get_ref_or_insert(ConnectionAttempt::new)
+                .restrict_to_request_policy();
         }
         let target = input.connector_target().ok_or_else(|| {
             ConnectionError::local(

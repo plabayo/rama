@@ -8,14 +8,14 @@ use rama_core::Layer;
 use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::error_sink::ErrorSink;
 use rama_core::extensions::{
-    Extension, ExtensionsRef, NestedConnectionTransfer, SharedNestedConnectionTransfer,
+    Extension, ExtensionsRef, ExtensionsTransfer, SharedExtensionsTransfer,
 };
 use rama_core::graceful::WeakScope;
 use rama_core::layer::{ConsumeErrLayer, MapOutputLayer};
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, extensions::Extensions, matcher::Matcher, service::BoxService};
 use rama_http_types::{Method, Request, proto::ext::Protocol};
-use rama_net::stream::DefaultConnectionTransfer;
+use rama_net::stream::DefaultExtensionsTransfer;
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{convert::Infallible, fmt, future::Future, pin::Pin, sync::Arc};
 
@@ -24,15 +24,15 @@ use std::{convert::Infallible, fmt, future::Future, pin::Pin, sync::Arc};
 ///
 /// The transport of an accepted `CONNECT` tunnel (RFC 9110 §9.3.6, not an extended
 /// `CONNECT` such as WebSocket or CONNECT-UDP) is handed on as a connection nested
-/// on the one it arrived on, see [`Extensions::fork_nested_connection`] and
-/// [`Self::set_nested_connection_transfer`].
+/// on the one it arrived on, see [`Extensions::fork_connection`] and
+/// [`Self::set_extensions_transfer`].
 #[derive(ExtensionsRef)]
 pub struct UpgradeService<S, O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
     inner: S,
     scope: WeakScope,
     error_sink: Arc<dyn ErrorSink>,
-    nested_connection_transfer: SharedNestedConnectionTransfer,
+    extensions_transfer: SharedExtensionsTransfer,
 }
 
 /// Handshake response produced by the responder in a
@@ -261,7 +261,7 @@ impl<S, O> UpgradeService<S, O> {
             inner,
             scope,
             error_sink,
-            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+            extensions_transfer: DefaultExtensionsTransfer::new().into_shared(),
         }
     }
 
@@ -269,11 +269,11 @@ impl<S, O> UpgradeService<S, O> {
         /// Set what an accepted CONNECT tunnel keeps from the connection it is
         /// nested on.
         ///
-        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
-        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// Defaults to [`DefaultExtensionsTransfer`]. Chain transfers with
+        /// [`ExtensionsTransfer::and`] to also carry your own connection-scoped
         /// extension types into the tunnel.
-        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
-            self.nested_connection_transfer = transfer.into_shared();
+        pub fn extensions_transfer(mut self, transfer: impl ExtensionsTransfer) -> Self {
+            self.extensions_transfer = transfer.into_shared();
             self
         }
     }
@@ -287,8 +287,8 @@ fn is_tunnel_request(request: &Request) -> bool {
 }
 
 /// The tunnelled transport as a new connection nested on the one the request arrived on.
-fn into_nested_connection(upgraded: Upgraded, transfer: &dyn NestedConnectionTransfer) -> Upgraded {
-    let nested = upgraded.extensions().fork_nested_connection(transfer);
+fn into_nested_connection(upgraded: Upgraded, transfer: &dyn ExtensionsTransfer) -> Upgraded {
+    let nested = upgraded.extensions().fork_connection(transfer);
     upgraded.with_extensions(nested)
 }
 
@@ -315,7 +315,7 @@ where
             inner: self.inner.clone(),
             scope: self.scope.clone(),
             error_sink: self.error_sink.clone(),
-            nested_connection_transfer: self.nested_connection_transfer.clone(),
+            extensions_transfer: self.extensions_transfer.clone(),
         }
     }
 }
@@ -344,8 +344,8 @@ where
                     continuation,
                 }) => {
                     let upgrade_error_sink = self.error_sink.clone();
-                    let nested_connection_transfer = is_tunnel_request(&request)
-                        .then(|| self.nested_connection_transfer.clone());
+                    let extensions_transfer =
+                        is_tunnel_request(&request).then(|| self.extensions_transfer.clone());
 
                     let span = tracing::trace_root_span!(
                         "upgrade::serve",
@@ -365,7 +365,7 @@ where
                                 async move {
                                     match crate::io::upgrade::handle_upgrade(request).await {
                                         Ok(upgraded) => {
-                                            let upgraded = match &nested_connection_transfer {
+                                            let upgraded = match &extensions_transfer {
                                                 Some(transfer) => {
                                                     into_nested_connection(upgraded, transfer)
                                                 }

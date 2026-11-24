@@ -5,41 +5,55 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::extensions::{Extensions, ExtensionsRef, NestedConnectionTransfer};
+use rama_core::extensions::{Extensions, ExtensionsRef, ExtensionsTransfer};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::client::pool::ConnectionReuse;
+use crate::client::{ConnectionAttemptTransfer, pool::ConnectionReuse, proxy_connection_reuse};
 
-/// What a nested connection keeps by default, the transfer every nesting
-/// connector starts from.
+/// What a child connection keeps by default, the transfer every site that
+/// forks a connection starts from: [`ConnectionReuseTransfer`] and
+/// [`ConnectionAttemptTransfer`].
 ///
-/// Today that is exactly [`ConnectionReuseTransfer`]. This is the one that
-/// grows as more of the outer connection turns out to still constrain the
-/// nested endpoint, so extend it rather than replace it:
-/// `DefaultConnectionTransfer.and(mine)`.
+/// This is the one that grows as more of the parent connection turns out to
+/// still constrain the child, so extend it rather than replace it:
+/// `DefaultExtensionsTransfer::new().and(mine)`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultConnectionTransfer;
+#[non_exhaustive]
+pub struct DefaultExtensionsTransfer;
 
-impl NestedConnectionTransfer for DefaultConnectionTransfer {
-    fn transfer(&self, outer: &Extensions, nested: &Extensions) {
-        ConnectionReuseTransfer.transfer(outer, nested);
+impl DefaultExtensionsTransfer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
     }
 }
 
-/// Carries the outer [`ConnectionReuse`] onto the nested connection as a
+impl ExtensionsTransfer for DefaultExtensionsTransfer {
+    fn transfer(&self, parent: &Extensions, child: &Extensions) {
+        ConnectionReuseTransfer
+            .and(ConnectionAttemptTransfer::new())
+            .transfer(parent, child);
+    }
+}
+
+/// Carries the parent's [`ConnectionReuse`] onto the child connection as a
 /// restriction.
 ///
-/// The outer connector classified the outer endpoint. A nested connection is a
+/// The parent's connector classified the parent endpoint. A child connection is a
 /// different endpoint, so its own connector still has to publish a complete
 /// policy, but whatever the transport underneath requires keeps applying on top
 /// of that.
+///
+/// A parent that is a connection to a proxy is carried as [`proxy_connection_reuse`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ConnectionReuseTransfer;
 
-impl NestedConnectionTransfer for ConnectionReuseTransfer {
-    fn transfer(&self, outer: &Extensions, nested: &Extensions) {
-        if let Some(reuse) = outer.get_ref::<ConnectionReuse>() {
-            nested.insert(reuse.clone().into_restriction());
+impl ExtensionsTransfer for ConnectionReuseTransfer {
+    fn transfer(&self, parent: &Extensions, child: &Extensions) {
+        if let Some(rules) = proxy_connection_reuse(parent) {
+            child.insert(rules);
+        } else if let Some(reuse) = parent.get_ref::<ConnectionReuse>() {
+            child.insert(reuse.clone().into_restriction());
         }
     }
 }
@@ -48,7 +62,7 @@ pin_project! {
     /// A stream that is a new connection nested on top of the one it wraps.
     ///
     /// Reads and writes go to the wrapped stream, but its [`Extensions`] are a
-    /// [`Extensions::fork_nested_connection`] of the wrapped stream's: flow data
+    /// [`Extensions::fork_connection`] of the wrapped stream's: flow data
     /// keeps resolving through, while a fact about the connection underneath (its
     /// negotiated ALPN, its TLS parameters, whether it may be reused, ...) no
     /// longer answers for this one.
@@ -68,8 +82,8 @@ pin_project! {
 impl<S: ExtensionsRef> NestedConnection<S> {
     /// Nest a new connection on top of `stream`, keeping what `transfer` puts
     /// on it.
-    pub fn new(stream: S, transfer: &dyn NestedConnectionTransfer) -> Self {
-        let extensions = stream.extensions().fork_nested_connection(transfer);
+    pub fn new(stream: S, transfer: &dyn ExtensionsTransfer) -> Self {
+        let extensions = stream.extensions().fork_connection(transfer);
         Self { stream, extensions }
     }
 }
@@ -128,7 +142,7 @@ mod tests {
     use super::*;
     use crate::client::pool::{ConnectionReusePolicy, ReuseKey};
     use rama_core::{
-        extensions::{Extension, NoConnectionTransfer},
+        extensions::{Extension, NoExtensionsTransfer},
         io::AbortIo,
     };
     use std::sync::{
@@ -173,7 +187,7 @@ mod tests {
         proxy.extensions.insert(NegotiatedAlpn(2));
         proxy.extensions.insert(RetryBudget(3));
 
-        let nested = NestedConnection::new(proxy, &NoConnectionTransfer);
+        let nested = NestedConnection::new(proxy, &NoExtensionsTransfer::new());
 
         assert_eq!(nested.extensions().get_ref::<NegotiatedAlpn>(), None);
         assert_eq!(
@@ -189,9 +203,9 @@ mod tests {
         };
         proxy.extensions.insert(NegotiatedAlpn(2));
 
-        let carry_alpn = |outer: &Extensions, nested: &Extensions| {
-            if let Some(alpn) = outer.get_ref::<NegotiatedAlpn>() {
-                nested.insert(*alpn);
+        let carry_alpn = |parent: &Extensions, child: &Extensions| {
+            if let Some(alpn) = parent.get_ref::<NegotiatedAlpn>() {
+                child.insert(*alpn);
             }
         };
         let nested = NestedConnection::new(proxy, &carry_alpn);
@@ -212,12 +226,13 @@ mod tests {
             .extensions
             .insert(ConnectionReuse::new(AlwaysReusable));
 
-        let carry_alpn = |outer: &Extensions, nested: &Extensions| {
-            if let Some(alpn) = outer.get_ref::<NegotiatedAlpn>() {
-                nested.insert(*alpn);
+        let carry_alpn = |parent: &Extensions, child: &Extensions| {
+            if let Some(alpn) = parent.get_ref::<NegotiatedAlpn>() {
+                child.insert(*alpn);
             }
         };
-        let nested = NestedConnection::new(proxy, &DefaultConnectionTransfer.and(carry_alpn));
+        let nested =
+            NestedConnection::new(proxy, &DefaultExtensionsTransfer::new().and(carry_alpn));
 
         assert_eq!(
             nested.extensions().get_ref::<NegotiatedAlpn>(),
@@ -230,6 +245,77 @@ mod tests {
         assert!(!reuse.is_complete());
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+    #[extension(scope(connection))]
+    struct HopSetting(u8);
+
+    #[derive(Debug)]
+    struct SettingReuse(Option<HopSetting>);
+
+    impl SettingReuse {
+        fn key(setting: Option<HopSetting>) -> ReuseKey {
+            ReuseKey::from_bits::<Self>(setting.map_or(0, |setting| u128::from(setting.0) + 1))
+        }
+    }
+
+    impl ConnectionReusePolicy for SettingReuse {
+        fn classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
+        }
+
+        fn connection_key(&self) -> Option<ReuseKey> {
+            Some(Self::key(self.0))
+        }
+
+        fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+            Some(Self::key(input.get_ref::<HopSetting>().copied()))
+        }
+    }
+
+    fn tunnel_over(hop: Option<HopSetting>) -> Extensions {
+        let leg = Extensions::new();
+        if let Some(hop) = hop {
+            leg.insert(hop);
+        }
+        leg.insert(ConnectionReuse::new(SettingReuse(hop)));
+        leg.fork_connection(&DefaultExtensionsTransfer::new())
+    }
+
+    #[test]
+    fn a_restriction_keeps_deciding_on_the_requests_it_is_given() {
+        let tunnel = tunnel_over(Some(HopSetting(1)));
+        let hop = tunnel
+            .get_ref::<ConnectionReuse>()
+            .expect("the hop's rules cross the boundary");
+        assert!(!hop.is_complete());
+
+        let same = Extensions::new();
+        same.insert(HopSetting(1));
+        assert!(hop.matches(&same));
+
+        let different = Extensions::new();
+        different.insert(HopSetting(2));
+        assert!(!hop.matches(&different));
+
+        assert!(!hop.matches(&Extensions::new()));
+    }
+
+    #[test]
+    fn hops_with_different_settings_never_share_a_key() {
+        let first = tunnel_over(Some(HopSetting(1)));
+        let second = tunnel_over(Some(HopSetting(2)));
+        let plain = tunnel_over(None);
+
+        let key = |tunnel: &Extensions| {
+            tunnel
+                .get_ref::<ConnectionReuse>()
+                .and_then(|reuse| reuse.key().cloned())
+                .expect("a reusable hop")
+        };
+        assert_ne!(key(&first), key(&second));
+        assert_ne!(key(&first), key(&plain));
+    }
+
     #[test]
     fn into_inner_returns_the_wrapped_stream() {
         let proxy = FakeStream {
@@ -237,7 +323,7 @@ mod tests {
         };
         proxy.extensions.insert(NegotiatedAlpn(2));
 
-        let inner = NestedConnection::new(proxy, &NoConnectionTransfer).into_inner();
+        let inner = NestedConnection::new(proxy, &NoExtensionsTransfer::new()).into_inner();
         assert_eq!(
             inner.extensions().get_ref::<NegotiatedAlpn>(),
             Some(&NegotiatedAlpn(2))
@@ -255,7 +341,7 @@ mod tests {
             move || aborted.store(true, Ordering::Release)
         }));
 
-        let nested = NestedConnection::new(proxy, &NoConnectionTransfer);
+        let nested = NestedConnection::new(proxy, &NoExtensionsTransfer::new());
 
         let abort = nested
             .extensions()

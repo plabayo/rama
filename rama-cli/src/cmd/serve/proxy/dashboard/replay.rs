@@ -5,8 +5,8 @@ use rama::{
     http::{
         Version,
         client::{
-            BindBodyToConnLayer, DefaultHttpWebClient, EasyHttpWebClient, Http3Connector,
-            HttpConnId, HttpConnIdentifier, HttpConnectRequestAdapter, HttpPooledConnectorConfig,
+            BindBodyToConnLayer, EasyHttpWebClient, HttpConnId, HttpConnIdentifier,
+            HttpConnectRequestAdapter, HttpPooledConnectorConfig,
         },
         layer::version_adapter::RequestVersionAdapter,
     },
@@ -29,6 +29,8 @@ use rama::{
     },
 };
 use tokio::io::AsyncReadExt as _;
+
+use crate::cmd::serve::proxy::upstream_proxies;
 
 use super::*;
 
@@ -69,43 +71,30 @@ pub(super) fn replay_client(
     upstream: &UpstreamProxyConfig,
     tls_config: TlsClientConfig,
 ) -> Result<BoxService<Request, Response, BoxError>, BoxError> {
-    let transport = TcpConnector::new().with_connector(tcp_options);
+    let transport = TcpConnector::new().with_connector(tcp_options.clone());
     let config = HttpPooledConnectorConfig::default();
     let pool = config.build_pool();
-    let proxy_tls = upstream.proxy_tls_config();
-    let masque_client = DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(
-        WeakScope::detached(),
-        proxy_tls
-            .clone()
-            .map_or_else(TlsClientConfig::default_http, |tls| {
-                tls.with_alpn_http_auto()
-            }),
-    )?;
-    let http3 = Http3Connector::builder(WeakScope::detached())
-        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
-        .with_tls_config(tls_config.clone());
-    let client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(transport)
-        .with_default_dns_connector();
-    let client = match proxy_tls {
-        Some(config) => client.with_tls_proxy_support_using_boringssl_config(config),
-        None => client.with_tls_proxy_support_using_boringssl(),
-    }
-    .with_proxy_support()
-    .with_tls_support_using_boringssl(tls_config)
-    .with_default_http_connector(WeakScope::detached())
-    .with_http3_masque_support(http3, masque_client)?
-    .with_custom_connection_pool(pool, replay_pool_id, config.wait_for_pool_timeout)
-    .map_connector(|connector| {
-        let connector = BindBodyToConnLayer::new().into_layer(connector);
-        let connector = ProxyRoutesConnector::new(connector);
-        let connector = HttpConnectRequestAdapter::new(connector);
-        RequestVersionAdapter::new(connector)
-    })
-    .build_client()
-    .with_forward_proxy_auth(upstream.forward_proxy_auth())
-    .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http())
-    .with_isolate_forward_proxy_auth_error(true);
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(transport)
+        .with_default_quic_connector()
+        .with_default_dns_connector()
+        .with_proxy_support(upstream_proxies(
+            upstream,
+            WeakScope::detached(),
+            tcp_options,
+        )?)
+        .with_tls_support_using_boringssl(tls_config)
+        .with_quic_tls_provider(Arc::new(BoringTlsProvider::new()))
+        .with_default_http_connector()
+        .with_custom_connection_pool(pool, replay_pool_id, config.wait_for_pool_timeout)
+        .map_connector(|connector| {
+            let connector = BindBodyToConnLayer::new().into_layer(connector);
+            let connector = ProxyRoutesConnector::new(connector);
+            let connector = HttpConnectRequestAdapter::new(connector);
+            RequestVersionAdapter::new(connector)
+        })
+        .build_client()
+        .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http());
     let client = upstream.http_service(client);
     let client = RemoveRequestHeaderLayer::hop_by_hop().into_layer(client);
     let client = CaptureHttpLayer::new(Some(capture)).into_layer(client);

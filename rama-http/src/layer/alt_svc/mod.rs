@@ -27,7 +27,7 @@ pub use cache::AltSvcCache;
 
 use crate::layer::http_service::authenticates;
 use crate::{
-    Body, Request, Response, StatusCode, StreamingBody,
+    Body, Method, Request, Response, StatusCode, StreamingBody,
     body::{Frame, SizeHint},
 };
 use pin_project_lite::pin_project;
@@ -45,7 +45,7 @@ use rama_net::{
     AuthorityInputExt as _, Protocol, ProtocolInputExt as _,
     client::{
         ConnectionAttempt, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
-        ConnectionPolicyScope, ProxyRouteContext,
+        ConnectionPolicyScope, DialedProxyConnection, ProxyRouteContext,
     },
 };
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
@@ -235,7 +235,20 @@ fn alternative_for_request(
 
 /// Resolve the logical request target, never the physical alternative endpoint.
 /// WebSocket opening handshakes belong to the corresponding HTTP(S) origin.
-fn request_origin<B>(request: &Request<B>) -> Option<HttpOrigin> {
+/// A classic CONNECT is answered by the proxy it was sent to, not by its tunnel target.
+fn request_origin<B>(connection: &impl ExtensionsRef, request: &Request<B>) -> Option<HttpOrigin> {
+    if request.method() == Method::CONNECT && request.uri().scheme().is_none() {
+        let proxy = connection
+            .extensions()
+            .get_ref::<DialedProxyConnection>()?
+            .proxy();
+        let protocol = if proxy.protocol.is_secure() {
+            Protocol::HTTPS
+        } else {
+            Protocol::HTTP
+        };
+        return HttpOrigin::new(protocol, proxy.address.clone()).ok();
+    }
     let protocol = match request.target_protocol()? {
         protocol if protocol == &Protocol::WS => Protocol::HTTP,
         protocol if protocol == &Protocol::WSS => Protocol::HTTPS,
@@ -471,7 +484,7 @@ where
                 })
             });
         }
-        let origin = request_origin(&request);
+        let origin = request_origin(&self.inner, &request);
         let alternative = origin
             .as_ref()
             .and_then(|origin| alternative_for_request(&self.inner, &request, origin));
@@ -536,6 +549,7 @@ mod tests {
     use rama_http_types::conn::{
         HttpServiceCandidate, HttpServiceCandidates, HttpServiceSelection,
     };
+    use rama_net::uri::Uri;
     use rama_net::{Protocol, address::HostWithPort, tls::ApplicationProtocol};
     #[cfg(feature = "tls")]
     use rama_tls::client::TlsServerAuthentication;
@@ -748,6 +762,102 @@ mod tests {
                 expected && (!origin.is_secure() || cfg!(feature = "tls"))
             );
         }
+    }
+
+    async fn learned_from(connection: Extensions, request: Request) -> AltSvcCache {
+        let cache = AltSvcCache::default();
+        let service = AltSvcLayer::new(cache.clone()).layer(self::connection(
+            service_fn(|_: Request| async {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("alt-svc", "h3=\":443\"")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }),
+            connection,
+        ));
+        service.serve(request).await.unwrap();
+        cache
+    }
+
+    fn connect_request(uri: Uri) -> Request {
+        Request::builder()
+            .method(Method::CONNECT)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn tunnel_to_example() -> Request {
+        connect_request(Uri::from_authority_form("example.com:443".parse().unwrap()))
+    }
+
+    fn proxy_origin() -> HttpOrigin {
+        HttpOrigin::new(Protocol::HTTPS, "proxy.example:443".parse().unwrap()).unwrap()
+    }
+
+    fn dialed_proxy_connection(proxy: &str) -> Extensions {
+        let extensions = authenticated_connection(&proxy_origin());
+        extensions.insert(DialedProxyConnection::new(proxy.parse().unwrap()));
+        extensions
+    }
+
+    #[tokio::test]
+    async fn a_connect_response_teaches_the_proxy_origin_not_the_tunnel_target() {
+        let cache = learned_from(
+            dialed_proxy_connection("https://proxy.example:443"),
+            tunnel_to_example(),
+        )
+        .await;
+        assert_eq!(
+            cache.lookup(&proxy_origin()).is_some(),
+            cfg!(feature = "tls")
+        );
+        assert!(cache.lookup(&origin(Protocol::HTTPS)).is_none());
+        assert!(cache.lookup(&origin(Protocol::HTTP)).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_connect_without_a_dialed_proxy_learns_nothing() {
+        let cache = learned_from(
+            authenticated_connection(&proxy_origin()),
+            tunnel_to_example(),
+        )
+        .await;
+        assert!(cache.lookup(&proxy_origin()).is_none());
+        assert!(cache.lookup(&origin(Protocol::HTTPS)).is_none());
+        assert!(cache.lookup(&origin(Protocol::HTTP)).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_extended_connect_teaches_the_proxy_origin() {
+        let cache = learned_from(
+            dialed_proxy_connection("https://proxy.example:443"),
+            connect_request(
+                "https://proxy.example/.well-known/masque/udp/example.com/443/"
+                    .parse()
+                    .unwrap(),
+            ),
+        )
+        .await;
+        assert_eq!(
+            cache.lookup(&proxy_origin()).is_some(),
+            cfg!(feature = "tls")
+        );
+        assert!(cache.lookup(&origin(Protocol::HTTPS)).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_response_teaches_the_origin_not_the_proxy() {
+        let target = HttpOrigin::new(Protocol::HTTP, "example.com:80".parse().unwrap()).unwrap();
+        let cache = learned_from(
+            dialed_proxy_connection("https://proxy.example:443"),
+            request(&target),
+        )
+        .await;
+        assert!(cache.lookup(&target).is_some());
+        assert!(cache.lookup(&proxy_origin()).is_none());
     }
 
     #[tokio::test]

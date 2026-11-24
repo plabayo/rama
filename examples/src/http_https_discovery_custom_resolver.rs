@@ -8,23 +8,19 @@
 
 use rama::http::service::client::HttpClientExt as _;
 use rama::{
-    dns::client::HickoryDnsResolver,
-    error::BoxError,
-    graceful::WeakScope,
-    http::{Body, client::EasyHttpConnectorBuilder},
-    tls::client::TlsClientConfig,
+    dns::client::HickoryDnsResolver, error::BoxError, graceful::WeakScope,
+    http::client::EasyHttpWebClient, tls::client::TlsClientConfig,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     let resolver = HickoryDnsResolver::try_new_system()?;
-    let client = EasyHttpConnectorBuilder::new()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_dns_resolver(resolver)
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(TlsClientConfig::new())
-        .with_default_http_connector::<Body>(WeakScope::detached())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
     let url = std::env::args()

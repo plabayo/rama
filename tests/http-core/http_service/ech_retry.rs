@@ -1,14 +1,25 @@
 //! Authenticated ECH recovery must redial through the selected proxy.
 use rama::{
     Layer as _,
+    graceful::WeakScope,
     http::{
+        Body,
+        client::{
+            HttpConnector, ProxyStreamConnector,
+            proxy::{HttpTunnelRoute, layer::HttpConnectProxyConnector},
+        },
         conn::HttpOrigin,
         layer::{
             alt_svc::AltSvcCache, http_service::HttpServiceConnector,
             https_service::HttpsServiceLayer,
         },
+        proxy::ProxyRequestBody,
     },
-    net::{Protocol, client::ConnectionErrorKind},
+    net::{
+        Protocol,
+        client::{ConnectionErrorKind, MaybeProxiedConnector},
+    },
+    proxy::socks5::Socks5ConnectProxyConnectorLayer,
 };
 use rama::{
     Service, ServiceInput,
@@ -177,10 +188,16 @@ async fn authenticated_retry_preserves_http_connect_and_socks5h_routes() {
                 }
             }
         });
-        let proxy = rama::http::client::ProxyConnector::optional(
-            transport,
-            rama::proxy::socks5::Socks5ProxyConnectorLayer::required(),
-            rama::http::client::proxy::layer::HttpProxyConnectorLayer::required(),
+        let scope = WeakScope::detached();
+        let proxy = MaybeProxiedConnector::new(
+            transport.clone(),
+            ProxyStreamConnector::new(
+                Socks5ConnectProxyConnectorLayer::new().into_layer(transport.clone()),
+                HttpConnectProxyConnector::new(HttpConnector::<_, ProxyRequestBody<Body>>::new(
+                    transport, scope,
+                )),
+            ),
+            HttpTunnelRoute::new(),
         );
         let tls = TlsClientConfig::new()
             .with_encrypted_client_hello(true)

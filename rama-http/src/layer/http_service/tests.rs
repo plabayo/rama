@@ -2397,3 +2397,70 @@ async fn only_dns_stream_candidates_allow_http1_without_alpn() {
         assert_eq!(result.is_ok(), source == HttpServiceSource::Https);
     }
 }
+
+#[test]
+fn a_fallback_version_replaces_the_request_version_as_prior_knowledge() {
+    let input = |request: Version, fallback: Option<Version>| {
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input.extensions().insert(HttpRequestVersion(request));
+        if let Some(fallback) = fallback {
+            input.extensions().insert(FallbackHttpVersion(fallback));
+        }
+        input
+    };
+    assert_eq!(
+        required_version(&input(Version::HTTP_3, None)),
+        Some(Version::HTTP_3)
+    );
+    assert_eq!(
+        required_version(&input(Version::HTTP_3, Some(Version::HTTP_11))),
+        None
+    );
+    assert_eq!(
+        required_version(&input(Version::HTTP_11, Some(Version::HTTP_3))),
+        None
+    );
+    assert_eq!(required_version(&input(Version::HTTP_2, None)), None);
+
+    let pinned = input(Version::HTTP_3, Some(Version::HTTP_11));
+    pinned
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_2));
+    assert_eq!(required_version(&pinned), Some(Version::HTTP_2));
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn a_connector_target_equal_to_the_origin_still_allows_alternatives() {
+    let cache = AltSvcCache::default();
+    let probe = input();
+    let origin = origin(&probe).unwrap();
+    let mut headers = crate::HeaderMap::new();
+    headers.insert(
+        crate::header::ALT_SVC,
+        crate::HeaderValue::from_static("h3=\":443\""),
+    );
+    cache.record(&origin, &headers, Duration::ZERO);
+    let connector = HttpServiceConnector::new(FakeConnector::new([])).with_cache(cache);
+
+    let same = input();
+    same.extensions()
+        .insert(ConnectorTarget(same.authority.clone()));
+    assert!(
+        connector
+            .candidates(&same, Some(&origin), false)
+            .0
+            .is_some()
+    );
+
+    let elsewhere = input();
+    elsewhere
+        .extensions()
+        .insert(ConnectorTarget("elsewhere.example:443".parse().unwrap()));
+    assert!(
+        connector
+            .candidates(&elsewhere, Some(&origin), false)
+            .0
+            .is_none()
+    );
+}

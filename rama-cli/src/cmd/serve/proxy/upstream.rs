@@ -82,8 +82,11 @@ impl UpstreamProxyConfig {
 
     /// The TLS configuration for a TLS upstream proxy, when not the default verifying one.
     pub(super) fn proxy_tls_config(&self) -> Option<TlsClientConfig> {
-        self.insecure
-            .then(|| TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable))
+        self.insecure.then(|| {
+            TlsClientConfig::new()
+                .with_server_verify(ServerVerifyMode::Disable)
+                .with_alpn_http_auto()
+        })
     }
 
     pub(super) fn set_listener_addresses(&self, addresses: impl IntoIterator<Item = SocketAddr>) {

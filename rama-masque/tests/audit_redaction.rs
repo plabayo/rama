@@ -79,7 +79,7 @@ async fn request(
     target: std::net::SocketAddr,
     user: Option<UserId>,
 ) -> (StatusCode, Option<Client>) {
-    let proxy = ProxyAddress::try_from("masque://proxy.example:443").unwrap();
+    let proxy = ProxyAddress::try_from("h3+udp://proxy.example:443").unwrap();
     let target = ConnectUdpTarget::new(
         Host::Address(target.ip()),
         NonZeroU16::new(target.port()).unwrap(),

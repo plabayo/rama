@@ -41,7 +41,7 @@ use rama::{
     graceful::{Scope, WeakScope},
     http::{
         Body, Request, Response, StatusCode, Version,
-        client::{EasyHttpWebClient, Http3Connector},
+        client::EasyHttpWebClient,
         conn::{H2ClientContextParams, TargetHttpVersion},
         header::{HOST, UPGRADE},
         headers::{
@@ -125,18 +125,12 @@ enum Mode {
 }
 
 fn client(scope: WeakScope, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxError> {
-    let h3 = Http3Connector::builder(scope.clone())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
-        .build_lazy()?;
-    let connector = EasyHttpWebClient::connector_builder()
+    let connector = EasyHttpWebClient::connector_builder(scope.clone())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_11)
-        .with_default_http_connector(scope.clone())
-        .with_http3_support(h3)
+        .with_default_http_connector()
         .with_default_connection_pool()
         // Version policy comes from the tunnel or label, not advertised alternatives.
         .without_alt_svc()

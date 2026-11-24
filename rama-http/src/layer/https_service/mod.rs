@@ -36,7 +36,7 @@
 //! ECH intent and `EchRequirement::Required` separately on the request; the
 //! backend checks acceptance on new connections and pooled reuse.
 
-use crate::layer::alt_svc::AltSvcCache;
+use crate::layer::{alt_svc::AltSvcCache, http_service::dials_another_endpoint};
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _},
@@ -312,7 +312,7 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
         if !self.enabled
             || input.application_protocol.as_ref() != Some(&Protocol::HTTPS)
             || input.extensions().contains::<HttpServiceCandidates>()
-            || input.extensions().contains::<ConnectorTarget>()
+            || dials_another_endpoint(input)
         {
             return Ok(());
         }

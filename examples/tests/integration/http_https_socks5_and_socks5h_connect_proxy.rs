@@ -10,8 +10,7 @@ use rama::{
     },
     layer::ArcLayer,
     net::{
-        Protocol,
-        address::{ProxyAddress, SocketAddress},
+        address::{ProxyAddress, ProxyProtocol, SocketAddress},
         client::ProxyRoute,
         user::{Basic, ProxyCredential},
     },
@@ -98,13 +97,12 @@ async fn test_http_client_over_socks5_proxy_connect(
         .with_store_server_cert_chain(true)
         .with_server_verify(ServerVerifyMode::Disable);
 
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
 
@@ -124,13 +122,12 @@ async fn test_http_client_over_socks5_proxy_connect(
             .expect("build simple GET request");
 
         request.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
-            protocol: Some(Protocol::SOCKS5),
+            protocol: ProxyProtocol::SOCKS5,
             address: proxy_socket_addr.into(),
             credential: Some(ProxyCredential::Basic(Basic::new(
                 non_empty_str!("john"),
                 non_empty_str!("secret"),
             ))),
-            template: None,
         }));
 
         tracing::info!(

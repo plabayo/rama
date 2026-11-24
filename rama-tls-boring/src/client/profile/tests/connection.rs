@@ -157,7 +157,7 @@ impl TlsClientSessionStore for SessionAccess {
 #[tokio::test]
 async fn a_configured_session_store_does_not_change_a_fresh_captured_offer() {
     let store = Arc::new(SessionAccess::default());
-    established_with_store(None, Some(store.clone())).await;
+    Box::pin(established_with_store(None, Some(store.clone()))).await;
     assert_eq!(store.reads.load(Ordering::Relaxed), 0);
     assert!(
         store.writes.load(Ordering::Relaxed) > 0,
@@ -188,7 +188,7 @@ async fn outer_adapter_preserves_native_trust_and_negotiated_alpn() {
 pub(super) async fn established(
     context: Option<(&EmulationContext, &ConnectionSelection)>,
 ) -> rama_core::extensions::Extensions {
-    established_with_store(context, None).await
+    Box::pin(established_with_store(context, None)).await
 }
 
 async fn established_with_store(

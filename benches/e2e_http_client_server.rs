@@ -32,7 +32,7 @@ use rama::{
     http::{
         HeaderName, HeaderValue, Request, Response, Version,
         body::util::BodyExt,
-        client::{EasyHttpWebClient, Http3Connector, HttpPooledConnectorConfig},
+        client::{EasyHttpWebClient, HttpPooledConnectorConfig, ProxyConnector},
         headers::Server,
         layer::{
             compression::CompressionLayer,
@@ -65,8 +65,7 @@ use rama::{
     io::Io,
     layer::{ArcLayer, ConsumeErrLayer, MapOutputLayer, TimeoutLayer},
     net::{
-        Protocol,
-        address::{ProxyAddress, SocketAddress},
+        address::{ProxyAddress, ProxyProtocol, SocketAddress},
         client::{ProxyRoute, pool::SaturationPolicy},
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
@@ -76,10 +75,7 @@ use rama::{
         user::credentials::{ProxyCredential, basic},
     },
     proxy::socks5::Socks5Acceptor,
-    quic::{
-        Endpoint, ServerConfig as QuicServerConfig, TransportConfig,
-        tls::{BoringTlsProvider, TlsOptions},
-    },
+    quic::{Endpoint, ServerConfig as QuicServerConfig, TransportConfig, tls::TlsOptions},
     service::{BoxService, service_fn},
     tcp::{client::service::TcpConnector, server::TcpListener},
     telemetry::tracing::{self},
@@ -387,8 +383,21 @@ fn get_inner_client(
     http: HttpVersion,
     tls: Tls,
 ) -> impl Service<Request, Output = Response, Error = OpaqueError> {
-    let b = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(TcpConnector::new().with_connector(transport_socket()));
+    let proxies = ProxyConnector::builder(WeakScope::detached())
+        .with_custom_tcp_connector(TcpConnector::new().with_connector(transport_socket()))
+        .without_dns_connector()
+        .without_tls_support()
+        .with_default_http_connector()
+        .without_connection_pool()
+        .with_socks5()
+        .with_http_connect()
+        .with_http_forward()
+        .build();
+
+    let b = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(TcpConnector::new().with_connector(transport_socket()))
+        .without_dns_connector()
+        .with_proxy_support(proxies);
 
     let proto = match http {
         HttpVersion::Http1 => ApplicationProtocol::HTTP_11,
@@ -397,11 +406,8 @@ fn get_inner_client(
 
     match tls {
         Tls::None => b
-            .without_dns_connector()
-            .without_tls_proxy_support()
-            .with_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::detached())
+            .with_default_http_connector()
             .without_connection_pool()
             .build_client(),
         Tls::Rustls => {
@@ -410,11 +416,8 @@ fn get_inner_client(
                 .with_alpn(smallvec![proto])
                 .with_server_verify(ServerVerifyMode::Disable)
                 .with_store_server_cert_chain(true);
-            b.without_dns_connector()
-                .without_tls_proxy_support()
-                .with_proxy_support()
-                .with_tls_support_using_rustls(tls_config)
-                .with_default_http_connector(WeakScope::detached())
+            b.with_tls_support_using_rustls(tls_config)
+                .with_default_http_connector()
                 .without_connection_pool()
                 .build_client()
         }
@@ -424,11 +427,8 @@ fn get_inner_client(
                 .with_alpn(smallvec![proto])
                 .with_server_verify(ServerVerifyMode::Disable)
                 .with_store_server_cert_chain(true);
-            b.without_dns_connector()
-                .without_tls_proxy_support()
-                .with_proxy_support()
-                .with_tls_support_using_boringssl(tls_config)
-                .with_default_http_connector(WeakScope::detached())
+            b.with_tls_support_using_boringssl(tls_config)
+                .with_default_http_connector()
                 .without_connection_pool()
                 .build_client()
         }
@@ -500,10 +500,9 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
                             .unwrap(),
                     )),
                     Proxy::Socks5 => req.extension(ProxyRoute::Proxy(ProxyAddress {
-                        protocol: Some(Protocol::SOCKS5),
+                        protocol: ProxyProtocol::SOCKS5,
                         address: address_proxy.into(),
                         credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
-                        template: None,
                     })),
                 };
 
@@ -714,16 +713,26 @@ fn load_client(
     version: HttpVersion,
     tls: bool,
 ) -> impl Service<Request, Output = Response, Error = OpaqueError> + Clone {
-    let builder = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(TcpConnector::new().with_connector(client_socket()))
+    let builder = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(TcpConnector::new().with_connector(client_socket()))
         .without_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support();
+        .with_proxy_support(
+            ProxyConnector::builder(WeakScope::detached())
+                .with_custom_tcp_connector(TcpConnector::new().with_connector(client_socket()))
+                .without_dns_connector()
+                .without_tls_support()
+                .with_default_http_connector()
+                .without_connection_pool()
+                .with_socks5()
+                .with_http_connect()
+                .with_http_forward()
+                .build(),
+        );
     if tls {
         Either::A(
             builder
                 .with_tls_support_using_boringssl(load_tls_client_config(load_alpn(version)))
-                .with_default_http_connector(WeakScope::detached())
+                .with_default_http_connector()
                 .with_connection_pool(load_pool())
                 .build_client(),
         )
@@ -731,7 +740,7 @@ fn load_client(
         Either::B(
             builder
                 .without_tls_support()
-                .with_default_http_connector(WeakScope::detached())
+                .with_default_http_connector()
                 .with_connection_pool(load_pool())
                 .build_client(),
         )
@@ -740,19 +749,13 @@ fn load_client(
 
 /// The stock client with HTTP/3 support: pooled, any certificate accepted.
 fn load_h3_client() -> impl Service<Request, Output = Response, Error = OpaqueError> + Clone {
-    let h3 = Http3Connector::builder(WeakScope::detached())
-        .with_tls_config(load_tls_client_config(ApplicationProtocol::HTTP_3))
-        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
-        .build_lazy()
-        .unwrap();
-    EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(TcpConnector::new().with_connector(client_socket()))
+    EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_transport_connector()
+        .with_custom_tcp_connector(TcpConnector::new().with_connector(client_socket()))
         .without_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
+        .without_proxy_support()
         .with_tls_support_using_boringssl(load_tls_client_config(ApplicationProtocol::HTTP_2))
-        .with_default_http_connector(WeakScope::detached())
-        .with_http3_support(h3)
+        .with_default_http_connector()
         .with_connection_pool(load_pool())
         .build_client()
 }

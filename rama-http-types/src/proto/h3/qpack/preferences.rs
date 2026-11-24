@@ -8,6 +8,7 @@ use rama_core::extensions::Extension;
 /// in the connector's fixed encoder configuration. Peer SETTINGS still limit
 /// dynamic compression. Absent fields retain the fixed configuration.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Extension)]
+#[extension(scope(connection))]
 pub struct EncoderPreferences {
     /// Desired dynamic-table capacity; zero keeps fields statically encoded.
     /// The actual capacity is clamped to the peer's advertised maximum.

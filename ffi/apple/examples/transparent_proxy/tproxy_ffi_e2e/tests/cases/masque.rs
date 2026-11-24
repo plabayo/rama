@@ -111,7 +111,7 @@ async fn ffi_contract_own_masque_session_on_every_carrier() {
                             CertificateDer::from_pem_slice(mitm_ca_pem().as_bytes()).unwrap()]).unwrap()
                     } else { TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable) };
                     let tls = tls.with_server_name(Host::from_static("localhost"));
-                    let address: ProxyAddress = format!("masque://localhost:{}", proxy.port()).parse().unwrap();
+                    let address: ProxyAddress = format!("h3+udp://localhost:{}", proxy.port()).parse().unwrap();
                     let target = ConnectUdpTarget::new(Host::from(origin.ip()), NonZeroU16::new(origin.port()).unwrap());
                     let request = connect_udp_request(&address, &target, version).unwrap();
                     request.extensions().insert(HttpDatagrams);

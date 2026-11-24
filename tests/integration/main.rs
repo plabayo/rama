@@ -65,3 +65,23 @@ mod masque;
 
 #[cfg(all(feature = "http-full", feature = "rustls", feature = "ring"))]
 mod pool_stack;
+
+#[cfg(all(feature = "http-full", feature = "boring", feature = "quic"))]
+mod proxy_versions;
+
+#[cfg(all(
+    feature = "http-full",
+    feature = "boring",
+    feature = "quic",
+    feature = "test-utils"
+))]
+mod proxy_reuse;
+
+#[cfg(all(
+    feature = "http-full",
+    feature = "boring",
+    feature = "quic",
+    feature = "socks5",
+    feature = "test-utils"
+))]
+mod proxy_tls_leg;

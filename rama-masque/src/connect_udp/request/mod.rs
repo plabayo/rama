@@ -18,7 +18,7 @@ use rama_http::{
     proto::ext::Protocol,
 };
 use rama_net::{
-    address::{ProxyAddress, ProxyPathTemplate},
+    address::{ProxyAddress, ProxyPathProtocolTemplate, ProxyPathTemplate},
     uri::{TemplateVariable, UriTemplate, UriTemplateError, UriTemplateMatcher},
     user::ProxyCredential,
 };
@@ -29,8 +29,8 @@ use super::{ConnectUdpTarget, ConnectUdpTargetError};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConnectUdpRequestError {
-    /// The proxy address is not a [`rama_net::Protocol::MASQUE`] proxy.
-    NotMasque,
+    /// The proxy address offers no CONNECT-UDP tunnels.
+    NoConnectUdp,
     /// The HTTP version cannot carry CONNECT-UDP (HTTP/1.0 and earlier).
     UnsupportedVersion(Version),
     /// The request is not a `connect-udp` upgrade or Extended CONNECT: not ours to answer.
@@ -50,7 +50,7 @@ pub enum ConnectUdpRequestError {
 impl fmt::Display for ConnectUdpRequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotMasque => f.write_str("proxy address is not a masque proxy"),
+            Self::NoConnectUdp => f.write_str("proxy address offers no connect-udp tunnels"),
             Self::UnsupportedVersion(version) => {
                 write!(f, "{version:?} cannot carry connect-udp")
             }
@@ -85,7 +85,7 @@ impl ConnectUdpRequestError {
         match self {
             Self::NotConnectUdp => None,
             Self::TemplateMismatch => Some(StatusCode::NOT_FOUND),
-            Self::NotMasque | Self::InvalidUri => Some(StatusCode::INTERNAL_SERVER_ERROR),
+            Self::NoConnectUdp | Self::InvalidUri => Some(StatusCode::INTERNAL_SERVER_ERROR),
             Self::UnsupportedVersion(_)
             | Self::Malformed(_)
             | Self::MalformedRequestLine
@@ -104,23 +104,16 @@ pub fn connect_udp_request(
     target: &ConnectUdpTarget,
     version: Version,
 ) -> Result<Request<Body>, ConnectUdpRequestError> {
-    if !proxy
-        .protocol
-        .as_ref()
-        .is_some_and(rama_net::Protocol::is_masque)
-    {
-        return Err(ConnectUdpRequestError::NotMasque);
-    }
+    let Some(template) = proxy.protocol.connect_udp_template() else {
+        return Err(ConnectUdpRequestError::NoConnectUdp);
+    };
     let mut uri = String::with_capacity(96);
     uri.push_str("https://");
     uri.push_str(&proxy.address.to_string());
-    match &proxy.template {
-        Some(template) => template.expand_target_to(&mut uri, &target.host, target.port.get()),
-        None => ProxyPathTemplate::expand_connect_udp_default_to(
-            &mut uri,
-            &target.host,
-            target.port.get(),
-        ),
+    if template.is_connect_udp_default() {
+        ProxyPathTemplate::expand_connect_udp_default_to(&mut uri, &target.host, target.port.get());
+    } else {
+        template.expand_target_to(&mut uri, &target.host, target.port.get());
     }
     let mut request = Request::builder()
         .version(version)
@@ -181,14 +174,20 @@ impl ConnectUdpRequestMatcher {
         let template = if let Some(template) = template {
             template
         } else {
-            default = ProxyPathTemplate::try_new(ProxyPathTemplate::CONNECT_UDP_DEFAULT)
-                .map_err(|_error| UriTemplateError::NotMatchable("invalid default template"))?;
+            default = ProxyPathTemplate::connect_udp_default();
             &default
+        };
+        let ProxyPathProtocolTemplate::ConnectUdp {
+            target_host,
+            target_port,
+        } = template.protocol()
+        else {
+            return Err(UriTemplateError::NotMatchable("not a connect-udp template"));
         };
         Ok(Self {
             matcher: UriTemplateMatcher::try_new(template.template())?,
-            target_host: template.target_host(),
-            target_port: template.target_port(),
+            target_host,
+            target_port,
         })
     }
 

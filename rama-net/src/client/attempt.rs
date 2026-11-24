@@ -5,15 +5,16 @@ use crate::address::Host;
 use parking_lot::Mutex;
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
-    extensions::Extension,
+    extensions::{Extension, Extensions, ExtensionsTransfer},
 };
 use rama_utils::macros::generate_set_and_with;
+use std::sync::Arc;
 
 /// Whether an establishment result describes a connector's fixed policy or a
 /// request override. Publish this on established connections or classified
 /// errors so discovery and failure caches can scope availability updates correctly.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Extension)]
-#[extension(tags(net))]
+#[extension(tags(net), scope(connection))]
 pub enum ConnectionPolicyScope {
     /// The connector did not classify its policy. Do not share policy failures.
     #[default]
@@ -33,10 +34,11 @@ pub enum ConnectionPolicyScope {
 /// The check is preflight only: the caller must still verify the authenticated
 /// identity on the established connection, including pool hits.
 #[derive(Debug, Default, Extension)]
-#[extension(tags(net))]
+#[extension(tags(net), scope(connection))]
 pub struct ConnectionAttempt {
     authenticated_peer: Option<Host>,
     observations: Mutex<Observations>,
+    dialed_for: Option<Arc<Self>>,
 }
 
 #[derive(Debug, Default)]
@@ -50,6 +52,20 @@ impl ConnectionAttempt {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The attempt of a connection dialed for the attempt of `parent`, such as
+    /// the connection to a proxy for the request that travels through it.
+    ///
+    /// It shares the outcome of `parent`, so a restriction to request policy
+    /// reaches `parent` too. Requirements of `parent`, such as its
+    /// authenticated peer, describe the other connection and stay there.
+    #[must_use]
+    pub fn dialed_for(parent: Arc<Self>) -> Self {
+        Self {
+            dialed_for: Some(parent),
+            ..Self::default()
+        }
     }
 
     generate_set_and_with! {
@@ -68,11 +84,7 @@ impl ConnectionAttempt {
         scope: ConnectionPolicyScope,
         authenticated_peer: Option<&Host>,
     ) -> Result<(), ConnectionError> {
-        let mut observations = self.observations.lock();
-        if observations.policy_scope != ConnectionPolicyScope::Request {
-            observations.policy_scope = scope;
-        }
-        drop(observations);
+        self.record_policy_scope(scope);
         if self
             .authenticated_peer
             .as_ref()
@@ -92,7 +104,23 @@ impl ConnectionAttempt {
     /// updating shared endpoint health. Later TLS classification cannot erase
     /// this restriction; all components participate in the same attempt.
     pub fn restrict_to_request_policy(&self) {
-        self.observations.lock().policy_scope = ConnectionPolicyScope::Request;
+        self.record_policy_scope(ConnectionPolicyScope::Request);
+    }
+
+    /// Latest report wins, but `Request` is final and also restricts the
+    /// attempt this one is dialed for.
+    fn record_policy_scope(&self, scope: ConnectionPolicyScope) {
+        let mut observations = self.observations.lock();
+        if observations.policy_scope == ConnectionPolicyScope::Request {
+            return;
+        }
+        observations.policy_scope = scope;
+        drop(observations);
+        if scope == ConnectionPolicyScope::Request
+            && let Some(parent) = &self.dialed_for
+        {
+            parent.record_policy_scope(scope);
+        }
     }
 
     /// Policy used by this attempt. Unknown is deliberately conservative for
@@ -123,6 +151,27 @@ impl ConnectionAttempt {
     #[must_use]
     pub fn failed(&self) -> bool {
         self.failure_kind().is_some()
+    }
+}
+
+/// Gives a child connection an attempt [`ConnectionAttempt::dialed_for`] the
+/// attempt of its parent, if that has one.
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct ConnectionAttemptTransfer;
+
+impl ConnectionAttemptTransfer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl ExtensionsTransfer for ConnectionAttemptTransfer {
+    fn transfer(&self, parent: &Extensions, child: &Extensions) {
+        if let Some(attempt) = parent.get_arc::<ConnectionAttempt>() {
+            child.insert(ConnectionAttempt::dialed_for(attempt));
+        }
     }
 }
 
@@ -180,5 +229,61 @@ mod tests {
             Some(ConnectionErrorKind::Authentication)
         );
         assert_eq!(attempt.policy_scope(), ConnectionPolicyScope::Request);
+    }
+
+    #[test]
+    fn a_request_local_restriction_reaches_the_attempt_it_is_dialed_for() {
+        let origin = Extensions::new();
+        origin.insert(
+            ConnectionAttempt::new().with_authenticated_peer(Host::from_static("origin.example")),
+        );
+        let leg = origin.fork_connection(&ConnectionAttemptTransfer::new());
+
+        let leg_attempt = leg
+            .get_ref::<ConnectionAttempt>()
+            .expect("the proxy connection's own attempt");
+        leg_attempt
+            .check_policy(ConnectionPolicyScope::Connector, None)
+            .expect("the origin's peer is not the proxy connection's requirement");
+        leg_attempt.restrict_to_request_policy();
+
+        assert_eq!(leg_attempt.policy_scope(), ConnectionPolicyScope::Request);
+        // The connection to the proxy is dialed for the origin's request and shares its outcome, so
+        // request-local configuration must not update shared route health.
+        assert_eq!(
+            origin
+                .get_ref::<ConnectionAttempt>()
+                .expect("the origin's attempt")
+                .policy_scope(),
+            ConnectionPolicyScope::Request,
+        );
+    }
+
+    #[test]
+    fn only_a_request_policy_of_a_leg_reaches_the_attempt_it_is_dialed_for() {
+        let origin = Extensions::new();
+        origin.insert(ConnectionAttempt::new());
+        let origin_scope = || {
+            origin
+                .get_ref::<ConnectionAttempt>()
+                .expect("the origin's attempt")
+                .policy_scope()
+        };
+
+        let connector_leg = origin.fork_connection(&ConnectionAttemptTransfer::new());
+        connector_leg
+            .get_ref::<ConnectionAttempt>()
+            .expect("the proxy connection's own attempt")
+            .check_policy(ConnectionPolicyScope::Connector, None)
+            .unwrap();
+        assert_eq!(origin_scope(), ConnectionPolicyScope::Unknown);
+
+        let request_leg = origin.fork_connection(&ConnectionAttemptTransfer::new());
+        request_leg
+            .get_ref::<ConnectionAttempt>()
+            .expect("the proxy connection's own attempt")
+            .check_policy(ConnectionPolicyScope::Request, None)
+            .unwrap();
+        assert_eq!(origin_scope(), ConnectionPolicyScope::Request);
     }
 }

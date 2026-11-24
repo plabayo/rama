@@ -23,7 +23,7 @@ use rama::{
     graceful::WeakScope,
     http::{
         Body, HeaderValue, Response, Version,
-        client::{EasyHttpWebClient, Http3Connector},
+        client::EasyHttpWebClient,
         conn::TargetHttpVersion,
         header::COOKIE,
         proto::h2::{
@@ -33,7 +33,7 @@ use rama::{
         server::HttpServer,
     },
     net::{address::SocketAddress, test_utils::client::MockConnectorService},
-    quic::{Endpoint, tls::BoringTlsProvider},
+    quic::{Endpoint, client::SharedQuicEndpoint},
     service::service_fn,
     tls::{
         SecureTransport,
@@ -855,15 +855,14 @@ async fn wire_reports(version: Version) -> (CollectionQueue, CollectionReceiver)
             .with_store_client_hello(true)
             .into_layer(http.service(Arc::new(service))),
     );
-    let connector = MockConnectorService::new(move || server.clone());
+    let connector = MockConnectorService::new(server);
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(connector)
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(connector)
         .without_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -1029,21 +1028,16 @@ async fn h3_wire_reports() -> (CollectionQueue, CollectionReceiver) {
             .await
             .unwrap();
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let h3 = Http3Connector::builder(WeakScope::detached())
-        .with_endpoint(client_endpoint.clone())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
-        .build()
-        .await
-        .unwrap();
-    let client = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_tcp_connector()
+        .with_custom_quic_connector(SharedQuicEndpoint::supplied(
+            client_endpoint.clone(),
+            WeakScope::detached(),
+        ))
         .without_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(WeakScope::detached())
-        .with_http3_support(h3)
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
     tokio::time::timeout(Duration::from_secs(10), async {

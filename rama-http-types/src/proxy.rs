@@ -1,8 +1,67 @@
-use crate::{Method, Request, Version, proto::ext::Protocol};
+use crate::{
+    Method, Request, StreamingBody, Version,
+    body::{Frame, SizeHint},
+    proto::ext::Protocol,
+};
+use pin_project_lite::pin_project;
 use rama_core::{
     extensions::{Extension, Extensions, ExtensionsRef as _},
     matcher::Matcher,
 };
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+pin_project! {
+    /// The body of a request sent to a proxy: the client's own body for a request the
+    /// proxy forwards, none for the CONNECT or CONNECT-UDP request opening a tunnel.
+    #[project = ProxyRequestBodyProj]
+    #[derive(Debug, Default)]
+    pub enum ProxyRequestBody<B> {
+        /// The body of a request the proxy forwards to its origin.
+        Forwarded { #[pin] body: B },
+        /// The request opens a tunnel and carries no body.
+        #[default]
+        Empty,
+    }
+}
+
+impl<B> ProxyRequestBody<B> {
+    /// The body of a request the proxy forwards to its origin.
+    pub const fn forwarded(body: B) -> Self {
+        Self::Forwarded { body }
+    }
+}
+
+impl<B: StreamingBody> StreamingBody for ProxyRequestBody<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match self.project() {
+            ProxyRequestBodyProj::Forwarded { body } => body.poll_frame(cx),
+            ProxyRequestBodyProj::Empty => Poll::Ready(None),
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        match self {
+            Self::Forwarded { body } => body.is_end_stream(),
+            Self::Empty => true,
+        }
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        match self {
+            Self::Forwarded { body } => body.size_hint(),
+            Self::Empty => SizeHint::with_exact(0),
+        }
+    }
+}
 
 /// Requested handling of plaintext HTTP and WebSocket traffic through an
 /// HTTP(S) proxy.
@@ -67,9 +126,28 @@ impl<Body> Matcher<Request<Body>> for HttpProxyConnectMatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlaintextHttpProxyMode, is_req_http_proxy_connect};
-    use crate::{Method, Request, Version, proto::ext::Protocol as UpgradeProtocol};
+    use super::{PlaintextHttpProxyMode, ProxyRequestBody, is_req_http_proxy_connect};
+    use crate::{
+        Body, BodyExtractExt as _, Method, Request, StreamingBody as _, Version,
+        proto::ext::Protocol as UpgradeProtocol,
+    };
     use rama_core::extensions::ExtensionsRef as _;
+
+    #[tokio::test]
+    async fn a_proxy_request_body_is_empty_or_the_forwarded_one() {
+        let empty = ProxyRequestBody::<Body>::default();
+        assert!(empty.is_end_stream());
+        assert_eq!(empty.size_hint().exact(), Some(0));
+        assert_eq!(Body::new(empty).try_into_string().await.unwrap(), "");
+
+        let forwarded = ProxyRequestBody::forwarded(Body::from("hello"));
+        assert!(!forwarded.is_end_stream());
+        assert_eq!(forwarded.size_hint().exact(), Some(5));
+        assert_eq!(
+            Body::new(forwarded).try_into_string().await.unwrap(),
+            "hello"
+        );
+    }
 
     #[test]
     fn ordinary_connect_is_recognized_on_every_version() {

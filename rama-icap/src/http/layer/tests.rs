@@ -18,12 +18,16 @@ use rama_core::{
     service::{BoxService, service_fn},
 };
 use rama_http::io::upgrade;
-use rama_http_backend::{client::proxy::layer::HttpProxyConnectorLayer, server::HttpServer};
+use rama_http_backend::{
+    client::{HttpConnector, proxy::layer::HttpConnectProxyConnectorLayer},
+    server::HttpServer,
+};
 use rama_http_types::{
     Body, HeaderMap, Method as HttpMethod, Request, Response, Version,
     body::{Frame, util::BodyExt as _},
     header::{self as http_header, HeaderValue, TRAILER},
     proto::ext::Protocol as UpgradeProtocol,
+    proxy::ProxyRequestBody,
 };
 use rama_net::{
     AuthorityInputExt, ConnectorTargetInputExt as _, Protocol, ProtocolInputExt,
@@ -33,7 +37,7 @@ use rama_net::{
         ConnectRequest, ConnectorTarget, EstablishedClientConnection, ProxyRoute,
         pool::{BasicConnIdentifier, ConnID, LruDropPool, PooledConnector},
     },
-    test_utils::client::{MockConnectorService, MockSocket},
+    test_utils::client::{MakeMockServer, MockConnectorService, MockSocket},
     uri::Uri,
 };
 use rama_tls::{
@@ -170,10 +174,13 @@ fn test_connection_id(_input: &ConnectRequest) -> Result<TestConnectionId, BoxEr
     Ok(TestConnectionId)
 }
 
-fn mock_icap_client<S>(
+fn mock_icap_client<S, M>(
     create_server: S,
     max_buffer_size: usize,
-) -> crate::client::Client<MockConnectorService<S>> {
+) -> crate::client::Client<MockConnectorService<S, M>>
+where
+    S: MakeMockServer<MockSocket, M>,
+{
     crate::client::Client::new(
         MockConnectorService::new(create_server).with_max_buffer_size(max_buffer_size),
     )
@@ -399,13 +406,13 @@ async fn serve_blocking_adaptation(request: IncomingRequest) -> Result<OutgoingR
 async fn detours_request_and_response_with_preview() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = MockConnectorService::new(|| {
+    let transport = MockConnectorService::new(
         Server::new(
             HttpService::new(service_fn(serve_adaptation_with_outer_trailers)),
             TEST_SERVICE_TAG,
         )
-        .unwrap()
-    })
+        .unwrap(),
+    )
     .with_max_buffer_size(256);
     let connector = service_fn(move |input: ConnectRequest| {
         let connector_connections = Arc::clone(&connector_connections);
@@ -478,13 +485,11 @@ async fn detours_request_and_response_with_preview() {
 #[tokio::test]
 async fn preserves_ordinary_header_order_and_casing_end_to_end() {
     let connector = mock_icap_client(
-        || {
-            Server::new(
-                HttpService::new(service_fn(serve_header_preserving_adaptation)),
-                TEST_SERVICE_TAG,
-            )
-            .unwrap()
-        },
+        Server::new(
+            HttpService::new(service_fn(serve_header_preserving_adaptation)),
+            TEST_SERVICE_TAG,
+        )
+        .unwrap(),
         4096,
     );
     let inner = service_fn(async |request: Request<Body>| {
@@ -541,7 +546,7 @@ async fn icaps_endpoint_uses_direct_tls_for_options_reqmod_and_respmod() {
     .unwrap();
     let icap_server = TlsIcapConnectionServer { inner: icap_server };
     let server = TlsAcceptorLayer::new(tls_config).into_layer(icap_server);
-    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let transport = MockConnectorService::new(server).with_max_buffer_size(4096);
     let transport = service_fn(move |input: ConnectRequest| {
         let transport = transport.clone();
         async move {
@@ -629,7 +634,7 @@ async fn boring_icaps_interoperates_for_options_reqmod_and_respmod() {
     .unwrap();
     let server = TlsAcceptorLayer::new(tls_config)
         .into_layer(TlsIcapConnectionServer { inner: icap_server });
-    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let transport = MockConnectorService::new(server).with_max_buffer_size(4096);
     let tls = BoringTlsConnector::auto(transport).with_base_config(
         TlsClientConfig::new()
             .with_server_verify(ServerVerifyMode::Auto)
@@ -678,7 +683,7 @@ async fn boring_icaps_rejects_wrong_certificate_identity() {
     .unwrap();
     let server = TlsAcceptorLayer::new(tls_config)
         .into_layer(TlsIcapConnectionServer { inner: icap_server });
-    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let transport = MockConnectorService::new(server).with_max_buffer_size(4096);
     let tls = BoringTlsConnector::auto(transport).with_base_config(
         TlsClientConfig::new()
             .with_server_verify(ServerVerifyMode::Auto)
@@ -695,13 +700,13 @@ async fn boring_icaps_rejects_wrong_certificate_identity() {
 
 #[tokio::test]
 async fn auto_tls_connector_keeps_icap_endpoint_plaintext() {
-    let transport = MockConnectorService::new(|| {
+    let transport = MockConnectorService::new(
         Server::new(
             HttpService::new(service_fn(serve_adaptation)),
             TEST_SERVICE_TAG,
         )
-        .unwrap()
-    })
+        .unwrap(),
+    )
     .with_max_buffer_size(4096);
     let tls = TlsConnector::auto(transport)
         .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
@@ -752,9 +757,11 @@ async fn http_connect_tunnel_carries_and_reuses_plain_icap() {
             }
         }
     }));
+    let transport = MockConnectorService::new(proxy_server).with_max_buffer_size(4096);
     let transport =
-        MockConnectorService::new(move || proxy_server.clone()).with_max_buffer_size(4096);
-    let transport = HttpProxyConnectorLayer::required().into_layer(transport);
+        HttpConnectProxyConnectorLayer::new().into_layer(
+            HttpConnector::<_, ProxyRequestBody<Body>>::new(transport, WeakScope::detached()),
+        );
     let pool = LruDropPool::try_new(1, 2)
         .unwrap()
         .with_drop_connection_if_no_response(false);
@@ -844,9 +851,11 @@ async fn http_connect_tunnel_carries_and_reuses_icaps() {
             }
         }
     }));
+    let transport = MockConnectorService::new(proxy_server).with_max_buffer_size(4096);
     let transport =
-        MockConnectorService::new(move || proxy_server.clone()).with_max_buffer_size(4096);
-    let transport = HttpProxyConnectorLayer::required().into_layer(transport);
+        HttpConnectProxyConnectorLayer::new().into_layer(
+            HttpConnector::<_, ProxyRequestBody<Body>>::new(transport, WeakScope::detached()),
+        );
     let transport = TlsConnector::auto(transport).with_base_config(
         TlsClientConfig::new()
             .with_server_verify(ServerVerifyMode::Auto)
@@ -1094,13 +1103,11 @@ async fn transfer_complete_disables_preview_in_both_directions() {
 #[tokio::test]
 async fn preserves_trailer_only_response_declaration() {
     let connector = mock_icap_client(
-        || {
-            Server::new(
-                HttpService::new(service_fn(serve_adaptation)),
-                TEST_SERVICE_TAG,
-            )
-            .unwrap()
-        },
+        Server::new(
+            HttpService::new(service_fn(serve_adaptation)),
+            TEST_SERVICE_TAG,
+        )
+        .unwrap(),
         256,
     );
     let inner = service_fn(async |_request: Request<Body>| {
@@ -1137,13 +1144,11 @@ async fn preserves_trailer_only_response_declaration() {
 #[tokio::test]
 async fn reqmod_rejects_late_connection_nominated_trailer() {
     let connector = mock_icap_client(
-        || {
-            Server::new(
-                HttpService::new(service_fn(serve_adaptation)),
-                TEST_SERVICE_TAG,
-            )
-            .unwrap()
-        },
+        Server::new(
+            HttpService::new(service_fn(serve_adaptation)),
+            TEST_SERVICE_TAG,
+        )
+        .unwrap(),
         256,
     );
     let origin_calls = Arc::new(AtomicUsize::new(0));

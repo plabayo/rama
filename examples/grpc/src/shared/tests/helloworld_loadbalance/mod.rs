@@ -95,13 +95,12 @@ async fn dns_lb_rotates_and_pool_reuses() {
     })
     .into_layer(mock);
 
-    let http_client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(transport)
+    let http_client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_custom_tcp_connector(transport)
         .without_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
 

@@ -46,13 +46,12 @@ async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() 
     let (proxy_address, inspector_address) = start_proxy(&shutdown, cli.proxy).await;
     let ui_address = inspector_address.expect("inspector listener bound");
 
-    let dashboard_client = EasyHttpWebClient::connector_builder()
+    let dashboard_client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(TlsClientConfig::default_http())
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     let dashboard = dashboard_client
@@ -73,23 +72,21 @@ async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() 
     let trusted_tls = TlsClientConfig::new()
         .try_with_server_trust_anchors([trust_anchor])
         .unwrap();
-    let trusted_client = EasyHttpWebClient::connector_builder()
+    let trusted_client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_boringssl(trusted_tls)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     let insecure_tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let insecure_client = EasyHttpWebClient::connector_builder()
+    let insecure_client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_boringssl(insecure_tls)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     // Use a DNS identity so the generated MITM leaf can be verified against

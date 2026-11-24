@@ -1,19 +1,26 @@
+use rama::net::client::MaybeProxied;
 use rama::{
-    error::ErrorExt as _,
+    error::{ErrorExt as _, extra::OpaqueError},
     http::{
-        Version,
-        client::{DefaultHttpWebClient, EasyHttpWebClient, masque_quic_transport},
+        Body, Version,
+        client::{
+            EasyHttpWebClient, Http3Connector, HttpConnector, ProxyConnector, masque_quic_transport,
+        },
         conn::TargetHttpVersion,
         core::h3::connection::Config as H3Config,
+        proxy::ProxyRequestBody,
     },
     net::{
-        address::{Host, HostWithPort},
-        client::{ConnectorTarget, EstablishedClientConnection, ProxyRoute},
+        address::{Host, HostWithPort, ProxyAddress, ProxyProtocol},
+        client::{
+            ConnectorService, ConnectorTarget, EstablishedClientConnection, MaybeProxiedConnector,
+            ProxiedRoute, ProxyRoute,
+        },
         socket::opts::SocketOptions,
         stream::Socket as _,
         tls::ApplicationProtocol,
     },
-    proxy::masque::connect_udp::{ConnectUdpConnector, ConnectUdpSocket, MaybeTunneledSocket},
+    proxy::masque::connect_udp::{ConnectUdpSocket, HttpConnectUdpProxyConnector},
     quic::{
         Connection, ConnectionError, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, NegotiatedTlsParameters,
         ServerConfig, TransportConfig,
@@ -23,6 +30,7 @@ use rama::{
     },
     tls::{
         SecureTransport,
+        boring::client::TlsConnector,
         client::{ClientHello, ClientHelloExtension},
     },
     ua::{
@@ -34,7 +42,7 @@ use rama::{
     },
     udp::{
         DatagramSenderExt as _, DatagramSocket as _, DatagramSocketExt as _, SendDatagram,
-        UdpSocketConfig, proxy::UdpConnector,
+        UdpPacketSocket, UdpSocketConfig, proxy::UdpConnector,
     },
 };
 use tokio::{net::UdpSocket, sync::mpsc};
@@ -72,15 +80,39 @@ async fn udp_echo() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     (address, task)
 }
 
-/// A client to a MASQUE proxy with a self-signed certificate.
-fn masque_client()
--> impl Service<Request, Output = Response, Error = rama::error::extra::OpaqueError> + Clone {
+/// The CONNECT-UDP tunnels of a client to a MASQUE proxy with a self-signed certificate,
+/// over HTTP/1.1 or HTTP/2 on TLS, or HTTP/3.
+fn masque_tunnels()
+-> impl ConnectorService<ConnectRequest, Connection = MaybeProxied<UdpPacketSocket, ConnectUdpSocket>>
++ Clone {
+    let scope = WeakScope::detached();
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(
-        WeakScope::detached(),
-        tls,
+    let h3 = Http3Connector::builder(scope.clone())
+        .with_endpoints(SharedQuicEndpoint::managed(scope.clone()))
+        .with_tls_config(tls.clone())
+        .with_transport(masque_quic_transport())
+        .build_lazy()
+        .unwrap();
+    let tls_over_tcp = TlsConnector::auto(TcpConnector::new()).with_base_config(tls);
+    let http = HttpConnector::<_, ProxyRequestBody<Body>>::new(tls_over_tcp, scope.clone())
+        .with_http3_connector(h3);
+    MaybeProxiedConnector::new(
+        UdpConnector::new(),
+        HttpConnectUdpProxyConnector::new(http, scope),
+        ProxiedRoute::new(),
     )
-    .unwrap()
+}
+
+fn with_version(proxy: &str, version: Version) -> ProxyAddress {
+    let mut proxy = proxy.parse::<ProxyAddress>().unwrap();
+    let ProxyProtocol::Http {
+        version: pinned, ..
+    } = &mut proxy.protocol
+    else {
+        panic!("a MASQUE proxy speaks HTTP");
+    };
+    *pinned = Some(version);
+    proxy
 }
 
 /// A CONNECT-UDP tunnel to `target` through `proxy` over `version`.
@@ -89,18 +121,15 @@ async fn tunnel(
     target: std::net::SocketAddr,
     version: Version,
 ) -> Result<ConnectUdpSocket, BoxError> {
-    let connector =
-        ConnectUdpConnector::new(UdpConnector::new(), masque_client(), WeakScope::detached())
-            .with_version(version);
     let request = ConnectRequest::new(HostWithPort::from(target));
     request
         .extensions
-        .insert(ProxyRoute::Proxy(proxy.parse().unwrap()));
+        .insert(ProxyRoute::Proxy(with_version(proxy, version)));
     let EstablishedClientConnection { conn, .. } =
-        timeout(Duration::from_secs(10), connector.serve(request)).await??;
+        timeout(Duration::from_secs(10), masque_tunnels().connect(request)).await??;
     match conn {
-        MaybeTunneledSocket::Tunneled(socket) => Ok(socket),
-        MaybeTunneledSocket::Direct(_) => Err(BoxError::from_static_str("not tunneled")),
+        MaybeProxied::Proxied { conn: socket } => Ok(socket),
+        MaybeProxied::Direct { .. } => Err(BoxError::from_static_str("not tunneled")),
     }
 }
 
@@ -235,7 +264,7 @@ async fn mitm_relays_a_clients_own_authenticated_masque_session() {
             ("inner:secret", true),
         ] {
             let proxy = format!(
-                "masque://{credential}@localhost:{}/custom{{?target_host,target_port}}",
+                "h3://{credential}@localhost:{}/custom{{?target_host,target_port}}",
                 own.port()
             )
             .parse()
@@ -269,7 +298,7 @@ async fn mitm_relays_a_clients_own_authenticated_masque_session() {
             let mut endpoint = None;
             let mut driver = None;
             let response = if version == Version::HTTP_3 {
-                let socket = tunnel(&format!("masque://outer:x@{front}"), own, Version::HTTP_3)
+                let socket = tunnel(&format!("h3+udp://outer:x@{front}"), own, Version::HTTP_3)
                     .await
                     .unwrap();
                 let ep = Endpoint::build(WeakScope::detached())
@@ -388,7 +417,46 @@ async fn tcp_egress_through_a_masque_upstream_uses_connect_with_its_credential()
     .await;
 
     for (credential, works) in [("vendor:secret", true), ("vendor:wrong", false)] {
-        let upstream_arg = format!("masque://{credential}@{upstream}");
+        let upstream_arg = format!("h2://{credential}@{upstream}");
+        let front = proxy_with(
+            &shutdown,
+            &[
+                "--protocol",
+                "http",
+                "--upstream-proxy",
+                upstream_arg.as_str(),
+                "--upstream-proxy-insecure",
+            ],
+        )
+        .await;
+        for tunnel in [false, true] {
+            let label = format!("{credential} tunnel={tunnel}");
+            match fetch(origin, &format!("http://{front}"), tunnel).await {
+                Ok((status, body)) if works => {
+                    assert_eq!(status, StatusCode::OK, "{label}");
+                    assert_eq!(body, "no credential", "{label}");
+                }
+                Ok((status, _)) => assert!(!status.is_success(), "{label}: {status}"),
+                Err(error) => assert!(!works, "{label}: {error:?}"),
+            }
+        }
+    }
+
+    shutdown_proxy(shutdown_tx, shutdown).await;
+    origin_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tcp_egress_through_an_http3_masque_upstream_uses_connect_with_its_credential() {
+    let (origin, origin_task) = spawn_credential_reporting_origin().await;
+    let (shutdown_tx, shutdown) = shutdown_pair();
+    let upstream = proxy_with(
+        &shutdown,
+        &["--protocol", "masque", "--proxy-auth", "vendor:secret"],
+    )
+    .await;
+    for (credential, works) in [("vendor:secret", true), ("vendor:wrong", false)] {
+        let upstream_arg = format!("h3+udp://{credential}@{upstream}");
         let front = proxy_with(
             &shutdown,
             &[
@@ -427,7 +495,7 @@ async fn masque_ingress_tunnels_udp_on_every_carrier_and_tcp_with_connect() {
         &["--protocol", "masque", "--masque-allow-private"],
     )
     .await;
-    let address = format!("masque://{proxy}");
+    let address = format!("h3+udp://{proxy}");
     for version in VERSIONS {
         let mut socket = tunnel(&address, target, version)
             .await
@@ -450,7 +518,7 @@ async fn masque_ingress_refuses_private_targets_by_default() {
     let (shutdown_tx, shutdown) = shutdown_pair();
     let proxy = proxy_with(&shutdown, &["--protocol", "masque"]).await;
     for version in VERSIONS {
-        let error = tunnel(&format!("masque://{proxy}"), target, version)
+        let error = tunnel(&format!("h3+udp://{proxy}"), target, version)
             .await
             .unwrap_err();
         assert!(
@@ -490,18 +558,18 @@ async fn masque_tunnels_select_connect_udp_and_connect() {
     )
     .await;
     for version in VERSIONS {
-        let mut socket = tunnel(&format!("masque://{udp_only}"), target, version)
+        let mut socket = tunnel(&format!("h3+udp://{udp_only}"), target, version)
             .await
             .unwrap();
         echo(&mut socket, b"udp allowed").await;
-        tunnel(&format!("masque://{tcp_only}"), target, version)
+        tunnel(&format!("h3+udp://{tcp_only}"), target, version)
             .await
             .unwrap_err();
     }
-    fetch(origin, &format!("masque://{udp_only}"), true)
+    fetch(origin, &format!("h3://{udp_only}"), true)
         .await
         .unwrap_err();
-    let (status, _) = fetch(origin, &format!("masque://{tcp_only}"), true)
+    let (status, _) = fetch(origin, &format!("h3://{tcp_only}"), true)
         .await
         .unwrap();
     assert_eq!(status, StatusCode::OK);
@@ -528,7 +596,7 @@ async fn masque_ingress_requires_the_proxy_credential() {
     .await;
     for version in VERSIONS {
         for credential in ["", "john:wrong@"] {
-            let error = tunnel(&format!("masque://{credential}{proxy}"), target, version)
+            let error = tunnel(&format!("h3+udp://{credential}{proxy}"), target, version)
                 .await
                 .unwrap_err();
             assert!(
@@ -536,7 +604,7 @@ async fn masque_ingress_requires_the_proxy_credential() {
                 "{version:?} {credential:?}: {error:?}"
             );
         }
-        let mut socket = tunnel(&format!("masque://john:secret@{proxy}"), target, version)
+        let mut socket = tunnel(&format!("h3+udp://john:secret@{proxy}"), target, version)
             .await
             .unwrap();
         echo(&mut socket, b"authorized").await;
@@ -560,14 +628,14 @@ async fn a_dedicated_masque_bind_serves_its_custom_template_in_both_proxy_forms(
     let (proxy, _) = start_proxy(&shutdown, cli.proxy).await;
     let template = "/masque?h={target_host}&p={target_port}";
     for version in VERSIONS {
-        for scheme in ["masque", "https"] {
+        for scheme in ["h3", "https"] {
             let mut socket = tunnel(&format!("{scheme}://{proxy}{template}"), target, version)
                 .await
                 .unwrap_or_else(|error| panic!("{scheme} {version:?}: {error:?}"));
             echo(&mut socket, b"custom template").await;
         }
         // The default template is not this proxy's.
-        tunnel(&format!("masque://{proxy}"), target, version)
+        tunnel(&format!("h3+udp://{proxy}"), target, version)
             .await
             .unwrap_err();
     }
@@ -601,7 +669,7 @@ async fn masque_ingress_chains_udp_to_a_masque_upstream_and_never_bypasses_anoth
         ],
     )
     .await;
-    let upstream_arg = format!("masque://vendor:secret@{upstream}");
+    let upstream_arg = format!("h3+udp://vendor:secret@{upstream}");
     let front = proxy_with(
         &shutdown,
         &[
@@ -615,7 +683,7 @@ async fn masque_ingress_chains_udp_to_a_masque_upstream_and_never_bypasses_anoth
     )
     .await;
     for version in VERSIONS {
-        let mut socket = tunnel(&format!("masque://{front}"), target, version)
+        let mut socket = tunnel(&format!("h3+udp://{front}"), target, version)
             .await
             .unwrap_or_else(|error| panic!("{version:?}: {error:?}"));
         echo(&mut socket, b"through two MASQUE proxies").await;
@@ -637,7 +705,7 @@ async fn masque_ingress_chains_udp_to_a_masque_upstream_and_never_bypasses_anoth
         ],
     )
     .await;
-    let mut socket = tunnel(&format!("masque://{front}"), target, Version::HTTP_3)
+    let mut socket = tunnel(&format!("h3+udp://{front}"), target, Version::HTTP_3)
         .await
         .unwrap();
     echo(&mut socket, b"through an https template upstream").await;
@@ -656,7 +724,7 @@ async fn masque_ingress_chains_udp_to_a_masque_upstream_and_never_bypasses_anoth
         )
         .await;
         for version in VERSIONS {
-            tunnel(&format!("masque://{front}"), target, version)
+            tunnel(&format!("h3+udp://{front}"), target, version)
                 .await
                 .unwrap_err();
         }
@@ -739,15 +807,9 @@ async fn bind_dual_stack_http3(tls: &TlsServerConfig) -> Endpoint {
 
 /// The QUIC endpoints of a client whose MASQUE routes tunnel through CONNECT-UDP.
 fn tunneling_endpoints() -> QuicEndpointConnector<
-    ConnectUdpConnector<
-        impl Service<Request, Output = Response, Error = rama::error::extra::OpaqueError> + Clone,
-        UdpConnector,
-    >,
+    impl ConnectorService<ConnectRequest, Connection = MaybeProxied<UdpPacketSocket, ConnectUdpSocket>>,
 > {
-    QuicEndpointConnector::new(
-        ConnectUdpConnector::new(UdpConnector::new(), masque_client(), WeakScope::detached()),
-        WeakScope::detached(),
-    )
+    QuicEndpointConnector::new(masque_tunnels(), WeakScope::detached())
 }
 
 /// A QUIC connection to the origin, directly or through `proxy`, keeping the peer's chain.
@@ -797,15 +859,23 @@ async fn origin_leaf(port: u16, proxy: Option<&str>) -> Vec<u8> {
     leaf
 }
 
+/// A default client which trusts the self-signed test servers, origin and proxy alike.
+fn insecure_client() -> impl Service<Request, Output = Response, Error = OpaqueError> {
+    let scope = WeakScope::detached();
+    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
+    EasyHttpWebClient::connector_builder(scope.clone())
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_proxy_support(ProxyConnector::default_using_tls(scope, tls.clone()))
+        .with_tls_support_using_boringssl(tls)
+        .with_default_http_connector()
+        .with_default_connection_pool()
+        .build_client()
+}
+
 /// GET the origin over HTTP/3 through `proxy`.
 async fn h3_get_through(port: u16, proxy: &str) -> Bytes {
-    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let client = DefaultHttpWebClient::try_default_masque_using_boringssl(
-        WeakScope::detached(),
-        tls.clone(),
-        tls,
-    )
-    .unwrap();
+    let client = insecure_client();
     let request = Request::builder()
         .version(Version::HTTP_3)
         .uri(format!("https://localhost:{port}/"))
@@ -835,7 +905,7 @@ async fn mitm_terminates_tunneled_quic_in_scope_and_forwards_the_rest_untouched(
         &["--protocol", "masque", "--masque-allow-private"],
     )
     .await;
-    let upstream = format!("masque://{upstream}");
+    let upstream = format!("h3+udp://{upstream}");
     for (args, intercepted) in [
         (&["--masque-allow-private"][..], false),
         (&["--masque-allow-private", "--mitm"][..], true),
@@ -880,7 +950,7 @@ async fn mitm_terminates_tunneled_quic_in_scope_and_forwards_the_rest_untouched(
     ] {
         let mut argv = vec!["--protocol", "masque"];
         argv.extend_from_slice(args);
-        let proxy = format!("masque://{}", proxy_with(&shutdown, &argv).await);
+        let proxy = format!("h3+udp://{}", proxy_with(&shutdown, &argv).await);
         let leaf = origin_leaf(port, Some(&proxy)).await;
         assert_eq!(leaf != direct, intercepted, "{args:?}");
         assert_eq!(h3_get_through(port, &proxy).await, "h3 origin", "{args:?}");
@@ -927,13 +997,7 @@ async fn mitm_inspector_records_and_exports_tunneled_http3_with_its_quic_hello()
     let (proxy, inspector) = start_proxy(&shutdown, cli.proxy).await;
     let inspector = inspector.unwrap();
 
-    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let client = DefaultHttpWebClient::try_default_masque_using_boringssl(
-        WeakScope::detached(),
-        tls.clone(),
-        tls,
-    )
-    .unwrap();
+    let client = insecure_client();
     let request = Request::builder()
         .version(Version::HTTP_3)
         .uri(format!("https://localhost:{port}/"))
@@ -941,7 +1005,7 @@ async fn mitm_inspector_records_and_exports_tunneled_http3_with_its_quic_hello()
         .body(Body::empty())
         .unwrap();
     request.extensions().insert(ProxyRoute::Proxy(
-        format!("masque://{proxy}").parse().unwrap(),
+        format!("h3+udp://{proxy}").parse().unwrap(),
     ));
     request
         .extensions()
@@ -1096,7 +1160,7 @@ async fn mitm_replay_offers_the_captured_quic_client_hello_of_an_emulated_browse
     let inspector = inspector.unwrap();
     let output = rama::utils::fs::tempdir().unwrap();
     let url = format!("https://localhost:{port}/");
-    let proxy = format!("masque://{proxy}");
+    let proxy = format!("h3+udp://{proxy}");
     let user_agent_header = format!("User-Agent: {user_agent}");
     rama_send(
         &output,
@@ -1182,7 +1246,7 @@ async fn mitm_egress_closes_its_tunneled_connection_before_the_upstream_one() {
         &["--protocol", "masque", "--masque-allow-private"],
     )
     .await;
-    let upstream = format!("masque://{upstream}");
+    let upstream = format!("h3+udp://{upstream}");
     // Three runs: both closes start at the same shutdown, so a wrong order only races.
     for run in 0..3 {
         let (shutdown_tx, shutdown) = shutdown_pair();
@@ -1199,7 +1263,7 @@ async fn mitm_egress_closes_its_tunneled_connection_before_the_upstream_one() {
             ],
         )
         .await;
-        let front = format!("masque://{front}");
+        let front = format!("h3+udp://{front}");
         let client = origin_connection(port, Some(&front)).await;
         let accepted = timeout(Duration::from_secs(5), connections.recv()).await;
         assert!(
@@ -1240,7 +1304,7 @@ async fn a_quiet_tunnel_resumes_after_the_default_quic_idle_timeout() {
         &["--protocol", "masque", "--masque-allow-private"],
     )
     .await;
-    let upstream_arg = format!("masque://{upstream}");
+    let upstream_arg = format!("h3+udp://{upstream}");
     let front = proxy_with(
         &shutdown,
         &[
@@ -1256,7 +1320,7 @@ async fn a_quiet_tunnel_resumes_after_the_default_quic_idle_timeout() {
     let mut direct = tunnel(&upstream_arg, target, Version::HTTP_3)
         .await
         .unwrap();
-    let mut chained = tunnel(&format!("masque://{front}"), target, Version::HTTP_3)
+    let mut chained = tunnel(&format!("h3+udp://{front}"), target, Version::HTTP_3)
         .await
         .unwrap();
     echo(&mut direct, b"before").await;
@@ -1278,7 +1342,7 @@ async fn graceful_shutdown_ends_live_tunnels() {
         if mitm {
             args.push("--mitm");
         }
-        let proxy = format!("masque://{}", proxy_with(&shutdown, &args).await);
+        let proxy = format!("h3+udp://{}", proxy_with(&shutdown, &args).await);
         let mut tunnels = Vec::new();
         for version in VERSIONS {
             let mut socket = tunnel(&proxy, target, version).await.unwrap();

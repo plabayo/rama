@@ -38,22 +38,15 @@ async fn forward_client_isolates_upstream_proxy_407() {
             },
         ))),
     );
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
-        har: HarController::default(),
-        portal: None,
-        tcp_options: Arc::new(SocketOptions::default_tcp()),
+    let client = proxy_client(ProxyClientConfig {
         connect_timeout: Some(Duration::from_secs(2)),
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(
             Some(format!("http://{proxy_address}").parse().unwrap()),
             false,
             &[],
         )
         .unwrap(),
-        icap: None,
+        ..ProxyClientConfig::for_tests()
     });
 
     let response = client
@@ -107,17 +100,10 @@ async fn forward_client_can_disable_automatic_upstream_proxy_auth() {
     let upstream = UpstreamProxyConfig::new(Some(proxy), false, &[])
         .unwrap()
         .with_forward_proxy_auth(false);
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
-        har: HarController::default(),
-        portal: None,
-        tcp_options: Arc::new(SocketOptions::default_tcp()),
+    let client = proxy_client(ProxyClientConfig {
         connect_timeout: Some(Duration::from_secs(2)),
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream,
-        icap: None,
+        ..ProxyClientConfig::for_tests()
     });
 
     let response = client
@@ -158,17 +144,10 @@ async fn forward_client_authenticates_plaintext_upstream_proxy_by_default() {
     proxy.credential = Some(rama::net::user::ProxyCredential::Basic(
         rama::net::user::Basic::try_from("pu:pp").unwrap(),
     ));
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
-        har: HarController::default(),
-        portal: None,
-        tcp_options: Arc::new(SocketOptions::default_tcp()),
+    let client = proxy_client(ProxyClientConfig {
         connect_timeout: Some(Duration::from_secs(2)),
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(Some(proxy), false, &[]).unwrap(),
-        icap: None,
+        ..ProxyClientConfig::for_tests()
     });
 
     let response = client
@@ -217,17 +196,10 @@ async fn forward_client_can_tunnel_plaintext_without_leaking_proxy_auth() {
     let upstream = UpstreamProxyConfig::new(Some(proxy), false, &[])
         .unwrap()
         .with_tunnel_plaintext_http(true);
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
-        har: HarController::default(),
-        portal: None,
-        tcp_options: Arc::new(SocketOptions::default_tcp()),
+    let client = proxy_client(ProxyClientConfig {
         connect_timeout: Some(Duration::from_secs(2)),
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream,
-        icap: None,
+        ..ProxyClientConfig::for_tests()
     });
 
     let response = client
@@ -262,17 +234,9 @@ async fn forward_http_client_applies_connect_timeout_to_tls_handshake() {
         drop(socket);
     });
     let connect_timeout = Duration::from_secs(30);
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
-        har: HarController::default(),
-        portal: None,
-        tcp_options: Arc::new(SocketOptions::default_tcp()),
+    let client = proxy_client(ProxyClientConfig {
         connect_timeout: Some(connect_timeout),
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
-        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
-        icap: None,
+        ..ProxyClientConfig::for_tests()
     });
     let request_task = tokio::spawn(async move {
         client

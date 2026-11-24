@@ -307,6 +307,15 @@ impl ConnectionReuse {
         self
     }
 
+    /// Insert these rules on `connection`, combined with existing rules
+    pub fn publish(self, connection: &Extensions) {
+        let rules = match connection.get_ref::<Self>() {
+            Some(inner) => inner.clone().and(self),
+            None => self,
+        };
+        connection.insert(rules);
+    }
+
     /// Whether the established connection may be retained for later requests.
     #[must_use]
     pub fn is_reusable(&self) -> bool {

@@ -937,12 +937,7 @@ impl ProfileConnectionReuse {
     }
 
     pub fn publish(self, connection: &Extensions) {
-        let policy = ConnectionReuse::new(self);
-        let policy = match connection.get_ref::<ConnectionReuse>() {
-            Some(inner) => inner.clone().and(policy),
-            None => policy,
-        };
-        connection.insert(policy);
+        ConnectionReuse::new(self).publish(connection);
     }
 }
 

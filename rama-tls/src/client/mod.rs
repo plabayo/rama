@@ -81,7 +81,7 @@ pub use config::{
 pub use http::{http_alpn_override, negotiated_http_version};
 pub use pool::{
     TlsComponentIdentity, TlsConnectionReuse, TlsDerivedPolicy, TlsPoolComponent, TlsPoolId,
-    TlsPoolIdBuilder,
+    TlsPoolIdBuilder, publish_tls_required,
 };
 use rama_crypto::pki_types::CertificateDer;
 #[doc(inline)]

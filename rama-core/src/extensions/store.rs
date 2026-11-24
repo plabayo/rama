@@ -15,9 +15,9 @@ pub(super) struct Node {
     /// of its own (always empty) ones. That level is never a view itself.
     pub(super) view_of: Option<Extensions>,
     pub(super) parent: Option<Extensions>,
-    /// Whether this level starts a connection nested on top of its parent, see
-    /// [`Extensions::fork_nested_connection`].
-    pub(super) nested_connection: bool,
+    /// Whether this level starts a child connection of its parent, see
+    /// [`Extensions::fork_connection`].
+    pub(super) connection_boundary: bool,
     pub(super) entries: Store,
 }
 

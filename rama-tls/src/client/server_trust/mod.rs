@@ -203,7 +203,7 @@ impl Default for ServerTrustSource {
 /// A backend-specific verifier or store takes precedence. The policy is ignored
 /// when server verification is disabled.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsServerTrust {
     source: ServerTrustSource,
     additional_anchors: Option<TlsServerTrustAnchors>,

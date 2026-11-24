@@ -82,7 +82,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(encoding);
@@ -127,7 +127,7 @@ async fn client_enabled_server_disabled(encoding: CompressionEncoding) {
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(encoding);
@@ -159,7 +159,7 @@ async fn client_enabled_server_disabled_multi_encoding() {
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(CompressionEncoding::Gzip)
@@ -218,7 +218,7 @@ async fn client_disabled(encoding: CompressionEncoding) {
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     );
 
@@ -252,7 +252,7 @@ async fn server_replying_with_unsupported_encoding(encoding: CompressionEncoding
     let server = HttpServer::new_h2(WeakScope::detached()).service(grpc_svc);
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(encoding);
@@ -292,7 +292,7 @@ async fn disabling_compression_on_single_response(encoding: CompressionEncoding)
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(encoding);
@@ -340,7 +340,7 @@ async fn disabling_compression_on_response_but_keeping_compression_on_stream(
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(encoding);
@@ -399,7 +399,7 @@ async fn disabling_compression_on_response_from_client_stream(encoding: Compress
     };
 
     let client = test_client::TestClient::new(
-        mock_io_client(move || server.clone()),
+        mock_io_client(server),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(encoding);

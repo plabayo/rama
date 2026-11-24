@@ -41,7 +41,7 @@ use super::{
 /// and server identity are still included in every session key. Keep the native
 /// policy fixed after constructing a context from Rama configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsClientSessionDomain(u64);
 
 impl TlsClientSessionDomain {

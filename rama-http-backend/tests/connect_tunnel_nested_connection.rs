@@ -12,7 +12,7 @@ use std::{convert::Infallible, time::Duration};
 use rama_core::{
     Layer as _, Service as _, ServiceInput,
     error::BoxError,
-    extensions::{Extension, Extensions, ExtensionsRef, NestedConnectionTransfer},
+    extensions::{Extension, Extensions, ExtensionsRef, ExtensionsTransfer},
     graceful::WeakScope,
     io::BridgeIo,
     service::service_fn,
@@ -30,7 +30,7 @@ use rama_http_types::{Body, Method, Request, Response, StatusCode, body::util::B
 use rama_net::{
     ProtocolInputExt as _,
     client::{ConnectRequest, EstablishedClientConnection},
-    stream::DefaultConnectionTransfer,
+    stream::DefaultExtensionsTransfer,
     uri::Uri,
 };
 use rama_tls::SecureTransport;
@@ -169,7 +169,7 @@ async fn custom_transfer_carries_a_chosen_fact_into_the_tunnel() {
         }
     };
     let layer =
-        lazy_connect_layer().with_nested_connection_transfer(DefaultConnectionTransfer.and(carry));
+        lazy_connect_layer().with_extensions_transfer(DefaultExtensionsTransfer::new().and(carry));
     serve_lazy_connect_proxy(tls_proxy_connection(server_io), layer);
 
     let observed = request_inside_tunnel(client_io).await;

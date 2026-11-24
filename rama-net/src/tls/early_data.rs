@@ -7,7 +7,7 @@ use rama_core::extensions::Extension;
 /// Recovery policies retain this in their caller's extension store so later
 /// attempts cannot use early data, even when they select another connection.
 #[derive(Debug, Clone, Copy, Default, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 #[non_exhaustive]
 pub struct ForbidEarlyData;
 
@@ -23,7 +23,7 @@ pub struct ForbidEarlyData;
 /// both TLS rejection and any application-level early-data rejection. Insert it
 /// into an attempt's fork, never a shared caller or connection store.
 #[derive(Debug, Clone, Copy, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 #[non_exhaustive]
 pub struct EarlyDataPermit;
 

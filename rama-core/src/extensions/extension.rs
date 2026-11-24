@@ -11,7 +11,17 @@ use super::Extensions;
 /// Internally the value is stored inside an `Arc` so this is cheap to clone
 pub struct TypeErasedExtension {
     pub(super) type_id: TypeId,
-    pub(super) value: Arc<dyn Extension>,
+    pub(super) value: Arc<dyn ErasedExtension>,
+}
+
+pub(super) trait ErasedExtension: Any + Send + Sync + fmt::Debug {
+    fn erased_scope(&self) -> ExtensionScope;
+}
+
+impl<T: Extension> ErasedExtension for T {
+    fn erased_scope(&self) -> ExtensionScope {
+        <T as Extension>::scope()
+    }
 }
 
 impl TypeErasedExtension {
@@ -38,6 +48,10 @@ impl TypeErasedExtension {
             type_id: TypeId::of::<T>(),
             value,
         }
+    }
+
+    pub(super) fn scope(&self) -> ExtensionScope {
+        self.value.erased_scope()
     }
 
     /// Get the [`TypeId`] for the internally stored type `Arc<T>`
@@ -113,9 +127,9 @@ impl TypeErasedExtension {
 ///
 /// An extension is either flow data, which keeps resolving through every fork
 /// of the chain, or a fact about one connection, which must not answer for a
-/// connection nested on top of it. Facts opt out of that inheritance with
+/// child connection forked from it. Facts opt out of that inheritance with
 /// `#[extension(scope(connection))]`, see [`ExtensionScope`] and
-/// [`Extensions::fork_nested_connection`].
+/// [`Extensions::fork_connection`].
 pub trait Extension: Any + Send + Sync + core::fmt::Debug + 'static {
     /// How far up an [`Extensions`] chain a lookup of this type resolves,
     /// [`ExtensionScope::Flow`] unless the type says otherwise.
@@ -128,85 +142,93 @@ pub trait Extension: Any + Send + Sync + core::fmt::Debug + 'static {
     }
 }
 
-/// What a connection nested on another one keeps from it.
+/// What a child connection keeps from its parent connection.
 ///
-/// A [`Extensions::fork_nested_connection`] boundary stops every
-/// [`ExtensionScope::Connection`] fact of the connection underneath. Some of
-/// those facts still constrain the nested endpoint, and only the site that
-/// establishes the nesting knows which: the extension types cannot say, and
-/// neither can the layers that published them. So every nesting site owns a
+/// A [`Extensions::fork_connection`] boundary stops every
+/// [`ExtensionScope::Connection`] fact of the parent connection. Some of those
+/// facts still matter for the child, and only the site that forks the
+/// connection knows which: the extension types cannot say, and neither can the
+/// layers that published them. So every site that forks a connection owns a
 /// transfer and exposes it for configuration.
-pub trait NestedConnectionTransfer: Send + Sync + 'static {
-    /// Put onto `nested` what it keeps from the `outer` chain it forks from.
-    fn transfer(&self, outer: &Extensions, nested: &Extensions);
+pub trait ExtensionsTransfer: Send + Sync + 'static {
+    /// Put onto `child` what it keeps from the `parent` chain it forks from.
+    fn transfer(&self, parent: &Extensions, child: &Extensions);
 
     /// Run `self`, then `other`.
-    fn and<T: NestedConnectionTransfer>(self, other: T) -> NestedConnectionTransferAnd<Self, T>
+    fn and<T: ExtensionsTransfer>(self, other: T) -> ExtensionsTransferAnd<Self, T>
     where
         Self: Sized,
     {
-        NestedConnectionTransferAnd {
+        ExtensionsTransferAnd {
             first: self,
             second: other,
         }
     }
 
     /// Erase and share this transfer, so a connector can hold it.
-    fn into_shared(self) -> SharedNestedConnectionTransfer
+    fn into_shared(self) -> SharedExtensionsTransfer
     where
         Self: Sized,
     {
-        SharedNestedConnectionTransfer(Arc::new(self))
+        SharedExtensionsTransfer(Arc::new(self))
     }
 }
 
-/// Keeps nothing: the nested connection starts from the flow data alone.
+/// Keeps nothing: the child connection starts from the flow data alone.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct NoConnectionTransfer;
+#[non_exhaustive]
+pub struct NoExtensionsTransfer;
 
-impl NestedConnectionTransfer for NoConnectionTransfer {
-    fn transfer(&self, _outer: &Extensions, _nested: &Extensions) {}
+impl NoExtensionsTransfer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
 }
 
-impl<F> NestedConnectionTransfer for F
+impl ExtensionsTransfer for NoExtensionsTransfer {
+    fn transfer(&self, _parent: &Extensions, _child: &Extensions) {}
+}
+
+impl<F> ExtensionsTransfer for F
 where
     F: Fn(&Extensions, &Extensions) + Send + Sync + 'static,
 {
-    fn transfer(&self, outer: &Extensions, nested: &Extensions) {
-        self(outer, nested);
+    fn transfer(&self, parent: &Extensions, child: &Extensions) {
+        self(parent, child);
     }
 }
 
-/// Two transfers run in order, see [`NestedConnectionTransfer::and`].
+/// Two transfers run in order, see [`ExtensionsTransfer::and`].
 #[derive(Debug, Clone)]
-pub struct NestedConnectionTransferAnd<A, B> {
+pub struct ExtensionsTransferAnd<A, B> {
     first: A,
     second: B,
 }
 
-impl<A: NestedConnectionTransfer, B: NestedConnectionTransfer> NestedConnectionTransfer
-    for NestedConnectionTransferAnd<A, B>
+impl<A: ExtensionsTransfer, B: ExtensionsTransfer> ExtensionsTransfer
+    for ExtensionsTransferAnd<A, B>
 {
-    fn transfer(&self, outer: &Extensions, nested: &Extensions) {
-        self.first.transfer(outer, nested);
-        self.second.transfer(outer, nested);
+    fn transfer(&self, parent: &Extensions, child: &Extensions) {
+        self.first.transfer(parent, child);
+        self.second.transfer(parent, child);
     }
 }
 
-/// A shared [`NestedConnectionTransfer`] of any type, see [`NestedConnectionTransfer::into_shared`].
+/// A shared [`ExtensionsTransfer`] of any type, see [`ExtensionsTransfer::into_shared`].
 #[derive(Clone)]
-pub struct SharedNestedConnectionTransfer(Arc<dyn NestedConnectionTransfer>);
+pub struct SharedExtensionsTransfer(Arc<dyn ExtensionsTransfer>);
 
-impl fmt::Debug for SharedNestedConnectionTransfer {
+impl fmt::Debug for SharedExtensionsTransfer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SharedNestedConnectionTransfer")
+        f.debug_struct("SharedExtensionsTransfer")
             .finish_non_exhaustive()
     }
 }
 
-impl NestedConnectionTransfer for SharedNestedConnectionTransfer {
-    fn transfer(&self, outer: &Extensions, nested: &Extensions) {
-        self.0.transfer(outer, nested);
+impl ExtensionsTransfer for SharedExtensionsTransfer {
+    fn transfer(&self, parent: &Extensions, child: &Extensions) {
+        self.0.transfer(parent, child);
     }
 
     fn into_shared(self) -> Self {
@@ -222,8 +244,8 @@ pub enum ExtensionScope {
     #[default]
     Flow,
     /// Resolves up to and including the nearest level created by
-    /// [`Extensions::fork_nested_connection`]: a fact about one connection,
-    /// which says nothing about a connection nested on top of it.
+    /// [`Extensions::fork_connection`]: a fact about one connection,
+    /// which says nothing about a child connection forked from it.
     Connection,
 }
 

@@ -873,37 +873,37 @@ impl BoringClientConfigExt for TlsClientConfig {
 
 /// Cipher suites to offer, in order (may include GREASE / unknown values).
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringCipherSuites(pub Vec<CipherSuite>);
 
 /// Supported groups (named curves), in order.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringSupportedGroups(pub Vec<SupportedGroup>);
 
 /// Groups to send key shares for, in order.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringKeyShares(pub Vec<SupportedGroup>);
 
 /// Signature schemes to advertise, in order.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringSignatureSchemes(pub Vec<SignatureScheme>);
 
 /// Whether GREASE values are injected into the ClientHello.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringGrease(pub bool);
 
 /// Whether a GREASE value leads the offered signature schemes.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringGreaseSignatureSchemes(pub bool);
 
 /// Application-Layer Protocol Settings (ALPS).
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringAlps {
     /// Protocols for which settings are offered.
     pub protocols: Vec<ApplicationProtocol>,
@@ -984,17 +984,17 @@ pub(crate) fn set_alpn_with_coupled_alps(
 /// With GREASE on, an order naming no GREASE codepoint gets the native slots, first and
 /// last; an empty order keeps the native layout. Permutation takes precedence over it.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringExtensionOrder(pub Vec<ExtensionId>);
 
 /// Per-handshake extension permutation, taking precedence over [`BoringExtensionOrder`].
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringPermuteExtensions(pub bool);
 
 /// What a ClientHello does with listed values BoringSSL cannot negotiate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringUnknownValues(pub UnknownValues);
 
 impl TlsPoolComponent for BoringUnknownValues {
@@ -1007,7 +1007,7 @@ impl TlsPoolComponent for BoringUnknownValues {
 
 /// How a ClientHello fills its GREASE slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringGreaseValues(pub GreaseValues);
 
 impl TlsPoolComponent for BoringGreaseValues {
@@ -1020,7 +1020,7 @@ impl TlsPoolComponent for BoringGreaseValues {
 
 /// ClientHello padding policy; native behavior is used when absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringClientHelloPadding(pub Padding);
 
 impl TlsPoolComponent for BoringClientHelloPadding {
@@ -1034,7 +1034,7 @@ impl TlsPoolComponent for BoringClientHelloPadding {
 /// Whether a ClientHello with a TLS 1.3 minimum still sends the TLS 1.2 extensions
 /// extended_master_secret and renegotiation_info.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringLegacyExtensions(pub bool);
 
 impl TlsPoolComponent for BoringLegacyExtensions {
@@ -1049,7 +1049,7 @@ impl TlsPoolComponent for BoringLegacyExtensions {
 ///
 /// The default is the native choice for both.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 #[non_exhaustive]
 pub struct BoringExtensionPresence {
     /// Send ec_point_formats (`[0]`, uncompressed only) with a TLS 1.3 minimum.
@@ -1069,7 +1069,7 @@ impl TlsPoolComponent for BoringExtensionPresence {
 
 /// Bodies of GREASE extensions and of preserved extensions BoringSSL does not build itself.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringExtensionBodies(pub Arc<[(ExtensionId, Bytes)]>);
 
 impl TlsPoolComponent for BoringExtensionBodies {
@@ -1082,24 +1082,24 @@ impl TlsPoolComponent for BoringExtensionBodies {
 
 /// Certificate compression algorithms to advertise.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringCertCompression(pub Vec<CertificateCompressionAlgorithm>);
 
 /// Delegated credential signature schemes.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringDelegatedCredentials(pub Vec<SignatureScheme>);
 
 /// `record_size_limit` extension value; `0` omits the extension.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringRecordSizeLimit(pub u16);
 
 /// Experimental server certificate padding requested on a fresh SSL.
 /// `None` explicitly omits the extension; `Some(0)` requests zero bytes.
 /// A new native SSL is configured before its handshake; no live SSL is reset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringServerPaddingRequest(pub Option<u16>);
 
 impl TlsPoolComponent for BoringServerPaddingRequest {
@@ -1112,35 +1112,35 @@ impl TlsPoolComponent for BoringServerPaddingRequest {
 
 /// Whether to request OCSP stapling (`status_request`).
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringOcspStapling(pub bool);
 
 /// Whether to request signed certificate timestamps (SCT).
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringSignedCertTimestamps(pub bool);
 
 /// Whether to offer TLS 1.2 session tickets (`session_ticket`).
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringTls12SessionTickets(pub bool);
 
 /// Minimum TLS version boring negotiates, overriding the min derived from the
 /// supported-versions list.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringMinVersion(pub ProtocolVersion);
 
 /// Maximum TLS version boring negotiates, overriding the max derived from the
 /// supported-versions list.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringMaxVersion(pub ProtocolVersion);
 
 /// Custom [`X509Store`] used to verify the server certificate (overrides the
 /// default OS trust store, unless verification is disabled).
 #[derive(Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct BoringServerVerifyCertStore(pub Arc<X509Store>);
 
 impl TlsPoolComponent for BoringServerVerifyCertStore {

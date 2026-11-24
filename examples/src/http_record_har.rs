@@ -33,7 +33,7 @@ use rama::{
     graceful::{Scope, WeakScope},
     http::{
         BodyLimitLayer, HeaderValue, Request, Response, StatusCode,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, ProxyConnector},
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
@@ -124,6 +124,9 @@ async fn main() -> Result<(), BoxError> {
             ),
             mitm_svc,
         );
+        let proxies = ProxyConnector::default_with_scope(weak_scope.clone())
+            .with_isolate_forward_proxy_auth_error(true);
+        let client = EasyHttpWebClient::default_using_proxies(weak_scope.clone(), proxies).boxed();
         let http_service = HttpServer::auto(weak_scope.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
@@ -144,10 +147,7 @@ async fn main() -> Result<(), BoxError> {
                 RemoveResponseHeaderLayer::hop_by_hop(),
                 ArcLayer::new(),
             )
-                .into_layer(
-                    EasyHttpWebClient::default_with_scope(weak_scope)
-                        .with_isolate_forward_proxy_auth_error(true),
-                ),
+                .into_layer(client),
         ));
 
         tcp_service

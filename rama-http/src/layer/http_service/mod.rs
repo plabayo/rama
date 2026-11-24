@@ -304,6 +304,15 @@ fn availability(error: &ConnectionError) -> bool {
 
 /// WebSocket handshakes use HTTP: map WS/WSS to HTTP/HTTPS for learning,
 /// preserving the original security scheme.
+/// Whether a [`ConnectorTarget`] sends `input` to an endpoint other than its own authority,
+/// which rules out alternatives and discovery.
+pub(crate) fn dials_another_endpoint(input: &ConnectRequest) -> bool {
+    input
+        .extensions()
+        .get_ref::<ConnectorTarget>()
+        .is_some_and(|target| target.0 != input.authority)
+}
+
 fn origin(input: &ConnectRequest) -> Option<HttpOrigin> {
     let protocol = match input.application_protocol.as_ref()? {
         protocol if protocol == &Protocol::HTTP || protocol == &Protocol::HTTPS => protocol.clone(),
@@ -317,19 +326,20 @@ fn origin(input: &ConnectRequest) -> Option<HttpOrigin> {
 /// Explicit targets constrain every HTTP version; H3 request metadata also means
 /// prior knowledge in Rama. Ordinary H1/H2 metadata leaves negotiation open.
 /// `FallbackHttpVersion` is a connection default, not a constraint on discovery.
+/// When one is set, the request's version is no longer prior knowledge.
 /// This is client policy, not a version-selection rule imposed by RFC 7838.
 pub(super) fn required_version(input: &ConnectRequest) -> Option<Version> {
-    input
-        .extensions()
-        .get_ref::<TargetHttpVersion>()
+    let extensions = input.extensions();
+    if let Some(target) = extensions.get_ref::<TargetHttpVersion>() {
+        return Some(target.0);
+    }
+    if extensions.contains::<FallbackHttpVersion>() {
+        return None;
+    }
+    extensions
+        .get_ref::<HttpRequestVersion>()
         .map(|value| value.0)
-        .or_else(|| {
-            input
-                .extensions()
-                .get_ref::<HttpRequestVersion>()
-                .map(|value| value.0)
-                .filter(|version| *version == Version::HTTP_3)
-        })
+        .filter(|version| *version == Version::HTTP_3)
 }
 
 /// Require the authenticated TLS name to match the origin, not the dial target.
@@ -476,7 +486,7 @@ where
     ) -> (Option<Arc<HttpServiceCandidates>>, bool) {
         if !cfg!(feature = "tls")
             || input.application_protocol.as_ref() != Some(&Protocol::HTTPS)
-            || input.extensions().contains::<ConnectorTarget>()
+            || dials_another_endpoint(input)
         {
             return (None, false);
         }

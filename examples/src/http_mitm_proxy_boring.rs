@@ -46,7 +46,7 @@ use rama::{
     graceful::{Scope, WeakScope},
     http::{
         BodyLimitLayer, HeaderName, HeaderValue,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, ProxyConnector},
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
@@ -122,16 +122,18 @@ async fn main() -> Result<(), BoxError> {
         );
         // Ordinary HTTP forwarding has its own connector and needs the same TCP protection.
         // Keep the default client's TLS, proxy, and pooling behavior; ingress is never HTTP/3.
-        let web_client = EasyHttpWebClient::connector_builder()
-            .with_custom_transport_connector(PostedRecvLayer::new().into_layer(TcpConnector::new()))
+        let web_client = EasyHttpWebClient::connector_builder(weak_scope.clone())
+            .with_custom_tcp_connector(PostedRecvLayer::new().into_layer(TcpConnector::new()))
             .with_default_dns_connector()
-            .with_tls_proxy_support_using_boringssl()
-            .with_proxy_support()
+            .with_proxy_support(
+                ProxyConnector::default_with_scope(weak_scope.clone())
+                    .with_isolate_forward_proxy_auth_error(true),
+            )
             .with_tls_support_using_boringssl(TlsClientConfig::default_http())
-            .with_default_http_connector(weak_scope.clone())
+            .with_default_http_connector()
             .with_default_connection_pool()
             .build_client()
-            .with_isolate_forward_proxy_auth_error(true);
+            .boxed();
         let web_client = (
             RemoveRequestHeaderLayer::hop_by_hop(),
             HijackLayer::new(

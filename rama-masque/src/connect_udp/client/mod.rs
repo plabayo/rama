@@ -1,40 +1,35 @@
 use std::{
-    fmt, io,
-    io::IoSliceMut,
+    fmt,
+    marker::PhantomData,
     net::{IpAddr, Ipv4Addr},
     num::NonZeroU16,
-    task::{Context, Poll},
     time::Duration,
 };
 
 use rama_core::{
     Layer, Service,
-    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
-    extensions::{Extensions, ExtensionsRef},
+    error::{BoxError, BoxErrorExt as _, ErrorExt as _},
+    extensions::{Extensions, ExtensionsRef, ExtensionsTransfer},
     graceful::WeakScope,
 };
 use rama_http::{
-    Request, Response, Version, conn::TargetHttpVersion, datagram::HttpDatagramSession,
-    io::upgrade::handle_upgrade, proto::ext::HttpDatagrams,
+    Body, Request, Response, StatusCode, Version, conn::TargetHttpVersion,
+    datagram::HttpDatagramSession, io::upgrade::handle_upgrade, proto::ext::HttpDatagrams,
+    proxy::ProxyRequestBody,
 };
 use rama_net::{
-    Protocol,
     address::{Host, ProxyAddress, SocketAddress},
     client::{
-        ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
-        EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
+        ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
+        ConnectorService, EstablishedClientConnection, EstablishedProxyRoute, ProxyDialRequest,
+        ProxyDialer, ProxyRoute,
     },
-    stream::Socket,
-};
-use rama_udp::{
-    DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
-    SendDatagram,
 };
 use rama_utils::macros::generate_set_and_with;
 
 use super::{
-    ConnectUdpSender, ConnectUdpSocket, ConnectUdpSocketConfig, ConnectUdpTarget,
-    connect_udp_request, session_config, validate_connect_udp_response,
+    ConnectUdpSocket, ConnectUdpSocketConfig, ConnectUdpTarget, connect_udp_request,
+    session_config, validate_connect_udp_response,
 };
 
 /// The peer a client tunnel to a DNS name reports: the IPv4 dummy address ([RFC 7600]),
@@ -53,74 +48,74 @@ pub const OUTER_INITIAL_MTU: u16 = 1350;
 /// tunnel ends. Configure it on both sides of that connection.
 pub const OUTER_IDLE_TIMEOUT: Duration = Duration::from_mins(3);
 
-/// A datagram proxy connector for MASQUE ([RFC 9298]): a request on a [`ProxyRoute`] to a
-/// MASQUE proxy gets a CONNECT-UDP tunnel to its target, opened with the HTTP client `S`;
-/// every other request goes to the inner datagram connector `C`.
+/// A datagram proxy connector for MASQUE ([RFC 9298]): a CONNECT-UDP tunnel to the target of
+/// a request on a [`ProxyRoute`], opened over the connector `C` towards that proxy.
 ///
-/// The tunnel's target keeps its name: the proxy resolves it. A request addressed to its own
-/// MASQUE proxy ([`ProxyRoute::addresses_proxy`]) goes to `C`, as does a request without a
-/// proxy route. A proxy route to any other kind of proxy is refused, so it is never bypassed.
-/// A tunnel publishes [`EstablishedProxyRoute::Tunnel`] on its socket.
+/// The tunnel's target keeps its name: the proxy resolves it. A route whose proxy offers no
+/// CONNECT-UDP is refused, so it is never bypassed. A tunnel publishes
+/// [`EstablishedProxyRoute::Tunnel`] on its socket. Compose it with a direct datagram
+/// connector in a [`MaybeProxiedConnector`] selecting by [`ProxiedRoute`] to make the proxy
+/// optional.
 ///
-/// `S` sends the CONNECT-UDP request to the proxy: it needs proxy support, so the proxy's
-/// credentials go with it, and, for HTTP/3 datagrams, an outer initial MTU of
+/// `C` dials the HTTP connection to the proxy, the same one CONNECT tunnels over, such as a
+/// [`ProxyDialer`] over the connector towards HTTP proxies. It answers with an HTTP
+/// connection to the proxy, in the version the [`ProxyAddress`] asks for or negotiates. Tunnels through one proxy share that
+/// connection when it can carry them. For HTTP/3 it needs an outer initial MTU of
 /// [`OUTER_INITIAL_MTU`].
 ///
+/// `B` is the body type of the connections towards the proxy: the CONNECT-UDP request
+/// carries its empty [`Default`] value.
+///
 /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
+/// [`MaybeProxiedConnector`]: rama_net::client::MaybeProxiedConnector
+/// [`ProxiedRoute`]: rama_net::client::ProxiedRoute
+/// [`ProxyDialer`]: rama_net::client::ProxyDialer
 #[derive(ExtensionsRef)]
-pub struct ConnectUdpConnector<S, C> {
-    client: S,
+pub struct HttpConnectUdpProxyConnector<C, B = ProxyRequestBody<Body>> {
     inner: C,
     scope: WeakScope,
     socket: ConnectUdpSocketConfig,
-    version: Version,
+    _phantom: PhantomData<fn() -> B>,
 }
 
-impl<S: fmt::Debug, C: fmt::Debug> fmt::Debug for ConnectUdpConnector<S, C> {
+impl<C: fmt::Debug, B> fmt::Debug for HttpConnectUdpProxyConnector<C, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ConnectUdpConnector")
-            .field("client", &self.client)
+        f.debug_struct("HttpConnectUdpProxyConnector")
             .field("inner", &self.inner)
             .field("socket", &self.socket)
-            .field("version", &self.version)
             .finish_non_exhaustive()
     }
 }
 
-impl<S: Clone, C: Clone> Clone for ConnectUdpConnector<S, C> {
+impl<C: Clone, B> Clone for HttpConnectUdpProxyConnector<C, B> {
     fn clone(&self) -> Self {
         Self {
-            client: self.client.clone(),
             inner: self.inner.clone(),
             scope: self.scope.clone(),
             socket: self.socket.clone(),
-            version: self.version,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<S, C> ConnectUdpConnector<S, C> {
-    /// Tunnel MASQUE routes with `client` and serve the rest with `inner`; `scope` runs each
-    /// tunnel's send task.
-    pub fn new(inner: C, client: S, scope: impl Into<WeakScope>) -> Self {
+impl<C, B> HttpConnectUdpProxyConnector<ProxyDialer<C>, B> {
+    /// Tunnel over connections from `inner` to the proxy; `scope` runs each tunnel's send task.
+    pub fn new(inner: C, scope: impl Into<WeakScope>) -> Self {
+        Self::from_dialer(ProxyDialer::new(inner), scope)
+    }
+}
+
+impl<C, B> HttpConnectUdpProxyConnector<C, B> {
+    /// Tunnel over the connections to the proxy that `dialer` dials, see [`ProxyDialer`].
+    pub fn from_dialer(dialer: C, scope: impl Into<WeakScope>) -> Self {
         let scope = scope.into();
         Self {
-            client,
-            inner,
+            inner: dialer,
             scope,
             socket: ConnectUdpSocketConfig::default(),
-            version: Version::HTTP_3,
+            _phantom: PhantomData,
         }
     }
-
-    generate_set_and_with! {
-        /// The HTTP version of the CONNECT-UDP request to the proxy; HTTP/3 by default.
-        pub fn version(mut self, version: Version) -> Self {
-            self.version = version;
-            self
-        }
-    }
-
     generate_set_and_with! {
         /// Limits of each tunnel, including its idle timeout.
         pub fn socket_config(mut self, config: ConnectUdpSocketConfig) -> Self {
@@ -128,11 +123,23 @@ impl<S, C> ConnectUdpConnector<S, C> {
             self
         }
     }
+
+    generate_set_and_with! {
+        /// See [`ConnectUdpSocketConfig::with_extensions_transfer`].
+        pub fn extensions_transfer(mut self, transfer: impl ExtensionsTransfer) -> Self {
+            self.socket.set_extensions_transfer(transfer);
+            self
+        }
+    }
 }
 
-impl<S, C> ConnectUdpConnector<S, C>
+impl<C, B> HttpConnectUdpProxyConnector<C, B>
 where
-    S: Service<Request, Output = Response, Error: Into<BoxError>>,
+    C: ConnectorService<
+            ProxyDialRequest,
+            Connection: Service<Request<B>, Output = Response, Error: Into<BoxError>> + 'static,
+        >,
+    B: Default,
 {
     /// Open a tunnel to `target` through `proxy`.
     ///
@@ -143,32 +150,53 @@ where
         &self,
         proxy: &ProxyAddress,
         target: ConnectUdpTarget,
-    ) -> Result<ConnectUdpSocket, BoxError> {
+        extensions: &Extensions,
+    ) -> Result<ConnectUdpSocket, ConnectionError> {
         // The tunnel's socket holds the connector's scope: a closed one opens no tunnel.
-        let scope = self.scope.try_hold().context("connect-udp tunnel")?;
-        let request = connect_udp_request(proxy, &target, self.version)?;
+        let scope = self.scope.try_hold().map_err(|error| {
+            ConnectionError::local(
+                error.context("connect-udp tunnel"),
+                ConnectionErrorKind::Unavailable,
+            )
+        })?;
+        let conn = self
+            .inner
+            .connect(ProxyDialRequest {
+                proxy: proxy.clone(),
+                origin: extensions.clone(),
+            })
+            .await?
+            .conn;
+        let version = conn
+            .extensions()
+            .get_ref::<TargetHttpVersion>()
+            .map(|version| version.0)
+            .unwrap_or(Version::HTTP_11);
+        let request = connect_udp_request(proxy, &target, version)
+            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?
+            .map(|_empty| B::default());
         // The token defines datagram semantics (RFC 9297 §2): declare them for this request.
         request.extensions().insert(HttpDatagrams);
-        request.extensions().insert(TargetHttpVersion(self.version));
-        // Addressed to the proxy itself: rama's connectors send it straight there, as to a
-        // forward proxy, with the proxy's credentials.
-        request
-            .extensions()
-            .insert(ProxyRoute::Proxy(proxy.clone()));
-        let response = self
-            .client
-            .serve(request)
-            .await
-            .map_err(Into::into)
-            .context("connect-udp request")?;
-        if let Err(error) = validate_connect_udp_response(self.version, &response) {
-            return Err(error
-                .context_field("status", response.status())
-                .context("connect-udp tunnel refused"));
+        request.extensions().insert(TargetHttpVersion(version));
+        let response = conn.serve(request).await.map_err(|error| {
+            let error: BoxError = error.into();
+            ConnectionError::transport(
+                error.context("connect-udp request"),
+                ConnectionErrorKind::Protocol,
+            )
+        })?;
+        if let Err(error) = validate_connect_udp_response(version, &response) {
+            return Err(refusal(response.status(), error));
         }
         let upgraded = handle_upgrade(&response)
             .await
-            .context("connect-udp upgrade")?;
+            .map_err(|error| {
+                ConnectionError::transport(
+                    error.context("connect-udp upgrade"),
+                    ConnectionErrorKind::Protocol,
+                )
+            })?
+            .with_guard(conn);
         let ip = match target.host {
             Host::Address(ip) => ip,
             _ => IpAddr::V4(NAME_TARGET_PEER),
@@ -195,31 +223,33 @@ where
     }
 }
 
-impl<S, C> Service<ConnectRequest> for ConnectUdpConnector<S, C>
+impl<C, B> Service<ConnectRequest> for HttpConnectUdpProxyConnector<C, B>
 where
-    S: Service<Request, Output = Response, Error: Into<BoxError>>,
-    C: ConnectorService<ConnectRequest, Connection: DatagramSocket>,
+    C: ConnectorService<
+            ProxyDialRequest,
+            Connection: Service<Request<B>, Output = Response, Error: Into<BoxError>> + 'static,
+        >,
+    B: Default + Send + 'static,
 {
-    type Output = EstablishedClientConnection<MaybeTunneledSocket<C::Connection>, ConnectRequest>;
+    type Output = EstablishedClientConnection<ConnectUdpSocket, ConnectRequest>;
     type Error = ConnectionError;
 
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
-        let route = input.extensions.get_ref::<ProxyRoute>();
-        let proxy = route
-            .filter(|route| !route.addresses_proxy(&input.authority))
+        let Some(proxy) = input
+            .extensions
+            .get_ref::<ProxyRoute>()
             .and_then(ProxyRoute::proxy_address)
-            .cloned();
-        let Some(proxy) = proxy else {
-            let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
-            return Ok(EstablishedClientConnection {
-                input,
-                conn: MaybeTunneledSocket::Direct(conn),
-            });
-        };
-        if !proxy.protocol.as_ref().is_some_and(Protocol::is_masque) {
+            .cloned()
+        else {
             return Err(ConnectionError::local(
-                BoxError::from_static_str("connect-udp connector serves masque proxies only"),
-                ConnectionErrorKind::Unavailable,
+                BoxError::from_static_str("connect-udp connector: no proxied route is requested"),
+                ConnectionErrorKind::InvalidInput,
+            ));
+        };
+        if proxy.protocol.connect_udp_template().is_none() {
+            return Err(ConnectionError::local(
+                BoxError::from_static_str("connect-udp connector serves connect-udp proxies only"),
+                ConnectionErrorKind::InvalidInput,
             )
             .context_debug_field("protocol", proxy.protocol.clone()));
         }
@@ -230,62 +260,69 @@ where
             )
         })?;
         let target = ConnectUdpTarget::new(input.authority.host.clone(), port);
-        let conn = self
-            .open(&proxy, target)
-            .await
-            .map_err(|error| ConnectionError::transport(error, ConnectionErrorKind::Unavailable))?;
-        Ok(EstablishedClientConnection {
-            input,
-            conn: MaybeTunneledSocket::Tunneled(conn),
-        })
+        let conn = self.open(&proxy, target, &input.extensions).await?;
+        Ok(EstablishedClientConnection { input, conn })
     }
 }
 
-/// A [`Layer`] producing [`ConnectUdpConnector`]s over its inner datagram connector.
-pub struct ConnectUdpConnectorLayer<S> {
-    client: S,
-    scope: WeakScope,
-    socket: ConnectUdpSocketConfig,
-    version: Version,
+fn refusal(status: StatusCode, error: impl Into<BoxError>) -> ConnectionError {
+    let (domain, kind) = match status {
+        StatusCode::PROXY_AUTHENTICATION_REQUIRED => (
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Authentication,
+        ),
+        StatusCode::SERVICE_UNAVAILABLE => (
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Unavailable,
+        ),
+        // The proxy reached the target but could not open the tunnel: retrying through
+        // another proxy only repeats the same target failure.
+        StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT => (
+            ConnectionErrorDomain::Application,
+            ConnectionErrorKind::Unavailable,
+        ),
+        status if status.is_success() => (
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Protocol,
+        ),
+        _ => (
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Rejected,
+        ),
+    };
+    let error = error.into().context_field("status", status);
+    ConnectionError::new(error.context("connect-udp tunnel refused"), domain, kind)
 }
 
-impl<S: fmt::Debug> fmt::Debug for ConnectUdpConnectorLayer<S> {
+/// A [`Layer`] producing [`HttpConnectUdpProxyConnector`]s over the connector towards proxies.
+pub struct HttpConnectUdpProxyConnectorLayer {
+    scope: WeakScope,
+    socket: ConnectUdpSocketConfig,
+}
+
+impl fmt::Debug for HttpConnectUdpProxyConnectorLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ConnectUdpConnectorLayer")
-            .field("client", &self.client)
-            .field("version", &self.version)
+        f.debug_struct("HttpConnectUdpProxyConnectorLayer")
+            .field("socket", &self.socket)
             .finish_non_exhaustive()
     }
 }
 
-impl<S: Clone> Clone for ConnectUdpConnectorLayer<S> {
+impl Clone for HttpConnectUdpProxyConnectorLayer {
     fn clone(&self) -> Self {
         Self {
-            client: self.client.clone(),
             scope: self.scope.clone(),
             socket: self.socket.clone(),
-            version: self.version,
         }
     }
 }
 
-impl<S> ConnectUdpConnectorLayer<S> {
-    /// Tunnel MASQUE routes with `client`; `scope` runs each tunnel's send task.
-    pub fn new(client: S, scope: impl Into<WeakScope>) -> Self {
-        let scope = scope.into();
+impl HttpConnectUdpProxyConnectorLayer {
+    /// `scope` runs each tunnel's send task.
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
         Self {
-            client,
-            scope,
+            scope: scope.into(),
             socket: ConnectUdpSocketConfig::default(),
-            version: Version::HTTP_3,
-        }
-    }
-
-    generate_set_and_with! {
-        /// The HTTP version of the CONNECT-UDP request to the proxy; HTTP/3 by default.
-        pub fn version(mut self, version: Version) -> Self {
-            self.version = version;
-            self
         }
     }
 
@@ -296,137 +333,34 @@ impl<S> ConnectUdpConnectorLayer<S> {
             self
         }
     }
+
+    generate_set_and_with! {
+        /// See [`ConnectUdpSocketConfig::with_extensions_transfer`].
+        pub fn extensions_transfer(mut self, transfer: impl ExtensionsTransfer) -> Self {
+            self.socket.set_extensions_transfer(transfer);
+            self
+        }
+    }
 }
 
-impl<S: Clone, C> Layer<C> for ConnectUdpConnectorLayer<S> {
-    type Service = ConnectUdpConnector<S, C>;
+impl<C> Layer<C> for HttpConnectUdpProxyConnectorLayer {
+    type Service = HttpConnectUdpProxyConnector<ProxyDialer<C>>;
 
     fn layer(&self, inner: C) -> Self::Service {
-        ConnectUdpConnector {
-            client: self.client.clone(),
-            inner,
+        HttpConnectUdpProxyConnector {
+            inner: ProxyDialer::new(inner),
             scope: self.scope.clone(),
             socket: self.socket.clone(),
-            version: self.version,
+            _phantom: PhantomData,
         }
     }
 
     fn into_layer(self, inner: C) -> Self::Service {
-        ConnectUdpConnector {
-            client: self.client,
-            inner,
+        HttpConnectUdpProxyConnector {
+            inner: ProxyDialer::new(inner),
             scope: self.scope,
-            socket: self.socket.clone(),
-            version: self.version,
-        }
-    }
-}
-
-/// The socket a [`ConnectUdpConnector`] establishes: the inner connector's socket, or a
-/// CONNECT-UDP tunnel through a MASQUE proxy.
-#[derive(Debug)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one socket per endpoint, owned in place: boxing the tunnel buys nothing"
-)]
-pub enum MaybeTunneledSocket<S> {
-    /// The inner connector's socket.
-    Direct(S),
-    /// A tunnel through a MASQUE proxy.
-    Tunneled(ConnectUdpSocket),
-}
-
-impl<S: ExtensionsRef> ExtensionsRef for MaybeTunneledSocket<S> {
-    fn extensions(&self) -> &Extensions {
-        match self {
-            Self::Direct(socket) => socket.extensions(),
-            Self::Tunneled(socket) => socket.extensions(),
-        }
-    }
-}
-
-impl<S: Socket> Socket for MaybeTunneledSocket<S> {
-    fn local_addr(&self) -> io::Result<SocketAddress> {
-        match self {
-            Self::Direct(socket) => socket.local_addr(),
-            Self::Tunneled(socket) => socket.local_addr(),
-        }
-    }
-
-    fn peer_addr(&self) -> io::Result<SocketAddress> {
-        match self {
-            Self::Direct(socket) => socket.peer_addr(),
-            Self::Tunneled(socket) => socket.peer_addr(),
-        }
-    }
-}
-
-impl<S: DatagramSocket> DatagramSocket for MaybeTunneledSocket<S> {
-    type Sender = MaybeTunneledSender<S::Sender>;
-
-    fn create_sender(&self) -> Self::Sender {
-        match self {
-            Self::Direct(socket) => MaybeTunneledSender::Direct(socket.create_sender()),
-            Self::Tunneled(socket) => MaybeTunneledSender::Tunneled(socket.create_sender()),
-        }
-    }
-
-    fn poll_recv(
-        &mut self,
-        cx: &mut Context<'_>,
-        buffers: &mut [IoSliceMut<'_>],
-        metadata: &mut [DatagramMetadata],
-    ) -> Poll<Result<usize, DatagramError>> {
-        match self {
-            Self::Direct(socket) => socket.poll_recv(cx, buffers, metadata),
-            Self::Tunneled(socket) => socket.poll_recv(cx, buffers, metadata),
-        }
-    }
-
-    fn capabilities(&self) -> DatagramCapabilities {
-        match self {
-            Self::Direct(socket) => socket.capabilities(),
-            Self::Tunneled(socket) => socket.capabilities(),
-        }
-    }
-}
-
-/// The send handle of a [`MaybeTunneledSocket`].
-#[derive(Debug)]
-pub enum MaybeTunneledSender<S> {
-    /// The inner socket's sender.
-    Direct(S),
-    /// The tunnel's sender.
-    Tunneled(ConnectUdpSender),
-}
-
-impl<S: DatagramSender> DatagramSender for MaybeTunneledSender<S> {
-    fn poll_send(
-        &mut self,
-        cx: &mut Context<'_>,
-        datagram: &SendDatagram<'_>,
-    ) -> Poll<Result<(), DatagramError>> {
-        match self {
-            Self::Direct(sender) => sender.poll_send(cx, datagram),
-            Self::Tunneled(sender) => sender.poll_send(cx, datagram),
-        }
-    }
-
-    fn poll_send_batch(
-        &mut self,
-        cx: &mut Context<'_>,
-        datagrams: &[SendDatagram<'_>],
-    ) -> Poll<Result<usize, DatagramError>> {
-        match self {
-            Self::Direct(sender) => sender.poll_send_batch(cx, datagrams),
-            Self::Tunneled(sender) => sender.poll_send_batch(cx, datagrams),
-        }
-    }
-
-    fn capabilities(&self) -> DatagramCapabilities {
-        match self {
-            Self::Direct(sender) => sender.capabilities(),
-            Self::Tunneled(sender) => sender.capabilities(),
+            socket: self.socket,
+            _phantom: PhantomData,
         }
     }
 }

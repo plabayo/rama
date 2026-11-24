@@ -2,9 +2,10 @@
 //! amplification limits, cancellation, shutdown, sustained load and flood fairness.
 
 use super::{
-    Carrier, DEADLINE, ProxyAuth, QuicTls, Tasks, assert_carrier, echo, http_client,
-    masque_proxy_limited, masque_proxy_on, open_tunnel, proxy_address, udp_echo,
+    Carrier, DEADLINE, ProxyAuth, QuicTls, Tasks, assert_carrier, echo, masque_proxy_limited,
+    masque_proxy_on, masque_tunnels, open_tunnel, proxy_address, udp_echo, with_version,
 };
+use rama::net::client::MaybeProxied;
 use rama::proxy::masque::budget::{DatagramRate, PrincipalBudget};
 use rama::proxy::masque::limits::TunnelLimits;
 use rama::{
@@ -16,14 +17,8 @@ use rama::{
         client::{ConnectRequest, EstablishedClientConnection, ProxyRoute},
         stream::Socket as _,
     },
-    proxy::masque::connect_udp::{
-        ConnectUdpConnector, ConnectUdpSocket, DestinationScopePolicy, MaybeTunneledSocket,
-        TunnelBudget,
-    },
-    udp::{
-        DatagramSenderExt as _, DatagramSocket as _, DatagramSocketExt as _, SendDatagram,
-        proxy::UdpConnector,
-    },
+    proxy::masque::connect_udp::{ConnectUdpSocket, DestinationScopePolicy, TunnelBudget},
+    udp::{DatagramSenderExt as _, DatagramSocket as _, DatagramSocketExt as _, SendDatagram},
     utils::{octets::mib, rate::Rate},
 };
 use std::{
@@ -106,7 +101,7 @@ async fn proxy_for(
         Some(budget),
     )
     .await;
-    (proxy_address("masque://", proxy), tasks)
+    (proxy_address("h3+udp://", proxy), tasks)
 }
 
 /// A tunnel for `carrier`, on a client connection of its own.
@@ -324,7 +319,7 @@ async fn a_graceful_proxy_shutdown_ends_every_tunnel_on_every_carrier() {
             )
             .await;
             let egress = fixture.proxy.clone().unwrap();
-            let mut socket = tunnel(&proxy_address("masque://", proxy), target, carrier).await;
+            let mut socket = tunnel(&proxy_address("h3+udp://", proxy), target, carrier).await;
             echo(&mut socket, b"before").await;
             assert_eq!(limits.live_tunnels(), 1, "{carrier:?}");
 
@@ -613,21 +608,20 @@ async fn measure(
         Some(TunnelBudget::new().with_unanswered(u64::MAX, u64::MAX)),
     )
     .await;
-    let anonymous = proxy_address("masque://", address);
-    let john = ProxyAddress::try_from(format!("masque://john:secret@{address}").as_str()).unwrap();
+    let anonymous = proxy_address("h3+udp://", address);
+    let john = ProxyAddress::try_from(format!("h3+udp://john:secret@{address}").as_str()).unwrap();
     let (mut measured, flooding) = if scenario == Flood::SameConnection {
         let scope = WeakScope::detached();
-        let connector =
-            ConnectUdpConnector::new(UdpConnector::new(), http_client(scope.clone()), scope)
-                .with_version(carrier.version());
+        let connector = masque_tunnels(scope);
         let mut sockets = Vec::new();
         for target in [echo_target, sink] {
             let request = ConnectRequest::new(HostWithPort::from(target));
-            request
-                .extensions
-                .insert(ProxyRoute::Proxy(anonymous.clone()));
+            request.extensions.insert(ProxyRoute::Proxy(with_version(
+                anonymous.clone(),
+                carrier.version(),
+            )));
             let EstablishedClientConnection { conn, .. } = connector.serve(request).await.unwrap();
-            let MaybeTunneledSocket::Tunneled(socket) = conn else {
+            let MaybeProxied::Proxied { conn: socket } = conn else {
                 panic!("{carrier:?}: a MASQUE route must tunnel");
             };
             sockets.push(socket);
@@ -753,7 +747,9 @@ fn report(carrier: Carrier, scenario: Flood, measured: &Measured) {
 #[tokio::test]
 async fn a_flooding_principal_leaves_another_principals_tunnel_live_on_every_carrier() {
     const TRIPS: usize = 100;
-    timeout(DEADLINE, async {
+    timeout(
+        DEADLINE,
+        Box::pin(async {
         for carrier in Carrier::ALL {
             let quiet = measure(carrier, Flood::None, TRIPS, None).await;
             assert_live(carrier, Flood::None, &quiet, TRIPS);
@@ -783,7 +779,8 @@ async fn a_flooding_principal_leaves_another_principals_tunnel_live_on_every_car
             assert_live(carrier, Flood::OtherPrincipalLimited, &limited, TRIPS);
             report(carrier, Flood::OtherPrincipalLimited, &limited);
         }
-    })
+        }),
+    )
     .await
     .unwrap();
 }

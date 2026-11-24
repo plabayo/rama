@@ -274,6 +274,8 @@ mod http3_client_server;
 mod http_datagram_echo;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod masque_connect_udp_proxy;
+#[cfg(all(feature = "http-full", feature = "boring"))]
+mod masque_proxy_chain;
 #[cfg(all(
     feature = "http-full",
     any(

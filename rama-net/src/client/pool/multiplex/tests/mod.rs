@@ -13,7 +13,7 @@ use rama_core::error::BoxErrorExt as _;
 
 use rama_core::{
     ServiceInput,
-    extensions::{ExtensionsRef, NoConnectionTransfer},
+    extensions::{ExtensionsRef, NoExtensionsTransfer},
     service::service_fn,
 };
 

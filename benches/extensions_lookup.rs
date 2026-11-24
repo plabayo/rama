@@ -14,7 +14,7 @@
 
 use divan::{black_box, counter::ItemsCount};
 use rama::{
-    extensions::{Egress, Extension, Extensions, Ingress, NoConnectionTransfer},
+    extensions::{Egress, Extension, Extensions, Ingress, NoExtensionsTransfer},
     tls::{boring::client::BoringTlsClientConfigProvider, client::TlsClientConfigProvider as _},
 };
 
@@ -267,7 +267,7 @@ fn stack(nested: bool) -> Extensions {
     let ext = ext.fork();
     insert_all!(ext, Marker, 0; 20 21 22);
     if nested {
-        ext.fork_nested_connection(&NoConnectionTransfer)
+        ext.fork_connection(&NoExtensionsTransfer::new())
     } else {
         ext.fork()
     }

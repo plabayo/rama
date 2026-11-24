@@ -53,7 +53,7 @@ pub mod proto;
 
 pub mod client;
 pub use client::Socks5Client;
-pub use client::{Socks5ProxyConnector, Socks5ProxyConnectorLayer};
+pub use client::{Socks5ConnectProxyConnector, Socks5ConnectProxyConnectorLayer};
 
 pub mod server;
 pub use server::Socks5Acceptor;

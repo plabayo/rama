@@ -29,7 +29,7 @@ use rama::{
     http::{
         Body, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
-        client::{EasyHttpConnectorBuilder, Http3Connector},
+        client::EasyHttpWebClient,
         conn::TargetHttpVersion,
         layer::{
             retry::{RetryBody, early_data::prepare_bodyless, managed::DoNotRetry},
@@ -120,13 +120,12 @@ async fn run(args: Args) -> Result<(), BoxError> {
     );
     let upstream = Arc::new(
         RewriteUriLayer::new(origin).into_layer(
-            EasyHttpConnectorBuilder::new()
-                .with_default_transport_connector()
+            EasyHttpWebClient::connector_builder(weak_scope.clone())
+                .with_default_tcp_connector()
                 .without_dns_connector()
-                .without_tls_proxy_support()
                 .without_proxy_support()
                 .without_tls_support()
-                .with_default_http_connector::<RetryBody>(weak_scope.clone())
+                .with_default_http_connector()
                 .with_default_connection_pool()
                 .build_client_with_early_data(
                     async |request: Request<RetryBody>, result: Result<Response, OpaqueError>| {
@@ -204,20 +203,16 @@ async fn run(args: Args) -> Result<(), BoxError> {
         Ok::<_, BoxError>(())
     });
 
-    let connector = Http3Connector::builder(weak_scope.clone())
-        .with_tls_config(client_tls)
-        .with_config(rama::http::core::h3::connection::Config {
+    let client = EasyHttpWebClient::connector_builder(weak_scope.clone())
+        .with_default_quic_connector()
+        .without_dns_connector()
+        .without_proxy_support()
+        .with_default_tls_support(client_tls)
+        .with_http3_config(rama::http::core::h3::connection::Config {
             early_requests: true,
             ..Default::default()
         })
-        .build_lazy()?;
-    let client = EasyHttpConnectorBuilder::new()
-        .with_custom_transport_connector(connector)
-        .without_dns_connector()
-        .without_tls_proxy_support()
-        .without_proxy_support()
-        .without_tls_support()
-        .with_default_http_connector::<RetryBody>(weak_scope.clone())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client_with_early_data(
             async |request, result: Result<Response, OpaqueError>| (request, result, false),

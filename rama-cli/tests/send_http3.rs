@@ -748,19 +748,19 @@ async fn explicit_h3_never_bypasses_an_explicit_proxy() -> TestResult {
     let fixture = Fixture::new().await?;
     let origin = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
     let proxy = TokioTcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0))).await?;
+    // A plain HTTP proxy offers no CONNECT-UDP tunnel, so it is refused, untouched.
     let proxy_url = format!("http://{}", proxy.local_addr()?);
     let output = fixture
         .send(origin.url(), &["--http3", "--proxy", &proxy_url])
         .await?;
     failed(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // HTTP/3 runs through CONNECT-UDP tunnels only: an HTTP proxy is refused, untouched.
     assert!(
-        stderr.contains("connect-udp connector serves masque proxies only"),
-        "{stderr}"
+        stderr.contains("connect-udp connector serves connect-udp proxies only"),
+        "{proxy_url}: {stderr}"
     );
-    assert!(origin.requests.lock().is_empty());
-    assert_eq!(origin.accepted.load(Ordering::Relaxed), 0);
+    assert!(origin.requests.lock().is_empty(), "{proxy_url}");
+    assert_eq!(origin.accepted.load(Ordering::Relaxed), 0, "{proxy_url}");
     timeout(Duration::from_millis(20), proxy.accept())
         .await
         .unwrap_err();
@@ -921,7 +921,7 @@ async fn explicit_h3_runs_through_a_masque_proxy_with_credentials() -> TestResul
     let fixture = Fixture::new().await?;
     let origin = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
     let (proxy, proxy_endpoint) = masque_proxy(WeakScope::detached()).await?;
-    let proxy_url = format!("masque://{proxy}");
+    let proxy_url = format!("h3+udp://{proxy}");
     let output = fixture
         .send(
             origin.url(),

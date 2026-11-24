@@ -467,6 +467,52 @@ impl NativeDatagramChannel for FullNative {
     }
 }
 
+/// A native carrier which carries datagrams up to its size and never delivers one.
+struct Roomy(usize);
+
+impl NativeDatagramChannel for Roomy {
+    fn max_payload_size(&self) -> Option<usize> {
+        Some(self.0)
+    }
+
+    fn send(&self, _payload: Bytes, _policy: NativeSendPolicy) -> Result<(), NativeSendError> {
+        Ok(())
+    }
+
+    fn send_ready(&self) -> NativeSendReady {
+        NativeSendReady::new(std::future::pending())
+    }
+
+    fn poll_recv(&self, _cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
+        Poll::Pending
+    }
+
+    fn dropped(&self) -> u64 {
+        0
+    }
+}
+
+#[tokio::test]
+async fn the_return_direction_fits_the_packets_the_proxy_sends() {
+    for (proxy_packet_size, max_receive_payload) in [(None, 1231), (Some(1350), 1301)] {
+        let (a, _b) = tokio::io::duplex(kib(64));
+        let a = ServiceInput::new(a);
+        a.extensions().insert(NativeDatagrams::new(Roomy(1400)));
+        let socket = ConnectUdpSocket::new(
+            &Scope::new(),
+            HttpDatagramSession::with_config(a, session_config()),
+            LOCAL,
+            PEER,
+            ConnectUdpSocketConfig::default().maybe_with_proxy_packet_size(proxy_packet_size),
+        );
+        assert_eq!(
+            socket.capabilities().max_receive_payload,
+            Some(max_receive_payload),
+            "{proxy_packet_size:?}"
+        );
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_permanently_full_native_carrier_idles_out() {
     let (a, _b) = tokio::io::duplex(kib(64));

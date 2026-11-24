@@ -128,12 +128,8 @@ impl TlsClientConfig {
         /// A DNS identity is also sent as SNI. An IP identity is matched against
         /// an `iPAddress` subject alternative name and is not sent as SNI.
         /// Overrides the identity the connector would otherwise derive from the
-        /// transport authority host. When this config is installed as a tunnel
-        /// connector's dedicated base, it also overrides
-        /// [`TlsTunnel::server_identity`]. Top-level origin request extensions
-        /// are not applied to a proxy-side tunnel handshake.
-        ///
-        /// [`TlsTunnel`]: crate::TlsTunnel
+        /// transport authority host, for the connection this configures: the
+        /// identity of a connection underneath is never one of its inputs.
         pub fn server_name(mut self, server_name: Host) -> Self {
             self.0.insert(TlsServerName(server_name));
             self
@@ -372,7 +368,7 @@ impl Clone for TlsClientConfig {
 
 /// Server identity used for certificate verification and, for DNS names, SNI.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsServerName(pub Host);
 
 /// A server certificate identity resolved from a [`Host`].
@@ -401,7 +397,7 @@ impl<'a> TryFrom<&'a Host> for TlsServerIdentity<'a> {
 }
 
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 /// How the server certificate is verified.
 pub struct TlsServerVerify(pub ServerVerifyMode);
 
@@ -412,7 +408,7 @@ pub struct TlsServerVerify(pub ServerVerifyMode);
 /// TLS server name matches. Names are configured explicitly rather than inferred
 /// from certificate contents.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsServerCertPins {
     sets: Arc<Vec<TlsServerCertPinSet>>,
     digest: super::pool::PolicyDigest,
@@ -660,21 +656,21 @@ impl TlsServerCertPins {
 
 /// Client certificate authentication material (mTLS).
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsClientAuth(pub ClientAuth);
 
 /// Whether to capture the peer certificate chain into `NegotiatedTlsParameters`.
 ///
 /// [`NegotiatedTlsParameters`]: crate::client::NegotiatedTlsParameters
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsStoreServerCertChain(pub bool);
 
 /// Whether to capture the server's ServerHello into `NegotiatedTlsParameters`.
 ///
 /// [`NegotiatedTlsParameters`]: crate::client::NegotiatedTlsParameters
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsStoreServerHello(pub bool);
 
 /// Whether to offer Encrypted ClientHello (ECH).
@@ -683,7 +679,7 @@ pub struct TlsStoreServerHello(pub bool);
 /// Explicit `false` disables it; explicit `true` also enables ECH GREASE.
 /// Requiring acceptance is a separate [`super::EchRequirement`] policy.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsEncryptedClientHello(pub bool);
 
 #[derive(Debug, Clone)]

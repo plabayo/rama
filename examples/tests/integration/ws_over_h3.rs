@@ -6,7 +6,7 @@ use rama::{
     futures::StreamExt as _,
     graceful::WeakScope,
     http::{
-        client::{EasyHttpConnectorBuilder, Http3Connector},
+        client::EasyHttpWebClient,
         ws::{Message, handshake::client::HttpClientWebSocketExt as _},
     },
     tls::{client::TlsClientConfig, server::ServerAuthData},
@@ -92,24 +92,12 @@ async fn test_ws_over_h3() {
     let tls = TlsClientConfig::new()
         .try_with_server_trust_anchors(auth.cert_chain.clone())
         .unwrap();
-    let client_builder = EasyHttpConnectorBuilder::new()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support();
-    #[cfg(feature = "rustls")]
-    let client_builder = client_builder.with_tls_support_using_rustls(tls.clone());
-    #[cfg(all(not(feature = "rustls"), feature = "boring"))]
-    let client_builder = client_builder.with_tls_support_using_boringssl(tls.clone());
-    let client = client_builder
-        .with_default_http_connector(WeakScope::detached())
-        .with_http3_support(
-            Http3Connector::builder(WeakScope::detached())
-                .with_tls_config(tls)
-                .build()
-                .await
-                .unwrap(),
-        )
+        .with_default_proxy_support()
+        .with_default_tls_support(tls)
+        .with_default_http_connector()
         .with_default_connection_pool()
         .build_client();
     // A refused handshake (no route) is not a connection failure: the sockets below reuse it.

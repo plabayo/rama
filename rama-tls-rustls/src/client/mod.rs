@@ -6,9 +6,7 @@
 
 mod connector;
 #[doc(inline)]
-pub use connector::{
-    ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, TlsConnector, TlsConnectorLayer,
-};
+pub use connector::{ConnectorKindAuto, ConnectorKindSecure, TlsConnector, TlsConnectorLayer};
 
 mod config;
 #[doc(inline)]

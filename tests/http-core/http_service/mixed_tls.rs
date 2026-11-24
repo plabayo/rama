@@ -13,14 +13,13 @@ use rama::{
     extensions::ExtensionsRef as _,
     graceful::WeakScope,
     http::{
-        Body, Request, Response, Version,
-        client::{EasyHttpConnectorBuilder, Http3Connector},
-        conn::TargetHttpVersion,
+        Request, Response, Version, client::EasyHttpWebClient, conn::TargetHttpVersion,
         layer::alt_svc::AltSvcCache,
     },
     net::address::SocketAddress,
     quic::{
         Endpoint,
+        client::SharedQuicEndpoint,
         tls::{BoringTlsProvider, default_tls_provider},
     },
     tls::{
@@ -145,21 +144,17 @@ async fn boring_stream_policy_is_independent_of_rustls_quic() {
     let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let h3 = Http3Connector::builder(WeakScope::detached())
-        .with_endpoint(endpoint.clone())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(default_tls_provider().unwrap())
-        .build()
-        .await
-        .unwrap();
-    let client = EasyHttpConnectorBuilder::new()
-        .with_default_transport_connector()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_tcp_connector()
+        .with_custom_quic_connector(SharedQuicEndpoint::supplied(
+            endpoint.clone(),
+            WeakScope::detached(),
+        ))
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_http_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector::<Body>(WeakScope::detached())
-        .with_http3_support(h3)
+        .with_quic_tls_provider(default_tls_provider().unwrap())
+        .with_default_http_connector()
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
         .configure_http_service(|selector| {
@@ -189,21 +184,17 @@ async fn rustls_stream_policy_is_independent_of_boring_quic() {
     let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let h3 = Http3Connector::builder(WeakScope::detached())
-        .with_endpoint(endpoint.clone())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider::new()))
-        .build()
-        .await
-        .unwrap();
-    let client = EasyHttpConnectorBuilder::new()
-        .with_default_transport_connector()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_tcp_connector()
+        .with_custom_quic_connector(SharedQuicEndpoint::supplied(
+            endpoint.clone(),
+            WeakScope::detached(),
+        ))
         .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_http_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_rustls(tls)
-        .with_default_http_connector::<Body>(WeakScope::detached())
-        .with_http3_support(h3)
+        .with_quic_tls_provider(Arc::new(BoringTlsProvider::new()))
+        .with_default_http_connector()
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
         .configure_http_service(|selector| {
@@ -222,21 +213,17 @@ async fn conditional_ech_reliance_uses_each_selected_backend_capability() {
         let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
             .await
             .unwrap();
-        let h3 = Http3Connector::builder(WeakScope::detached())
-            .with_endpoint(endpoint.clone())
-            .with_tls_config(tls.clone())
-            .with_tls_provider(Arc::new(BoringTlsProvider::new()))
-            .build()
-            .await
-            .unwrap();
-        let client = EasyHttpConnectorBuilder::new()
-            .with_default_transport_connector()
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_default_tcp_connector()
+            .with_custom_quic_connector(SharedQuicEndpoint::supplied(
+                endpoint.clone(),
+                WeakScope::detached(),
+            ))
             .with_default_dns_connector()
-            .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_rustls(tls)
-            .with_default_http_connector::<Body>(WeakScope::detached())
-            .with_http3_support(h3)
+            .with_quic_tls_provider(Arc::new(BoringTlsProvider::new()))
+            .with_default_http_connector()
             .without_connection_pool()
             .build_client();
         let request = origin.request();

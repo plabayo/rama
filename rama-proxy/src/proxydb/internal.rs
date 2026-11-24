@@ -1,51 +1,145 @@
-use super::{ProxyContext, ProxyFilter, StringFilter};
+use super::{IpCategory, ProxyContext, ProxyFilter, StringFilter};
 use rama_core::extensions::Extension;
-use rama_net::{Protocol, address::ProxyAddress, asn::Asn, transport::TransportProtocol};
+
+use rama_net::{
+    address::{HostWithPort, ProxyProtocol},
+    asn::Asn,
+    transport::TransportProtocol,
+    user::ProxyCredential,
+};
 use rama_utils::str::NonEmptyStr;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "memory-db")]
 use venndb::VennDB;
 
+/// The protocols a [`Proxy`] speaks, in the order they are preferred in.
+///
+/// Each protocol appears once: adding one it already holds keeps its first place.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProxyProtocols(Vec<ProxyProtocol>);
+
+impl ProxyProtocols {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Add `protocol` last, unless it is already present; returns whether it was added.
+    pub fn insert(&mut self, protocol: ProxyProtocol) -> bool {
+        if self.0.contains(&protocol) {
+            return false;
+        }
+        self.0.push(protocol);
+        true
+    }
+
+    #[must_use]
+    pub fn contains(&self, protocol: &ProxyProtocol) -> bool {
+        self.0.contains(protocol)
+    }
+
+    pub fn iter(&self) -> core::slice::Iter<'_, ProxyProtocol> {
+        self.0.iter()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl FromIterator<ProxyProtocol> for ProxyProtocols {
+    fn from_iter<I: IntoIterator<Item = ProxyProtocol>>(iter: I) -> Self {
+        let mut protocols = Self::new();
+        for protocol in iter {
+            protocols.insert(protocol);
+        }
+        protocols
+    }
+}
+
+impl<const N: usize> From<[ProxyProtocol; N]> for ProxyProtocols {
+    fn from(protocols: [ProxyProtocol; N]) -> Self {
+        protocols.into_iter().collect()
+    }
+}
+
+impl IntoIterator for ProxyProtocols {
+    type Item = ProxyProtocol;
+    type IntoIter = std::vec::IntoIter<ProxyProtocol>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a ProxyProtocols {
+    type Item = &'a ProxyProtocol;
+    type IntoIter = core::slice::Iter<'a, ProxyProtocol>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+#[cfg(feature = "memory-db")]
+impl venndb::FilterSet for ProxyProtocols {
+    type Item = ProxyProtocol;
+
+    fn for_each_member(&self, f: impl FnMut(&ProxyProtocol)) {
+        self.0.iter().for_each(f);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Extension)]
 #[extension(tags(proxy))]
 #[cfg_attr(feature = "memory-db", derive(VennDB))]
 #[cfg_attr(feature = "memory-db", venndb(validator = proxydb_insert_validator))]
 /// A proxy record returned by a [`ProxyDB`](super::ProxyDB).
+///
+/// A record names every protocol the proxy speaks, and the
+/// [`ProxyDBService`](crate::ProxyDBService) turns a record plus the requested
+/// transport into one `ProxyAddress` with one of them.
 pub struct Proxy {
     #[cfg_attr(feature = "memory-db", venndb(key))]
     /// Unique identifier of the proxy.
     pub id: NonEmptyStr,
 
-    /// The address to be used to connect to the proxy, including credentials if needed.
-    pub address: ProxyAddress,
+    /// Host and port to connect to the proxy on.
+    pub address: HostWithPort,
 
-    /// True if the proxy supports TCP connections.
-    pub tcp: bool,
+    /// Credential to authenticate with at the proxy.
+    #[serde(default)]
+    pub credential: Option<ProxyCredential>,
 
-    /// True if the proxy supports UDP connections, through SOCKS5 or as a MASQUE proxy.
-    pub udp: bool,
+    #[cfg_attr(feature = "memory-db", venndb(filter, set))]
+    #[serde(with = "protocol_tokens")]
+    /// Every protocol the proxy speaks, each one way to reach it and one kind of tunnel,
+    /// in order of preference: a request uses the first that carries its transport.
+    ///
+    /// Outside of Rust each protocol is written as a proxy address scheme, optionally
+    /// followed by a path (see [`ProxyProtocol::try_from_scheme_and_path`]):
+    ///
+    /// - `h2`: CONNECT (TCP) over HTTP/2
+    /// - `socks5+tcp`: SOCKS5 CONNECT
+    /// - `socks5+udp`: SOCKS5 UDP ASSOCIATE
+    /// - `h3+udp`: CONNECT-UDP over HTTP/3, on the default template
+    /// - `h3/udp/{target_host}/{target_port}`: CONNECT-UDP over HTTP/3 on that path
+    ///   template, as in `h3://proxy.example:443/udp/{target_host}/{target_port}`
+    ///
+    /// A record is selected on what it offers, so a SOCKS5 protocol names its transport.
+    /// A proxy that does both TCP and UDP lists both, such as `socks5+tcp;socks5+udp`.
+    pub protocols: ProxyProtocols,
 
-    /// http-proxy enabled
-    pub http: bool,
-
-    /// https-proxy enabled
-    pub https: bool,
-
-    /// socks5-proxy enabled
-    pub socks5: bool,
-
-    /// socks5h-proxy enabled
-    pub socks5h: bool,
-
-    /// Proxy is located in a datacenter.
-    pub datacenter: bool,
-
-    /// Proxy's IP is labeled as residential.
-    pub residential: bool,
-
-    /// Proxy's IP originates from a mobile network.
-    pub mobile: bool,
+    #[cfg_attr(feature = "memory-db", venndb(filter))]
+    /// Where the IP of the proxy comes from.
+    pub ip_category: IpCategory,
 
     #[cfg_attr(feature = "memory-db", venndb(filter, any = StringFilter::is_any))]
     /// Pool ID of the proxy.
@@ -79,9 +173,31 @@ pub struct Proxy {
 #[cfg(feature = "memory-db")]
 /// Validate the proxy is valid according to rules that are not enforced by the type system.
 fn proxydb_insert_validator(proxy: &Proxy) -> bool {
-    (proxy.datacenter || proxy.residential || proxy.mobile)
-        && (proxy.supports_transport(TransportProtocol::Tcp)
-            || proxy.supports_transport(TransportProtocol::Udp))
+    !proxy.protocols.is_empty()
+        && proxy
+            .protocols
+            .iter()
+            .all(|p| record_transport(p).is_some())
+}
+
+/// The one transport a protocol of a [`Proxy`] record carries, `None` when it does not say.
+///
+/// A record is selected on what it offers, so each protocol in it is one tunnel: CONNECT
+/// for an HTTP proxy without a path, CONNECT-UDP with a CONNECT-UDP template, and for
+/// SOCKS5 whatever its `+tcp` or `+udp` option names.
+pub(crate) fn record_transport(protocol: &ProxyProtocol) -> Option<TransportProtocol> {
+    match protocol {
+        ProxyProtocol::Http {
+            path_template: None,
+            ..
+        }
+        | ProxyProtocol::Custom(_) => Some(TransportProtocol::Tcp),
+        ProxyProtocol::Http {
+            path_template: Some(template),
+            ..
+        } => template.is_connect_udp().then_some(TransportProtocol::Udp),
+        ProxyProtocol::Socks5 { transport, .. } => *transport,
+    }
 }
 
 fn column_matches<T: PartialEq>(
@@ -97,27 +213,20 @@ fn column_matches<T: PartialEq>(
 }
 
 impl Proxy {
-    /// Whether the address names a MASQUE proxy, which tunnels UDP with CONNECT-UDP.
+    /// Whether the proxy tunnels UDP with CONNECT-UDP on at least one HTTP version.
     #[must_use]
-    pub fn is_masque(&self) -> bool {
-        self.address
-            .protocol
-            .as_ref()
-            .is_some_and(Protocol::is_masque)
+    pub fn supports_connect_udp(&self) -> bool {
+        self.protocols.iter().any(|protocol| {
+            protocol.is_http() && record_transport(protocol) == Some(TransportProtocol::Udp)
+        })
     }
 
-    /// Whether the proxy can carry traffic of the given transport.
-    ///
-    /// UDP needs a SOCKS5 or MASQUE proxy; a MASQUE proxy is also an HTTPS proxy for TCP.
+    /// Whether one of the proxy's protocols carries the given transport.
     #[must_use]
     pub fn supports_transport(&self, protocol: TransportProtocol) -> bool {
-        match protocol {
-            TransportProtocol::Udp => self.udp && (self.socks5 || self.socks5h || self.is_masque()),
-            TransportProtocol::Tcp => {
-                self.tcp
-                    && (self.http || self.https || self.socks5 || self.socks5h || self.is_masque())
-            }
-        }
+        self.protocols
+            .iter()
+            .any(|p| record_transport(p) == Some(protocol))
     }
 
     /// Check if the proxy is a match for the given[`ProxyContext`] and [`ProxyFilter`].
@@ -143,14 +252,145 @@ impl Proxy {
             && strings_match(filter.carrier.as_deref(), self.carrier.as_ref())
             && column_matches(filter.asn.as_deref(), self.asn.as_ref(), Asn::is_any)
             && filter
-                .datacenter
-                .map(|d| d == self.datacenter)
-                .unwrap_or(true)
-            && filter
-                .residential
-                .map(|r| r == self.residential)
-                .unwrap_or(true)
-            && filter.mobile.map(|m| m == self.mobile).unwrap_or(true)
+                .ip_category
+                .as_ref()
+                .is_none_or(|kinds| kinds.contains(&self.ip_category))
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+    use rama_net::user::credentials::{basic, bearer};
+    use rama_utils::str::{non_empty_str, smol_str::SmolStr};
+
+    fn protocols() -> ProxyProtocols {
+        ProxyProtocols::from([
+            ProxyProtocol::H2,
+            ProxyProtocol::SOCKS5H_UDP,
+            ProxyProtocol::Custom(SmolStr::new_static("warp")),
+            protocol_token::parse("h3/m?h={target_host}&p={target_port}").unwrap(),
+        ])
+    }
+
+    fn proxy(credential: Option<ProxyCredential>) -> Proxy {
+        Proxy {
+            id: non_empty_str!("id"),
+            address: "proxy.example:443".parse().unwrap(),
+            credential,
+            protocols: protocols(),
+            ip_category: IpCategory::Datacenter,
+            pool_id: None,
+            continent: None,
+            country: Some("be".into()),
+            state: None,
+            city: None,
+            carrier: None,
+            asn: None,
+        }
+    }
+
+    #[test]
+    fn a_proxy_row_round_trips_through_json() {
+        for credential in [
+            None,
+            Some(basic!("user", "p@ss").into()),
+            Some(ProxyCredential::Bearer(bearer!("token"))),
+        ] {
+            let original = proxy(credential);
+            let json = serde_json::to_string(&original).unwrap();
+            let parsed: Proxy = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.credential, original.credential, "{json}");
+            assert_eq!(parsed.address, original.address);
+            assert_eq!(parsed.protocols, original.protocols, "{json}");
+        }
+    }
+
+    #[test]
+    fn protocols_serialize_as_tokens_in_their_order() {
+        let json = serde_json::to_value(proxy(None)).unwrap();
+        assert_eq!(
+            json["protocols"],
+            serde_json::json!([
+                "h2",
+                "socks5h+udp",
+                "warp",
+                "h3/m?h={target_host}&p={target_port}",
+            ]),
+        );
+    }
+
+    #[test]
+    fn a_repeated_protocol_keeps_its_first_place() {
+        let protocols: ProxyProtocols = [
+            ProxyProtocol::SOCKS5_TCP,
+            ProxyProtocol::H2,
+            ProxyProtocol::SOCKS5_TCP,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            Vec::from_iter(protocols),
+            [ProxyProtocol::SOCKS5_TCP, ProxyProtocol::H2]
+        );
+    }
+
+    #[test]
+    fn a_protocol_token_names_one_protocol() {
+        for (token, protocol) in [
+            ("http", Some(ProxyProtocol::HTTP)),
+            ("h1", Some(ProxyProtocol::H1)),
+            ("h2c", Some(ProxyProtocol::H2C)),
+            ("https", Some(ProxyProtocol::HTTPS)),
+            (
+                "h3+udp",
+                Some(ProxyProtocol::connect_udp(rama_net::http::Version::HTTP_3)),
+            ),
+            ("socks5", Some(ProxyProtocol::SOCKS5)),
+            ("socks5h", Some(ProxyProtocol::SOCKS5H)),
+            ("socks5+udp", Some(ProxyProtocol::SOCKS5_UDP)),
+            (
+                "h3/.well-known/masque/udp/{target_host}/{target_port}/",
+                Some(ProxyProtocol::connect_udp(rama_net::http::Version::HTTP_3)),
+            ),
+            (
+                "warp",
+                Some(ProxyProtocol::Custom(SmolStr::new_static("warp"))),
+            ),
+            // An option belongs to its own scheme, and only TLS carries HTTP/3.
+            ("socks5+h2", None),
+            ("https+h2", None),
+            ("warp+h2", None),
+            ("http+h3", None),
+            ("https+h4", None),
+            // A template belongs to MASQUE, and has to be one.
+            ("socks5/m/{target_host}/{target_port}", None),
+            ("h3/{target_host}", None),
+        ] {
+            assert_eq!(protocol_token::parse(token), protocol, "{token}");
+        }
+    }
+
+    #[test]
+    fn a_tls_scheme_with_a_template_is_masque_in_the_version_it_asked_for() {
+        let protocol = protocol_token::parse("h2/m/{target_host}/{target_port}").unwrap();
+        assert_eq!(record_transport(&protocol), Some(TransportProtocol::Udp));
+        assert_eq!(
+            protocol.http_version(),
+            Some(rama_net::http::Version::HTTP_2)
+        );
+        assert_eq!(
+            protocol_token::display(&protocol).to_string(),
+            "h2/m/{target_host}/{target_port}"
+        );
+    }
+
+    #[test]
+    fn every_protocol_token_round_trips() {
+        for protocol in protocols() {
+            let token = protocol_token::display(&protocol).to_string();
+            assert_eq!(protocol_token::parse(&token), Some(protocol), "{token}");
+        }
     }
 }
 
@@ -165,11 +405,11 @@ mod tests {
     #[test]
     fn test_proxy_db_happy_path_basic() {
         let mut db = ProxyDB::new();
-        let proxy = parse_csv_row("id,1,,1,,,,1,,,authority:80,,,,,,,,").unwrap();
+        let proxy = parse_csv_row("id,datacenter,authority:80,,,,,,,,,http").unwrap();
         db.append(proxy).unwrap();
 
         let mut query = db.query();
-        query.tcp(true).http(true);
+        query.protocols(ProxyProtocol::HTTP);
 
         let proxy = query.execute().unwrap().any();
         assert_eq!(proxy.id, "id");
@@ -179,14 +419,14 @@ mod tests {
     async fn test_proxy_db_happy_path_any_country() {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw(
-            "1,1,,1,,,,1,,,authority:80,,,US,,,,,\n2,1,,1,,,,1,,,authority:80,,,*,,,,,",
+            "1,datacenter,authority:80,,,US,,,,,,http\n2,datacenter,authority:80,,,*,,,,,,http",
         );
         while let Some(proxy) = reader.next().await.unwrap() {
             db.append(proxy).unwrap();
         }
 
         let mut query = db.query();
-        query.tcp(true).http(true).country("US");
+        query.protocols(ProxyProtocol::HTTP).country("US");
 
         let proxies: Vec<_> = query
             .execute()
@@ -211,7 +451,8 @@ mod tests {
 
     #[test]
     fn direct_match_rejects_empty_filter_for_wildcard_candidate() {
-        let proxy = parse_csv_row("2,1,,1,,,,1,,,authority:80,,,*,,,,,").expect("valid proxy row");
+        let proxy =
+            parse_csv_row("2,datacenter,authority:80,,,*,,,,,,http").expect("valid proxy row");
         let filter = ProxyFilter {
             country: Some(Vec::new()),
             ..Default::default()
@@ -229,14 +470,17 @@ mod tests {
     async fn test_proxy_db_happy_path_any_country_city() {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw(
-            "1,1,,1,,,,1,,,authority:80,,,US,,New York,,,\n2,1,,1,,,,1,,,authority:80,,,*,,*,,,",
+            "1,datacenter,authority:80,,,US,,New York,,,,http\n2,datacenter,authority:80,,,*,,*,,,,http",
         );
         while let Some(proxy) = reader.next().await.unwrap() {
             db.append(proxy).unwrap();
         }
 
         let mut query = db.query();
-        query.tcp(true).http(true).country("US").city("new york");
+        query
+            .protocols(ProxyProtocol::HTTP)
+            .country("US")
+            .city("new york");
 
         let proxies: Vec<_> = query
             .execute()
@@ -273,7 +517,7 @@ mod tests {
     async fn test_proxy_db_happy_path_specific_asn_within_continents() {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw(
-            "1,1,,1,,,,1,,,authority:80,,europe,BE,,Brussels,,1348,\n2,1,,1,,,,1,,,authority:80,,asia,CN,,Shenzen,,1348,\n3,1,,1,,,,1,,,authority:80,,asia,CN,,Peking,,42,",
+            "1,datacenter,authority:80,,europe,BE,,Brussels,,1348,,http\n2,datacenter,authority:80,,asia,CN,,Shenzen,,1348,,http\n3,datacenter,authority:80,,asia,CN,,Peking,,42,,http",
         );
         while let Some(proxy) = reader.next().await.unwrap() {
             db.append(proxy).unwrap();
@@ -281,8 +525,7 @@ mod tests {
 
         let mut query = db.query();
         query
-            .tcp(true)
-            .http(true)
+            .protocols(ProxyProtocol::HTTP)
             .continent("europe")
             .continent("asia")
             .asn(Asn::from_static(1348));
@@ -312,14 +555,17 @@ mod tests {
     async fn test_proxy_db_happy_path_states() {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw(
-            "1,1,,1,,,,1,,,authority:80,,,US,Texas,,,,\n2,1,,1,,,,1,,,authority:80,,,US,New York,,,,\n3,1,,1,,,,1,,,authority:80,,,US,California,,,,",
+            "1,datacenter,authority:80,,,US,Texas,,,,,http\n2,datacenter,authority:80,,,US,New York,,,,,http\n3,datacenter,authority:80,,,US,California,,,,,http",
         );
         while let Some(proxy) = reader.next().await.unwrap() {
             db.append(proxy).unwrap();
         }
 
         let mut query = db.query();
-        query.tcp(true).http(true).state("texas").state("new york");
+        query
+            .protocols(ProxyProtocol::HTTP)
+            .state("texas")
+            .state("new york");
 
         let proxies: Vec<_> = query
             .execute()
@@ -346,7 +592,7 @@ mod tests {
     async fn test_proxy_db_invalid_row_cases() {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw(
-            "id1,1,,,,,,,,,authority:80,,,,,,,\nid2,,1,,,,,,,,authority:80,,,,,,,\nid3,,1,1,,,,,,,authority:80,,,,,,,\nid4,,1,1,,,,,1,,authority:80,,,,,,,\nid5,,1,1,,,,,1,,authority:80,,,,,,,",
+            "id1,datacenter,authority:80,,,,,,,,,\nid2,mobile,authority:80,,,,,,,,,;",
         );
         while let Some(proxy) = reader.next().await.unwrap() {
             assert_eq!(
@@ -354,5 +600,71 @@ mod tests {
                 db.append(proxy).unwrap_err().kind
             );
         }
+    }
+}
+
+/// The textual form of a [`ProxyProtocol`]; see [`Proxy::protocols`].
+///
+/// A token is the scheme of a proxy address with the path a MASQUE one offers its tunnels
+/// on, which is how [`ProxyProtocol::try_from_scheme_and_path`] reads it.
+pub(super) mod protocol_token {
+    use rama_net::address::ProxyProtocol;
+    use std::fmt;
+
+    pub(crate) fn parse(token: &str) -> Option<ProxyProtocol> {
+        let (scheme, path) = match token.find('/') {
+            Some(index) => (&token[..index], &token[index..]),
+            None => (token, ""),
+        };
+        ProxyProtocol::try_from_scheme_and_path(scheme, path).ok()
+    }
+
+    pub(crate) fn display(protocol: &ProxyProtocol) -> impl fmt::Display {
+        Token(protocol.clone())
+    }
+
+    struct Token(ProxyProtocol);
+
+    impl fmt::Display for Token {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            self.0.fmt(f)?;
+            if let Some(template) = self.0.path_template()
+                && !template.is_connect_udp_default()
+            {
+                template.fmt(f)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// `protocols` as a list of [`protocol_token`]s.
+mod protocol_tokens {
+    use super::{ProxyProtocols, protocol_token};
+    use serde::{
+        Deserialize as _, Deserializer, Serializer, de::Error as _, ser::SerializeSeq as _,
+    };
+
+    pub(super) fn serialize<S: Serializer>(
+        protocols: &ProxyProtocols,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(protocols.len()))?;
+        for protocol in protocols {
+            sequence.serialize_element(&protocol_token::display(protocol).to_string())?;
+        }
+        sequence.end()
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<ProxyProtocols, D::Error> {
+        Vec::<String>::deserialize(deserializer)?
+            .into_iter()
+            .map(|token| {
+                protocol_token::parse(&token)
+                    .ok_or_else(|| D::Error::custom(format!("invalid proxy protocol: {token}")))
+            })
+            .collect()
     }
 }

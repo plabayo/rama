@@ -84,6 +84,7 @@ impl<'a> ServerClientHellos<'a> {
 mod tests {
     use super::*;
     use crate::{CipherSuite, CompressionAlgorithm, ProtocolVersion};
+    use rama_core::extensions::NoExtensionsTransfer;
 
     fn hello(suite: u16) -> ClientHello {
         ClientHello::new(
@@ -116,7 +117,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(ServerEchAccepted::new(true));
         proxy.insert(EchServerObservation::new(hello(2)));
-        let origin = proxy.fork_nested_connection(&rama_core::extensions::NoConnectionTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
         origin.insert(SecureTransport::with_client_hello(hello(3)));
 
         let hellos = ServerClientHellos::from_extensions(&origin);

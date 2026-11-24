@@ -23,17 +23,11 @@ async fn peer_max_connections_clamps_concurrent_icap_transactions() {
         Some(Duration::from_secs(2)),
     )
     .unwrap();
-    let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::detached(),
-        capture: None,
-        inspection: InspectionState::default(),
-        har: HarController::default(),
-        portal: None,
+    let client = proxy_client(ProxyClientConfig {
         tcp_options,
         connect_timeout: Some(Duration::from_secs(2)),
-        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
-        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap,
+        ..ProxyClientConfig::for_tests()
     });
     let request = || {
         Request::builder()
@@ -113,13 +107,12 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
     assert!(inspector_address.is_some(), "inspector listener bound");
 
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let client = EasyHttpWebClient::connector_builder()
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
+        .with_default_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::detached())
+        .with_default_http_connector()
         .without_connection_pool()
         .build_client();
     for scheme in ["http", "socks5h"] {

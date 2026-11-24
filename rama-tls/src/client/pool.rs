@@ -16,7 +16,7 @@ use rama_net::{
         ConnectionPolicyScope,
         pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
     },
-    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
+    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn, TlsRequired},
 };
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
@@ -27,8 +27,7 @@ use crate::client::{
 };
 use crate::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, KeyLogIntent, ProtocolVersion,
-    SignatureScheme, SupportedGroup, TlsKeyLog, TlsSupportedVersions, TlsTunnel,
-    keylog::KeyLogSink,
+    SignatureScheme, SupportedGroup, TlsKeyLog, TlsSupportedVersions, keylog::KeyLogSink,
 };
 
 /// Reuse rules published by the connector that performed a TLS handshake.
@@ -41,17 +40,11 @@ use crate::{
 #[derive(Debug)]
 pub struct TlsConnectionReuse<P> {
     provider: P,
-    scope: ReuseScope,
+    scope: ConnectionPolicyScope,
     key: Option<ReuseKey>,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ReuseScope {
-    Origin(ConnectionPolicyScope),
-    Tunnel,
-}
-
-/// Keys of requests without TLS overrides, and without tunnel settings.
+/// Keys of requests without TLS overrides.
 struct NoOverrides;
 
 impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
@@ -68,17 +61,13 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
         Self {
             key,
             provider,
-            scope: ReuseScope::Origin(scope),
+            scope,
         }
     }
 
     /// Classify the original caller policy, including validated derived settings.
-    /// Tunnel policies do not describe the origin and remain unclassified here.
     pub fn policy_scope(&self) -> ConnectionPolicyScope {
-        match self.scope {
-            ReuseScope::Origin(scope) => scope,
-            ReuseScope::Tunnel => ConnectionPolicyScope::Unknown,
-        }
+        self.scope
     }
 
     /// Keep the caller's reuse identity when a layer derives TLS settings on a
@@ -87,16 +76,13 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
     ///
     /// The scope is bound to this provider and the actual derived settings.
     /// Later changes invalidate it. It retains only policy keys, not settings,
-    /// sessions or the provider. Opaque derived settings and tunnel policies
-    /// cannot be scoped; their existing reuse behavior remains authoritative.
+    /// sessions or the provider. Opaque derived settings cannot be scoped;
+    /// their existing reuse behavior remains authoritative.
     ///
     /// This does not establish compatibility between derived configurations.
     /// The deriving layer must also partition its configurations or publish its
     /// own [`ConnectionReusePolicy`], while retaining inner restrictions.
     pub fn for_derived_settings(self, request: &Extensions) -> Option<TlsDerivedPolicy> {
-        if !matches!(self.scope, ReuseScope::Origin(_)) {
-            return None;
-        }
         Some(TlsDerivedPolicy {
             provider: self.provider.pool_classifier(),
             caller: self.key,
@@ -104,24 +90,10 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
         })
     }
 
-    /// Capture fixed proxy TLS policy, independently of origin TLS overrides.
-    ///
-    /// The pool's route key identifies the proxy. Caller-supplied tunnel settings
-    /// must match on later requests; route-generated settings remain fixed for
-    /// that route and are distinct from the caller's overrides.
-    pub fn tunnel(provider: P, request: &Extensions) -> Self {
-        Self {
-            key: Some(tunnel_key(request)),
-            provider,
-            scope: ReuseScope::Tunnel,
-        }
-    }
-
     /// Publish this handshake's rules while retaining restrictions from inner layers.
     /// Supply only the connector's fixed defaults, never merged request settings.
     /// Defaults are consulted while publishing and are not retained by the policy.
     pub fn publish(self, connection: &Extensions, defaults: Option<&TlsClientConfig>) {
-        let tunnel = matches!(self.scope, ReuseScope::Tunnel);
         let default_ech_requirement = defaults
             .and_then(|config| {
                 config
@@ -130,11 +102,8 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
                     .copied()
             })
             .unwrap_or_default();
-        let policy = ConnectionReuse::new(self);
-        let policy = if tunnel {
-            policy
-        } else {
-            policy.and(ConnectionReuse::new(super::ech::EchConnectionReuse {
+        let policy =
+            ConnectionReuse::new(self).and(ConnectionReuse::new(super::ech::EchConnectionReuse {
                 accepted: connection
                     .get_ref::<super::TlsEchAccepted>()
                     .is_some_and(|accepted| accepted.0)
@@ -142,18 +111,40 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
                         .get_ref::<super::TlsServerAuthentication>()
                         .is_some_and(|auth| auth.0.is_some()),
                 required: default_ech_requirement == super::EchRequirement::Required,
-            }))
-        };
-        let policy = match connection.get_ref::<ConnectionReuse>() {
-            Some(inner) => inner.clone().and(policy),
-            None => policy,
-        };
-        // Securing a proxy says nothing about the eventual origin handshake.
-        connection.insert(if tunnel {
-            policy.into_restriction()
-        } else {
-            policy
-        });
+            }));
+        policy.publish(connection);
+    }
+}
+
+/// Publish whether a connection whose protocol is not secure was secured, which
+/// only [`TlsRequired`] on its input decides.
+///
+/// Its protocol, part of the pool id, says the same for both, so without this a
+/// request asking for TLS could reuse the plaintext connection to the same address,
+/// or the other way around. Call it from a connector that decides per input, on
+/// both outcomes.
+pub fn publish_tls_required(connection: &Extensions, secured: bool) {
+    ConnectionReuse::new(TlsRequiredReuse { secured }).publish(connection);
+}
+
+#[derive(Debug)]
+struct TlsRequiredReuse {
+    secured: bool,
+}
+
+impl ConnectionReusePolicy for TlsRequiredReuse {
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
+    }
+
+    fn connection_key(&self) -> Option<ReuseKey> {
+        Some(ReuseKey::from_bits::<Self>(self.secured.into()))
+    }
+
+    fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+        Some(ReuseKey::from_bits::<Self>(
+            input.contains::<TlsRequired>().into(),
+        ))
     }
 }
 
@@ -164,7 +155,7 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
 /// Existing connection, tunnel and producer restrictions remain in force.
 /// This extension contains no TLS configuration or profile information.
 #[derive(Clone, Debug, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsDerivedPolicy {
     provider: ReuseKey,
     caller: Option<ReuseKey>,
@@ -202,21 +193,9 @@ fn origin_key(identity: Option<TlsPoolId>) -> Option<ReuseKey> {
     }
 }
 
-fn tunnel_key(request: &Extensions) -> ReuseKey {
-    request
-        .get_arc::<TlsTunnel>()
-        .map_or_else(ReuseKey::of::<NoOverrides>, ReuseKey::from_arc)
-}
-
 impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnectionReuse<P> {
     fn classifier(&self) -> ReuseKey {
-        match self.scope {
-            ReuseScope::Origin(_) => {
-                ReuseKey::of::<TlsPoolId>().and(self.provider.pool_classifier())
-            }
-            // Tunnel keys only depend on the request's tunnel settings.
-            ReuseScope::Tunnel => ReuseKey::of::<TlsTunnel>(),
-        }
+        ReuseKey::of::<TlsPoolId>().and(self.provider.pool_classifier())
     }
 
     fn connection_key(&self) -> Option<ReuseKey> {
@@ -224,10 +203,7 @@ impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnecti
     }
 
     fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
-        match self.scope {
-            ReuseScope::Origin(_) => origin_request_key(&self.provider, input),
-            ReuseScope::Tunnel => Some(tunnel_key(input)),
-        }
+        origin_request_key(&self.provider, input)
     }
 }
 
@@ -244,7 +220,7 @@ impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnecti
 /// matching a different policy. Pools must check [`Self::is_reusable`] at checkout
 /// and return.
 #[derive(Clone, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsPoolId {
     digest: PolicyDigest,
     reusable: bool,
@@ -984,10 +960,23 @@ mod tests {
         TlsServerTrustAnchors,
     };
     use crate::keylog::NoopKeyLogSink;
-    use rama_core::extensions::NoConnectionTransfer;
+    use rama_core::{
+        ServiceInput,
+        extensions::{ExtensionsRef, NoExtensionsTransfer},
+        service::service_fn,
+    };
     use rama_crypto::pki_types::PrivatePkcs8KeyDer;
+    use rama_net::{
+        address::{Host, ProxyAddress},
+        client::{
+            ConnectRequest, ConnectorService as _, EstablishedClientConnection,
+            ProxyConnectionExtensions, ProxyDialRequest, ProxyDialer, ProxyRoute, proxy_request,
+        },
+        stream::DefaultExtensionsTransfer,
+    };
     use rama_utils::octets::kib;
     use std::{
+        convert::Infallible,
         hash::Hasher,
         ptr,
         sync::atomic::{AtomicU64, Ordering},
@@ -1032,7 +1021,7 @@ mod tests {
             Some(&TlsEchAccepted(true))
         );
 
-        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
+        let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
         assert_eq!(origin.get_ref::<TlsEchAccepted>(), None);
 
         origin.insert(TlsServerAuthentication(Some(Host::from_static(
@@ -1104,10 +1093,23 @@ mod tests {
             TlsConnectionReuse::new(TestProvider, &request).policy_scope(),
             ConnectionPolicyScope::Request
         );
-        assert_eq!(
-            TlsConnectionReuse::tunnel(TestProvider, &request).policy_scope(),
-            ConnectionPolicyScope::Unknown
-        );
+    }
+
+    #[derive(Clone, Debug, Extension)]
+    struct ProxyProducer(u64);
+
+    impl ConnectionReusePolicy for ProxyProducer {
+        fn classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
+        }
+
+        fn connection_key(&self) -> Option<ReuseKey> {
+            Some(ReuseKey::from_bits::<Self>(self.0.into()))
+        }
+
+        fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+            input.get_ref::<Self>()?.connection_key()
+        }
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -1267,14 +1269,6 @@ mod tests {
                 &request
             ))),
             "a shared provider classifies like the provider"
-        );
-        assert_ne!(
-            test,
-            classifier(ConnectionReuse::new(TlsConnectionReuse::tunnel(
-                TestProvider,
-                &request
-            ))),
-            "tunnel and origin keys never share a lane"
         );
     }
 
@@ -1633,60 +1627,92 @@ mod tests {
         }
     }
 
-    #[test]
-    fn proxy_reuse_matches_caller_tunnel_settings() {
-        let plain = Extensions::new();
-        let tunnel = TlsTunnel {
-            server_identity: Some(Host::from_static("proxy.example")),
-            application_protocol: None,
-            alpn: Some(TlsAlpn::http_2()),
-        };
-        let first = Extensions::new();
-        first.insert(tunnel.clone());
-        let same = Extensions::new();
-        same.insert(tunnel.clone());
-        let different = Extensions::new();
-        different.insert(TlsTunnel {
-            alpn: Some(TlsAlpn::http_1()),
-            ..tunnel
-        });
-        let explicit = ConnectionReuse::new(TlsConnectionReuse::tunnel(TestProvider, &first));
-        assert!(explicit.is_reusable());
-        assert!(explicit.matches(&same));
-        assert!(!explicit.matches(&different));
-        assert!(!explicit.matches(&plain));
-        let default = ConnectionReuse::new(TlsConnectionReuse::tunnel(TestProvider, &plain));
-        assert!(default.matches(&plain));
-        assert!(!default.matches(&same));
+    fn leg_input() -> Extensions {
+        leg_input_for(&Extensions::new())
     }
 
-    #[test]
-    fn origin_and_proxy_reuse_restrictions_compose() {
-        let request = Extensions::new();
+    fn leg_input_for(origin: &Extensions) -> Extensions {
+        proxy_request(&"http://proxy.example:8080".parse().unwrap(), origin).extensions
+    }
+
+    fn test_proxy() -> ProxyAddress {
+        "http://proxy.example:8080".parse().unwrap()
+    }
+
+    fn routed(origin: Extensions) -> Extensions {
+        origin.insert(ProxyRoute::Proxy(test_proxy()));
+        origin
+    }
+
+    fn with_hop_verify(verify: ServerVerifyMode) -> Extensions {
+        let origin = Extensions::new();
+        let bag = Extensions::new();
+        bag.insert(TlsServerVerify(verify));
+        origin.insert(ProxyConnectionExtensions(bag));
+        routed(origin)
+    }
+
+    async fn tunnel_for(
+        origin: &Extensions,
+        below: impl Fn(&Extensions) + Clone + Send + Sync + 'static,
+    ) -> Extensions {
+        let legs = service_fn(move |input: ConnectRequest| {
+            let below = below.clone();
+            async move {
+                let conn = ServiceInput::new(());
+                below(conn.extensions());
+                TlsConnectionReuse::new(TestProvider, &input.extensions)
+                    .publish(conn.extensions(), None);
+                Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
+            }
+        });
+        let leg = ProxyDialer::new(legs.clone())
+            .connect(ProxyDialRequest {
+                proxy: test_proxy(),
+                origin: origin.clone(),
+            })
+            .await
+            .unwrap()
+            .conn;
+        leg.extensions()
+            .fork_connection(&DefaultExtensionsTransfer::new())
+    }
+
+    async fn tunnel_rules(origin: &Extensions) -> ConnectionReuse {
+        tunnel_for(origin, |_| {})
+            .await
+            .get_ref::<ConnectionReuse>()
+            .cloned()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn origin_and_proxy_reuse_restrictions_compose() {
+        let request = routed(Extensions::new());
         request.insert(TlsServerVerify(ServerVerifyMode::Disable));
-        let connection = Extensions::new();
-        TlsConnectionReuse::tunnel(TestProvider, &Extensions::new()).publish(&connection, None);
+
+        // A proxy-side restriction of its own, as a transport below the TLS of the connection to the proxy
+        // publishes one, keeps deciding on the requests it is given.
+        let connection = tunnel_for(&request, |leg| {
+            leg.insert(ConnectionReuse::restriction(ProxyProducer(1)));
+        })
+        .await;
         assert!(
             !connection
                 .get_ref::<ConnectionReuse>()
                 .unwrap()
                 .is_complete()
         );
+
         TlsConnectionReuse::new(TestProvider, &request).publish(&connection, None);
         let policy = connection.get_ref::<ConnectionReuse>().unwrap();
         assert!(policy.is_complete());
         for proxy_matches in [false, true] {
             for origin_matches in [false, true] {
-                let next = Extensions::new();
+                let next = routed(Extensions::new());
+                next.insert(ProxyProducer(if proxy_matches { 1 } else { 2 }));
                 if origin_matches {
                     next.insert(TlsServerVerify(ServerVerifyMode::Disable));
-                }
-                if !proxy_matches {
-                    next.insert(TlsTunnel {
-                        server_identity: Some(Host::from_static("proxy.example")),
-                        application_protocol: None,
-                        alpn: None,
-                    });
                 }
                 assert_eq!(
                     policy.matches(&next),
@@ -1695,15 +1721,82 @@ mod tests {
                 );
             }
         }
+    }
 
+    #[tokio::test]
+    async fn a_leg_key_follows_its_hop_settings_and_not_the_origin() {
+        let origin = with_hop_verify(ServerVerifyMode::Disable);
+        let hop = tunnel_rules(&origin).await;
+
+        // The same request reaches the same connection to the proxy: its settings are the bag's.
+        assert!(hop.matches(&origin));
+
+        // The origin's own TLS inputs configure the origin's handshake and
+        // cannot change which connection to the proxy serves it.
+        let noisy = origin.fork();
+        noisy.insert(TlsServerName(Host::from_static("origin.example")));
+        assert!(hop.matches(&noisy));
+
+        // A request asking for other hop settings is a different connection to the proxy.
+        assert!(!hop.matches(&with_hop_verify(ServerVerifyMode::Auto)));
+        assert!(!hop.matches(&routed(Extensions::new())));
+    }
+
+    #[test]
+    fn a_leg_serves_the_next_leg_request_of_its_own_hop() {
+        let origin = with_hop_verify(ServerVerifyMode::Disable);
         let connection = Extensions::new();
-        TlsConnectionReuse::tunnel(TestProvider, &Extensions::new()).publish(&connection, None);
-        TlsConnectionReuse::new(TestProvider, &Extensions::new()).publish(&connection, None);
-        assert!(
+        TlsConnectionReuse::new(TestProvider, &leg_input_for(&origin)).publish(&connection, None);
+        let hop = connection.get_ref::<ConnectionReuse>().unwrap();
+
+        // The pool of the connection to the proxy evaluates this against another proxy dial request.
+        assert!(hop.matches(&leg_input_for(&origin)));
+        assert!(!hop.matches(&leg_input_for(&Extensions::new())));
+    }
+
+    #[test]
+    fn legs_with_equal_keys_share_one_class_and_request_key() {
+        let publish = || {
+            let connection = Extensions::new();
+            TlsConnectionReuse::new(TestProvider, &leg_input()).publish(&connection, None);
             connection
-                .get_ref::<ConnectionReuse>()
-                .unwrap()
-                .is_reusable()
+        };
+        let first = publish();
+        let second = publish();
+        let first = first.get_ref::<ConnectionReuse>().unwrap();
+        let second = second.get_ref::<ConnectionReuse>().unwrap();
+
+        assert_eq!(first.classifier(), second.classifier());
+        assert_eq!(first.key(), second.key());
+        // One policy per class derives the request key for every connection of
+        // it, so either one must answer for both.
+        let request = Extensions::new();
+        assert_eq!(first.request_key(&request), second.request_key(&request));
+    }
+
+    #[tokio::test]
+    async fn legs_with_different_hop_settings_stay_apart_and_reachable() {
+        let strict = tunnel_rules(&routed(Extensions::new())).await;
+        let insecure = tunnel_rules(&with_hop_verify(ServerVerifyMode::Disable)).await;
+
+        assert_ne!(strict.key(), insecure.key());
+        // Both derive with the same rules, so they share one class and the pool
+        // tells them apart by key.
+        assert_eq!(strict.classifier(), insecure.classifier());
+        assert!(strict.matches(&routed(Extensions::new())));
+        assert!(insecure.matches(&with_hop_verify(ServerVerifyMode::Disable)));
+        assert!(!strict.matches(&with_hop_verify(ServerVerifyMode::Disable)));
+    }
+
+    #[tokio::test]
+    async fn a_leg_never_shares_a_class_with_a_policy_reading_the_request() {
+        let leg = tunnel_rules(&routed(Extensions::new())).await;
+        let origin = Extensions::new();
+        TlsConnectionReuse::new(TestProvider, &Extensions::new()).publish(&origin, None);
+
+        assert_ne!(
+            leg.classifier(),
+            origin.get_ref::<ConnectionReuse>().unwrap().classifier(),
         );
     }
 
@@ -1921,12 +2014,77 @@ mod tests {
         let scoped = |name: &str| {
             TlsServerCertPins::new(
                 TlsServerCertPinSet::new(TlsServerCertPin::SpkiSha256([1; 32]))
-                    .with_server_name(name.parse::<rama_net::address::Host>().unwrap()),
+                    .with_server_name(name.parse::<Host>().unwrap()),
             )
         };
         let lower = scoped("example.test");
         let upper = scoped("EXAMPLE.TEST");
         assert_eq!(lower, upper);
         assert_eq!(id_from_hash(&lower), id_from_hash(&upper));
+    }
+
+    #[test]
+    fn separates_a_connection_which_asks_for_tls_from_a_plaintext_one() {
+        let published = |secured: bool| {
+            let connection = Extensions::new();
+            publish_tls_required(&connection, secured);
+            connection
+                .get_ref::<ConnectionReuse>()
+                .cloned()
+                .expect("published")
+        };
+        let asks = Extensions::new();
+        asks.insert(TlsRequired::new());
+
+        assert!(published(false).matches(&Extensions::new()));
+        assert!(!published(false).matches(&asks));
+        assert!(published(true).matches(&asks));
+        assert!(!published(true).matches(&Extensions::new()));
+    }
+
+    #[tokio::test]
+    async fn separates_a_hop_which_asks_for_tls_from_the_same_hop_in_plaintext() {
+        let proxy: ProxyAddress = "socks5h://proxy.test:1080".parse().unwrap();
+        let origin = |asks: bool| {
+            let origin = Extensions::new();
+            let bag = Extensions::new();
+            if asks {
+                bag.insert(TlsRequired::new());
+            }
+            origin.insert(ProxyConnectionExtensions(bag));
+            origin.insert(ProxyRoute::Proxy(proxy.clone()));
+            origin
+        };
+        let legs = service_fn(|input: ConnectRequest| async move {
+            Ok::<_, Infallible>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        });
+        let mut tunnels = Vec::new();
+        for secured in [false, true] {
+            let leg = ProxyDialer::new(legs.clone())
+                .connect(ProxyDialRequest {
+                    proxy: proxy.clone(),
+                    origin: origin(secured),
+                })
+                .await
+                .unwrap()
+                .conn;
+            publish_tls_required(leg.extensions(), secured);
+            tunnels.push(
+                leg.extensions()
+                    .fork_connection(&DefaultExtensionsTransfer::new())
+                    .get_ref::<ConnectionReuse>()
+                    .cloned()
+                    .expect("the rules of the connection to the proxy cross onto the tunnel"),
+            );
+        }
+        let [plain, secured] = [&tunnels[0], &tunnels[1]];
+
+        assert!(plain.matches(&origin(false)));
+        assert!(!plain.matches(&origin(true)));
+        assert!(secured.matches(&origin(true)));
+        assert!(!secured.matches(&origin(false)));
     }
 }

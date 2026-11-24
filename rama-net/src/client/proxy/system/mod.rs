@@ -1537,15 +1537,15 @@ pub(super) fn proxy_address(
         Err(error) => return Err(error).context("parse system proxy host"),
     };
     Ok(ProxyAddress {
-        protocol: Some(protocol),
+        protocol: protocol.into(),
         address: HostWithPort::new(host, port),
         credential: None,
-        template: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::address::ProxyProtocol;
     use std::assert_matches;
     use std::convert::Infallible;
 
@@ -1920,7 +1920,7 @@ mod tests {
             let address = routes.as_ref().unwrap().as_slice()[0]
                 .proxy_address()
                 .unwrap();
-            assert_eq!(address.protocol, Some(Protocol::SOCKS5));
+            assert_eq!(address.protocol, ProxyProtocol::SOCKS5);
         }
     }
 
