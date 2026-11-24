@@ -696,13 +696,21 @@ impl<T, Q, D, F> EasyHttpConnectorBuilder<T, DnsStage<Q>, D, F> {
         self,
         proxies: ProxyConnector<S, C, U, F2>,
     ) -> EasyHttpConnectorBuilder<
-        MaybeProxiedConnector<T, ProxyStreamConnector<S, C>, HttpTunnelRoute>,
+        MaybeProxiedConnector<
+            T,
+            ProxyStreamConnector<ErasedConnector<S::Connection>, ErasedConnector<C::Connection>>,
+            HttpTunnelRoute,
+        >,
         ProxyStage<true, Q::Proxied>,
         D,
-        F2,
+        ErasedConnector<F2::Connection>,
     >
     where
-        Q: ProxiedQuicLeg<U>,
+        S: ConnectorService<ConnectRequest>,
+        C: ConnectorService<ConnectRequest>,
+        U: ConnectorService<ConnectRequest>,
+        F2: ConnectorService<ConnectRequest>,
+        Q: ProxiedQuicLeg<ErasedConnector<U::Connection>>,
     {
         let ProxyConnectorParts {
             socks,
@@ -711,16 +719,21 @@ impl<T, Q, D, F> EasyHttpConnectorBuilder<T, DnsStage<Q>, D, F> {
             forward,
             ..
         } = proxies.into_parts();
-        let quic = self.stage.quic.with_connect_udp(connect_udp, &self.scope);
+        // Each method is a client stack of its own; erased so this client's types and
+        // futures do not nest them.
+        let quic = self
+            .stage
+            .quic
+            .with_connect_udp(erase_connector(connect_udp), &self.scope);
         EasyHttpConnectorBuilder {
             dns: self.dns,
             discovery: self.discovery,
             target_version: self.target_version,
-            forward,
+            forward: erase_connector(forward),
             scope: self.scope,
             connector: MaybeProxiedConnector::new(
                 self.connector,
-                ProxyStreamConnector::new(socks, connect),
+                ProxyStreamConnector::new(erase_connector(socks), erase_connector(connect)),
                 HttpTunnelRoute::new(),
             ),
             stage: ProxyStage { quic },
@@ -741,17 +754,17 @@ impl<T, Q, D, F> EasyHttpConnectorBuilder<T, DnsStage<Q>, D, F> {
         MaybeProxiedConnector<
             T,
             ProxyStreamConnector<
-                DefaultProxySocksMethod,
-                DefaultProxyConnectMethod<TcpConnector, Body>,
+                ErasedMethod<DefaultProxySocksMethod>,
+                ErasedMethod<DefaultProxyConnectMethod<TcpConnector, Body>>,
             >,
             HttpTunnelRoute,
         >,
         ProxyStage<true, Q::Proxied>,
         D,
-        DefaultProxyForwardMethod<TcpConnector, Body>,
+        ErasedMethod<DefaultProxyForwardMethod<TcpConnector, Body>>,
     >
     where
-        Q: ProxiedQuicLeg<DefaultProxyConnectUdpMethod<TcpConnector, Body>>,
+        Q: ProxiedQuicLeg<ErasedMethod<DefaultProxyConnectUdpMethod<TcpConnector, Body>>>,
         Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     {
         let proxies = ProxyConnector::default_with_scope(self.scope.clone());
@@ -1246,6 +1259,8 @@ type ConfiguredConnectionPoolBuilder<T> =
 
 type ErasedConnector<C> =
     BoxService<ConnectRequest, EstablishedClientConnection<C, ConnectRequest>, ConnectionError>;
+
+type ErasedMethod<M> = ErasedConnector<<M as ConnectorService<ConnectRequest>>::Connection>;
 
 type DefaultConnectionBuilder<C, F> = ConfiguredConnectionBuilder<
     ProxyRouteFailureCacheConnector<ErasedConnector<MaybeForwardedConnection<C, F>>>,

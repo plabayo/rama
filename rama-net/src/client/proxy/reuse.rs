@@ -1,9 +1,13 @@
 use rama_core::extensions::Extensions;
+use std::sync::Arc;
 
-use super::{DialedProxyConnection, proxy_request};
-use crate::client::{
-    ProxyRoute,
-    pool::{ConnectionReuse, ConnectionReusePolicy, PoolPartition, ReuseKey},
+use super::{DialedProxyConnection, hop_chain, proxy_request};
+use crate::{
+    address::ProxyAddress,
+    client::{
+        ProxyRoute,
+        pool::{ConnectionReuse, ConnectionReusePolicy, PoolPartition, ReuseKey},
+    },
 };
 
 /// The reuse rules of a connection to a proxy, for the connection that carries
@@ -18,24 +22,31 @@ pub fn proxy_connection_reuse(connection: &Extensions) -> Option<ConnectionReuse
     let marker = connection.get_ref::<DialedProxyConnection>()?;
     Some(ConnectionReuse::restriction(ProxyConnectionReuse {
         rules: connection.get_ref::<ConnectionReuse>().cloned(),
+        hops: marker.hops.clone(),
         partition: marker.partition.clone(),
     }))
 }
 
-/// The rules a connection to a proxy was published with, and the pool partition it
-/// was dialed under, checked against each origin request as [`proxy_request`] turns
-/// it into a request to that proxy.
+/// The rules a connection to a proxy was published with, the proxies it went through
+/// and the pool partition it was dialed under, checked against each origin request as
+/// [`proxy_request`] turns it into a request to that proxy.
 #[derive(Debug)]
 struct ProxyConnectionReuse {
     rules: Option<ConnectionReuse>,
+    hops: Arc<[ProxyAddress]>,
     partition: Option<PoolPartition>,
 }
 
 impl ProxyConnectionReuse {
-    fn partition_key(partition: Option<&PoolPartition>) -> ReuseKey {
-        match partition {
+    fn leg_key(hops: &Arc<[ProxyAddress]>, partition: Option<&PoolPartition>) -> ReuseKey {
+        let key = match partition {
             Some(partition) => ReuseKey::of::<Self>().and(partition.key().clone()),
             None => ReuseKey::of::<Self>(),
+        };
+        if hops.is_empty() {
+            key
+        } else {
+            key.and(ReuseKey::new(hops.clone()))
         }
     }
 }
@@ -49,20 +60,20 @@ impl ConnectionReusePolicy for ProxyConnectionReuse {
     }
 
     fn connection_key(&self) -> Option<ReuseKey> {
-        let partition = Self::partition_key(self.partition.as_ref());
+        let leg = Self::leg_key(&self.hops, self.partition.as_ref());
         match &self.rules {
-            Some(rules) => Some(partition.and(rules.key()?.clone())),
-            None => Some(partition),
+            Some(rules) => Some(leg.and(rules.key()?.clone())),
+            None => Some(leg),
         }
     }
 
     fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
         let proxy = input.get_ref::<ProxyRoute>()?.proxy_address()?;
         let view = proxy_request(proxy, input).extensions;
-        let partition = Self::partition_key(view.get_ref::<PoolPartition>());
+        let leg = Self::leg_key(&hop_chain(proxy, input), view.get_ref::<PoolPartition>());
         match &self.rules {
-            Some(rules) => Some(partition.and(rules.request_key(&view)?)),
-            None => Some(partition),
+            Some(rules) => Some(leg.and(rules.request_key(&view)?)),
+            None => Some(leg),
         }
     }
 }
@@ -97,6 +108,7 @@ mod tests {
         let connection = Extensions::new();
         connection.insert(DialedProxyConnection {
             proxy: proxy.clone(),
+            hops: hop_chain(proxy, origin),
             partition: leg.get_ref::<PoolPartition>().cloned(),
         });
         proxy_connection_reuse(&connection).expect("a connection to a proxy")
@@ -114,6 +126,41 @@ mod tests {
         origin.insert(ProxyConnectionExtensions(bag));
         origin.insert(ProxyRoute::Proxy(proxy.clone()));
         origin
+    }
+
+    fn routed_through(proxy: &ProxyAddress, hops: &[ProxyAddress]) -> Extensions {
+        let origin = Extensions::new();
+        origin.insert(ProxyRoute::Proxy(proxy.clone()));
+        let mut bag: Option<Extensions> = None;
+        for hop in hops.iter().rev() {
+            let level = Extensions::new();
+            level.insert(ProxyRoute::Proxy(hop.clone()));
+            if let Some(inner) = bag.take() {
+                level.insert(ProxyConnectionExtensions(inner));
+            }
+            bag = Some(level);
+        }
+        if let Some(bag) = bag {
+            origin.insert(ProxyConnectionExtensions(bag));
+        }
+        origin
+    }
+
+    #[test]
+    fn the_hops_before_a_proxy_scope_the_connection_identity() {
+        let proxy = socks_proxy();
+        let a: ProxyAddress = "socks5://hop-a.example:1080".parse().unwrap();
+        let z: ProxyAddress = "socks5://hop-z.example:1080".parse().unwrap();
+        let direct = routed_through(&proxy, &[]);
+        let via_a = routed_through(&proxy, std::slice::from_ref(&a));
+        let via_a_and_z = routed_through(&proxy, &[a, z]);
+
+        assert!(tunnel_over(&proxy, &direct).matches(&direct));
+        assert!(tunnel_over(&proxy, &via_a).matches(&via_a));
+        assert!(tunnel_over(&proxy, &via_a_and_z).matches(&via_a_and_z));
+        assert!(!tunnel_over(&proxy, &direct).matches(&via_a));
+        assert!(!tunnel_over(&proxy, &via_a).matches(&direct));
+        assert!(!tunnel_over(&proxy, &via_a).matches(&via_a_and_z));
     }
 
     #[test]

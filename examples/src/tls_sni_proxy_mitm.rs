@@ -85,8 +85,6 @@
 //! notice that if you try to send for exampel plain-text HTTP traffic over it,
 //! that the connection will be simply aborted.
 
-#![recursion_limit = "256"]
-
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, extra::OpaqueError},
@@ -185,7 +183,8 @@ async fn main() -> Result<(), BoxError> {
         .with_default_http_connector()
         // NOTE: up to you define if a pool is acceptable, and especially a global one...
         .with_default_connection_pool()
-        .build_client();
+        .build_client()
+        .boxed();
 
     let optional_dns_overwrite_layer_used_for_e2e_only =
         std::env::var("EXAMPLE_EGRESS_SERVER_ADDR")

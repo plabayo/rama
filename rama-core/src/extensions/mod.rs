@@ -350,13 +350,22 @@ impl Extensions {
     /// such as per-route settings forked from settings for every route: [`Self::extend`]
     /// would copy only the bag's own level and drop the defaults it was forked from.
     ///
-    /// This flattens the chain onto this one level, across connection boundaries
-    /// too, so it is not meant for the extensions of a request or a connection.
+    /// It copies what a lookup in `other` sees: past its first connection boundary
+    /// only [`ExtensionScope::Flow`] entries, as [`ExtensionScope::Connection`] ones
+    /// stop there.
     pub fn extend_chain(&self, other: &Self) {
+        self.extend_chain_seen(other, false);
+    }
+
+    fn extend_chain_seen(&self, other: &Self, past_boundary: bool) {
         if let Some(parent) = other.parent() {
-            self.extend_chain(parent);
+            self.extend_chain_seen(parent, past_boundary || other.is_connection_boundary());
         }
-        self.extend(other);
+        for entry in other.store().entries.iter() {
+            if !past_boundary || !entry.scope().is_connection() {
+                self.store().push(entry.clone());
+            }
+        }
     }
 
     /// Returns true if the [`Extensions`] store contains the given type.
@@ -1131,6 +1140,26 @@ mod tests {
         assert!(target.parent().is_none());
         assert_eq!(target.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(2)));
         assert_eq!(target.get_ref::<RetryBudget>(), Some(&RetryBudget(3)));
+    }
+
+    #[test]
+    fn extend_chain_keeps_what_a_connection_boundary_hides_hidden() {
+        let outer = Extensions::new();
+        outer.insert(NegotiatedAlpn(1));
+        outer.insert(RetryBudget(3));
+        let bag = outer.fork_connection(&NoExtensionsTransfer::new());
+        assert!(bag.get_ref::<NegotiatedAlpn>().is_none());
+
+        let target = Extensions::new();
+        target.extend_chain(&bag);
+
+        assert!(target.get_ref::<NegotiatedAlpn>().is_none());
+        assert_eq!(target.get_ref::<RetryBudget>(), Some(&RetryBudget(3)));
+
+        bag.insert(NegotiatedAlpn(2));
+        let target = Extensions::new();
+        target.extend_chain(&bag.fork());
+        assert_eq!(target.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(2)));
     }
 
     #[test]

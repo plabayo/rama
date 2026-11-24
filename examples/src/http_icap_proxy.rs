@@ -64,7 +64,6 @@
 //! proxy must use a persistent CA trusted by its clients and an explicit
 //! interception policy.
 
-#![recursion_limit = "256"]
 #![expect(
     clippy::print_stdout,
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
@@ -74,7 +73,7 @@ use std::{sync::Arc, time::Duration};
 
 use clap::Parser;
 use rama::{
-    Layer as _,
+    Layer as _, Service as _,
     error::{BoxError, ErrorContext as _},
     graceful::Scope,
     http::{
@@ -174,7 +173,7 @@ async fn main() -> Result<(), BoxError> {
 
     let proxies = ProxyConnector::default_with_scope(weak_scope.clone())
         .with_isolate_forward_proxy_auth_error(true);
-    let client = EasyHttpWebClient::default_using_proxies(weak_scope.clone(), proxies);
+    let client = EasyHttpWebClient::default_using_proxies(weak_scope.clone(), proxies).boxed();
 
     // A non-CONNECT request selects its origin per request. The web client
     // derives that origin and acquires a matching upstream connection.

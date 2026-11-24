@@ -31,7 +31,6 @@
 //! origin answered over HTTP/3.0: hello through two hops
 //! ```
 
-#![recursion_limit = "256"]
 #![expect(
     clippy::print_stdout,
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
@@ -46,7 +45,7 @@ use rama::{
         Body, BodyExtractExt as _, Request, Response, Version,
         client::{
             EasyHttpWebClient, Http3Connector, HttpConnectRequestAdapter, HttpConnector,
-            builder::NoTcpConnector, masque_quic_transport,
+            HttpTransportConnector, builder::NoTcpConnector, masque_quic_transport,
             proxy::layer::HttpConnectProxyConnector,
         },
         conn::TargetHttpVersion,
@@ -162,34 +161,25 @@ fn chain_client(
     // The hops and the origin use a generated certificate.
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
 
-    // Hop A: HTTP/3 over QUIC on UDP; CONNECT-UDP through it. Its QUIC needs room for the
-    // QUIC packets it tunnels.
-    let h3_to_a = Http3Connector::builder(scope.clone())
-        .with_endpoints(SharedQuicEndpoint::managed(scope.clone()))
-        .with_tls_config(tls.clone())
-        .with_transport(masque_quic_transport())
-        .build_lazy()?;
-    let http_to_a =
-        HttpConnector::<_, ProxyRequestBody<Body>>::new(NoTcpConnector::default(), scope.clone())
-            .with_http3_connector(h3_to_a);
-    // Hop A sends packets of its QUIC transport's size, which leaves room in the tunnel for
-    // the QUIC packets hop B tunnels in turn.
+    // Hop A, over plain UDP. Its CONNECT-UDP tunnels carry the QUIC to hop B, so it sends
+    // packets of its QUIC transport's size, which leaves room for the QUIC packets hop B
+    // tunnels in turn.
+    let http_to_a = http3_to_hop(&scope, &tls, SharedQuicEndpoint::managed(scope.clone()))?;
+    // Boxed so the types of hop B's stack do not nest hop A's whole stack.
     let udp_through_a = HttpConnectUdpProxyConnector::new(http_to_a, scope.clone())
         .with_socket_config(
             ConnectUdpSocketConfig::default()
                 .with_proxy_packet_size(masque_quic_transport().get_initial_mtu()),
-        );
+        )
+        .boxed();
 
-    // Hop B: HTTP/3 over QUIC on hop A's CONNECT-UDP tunnels; CONNECT and CONNECT-UDP
-    // through it.
-    let h3_to_b = Http3Connector::builder(scope.clone())
-        .with_endpoints(QuicEndpointConnector::new(udp_through_a, scope.clone()))
-        .with_tls_config(tls.clone())
-        .with_transport(masque_quic_transport())
-        .build_lazy()?;
-    let http_to_b =
-        HttpConnector::<_, ProxyRequestBody<Body>>::new(NoTcpConnector::default(), scope.clone())
-            .with_http3_connector(h3_to_b);
+    // Hop B, over hop A's CONNECT-UDP tunnels. Its CONNECT and CONNECT-UDP tunnels carry
+    // the connections to the origin.
+    let http_to_b = http3_to_hop(
+        &scope,
+        &tls,
+        QuicEndpointConnector::new(udp_through_a, scope.clone()),
+    )?;
     let tcp_through_b = HttpConnectProxyConnector::new(http_to_b.clone());
     let udp_through_b = HttpConnectUdpProxyConnector::new(http_to_b, scope.clone());
 
@@ -210,6 +200,29 @@ fn chain_client(
         HttpConnectRequestAdapter::new(to_origin),
     )))
 }
+
+/// HTTP/3 to a hop, over the QUIC endpoints `endpoints` hands out. Its QUIC needs room for
+/// the QUIC packets the hop tunnels.
+fn http3_to_hop<E: Clone>(
+    scope: &WeakScope,
+    tls: &TlsClientConfig,
+    endpoints: E,
+) -> Result<HttpToHop<E>, BoxError> {
+    let h3 = Http3Connector::builder(scope.clone())
+        .with_endpoints(endpoints)
+        .with_tls_config(tls.clone())
+        .with_transport(masque_quic_transport())
+        .build_lazy()?;
+    Ok(
+        HttpConnector::<_, ProxyRequestBody<Body>>::new(NoTcpConnector::default(), scope.clone())
+            .with_http3_connector(h3),
+    )
+}
+
+type HttpToHop<E> = HttpConnector<
+    HttpTransportConnector<NoTcpConnector, Http3Connector<E>>,
+    ProxyRequestBody<Body>,
+>;
 
 async fn print_answer<S>(client: &S, request: Request) -> Result<(), BoxError>
 where

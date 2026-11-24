@@ -132,7 +132,8 @@ async fn main() -> Result<(), BoxError> {
             .with_tls_support_using_boringssl(TlsClientConfig::default_http())
             .with_default_http_connector()
             .with_default_connection_pool()
-            .build_client();
+            .build_client()
+            .boxed();
         let web_client = (
             RemoveRequestHeaderLayer::hop_by_hop(),
             HijackLayer::new(

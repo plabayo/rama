@@ -9,6 +9,7 @@ mod bypass;
 pub use bypass::{BypassRules, ProxyBypassLayer, ProxyBypassService};
 
 mod connect;
+use connect::hop_chain;
 #[doc(inline)]
 pub use connect::{
     DialedProxyConnection, ProxyConnectionExtensions, ProxyConnectionExtensionsTransfer,

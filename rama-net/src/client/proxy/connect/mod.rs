@@ -1,14 +1,17 @@
 use rama_core::{
     Layer, Service,
+    error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, Extensions, ExtensionsRef, ExtensionsTransfer as _},
 };
 use rama_utils::macros::define_inner_service_accessors;
+use std::sync::Arc;
 
 use crate::{
     address::{ProxyAddress, ProxyProtocol},
     client::{
-        ConnectRequest, ConnectionError, ConnectorService, ConnectorTarget,
-        ConnectorTransportProtocol, EstablishedClientConnection, ProxyRoute, pool::PoolPartition,
+        ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
+        ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
+        pool::PoolPartition,
     },
     http::{FallbackHttpVersion, HttpRequestVersion, TargetHttpVersion, Version},
     stream::DefaultExtensionsTransfer,
@@ -73,6 +76,23 @@ pub fn proxy_request(proxy: &ProxyAddress, origin: &Extensions) -> ConnectReques
         .with_transport_protocol(transport_protocol)
 }
 
+/// The proxies the connection to `proxy` goes through, nearest first, as the bags in
+/// `origin` route it.
+pub(super) fn hop_chain(proxy: &ProxyAddress, origin: &Extensions) -> Arc<[ProxyAddress]> {
+    let mut hops = Vec::new();
+    let mut leg = proxy_request(proxy, origin);
+    while let Some(hop) = leg
+        .extensions
+        .get_ref::<ProxyRoute>()
+        .and_then(ProxyRoute::proxy_address)
+        .cloned()
+    {
+        leg = proxy_request(&hop, &leg.extensions);
+        hops.push(hop);
+    }
+    hops.into()
+}
+
 fn leg_partition(origin: &Extensions, leg: &Extensions) -> Option<PoolPartition> {
     let origin_partition = origin.get_ref::<PoolPartition>();
     // The hop's own crossed onto the connection to the proxy, where it shadows the origin's.
@@ -124,16 +144,37 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, request: ProxyDialRequest) -> Result<Self::Output, Self::Error> {
-        match self
-            .inner
-            .connect(proxy_request(&request.proxy, &request.origin))
-            .await
-        {
+        let leg = proxy_request(&request.proxy, &request.origin);
+        let hop = leg
+            .extensions
+            .get_ref::<ProxyRoute>()
+            .and_then(ProxyRoute::proxy_address)
+            .cloned();
+        match self.inner.connect(leg).await {
             Ok(established) => {
                 let conn = established.conn;
+                if let Some(hop) = hop {
+                    let taken = conn
+                        .extensions()
+                        .get_ref::<EstablishedProxyRoute>()
+                        .and_then(EstablishedProxyRoute::proxy_address);
+                    if taken.is_none_or(|taken| {
+                        taken.address != hop.address || taken.protocol != hop.protocol
+                    }) {
+                        return Err(ConnectionError::local(
+                            BoxError::from_static_str(
+                                "connection to proxy did not go through the proxy it was routed through",
+                            ),
+                            ConnectionErrorKind::Unavailable,
+                        )
+                        .context_field("address", request.proxy.address)
+                        .context_field("hop", hop.address));
+                    }
+                }
                 let partition = established.input.extensions().get_ref::<PoolPartition>();
                 conn.extensions().insert(DialedProxyConnection {
                     proxy: request.proxy.clone(),
+                    hops: hop_chain(&request.proxy, &request.origin),
                     partition: partition.cloned(),
                 });
                 // The version spoken over this connection, as a fact of it: the one the
@@ -186,15 +227,17 @@ impl<S> Layer<S> for ProxyDialerLayer {
 #[extension(tags(net, proxy), scope(connection))]
 pub struct DialedProxyConnection {
     pub(super) proxy: ProxyAddress,
+    pub(super) hops: Arc<[ProxyAddress]>,
     pub(super) partition: Option<PoolPartition>,
 }
 
 impl DialedProxyConnection {
-    /// Mark a connection as dialed to `proxy`, outside any pool partition.
+    /// Mark a connection as dialed to `proxy` directly, outside any pool partition.
     #[must_use]
-    pub const fn new(proxy: ProxyAddress) -> Self {
+    pub fn new(proxy: ProxyAddress) -> Self {
         Self {
             proxy,
+            hops: Arc::from([]),
             partition: None,
         }
     }
@@ -214,7 +257,10 @@ mod tests {
         ProtocolInputExt as _, TargetHttpVersionInputExt as _, TransportProtocolInputExt as _,
         address::HostWithPort, client::pool::ReuseKey,
     };
-    use rama_core::extensions::Extension;
+    use rama_core::{
+        extensions::{Extension, ExtensionsRef},
+        service::service_fn,
+    };
 
     #[derive(Debug, Extension, PartialEq)]
     struct OriginMarker(u8);
@@ -225,6 +271,67 @@ mod tests {
 
     fn socks_proxy() -> ProxyAddress {
         "socks5://user:secret@proxy.example:1080".parse().unwrap()
+    }
+
+    #[derive(Debug, ExtensionsRef)]
+    struct LegConnection {
+        #[extensions_ref]
+        extensions: Extensions,
+    }
+
+    fn reporting(
+        route: Option<EstablishedProxyRoute>,
+    ) -> ProxyDialer<impl ConnectorService<ConnectRequest, Connection = LegConnection>> {
+        ProxyDialer::new(service_fn(move |input: ConnectRequest| {
+            let route = route.clone();
+            async move {
+                let conn = LegConnection {
+                    extensions: Extensions::new(),
+                };
+                if let Some(route) = route {
+                    conn.extensions.insert(route);
+                }
+                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+            }
+        }))
+    }
+
+    #[tokio::test]
+    async fn a_proxy_the_bag_routes_through_must_be_the_one_the_connection_took() {
+        let hop_a: ProxyAddress = "socks5://user:secret@hop-a.example:1080".parse().unwrap();
+        let other: ProxyAddress = "socks5://other.example:1080".parse().unwrap();
+        let hop_b: ProxyAddress = "http://hop-b.example:8080".parse().unwrap();
+        let through_a = Extensions::new();
+        let bag = Extensions::new();
+        bag.insert(ProxyRoute::Proxy(hop_a.clone()));
+        through_a.insert(ProxyConnectionExtensions(bag));
+        let dial = |origin: &Extensions| ProxyDialRequest {
+            proxy: hop_b.clone(),
+            origin: origin.clone(),
+        };
+
+        reporting(Some(EstablishedProxyRoute::Tunnel(hop_a)))
+            .serve(dial(&through_a))
+            .await
+            .unwrap();
+        for skipped in [
+            Some(EstablishedProxyRoute::Direct),
+            Some(EstablishedProxyRoute::Tunnel(other)),
+            None,
+        ] {
+            assert!(
+                reporting(skipped.clone())
+                    .serve(dial(&through_a))
+                    .await
+                    .is_err(),
+                "{skipped:?}"
+            );
+        }
+
+        reporting(Some(EstablishedProxyRoute::Direct))
+            .serve(dial(&Extensions::new()))
+            .await
+            .unwrap();
     }
 
     #[test]
