@@ -1371,6 +1371,115 @@ mod tests {
         assert_eq!(auth.as_deref(), None);
     }
 
+    #[derive(Debug, Clone, rama_core::extensions::Extension)]
+    struct Pick(&'static str);
+
+    #[derive(Debug, Clone)]
+    struct PickTarget<S>(S);
+
+    impl<S, Input> Service<Input> for PickTarget<S>
+    where
+        S: Service<Input>,
+        Input: ExtensionsRef + Send + 'static,
+    {
+        type Output = S::Output;
+        type Error = S::Error;
+
+        async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+            if let Some(Pick(target)) = input.extensions().get_ref::<Pick>().cloned() {
+                input
+                    .extensions()
+                    .insert(ConnectorTarget(HostWithPort::try_from(target).unwrap()));
+            }
+            self.0.serve(input).await
+        }
+    }
+
+    async fn connections_for<S>(
+        client: &S,
+        picks: &[&'static str],
+        proxy: Option<&str>,
+    ) -> Vec<usize>
+    where
+        S: Service<Request, Output = Response, Error: std::fmt::Debug>,
+    {
+        let mut connections = Vec::new();
+        for pick in picks {
+            let request = Request::builder()
+                .uri("http://example.com/")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions().insert(Pick(pick));
+            if let Some(proxy) = proxy {
+                request
+                    .extensions()
+                    .insert(ProxyRoute::Proxy(proxy.parse().unwrap()));
+            }
+            let response = client.serve(request).await.unwrap();
+            connections.push(response.try_into_json::<Output>().await.unwrap().conn);
+        }
+        connections
+    }
+
+    #[tokio::test]
+    async fn a_connector_above_the_pool_picks_a_pooled_connection_per_target() {
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
+            .without_dns_connector()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector()
+            .with_default_connection_pool()
+            .with_custom_connector(rama_core::layer::layer_fn(PickTarget))
+            .build_client();
+
+        assert_eq!(
+            connections_for(
+                &client,
+                &["10.0.0.1:80", "10.0.0.1:80", "10.0.0.2:80", "10.0.0.1:80"],
+                None
+            )
+            .await,
+            [0, 0, 1, 0]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connector_above_the_proxy_pool_picks_a_pooled_connection_per_target() {
+        let proxies = ProxyConnector::builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
+            .without_dns_connector()
+            .without_tls_support()
+            .with_default_http_connector::<Body>()
+            .with_default_connection_pool()
+            .with_custom_connector(rama_core::layer::layer_fn(PickTarget))
+            .with_http_forward()
+            .build();
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
+            .without_dns_connector()
+            .with_proxy_support(proxies)
+            .without_tls_support()
+            .with_default_http_connector()
+            .without_connection_pool()
+            .build_client();
+
+        assert_eq!(
+            connections_for(
+                &client,
+                &[
+                    "10.0.0.1:8080",
+                    "10.0.0.1:8080",
+                    "10.0.0.2:8080",
+                    "10.0.0.1:8080"
+                ],
+                Some("http://proxy.example:8080"),
+            )
+            .await,
+            [0, 0, 1, 0]
+        );
+    }
+
     #[test]
     fn blocking_client_drives_the_composed_http_stack() {
         let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
