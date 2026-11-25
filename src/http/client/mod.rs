@@ -496,6 +496,8 @@ where
 mod tests {
     use std::{
         convert::Infallible,
+        fmt::Debug,
+        net::{Ipv4Addr, Ipv6Addr},
         num::NonZeroUsize,
         sync::{
             Arc,
@@ -504,8 +506,17 @@ mod tests {
         time::Duration,
     };
 
-    use crate::net::address::HostWithPort;
+    use crate::dns::client::{
+        lb::{DnsLoadBalancerConfig, DnsLoadBalancerLayer, RoundRobinPicker},
+        resolver::DnsAddressResolver,
+    };
+    use crate::net::{
+        ConnectorTargetInputExt as _,
+        address::{Domain, HostWithPort},
+        mode::DnsResolveIpMode,
+    };
     use rama_core::extensions::Extensions;
+    use rama_core::futures::{Stream, stream};
     use rama_core::{error::BoxErrorExt as _, service::service_fn};
     use rama_http::{Body, BodyExtractExt, Version, proxy::ProxyRequestBody};
     use rama_http_backend::server::HttpServer;
@@ -545,6 +556,7 @@ mod tests {
     struct Output {
         conn: usize,
         resp: usize,
+        target: String,
     }
 
     #[tokio::test]
@@ -607,9 +619,10 @@ mod tests {
         Error = Infallible,
     > + Clone {
         let created_connections = Arc::new(AtomicUsize::new(0));
-        MockConnectorService::new(move || {
+        MockConnectorService::new(move |input: &ConnectRequest| {
             let created_connections = created_connections.clone();
             let conn = created_connections.fetch_add(1, Ordering::Relaxed);
+            let target = input.connector_target().unwrap().to_string();
 
             // count responses created on this specific connection
             let created_response = Arc::new(AtomicUsize::new(0));
@@ -617,9 +630,10 @@ mod tests {
             HttpServer::auto(WeakScope::detached()).service(service_fn(move |_req: Request| {
                 let created_response = created_response.clone();
                 let resp = created_response.fetch_add(1, Ordering::Relaxed);
+                let target = target.clone();
                 async move {
                     sleep(Duration::from_millis(5)).await;
-                    let out = Output { conn, resp };
+                    let out = Output { conn, resp, target };
                     let resp = Response::new(Body::from(serde_json::to_vec(&out).unwrap()));
                     Ok::<_, Infallible>(resp)
                 }
@@ -1371,58 +1385,60 @@ mod tests {
         assert_eq!(auth.as_deref(), None);
     }
 
-    #[derive(Debug, Clone, rama_core::extensions::Extension)]
-    struct Pick(&'static str);
-
     #[derive(Debug, Clone)]
-    struct PickTarget<S>(S);
+    struct TwoAddresses;
 
-    impl<S, Input> Service<Input> for PickTarget<S>
-    where
-        S: Service<Input>,
-        Input: ExtensionsRef + Send + 'static,
-    {
-        type Output = S::Output;
-        type Error = S::Error;
+    impl DnsAddressResolver for TwoAddresses {
+        type Error = Infallible;
 
-        async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-            if let Some(Pick(target)) = input.extensions().get_ref::<Pick>().cloned() {
-                input
-                    .extensions()
-                    .insert(ConnectorTarget(HostWithPort::try_from(target).unwrap()));
-            }
-            self.0.serve(input).await
+        fn lookup_ipv4(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+            stream::iter([
+                Ok(Ipv4Addr::new(10, 0, 0, 1)),
+                Ok(Ipv4Addr::new(10, 0, 0, 2)),
+            ])
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
+            stream::empty()
         }
     }
 
-    async fn connections_for<S>(
-        client: &S,
-        picks: &[&'static str],
-        proxy: Option<&str>,
-    ) -> Vec<usize>
+    fn round_robin() -> DnsLoadBalancerLayer<TwoAddresses, RoundRobinPicker> {
+        DnsLoadBalancerLayer::new(DnsLoadBalancerConfig {
+            mode: DnsResolveIpMode::SingleIpV4,
+            ..DnsLoadBalancerConfig::from_parts(TwoAddresses, RoundRobinPicker::new())
+        })
+    }
+
+    async fn connections_for<S>(client: &S, proxy: Option<&str>) -> Vec<Output>
     where
-        S: Service<Request, Output = Response, Error: std::fmt::Debug>,
+        S: Service<Request, Output = Response, Error: Debug>,
     {
         let mut connections = Vec::new();
-        for pick in picks {
+        for _ in 0..4 {
             let request = Request::builder()
                 .uri("http://example.com/")
                 .body(Body::empty())
                 .unwrap();
-            request.extensions().insert(Pick(pick));
             if let Some(proxy) = proxy {
                 request
                     .extensions()
                     .insert(ProxyRoute::Proxy(proxy.parse().unwrap()));
             }
             let response = client.serve(request).await.unwrap();
-            connections.push(response.try_into_json::<Output>().await.unwrap().conn);
+            connections.push(response.try_into_json::<Output>().await.unwrap());
         }
         connections
     }
 
     #[tokio::test]
-    async fn a_connector_above_the_pool_picks_a_pooled_connection_per_target() {
+    async fn a_load_balancer_above_the_pool_picks_a_pooled_connection_per_address() {
         let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
             .with_custom_tcp_connector(dummy_server())
             .without_dns_connector()
@@ -1430,29 +1446,45 @@ mod tests {
             .without_tls_support()
             .with_default_http_connector()
             .with_default_connection_pool()
-            .with_custom_connector(rama_core::layer::layer_fn(PickTarget))
+            .with_custom_connector(round_robin())
             .build_client();
 
         assert_eq!(
-            connections_for(
-                &client,
-                &["10.0.0.1:80", "10.0.0.1:80", "10.0.0.2:80", "10.0.0.1:80"],
-                None
-            )
-            .await,
-            [0, 0, 1, 0]
+            connections_for(&client, None).await,
+            [
+                Output {
+                    conn: 0,
+                    resp: 0,
+                    target: "10.0.0.1:80".to_owned(),
+                },
+                Output {
+                    conn: 1,
+                    resp: 0,
+                    target: "10.0.0.2:80".to_owned(),
+                },
+                Output {
+                    conn: 0,
+                    resp: 1,
+                    target: "10.0.0.1:80".to_owned(),
+                },
+                Output {
+                    conn: 1,
+                    resp: 1,
+                    target: "10.0.0.2:80".to_owned(),
+                },
+            ]
         );
     }
 
     #[tokio::test]
-    async fn a_connector_above_the_proxy_pool_picks_a_pooled_connection_per_target() {
+    async fn a_load_balancer_above_the_proxy_pool_picks_a_pooled_connection_per_address() {
         let proxies = ProxyConnector::builder(WeakScope::detached())
             .with_custom_tcp_connector(dummy_server())
             .without_dns_connector()
             .without_tls_support()
             .with_default_http_connector::<Body>()
             .with_default_connection_pool()
-            .with_custom_connector(rama_core::layer::layer_fn(PickTarget))
+            .with_custom_connector(round_robin())
             .with_http_forward()
             .build();
         let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
@@ -1465,18 +1497,76 @@ mod tests {
             .build_client();
 
         assert_eq!(
-            connections_for(
-                &client,
-                &[
-                    "10.0.0.1:8080",
-                    "10.0.0.1:8080",
-                    "10.0.0.2:8080",
-                    "10.0.0.1:8080"
-                ],
-                Some("http://proxy.example:8080"),
-            )
-            .await,
-            [0, 0, 1, 0]
+            connections_for(&client, Some("http://proxy.example:8080")).await,
+            [
+                Output {
+                    conn: 0,
+                    resp: 0,
+                    target: "10.0.0.1:8080".to_owned(),
+                },
+                Output {
+                    conn: 1,
+                    resp: 0,
+                    target: "10.0.0.2:8080".to_owned(),
+                },
+                Output {
+                    conn: 0,
+                    resp: 1,
+                    target: "10.0.0.1:8080".to_owned(),
+                },
+                Output {
+                    conn: 1,
+                    resp: 1,
+                    target: "10.0.0.2:8080".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_load_balancer_below_the_proxy_pool_does_not_split_its_connections() {
+        let proxies = ProxyConnector::builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
+            .without_dns_connector()
+            .without_tls_support()
+            .with_default_http_connector::<Body>()
+            .with_custom_connector(round_robin())
+            .with_default_connection_pool()
+            .with_http_forward()
+            .build();
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(dummy_server())
+            .without_dns_connector()
+            .with_proxy_support(proxies)
+            .without_tls_support()
+            .with_default_http_connector()
+            .without_connection_pool()
+            .build_client();
+
+        assert_eq!(
+            connections_for(&client, Some("http://proxy.example:8080")).await,
+            [
+                Output {
+                    conn: 0,
+                    resp: 0,
+                    target: "10.0.0.1:8080".to_owned(),
+                },
+                Output {
+                    conn: 0,
+                    resp: 1,
+                    target: "10.0.0.1:8080".to_owned(),
+                },
+                Output {
+                    conn: 0,
+                    resp: 2,
+                    target: "10.0.0.1:8080".to_owned(),
+                },
+                Output {
+                    conn: 0,
+                    resp: 3,
+                    target: "10.0.0.1:8080".to_owned(),
+                },
+            ]
         );
     }
 
@@ -1498,7 +1588,11 @@ mod tests {
         let response = cloned.get("http://example.com").send().unwrap();
         assert_eq!(
             response.try_into_json::<Output>().unwrap(),
-            Output { conn: 0, resp: 0 }
+            Output {
+                conn: 0,
+                resp: 0,
+                target: "example.com:80".to_owned(),
+            }
         );
     }
 
@@ -1674,6 +1768,7 @@ mod tests {
                 Output {
                     conn: expected_conn,
                     resp: 0,
+                    target: "proxy.example:8080".to_owned(),
                 },
             );
         }
@@ -1730,7 +1825,14 @@ mod tests {
 
         let response = client.serve(request).await.unwrap();
         let output = response.try_into_json::<Output>().await.unwrap();
-        assert_eq!(output, Output { conn: 0, resp: 0 });
+        assert_eq!(
+            output,
+            Output {
+                conn: 0,
+                resp: 0,
+                target: "example.com:80".to_owned(),
+            }
+        );
         assert_eq!(
             attempts.lock().as_slice(),
             [

@@ -136,10 +136,15 @@ impl ProxyConnectorBuilder {
 }
 
 impl<C, S, D> ProxyConnectorBuilder<C, S, D> {
-    /// Add a custom connector to this stage, around the connector built so far.
+    /// Add a custom connector around the connector built so far, keeping the stage.
     ///
-    /// Up to the TLS stage that is the connector of streams towards proxies, from the HTTP
-    /// stage on the HTTP connector towards proxies.
+    /// Before the HTTP stage, that is the stream connector towards proxies, which every
+    /// proxy method uses, SOCKS5 included.
+    ///
+    /// After the HTTP stage, the layer wraps the HTTP connector towards proxies.
+    /// A pool added later sits above it, so the layer only runs when the pool
+    /// opens a new connection. SOCKS5 keeps the stream connector from before
+    /// and does not see this layer.
     pub fn with_custom_connector<L: Layer<C>>(
         self,
         connector_layer: L,
@@ -150,8 +155,9 @@ impl<C, S, D> ProxyConnectorBuilder<C, S, D> {
     /// Map the connector built so far, keeping the stage; see
     /// [`Self::with_custom_connector`].
     ///
-    /// After the TLS stage this is how every connection to a proxy is secured, also one
-    /// whose address does not ask for TLS: `.map_connector(|tls| tls.into_secure())`.
+    /// Right after the TLS stage, before HTTP, this is how every connection to a proxy is
+    /// secured, also one whose address does not ask for TLS:
+    /// `.map_connector(|tls| tls.into_secure())`.
     pub fn map_connector<C2>(
         self,
         map_fn: impl FnOnce(C) -> C2,
@@ -750,9 +756,17 @@ impl<T, C, B> ProxyMethodBuilder<T, ProxyServiceConnector<C>, B> {
 }
 
 impl<T, C, B> ProxyMethodBuilder<T, C, B> {
-    /// Add a custom connector around the pooled HTTP connector towards proxies, which the
-    /// HTTP proxy methods added next share: above the pool, such as a load balancer that
-    /// picks the address of each new connection to a proxy.
+    /// Add a custom connector around the HTTP connector towards proxies that the HTTP proxy
+    /// methods added next share: above the pool when there is one.
+    ///
+    /// It runs for every dial, so a layer that sets a
+    /// [`ConnectorTarget`](crate::net::client::ConnectorTarget), such as a load balancer,
+    /// decides which pooled connection a dial gets: the pool keys on it. Such a target is an
+    /// explicit endpoint, so HTTPS discovery and Alt-Svc are skipped for it.
+    ///
+    /// Configure HTTP service selection, HTTPS discovery and Alt-Svc
+    /// (`configure_http_service`, `without_https_discovery`, `alt_svc_cache` and the like)
+    /// before this call: they are not available after it.
     pub fn with_custom_connector<L: Layer<C>>(
         self,
         connector_layer: L,
@@ -760,7 +774,7 @@ impl<T, C, B> ProxyMethodBuilder<T, C, B> {
         self.map_connector(|connector| connector_layer.into_layer(connector))
     }
 
-    /// Map the pooled HTTP connector towards proxies; see [`Self::with_custom_connector`].
+    /// Map the HTTP connector towards proxies; see [`Self::with_custom_connector`].
     pub fn map_connector<C2>(self, map_fn: impl FnOnce(C) -> C2) -> ProxyMethodBuilder<T, C2, B> {
         let mut builder = ProxyMethodBuilder::new(self.stream, map_fn(self.http), self.scope);
         builder.extensions_transfer = self.extensions_transfer;
