@@ -1,6 +1,44 @@
-use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
+use base64::Engine;
 use rama::graceful::WeakScope;
 use rama::net::client::ConnectRequest;
+use rama::{
+    Layer as _,
+    crypto::pki_types::{CertificateDer, PrivateKeyDer},
+    error::{BoxError, ErrorContext as _},
+    futures::StreamExt as _,
+    http::{
+        headers::StrictTransportSecurity,
+        layer::{
+            compression::CompressionLayer, cors, map_response_body::MapResponseBodyLayer,
+            required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
+            trace::TraceLayer,
+        },
+        server::HttpServer,
+        service::web::{
+            Router,
+            extract::{Json, State},
+        },
+        tls::{CertOrderInput, CertOrderOutput},
+        ws::Message,
+    },
+    net::address::{Domain, SocketAddress},
+    proxy::haproxy::server::HaProxyLayer,
+    tcp::server::TcpListener,
+    tls::{
+        boring::{
+            core::{
+                pkey::{PKey, Private},
+                x509::X509,
+            },
+            server::TlsAcceptorLayer,
+        },
+        server::{
+            CertificateIdentity, CertificateSubject, LeafCertConfig, LeafCertRequest,
+            SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+        },
+    },
+    udp::bind_udp_with_address,
+};
 use rama::{
     extensions::Extensions,
     http::{
@@ -357,8 +395,6 @@ async fn test_https_echo() {
 #[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_http3_echo() {
-    use rama::{futures::StreamExt as _, graceful::WeakScope, http::ws::Message};
-
     utils::init_tracing();
 
     let mut server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
@@ -534,44 +570,6 @@ async fn test_https_forced_version() {
 #[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_https_with_remote_tls_cert_issuer() {
-    use ::base64::Engine;
-    use ::rama::{
-        Layer as _,
-        crypto::pki_types::{CertificateDer, PrivateKeyDer},
-        error::{BoxError, ErrorContext as _},
-        graceful::WeakScope,
-        http::{
-            headers::StrictTransportSecurity,
-            layer::{
-                compression::CompressionLayer, cors, map_response_body::MapResponseBodyLayer,
-                required_header::AddRequiredResponseHeadersLayer,
-                set_header::SetResponseHeaderLayer, trace::TraceLayer,
-            },
-            server::HttpServer,
-            service::web::{
-                Router,
-                extract::{Json, State},
-            },
-            tls::{CertOrderInput, CertOrderOutput},
-        },
-        net::address::Domain,
-        proxy::haproxy::server::HaProxyLayer,
-        tcp::server::TcpListener,
-        tls::{
-            boring::{
-                core::{
-                    pkey::{PKey, Private},
-                    x509::X509,
-                },
-                server::TlsAcceptorLayer,
-            },
-            server::{
-                CertificateIdentity, CertificateSubject, LeafCertConfig, LeafCertRequest,
-                SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
-            },
-        },
-    };
-
     const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
     const DOMAIN_TLS_ECHO_CERTS: Domain = Domain::from_static("localhost");
 

@@ -549,6 +549,8 @@ mod tests {
     use rama_http_types::conn::{
         HttpServiceCandidate, HttpServiceCandidates, HttpServiceSelection,
     };
+    #[cfg(feature = "tls")]
+    use rama_net::tls::ServerName;
     use rama_net::uri::Uri;
     use rama_net::{Protocol, address::HostWithPort, tls::ApplicationProtocol};
     #[cfg(feature = "tls")]
@@ -592,7 +594,7 @@ mod tests {
         extensions.insert(ConnectionPolicyScope::Connector);
         #[cfg(feature = "tls")]
         extensions.insert(TlsServerAuthentication(Some(
-            origin.authority().host.clone(),
+            ServerName::try_from(&origin.authority().host).unwrap(),
         )));
         #[cfg(not(feature = "tls"))]
         let _ = origin;

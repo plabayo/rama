@@ -6,6 +6,7 @@ use std::{
 
 use crate::HeaderMap;
 use crate::body::http_body::{Body, Frame};
+use crate::header::trailer::merge_trailers;
 use futures_core::ready;
 use pin_project_lite::pin_project;
 
@@ -97,7 +98,7 @@ where
                         (None, None) => return Poll::Ready(None),
                         (None, Some(trailers)) | (Some(Ok(trailers)), None) => trailers,
                         (Some(Ok(new_trailers)), Some(mut prev_trailers)) => {
-                            prev_trailers.extend(new_trailers);
+                            merge_trailers(&mut prev_trailers, new_trailers);
                             prev_trailers
                         }
                     };
@@ -129,9 +130,23 @@ mod tests {
     use bytes::Bytes;
 
     use crate::body::http_body_util::{BodyExt, Empty, Full};
+    use crate::header::trailer::merge_fixture;
 
     #[allow(unused_imports)]
     use super::*;
+
+    #[tokio::test]
+    async fn merges_trailers_line_by_line() {
+        let (first, later) = merge_fixture::sections();
+        let collected = Empty::<Bytes>::new()
+            .with_trailers(std::future::ready(Some(Ok::<_, Infallible>(first))))
+            .with_trailers(std::future::ready(Some(Ok::<_, Infallible>(later))))
+            .collect()
+            .await
+            .unwrap();
+        let trailers = collected.trailers().unwrap();
+        assert_eq!(merge_fixture::lines(trailers), merge_fixture::MERGED);
+    }
 
     #[tokio::test]
     async fn works() {

@@ -708,7 +708,8 @@ impl TryFrom<&[u8]> for Authority {
 /// [`AuthorityRef::parse_strict`].
 ///
 /// Parsing: an unbracketed IPv6 address never carries a port (`::1:80` is one
-/// address); a port requires brackets (`[::1]:80`).
+/// address); a port requires brackets (`[::1]:80`). [`AuthorityRef::parse_strict`]
+/// accepts IPv6 only in brackets, as RFC 3986 does.
 ///
 /// `PartialEq` / `Eq` / `Hash` follow the same component-wise rules as
 /// the owned [`Authority`] (case-insensitive host via `HostRef`'s impl,
@@ -959,10 +960,16 @@ mod tests {
             );
             assert_eq!(owned.address.port.as_u16(), port, "{input}");
 
+            let bracketed = input.starts_with('[');
+            let strict = AuthorityRef::parse_strict(input.as_bytes());
+            assert_eq!(strict.is_ok(), bracketed, "{input}: {strict:?}");
             for borrowed in [
-                AuthorityRef::parse(input.as_bytes()).unwrap(),
-                AuthorityRef::parse_strict(input.as_bytes()).unwrap(),
-            ] {
+                Some(AuthorityRef::parse(input.as_bytes()).unwrap()),
+                strict.ok(),
+            ]
+            .into_iter()
+            .flatten()
+            {
                 assert_eq!(
                     borrowed.host(),
                     HostRef::Address(IpAddr::V6(address)),
@@ -971,6 +978,10 @@ mod tests {
                 assert_eq!(borrowed.port_u16(), port, "{input}");
                 assert_eq!(borrowed.into_owned(), owned, "{input}");
             }
+        }
+        for input in ["user@::1", "::1:80", "2001:db8::1"] {
+            AuthorityRef::parse_strict(input.as_bytes()).unwrap_err();
+            AuthorityRef::parse(input.as_bytes()).unwrap();
         }
     }
     use std::assert_matches;

@@ -1,35 +1,40 @@
-use crate::dep::rustls::{
-    ClientConfig,
-    client::{danger::ServerCertVerifier, verify_server_name},
-    server::ParsedCertificate,
-};
+use std::sync::Arc;
+
 use rama_core::{
     conversion::RamaTryFrom as _,
     error::BoxError,
     extensions::{Extension, Extensions, FromExtensions},
 };
-use rama_crypto::pki_types::{CertificateDer, ServerName};
+use rama_crypto::pki_types::CertificateDer;
 use rama_net::{
-    address::Host,
     client::pool::ReuseKey,
-    tls::{AlpnPolicy, TlsAlpn},
+    tls::{AlpnPolicy, ServerName, TlsAlpn},
 };
-#[cfg(test)]
-use rama_tls::KeyLogIntent;
-use rama_tls::client::{
-    ClientHandshake, DynTlsServerCertChainPolicy, ServerTrustSource, TlsClientAuth,
-    TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity, TlsPoolComponent, TlsPoolId,
-    TlsServerCertPinCheck, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
-    TlsSessionProfileScope, TlsStoreServerCertChain,
+use rama_tls::{
+    KeyLogIntent, TlsKeyLog, TlsSupportedVersions,
+    client::{
+        ClientAuth, ClientHandshake, DynTlsServerCertChainPolicy, EchRequirement,
+        ServerTrustSource, ServerVerificationScope, TlsClientAuth, TlsClientConfig,
+        TlsClientConfigProvider, TlsClientSni, TlsComponentIdentity, TlsPoolComponent, TlsPoolId,
+        TlsPoolIdBuilder, TlsServerCertPinCheck, TlsServerCertPins, TlsServerTrust,
+        TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain,
+    },
 };
-use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
-use std::sync::Arc;
+
+use crate::{
+    client::connector_data::ConfigOwner,
+    dep::rustls::{
+        ClientConfig,
+        client::{danger::ServerCertVerifier, verify_server_name},
+        server::ParsedCertificate,
+    },
+};
 
 /// Gather all the TLS extensions supported by rustls
 #[derive(Clone, FromExtensions)]
 pub struct RustlsTlsConnectorConfig<'a> {
-    pub ech_requirement: Option<&'a rama_tls::client::EchRequirement>,
+    pub ech_requirement: Option<&'a EchRequirement>,
     pub session_profile_scope: Option<&'a TlsSessionProfileScope>,
     pub client_handshake: Option<&'a ClientHandshake>,
     pub alpn: Option<&'a TlsAlpn>,
@@ -37,7 +42,8 @@ pub struct RustlsTlsConnectorConfig<'a> {
     pub versions: Option<&'a TlsSupportedVersions>,
     pub verify: Option<&'a TlsServerVerify>,
     pub keylog: Option<&'a TlsKeyLog>,
-    pub server_name: Option<&'a TlsServerName>,
+    pub server_name: Option<&'a ServerName>,
+    pub sni_policy: Option<&'a TlsClientSni>,
     pub store_chain: Option<&'a TlsStoreServerCertChain>,
     pub client_auth: Option<&'a TlsClientAuth>,
     pub server_cert_pins: Option<&'a TlsServerCertPins>,
@@ -59,6 +65,56 @@ impl RustlsTlsConnectorConfig<'_> {
         if self.is_empty() {
             return None;
         }
+        self.pool_id_builder().build()
+    }
+
+    /// Cache identity of the native configuration for this effective policy
+    /// and `verification`, or `None` when every connection builds its own.
+    pub(super) fn native_config_key(
+        &self,
+        verification: Option<&super::RustlsServerVerification>,
+    ) -> Option<NativeConfigKey> {
+        // Resumption skips verification decisions a key cannot capture, so those never share.
+        if self
+            .client_handshake
+            .is_some_and(|handshake| *handshake != ClientHandshake::Auto)
+            || self
+                .client_auth
+                .is_some_and(|auth| matches!(auth.0, ClientAuth::SelfSigned))
+            || self.server_cert_chain_policy.is_some()
+            || self.verifier.is_some()
+            || self.modify.is_some()
+            // The destination is read from the environment on every build.
+            || self
+                .keylog
+                .is_some_and(|keylog| matches!(keylog.0, KeyLogIntent::Environment))
+            || verification.is_some_and(|verification| {
+                !ServerVerificationScope::allows_resumption(
+                    self.server_trust,
+                    verification.verifier(),
+                )
+            })
+        {
+            return None;
+        }
+        let mut builder = self.pool_id_builder();
+        if let Some(scope) = verification.and_then(|verification| {
+            ServerVerificationScope::reloadable(self.server_trust, verification.verifier())
+        }) {
+            builder.set_component(&scope);
+        }
+        match builder.build() {
+            Some(id) if !id.is_reusable() => None,
+            id => Some(NativeConfigKey {
+                policy: id,
+                ech_requirement: self.ech_requirement.copied(),
+            }),
+        }
+    }
+
+    /// Every request-level override, to build [`Self::pool_id`] and [`Self::native_config_key`] from.
+    fn pool_id_builder(&self) -> TlsPoolIdBuilder<'_> {
+        // New fields must also be reviewed for whether they shape the native configuration.
         let Self {
             ech_requirement: _,
             session_profile_scope,
@@ -69,6 +125,7 @@ impl RustlsTlsConnectorConfig<'_> {
             verify,
             keylog,
             server_name,
+            sni_policy,
             store_chain,
             client_auth,
             server_cert_pins,
@@ -88,6 +145,9 @@ impl RustlsTlsConnectorConfig<'_> {
             .maybe_with_client_auth(*client_auth)
             .maybe_with_server_cert_pins(*server_cert_pins)
             .maybe_with_server_trust(*server_trust);
+        if let Some(sni_policy) = sni_policy {
+            builder.set_component(*sni_policy);
+        }
         if let Some(scope) = session_profile_scope {
             builder.set_component(*scope);
         }
@@ -100,7 +160,7 @@ impl RustlsTlsConnectorConfig<'_> {
         if let Some(modify) = modify {
             builder.set_shared_instance(modify);
         }
-        builder.build()
+        builder
     }
 
     /// Whether the `leaf` of a connection authenticated under this configuration
@@ -109,7 +169,7 @@ impl RustlsTlsConnectorConfig<'_> {
     /// A chain policy, and the platform verifier with its per-name trust
     /// settings, judge a chain for one server name, so such a connection is
     /// never reused for another name.
-    pub fn peer_matches_name(&self, leaf: &CertificateDer<'_>, name: &Host) -> bool {
+    pub fn peer_matches_name(&self, leaf: &CertificateDer<'_>, name: &ServerName) -> bool {
         if !self.authenticates_server()
             || self.server_cert_chain_policy.is_some()
             || self
@@ -124,7 +184,7 @@ impl RustlsTlsConnectorConfig<'_> {
         let Ok(certificate) = ParsedCertificate::try_from(leaf) else {
             return false;
         };
-        let Ok(name) = ServerName::rama_try_from(name.clone()) else {
+        let Ok(name) = rama_crypto::pki_types::ServerName::rama_try_from(name) else {
             return false;
         };
         verify_server_name(&certificate, &name).is_ok()
@@ -143,6 +203,7 @@ impl RustlsTlsConnectorConfig<'_> {
             verify,
             keylog: _,
             server_name: _,
+            sni_policy: _,
             store_chain: _,
             client_auth: _,
             server_cert_pins: _,
@@ -170,7 +231,7 @@ impl RustlsTlsConnectorConfig<'_> {
         self,
         provider: Arc<crate::dep::rustls::crypto::CryptoProvider>,
     ) -> Result<ClientConfig, BoxError> {
-        super::connector_data::build_client_config(&self, Some(provider), None)
+        super::connector_data::build_client_config(&self, Some(provider), None, ConfigOwner::Caller)
     }
 
     /// Build a native client configuration with the supplied server verification.
@@ -181,8 +242,21 @@ impl RustlsTlsConnectorConfig<'_> {
         provider: Arc<crate::dep::rustls::crypto::CryptoProvider>,
         verification: &super::RustlsServerVerification,
     ) -> Result<ClientConfig, BoxError> {
-        super::connector_data::build_client_config(&self, Some(provider), Some(verification))
+        super::connector_data::build_client_config(
+            &self,
+            Some(provider),
+            Some(verification),
+            ConfigOwner::Caller,
+        )
     }
+}
+
+/// Cache identity of a native client configuration: the effective policy,
+/// `None` for the baseline, and the verification of a reloadable trust source.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct NativeConfigKey {
+    policy: Option<TlsPoolId>,
+    ech_requirement: Option<EchRequirement>,
 }
 
 /// Rustls specific setters for [`TlsClientConfig`].
@@ -297,12 +371,47 @@ impl TlsClientConfigProvider for RustlsTlsClientConfigProvider {
 
 #[cfg(test)]
 mod pool_tests {
+    use rama_core::extensions::Extensions;
+    use rama_tls::{
+        ProtocolVersion,
+        client::{ClientAuth, ServerVerifyMode, TlsServerCertPin, TlsServerTrustAnchors},
+        keylog::NoopKeyLogSink,
+    };
+
     use super::*;
     use crate::verify::NoServerCertVerifier;
-    use rama_core::extensions::Extensions;
-    use rama_tls::ProtocolVersion;
-    use rama_tls::client::{ClientAuth, ServerVerifyMode, TlsServerCertPin, TlsServerTrustAnchors};
-    use rama_tls::keylog::NoopKeyLogSink;
+
+    #[test]
+    fn sni_policy_partitions_pools_and_native_configs() {
+        let base = TlsClientConfig::new();
+        let base = RustlsTlsConnectorConfig::from_extensions(base.as_extensions());
+        for sni_policy in [
+            TlsClientSni::Auto,
+            TlsClientSni::IncludeIp,
+            TlsClientSni::Disabled,
+        ] {
+            let config = TlsClientConfig::new().with_sni_policy(sni_policy);
+            let view = RustlsTlsConnectorConfig::from_extensions(config.as_extensions());
+            assert_ne!(view.pool_id(), base.pool_id());
+            assert_ne!(view.native_config_key(None), base.native_config_key(None));
+            for other in [
+                TlsClientSni::Auto,
+                TlsClientSni::IncludeIp,
+                TlsClientSni::Disabled,
+            ] {
+                let config = TlsClientConfig::new().with_sni_policy(other);
+                let other = RustlsTlsConnectorConfig::from_extensions(config.as_extensions());
+                assert_eq!(
+                    view.pool_id() == other.pool_id(),
+                    view.sni_policy == other.sni_policy
+                );
+                assert_eq!(
+                    view.native_config_key(None) == other.native_config_key(None),
+                    view.sni_policy == other.sni_policy
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_ech_intent_is_not_read_by_rustls() {
@@ -364,15 +473,15 @@ mod pool_tests {
                 ext.insert(TlsKeyLog(KeyLogIntent::File(format!("pool-test-{value}"))));
             }),
             ("server_name", |ext, value| {
-                ext.insert(TlsServerName(
+                ext.insert(
                     if value == 0 {
                         "one.example"
                     } else {
                         "two.example"
                     }
-                    .parse()
+                    .parse::<ServerName>()
                     .unwrap(),
-                ));
+                );
             }),
             ("store_chain", |ext, value| {
                 ext.insert(TlsStoreServerCertChain(value != 0));
@@ -489,20 +598,22 @@ mod pool_tests {
 
 #[cfg(test)]
 mod authenticated_alias_tests {
-    use super::*;
+    use rama_net::address::Domain;
     use rama_tls::{
         client::{ServerVerifyMode, TlsServerCertPinSet, TlsServerCertPins},
         server::{CertificateIdentity, LeafCertRequest, ServerAuthData},
     };
 
-    fn matches(policy: &Extensions, leaf: &CertificateDer<'_>, name: &Host) -> bool {
+    use super::*;
+
+    fn matches(policy: &Extensions, leaf: &CertificateDer<'_>, name: &ServerName) -> bool {
         RustlsTlsConnectorConfig::from_extensions(policy).peer_matches_name(leaf, name)
     }
 
     #[test]
     fn additional_names_preserve_the_actual_leaf_and_scoped_pin_policy() {
-        let first = Host::from_static("a.example");
-        let second = Host::from_static("b.example");
+        let first = ServerName::from(Domain::from_static("a.example"));
+        let second = ServerName::from(Domain::from_static("b.example"));
         let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest {
             identities: vec![
                 CertificateIdentity::Dns("a.example".parse().unwrap()),
@@ -516,7 +627,11 @@ mod authenticated_alias_tests {
         let policy = Extensions::new();
         assert!(matches(&policy, leaf, &first));
         assert!(matches(&policy, leaf, &second));
-        assert!(!matches(&policy, leaf, &Host::from_static("wrong.example")));
+        assert!(!matches(
+            &policy,
+            leaf,
+            &ServerName::from(Domain::from_static("wrong.example"))
+        ));
         policy.insert(TlsServerCertPins::new(
             TlsServerCertPinSet::new(other.cert_chain.first().unwrap().clone())
                 .with_server_name(second.clone()),
@@ -547,7 +662,7 @@ mod authenticated_alias_tests {
         })
         .unwrap();
         let leaf = identity.cert_chain.first().unwrap();
-        let second = Host::from_static("b.example");
+        let second = ServerName::from(Domain::from_static("b.example"));
 
         let native = Extensions::new();
         native.insert(rama_tls::client::TlsServerTrust::native_roots());

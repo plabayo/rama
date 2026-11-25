@@ -5,12 +5,15 @@
 use dial9::Dial9Handle;
 use dial9::core::clock_monotonic_ns;
 use dial9_trace_format::{EventEncoder, TraceEvent, TraceField, types::FieldType};
-use rama_net::{address::Host, tls::ApplicationProtocol};
+use rama_net::{
+    address::HostRef,
+    tls::{ApplicationProtocol, ServerName},
+};
 use rama_tls::ProtocolVersion;
 use std::io::{self, Write};
 
 #[derive(Debug, Clone)]
-pub struct MaybeServerName(Option<Host>);
+pub struct MaybeServerName(Option<ServerName>);
 
 impl TraceField for MaybeServerName {
     fn field_type() -> FieldType {
@@ -19,9 +22,9 @@ impl TraceField for MaybeServerName {
 
     fn encode<W: Write>(&self, enc: &mut EventEncoder<'_, W>) -> io::Result<()> {
         match self.0.as_ref() {
-            Some(host) => {
-                let host = host.to_str();
-                enc.write_string(host.as_ref())
+            Some(server_name) => {
+                let server_name = HostRef::from(server_name).to_str();
+                enc.write_string(server_name.as_ref())
             }
             None => enc.write_string(""),
         }
@@ -104,7 +107,7 @@ pub struct TlsHandshakeFailed {
 }
 
 #[inline]
-pub(crate) fn record_handshake_started(server_name: Option<&Host>) {
+pub(crate) fn record_handshake_started(server_name: Option<&ServerName>) {
     let handle = Dial9Handle::current();
     if handle.is_enabled() {
         handle.record_event(TlsHandshakeStarted {
@@ -118,7 +121,7 @@ pub(crate) fn record_handshake_started(server_name: Option<&Host>) {
 
 #[inline]
 pub(crate) fn record_handshake_completed(
-    server_name: Option<&Host>,
+    server_name: Option<&ServerName>,
     protocol_version: ProtocolVersion,
     alpn_selected: Option<&[u8]>,
     peer_cert_chain_depth: usize,
@@ -139,7 +142,7 @@ pub(crate) fn record_handshake_completed(
 
 #[inline]
 pub(crate) fn record_handshake_failed(
-    server_name: Option<&Host>,
+    server_name: Option<&ServerName>,
     error_kind: u32,
     io_error_kind: Option<u32>,
 ) {

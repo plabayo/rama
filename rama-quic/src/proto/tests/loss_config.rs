@@ -1,5 +1,5 @@
 use super::*;
-use rama_quic_proto::{Dir, packet::SpaceId, version::LongKind};
+use rama_quic_proto::{Dir, frame::EcnCounts, packet::SpaceId, version::LongKind};
 
 #[test]
 fn padded_initial_ack_at_a_full_window_recovers_on_pto() {
@@ -789,6 +789,53 @@ fn discarding_initial_keys_resets_pto_backoff() {
     assert!(pair.client_conn_mut(client).handshake_confirmed());
 }
 
+/// Application data PTOs double from the latest ack-eliciting send (RFC 9002 §6.2.1), also
+/// when a PTO expires before its probe could be sent.
+#[test]
+fn post_handshake_pto_doubles_from_the_latest_send() {
+    let mut config = server_config();
+    let mut transport = TransportConfig::default();
+    transport.maybe_set_mtu_discovery_config(None);
+    config.set_transport_config(Arc::new(transport));
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        config,
+    );
+    let (_, server) = pair.connect();
+    pair.drive();
+    assert!(pair.server_conn_mut(server).handshake_confirmed());
+
+    let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+    pair.server_send(server, stream)
+        .write(b"lost in a connectivity gap")
+        .unwrap();
+    pair.server.drive(pair.time, pair.client.addr);
+    assert!(!pair.server.outbound.is_empty());
+    pair.server.outbound.clear();
+
+    let pto = pair.server_conn_mut(server).pto_for_test(SpaceId::Data);
+    for count in 0..8 {
+        let conn = pair.server_conn_mut(server);
+        assert_eq!(
+            conn.pto_interval_for_test(SpaceId::Data),
+            Some(pto * (1 << count)),
+            "PTO {count}"
+        );
+        pair.time = conn.loss_detection_timer().unwrap();
+        pair.server.drive(pair.time, pair.client.addr);
+        assert!(!pair.server.outbound.is_empty(), "every PTO sends a probe");
+        pair.server.outbound.clear();
+    }
+
+    // Expire a PTO without transmitting: the next one still doubles from the latest send,
+    // which lies one armed period before the expiry.
+    let conn = pair.server_conn_mut(server);
+    let armed = conn.pto_interval_for_test(SpaceId::Data).unwrap();
+    let now = conn.loss_detection_timer().unwrap();
+    conn.handle_timeout(now);
+    assert_eq!(conn.loss_detection_timer(), Some(now + armed));
+}
+
 #[test]
 fn ack_delay_limit_applies_after_handshake_confirmation() {
     let mut pair = Pair::default();
@@ -991,8 +1038,6 @@ fn ecn_validation_counts_packets_instead_of_contiguous_runs() {
 
 #[test]
 fn current_path_ecn_rejects_bleaching_corruption_and_missing_feedback() {
-    use rama_quic_proto::frame::EcnCounts;
-
     for counts in [
         None,
         Some(EcnCounts::ZERO),
@@ -1025,8 +1070,6 @@ fn current_path_ecn_rejects_bleaching_corruption_and_missing_feedback() {
 
 #[test]
 fn current_path_ecn_accepts_congestion_marks_and_lost_ack_counts() {
-    use rama_quic_proto::frame::EcnCounts;
-
     for counts in [
         EcnCounts {
             ect0: 1,

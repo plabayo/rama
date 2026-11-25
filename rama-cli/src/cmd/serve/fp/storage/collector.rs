@@ -15,7 +15,7 @@ use rama::{
     tls::{SecureTransport, server::ServerClientHellos},
     ua::{
         UserAgent,
-        inspect::tls_connection_slots,
+        inspect::{append_quic_parameter_slots, tls_connection_slots},
         profile::{
             capture::{
                 CAPTURE_REVISION,
@@ -179,11 +179,9 @@ pub(super) fn connection_capture(
     h3: Option<&Http3Info>,
     initial_request: Option<&ProfileCapture>,
 ) -> Result<Option<ProfileCapture>, BoxError> {
+    let hellos = ServerClientHellos::from_extensions(ext);
     // Negotiated TLS with unavailable capture is not a cleartext observation.
-    if ext
-        .get_ref::<SecureTransport>()
-        .is_some_and(|transport| transport.client_hello().is_none())
-    {
+    if ext.contains::<SecureTransport>() && hellos.effective().is_none() {
         return Err(ProfileDataError::Incomplete("TLS ClientHello").into());
     }
     let mut slots = Vec::new();
@@ -197,19 +195,7 @@ pub(super) fn connection_capture(
             kind: CapturedSlotKind::QuicFirstFlight,
             value: flight.canonical(flight_limits)?,
         });
-        let parameters = OrderedProtocolCapture::capture(
-            ProfileCaptureCompleteness::from_complete(observed.completeness.transport_parameters),
-            OrderNamespace::QuicParameter,
-            observed
-                .transport_parameters
-                .iter()
-                .map(|parameter| (u64::from(parameter.id), parameter.value.as_slice())),
-            orders,
-        )?;
-        slots.push(CapturedSlot {
-            kind: CapturedSlotKind::QuicParameters,
-            value: parameters.canonical(orders)?,
-        });
+        append_quic_parameter_slots(&mut slots, observed, &hellos, orders)?;
         let h3 = h3.ok_or(ProfileDataError::Incomplete("H3 connection observation"))?;
         let sequence_limits = H3SequenceCaptureLimits::default();
         let sequence = H3ClientSequenceCapture::capture_at_request_head(
@@ -300,7 +286,7 @@ pub(super) fn connection_capture(
     }
     let is_quic = version == Version::HTTP_3;
     slots.extend(tls_connection_slots(
-        &ServerClientHellos::from_extensions(ext),
+        &hellos,
         if is_quic {
             TlsCaptureTransport::Quic
         } else {
@@ -333,7 +319,8 @@ pub(super) fn connection_capture(
 
 #[cfg(test)]
 pub(super) mod tests {
-    use super::*;
+    use std::sync::{Arc, OnceLock};
+
     use rama::{
         http::proto::{
             h2::frame::{EarlyFrameStreamContext, Head, Kind, Settings, StreamId, WindowUpdate},
@@ -351,10 +338,11 @@ pub(super) mod tests {
         tls::{
             CipherSuite, CompressionAlgorithm, ProtocolVersion,
             client::ClientHello,
-            server::{EchServerObservation, ServerEchAccepted},
+            server::{ServerHandshakeHellos, publish_server_client_hellos},
         },
     };
-    use std::sync::{Arc, OnceLock};
+
+    use super::*;
 
     pub(in super::super) fn observed() -> QuicObservation {
         QuicObservation {
@@ -660,8 +648,8 @@ pub(super) mod tests {
     #[test]
     fn accepted_ech_requires_the_outer_hello_and_keeps_both_slots() {
         let ext = Extensions::new();
-        ext.insert(SecureTransport::with_client_hello(tls_hello(1)));
-        ext.insert(ServerEchAccepted::new(true));
+        ext.insert(SecureTransport::default());
+        publish_server_client_hellos(&ext, Some(true), Some(tls_hello(1)));
         let error = connection_capture(
             profile_key("synthetic/1").unwrap(),
             connection_context(&ext),
@@ -675,7 +663,10 @@ pub(super) mod tests {
             error.downcast_ref::<ProfileDataError>(),
             Some(ProfileDataError::Incomplete("ECH outer ClientHello"))
         ));
-        ext.insert(EchServerObservation::new(tls_hello(2)));
+        let wire = Extensions::new();
+        wire.insert(SecureTransport::with_client_hello(tls_hello(2)));
+        publish_server_client_hellos(&wire, Some(true), Some(tls_hello(1)));
+        ext.insert(wire.get_ref::<ServerHandshakeHellos>().unwrap().clone());
         let capture = connection_capture(
             profile_key("synthetic/1").unwrap(),
             connection_context(&ext),
@@ -713,5 +704,97 @@ pub(super) mod tests {
                 Some(ProfileDataError::Incomplete("TLS ClientHello"))
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod inner_parameter_tests {
+    use rama::tls::{
+        ExtensionId, ProtocolVersion,
+        client::{ClientHello, ClientHelloExtension},
+        server::{EchServerObservation, ServerEchAccepted},
+    };
+
+    use super::{tests::observed, *};
+
+    #[test]
+    fn accepted_inner_parameters_supply_the_replay_tuple() {
+        let observed = observed();
+        let hello = |body| {
+            ClientHello::new(
+                ProtocolVersion::TLSv1_3,
+                vec![],
+                vec![],
+                vec![ClientHelloExtension::Opaque {
+                    id: ExtensionId::QUIC_TRANSPORT_PARAMETERS,
+                    data: body,
+                }],
+            )
+        };
+        let inner = hello(vec![1, 1, 1, 4, 1, 2]);
+        let outer = hello(vec![1, 1, 1]);
+        let observation = EchServerObservation::new(outer.clone());
+        let hellos = ServerClientHellos::new(
+            Some(&inner),
+            Some(ServerEchAccepted::new(true)),
+            Some(&observation),
+        );
+        let mut slots = Vec::new();
+        append_quic_parameter_slots(
+            &mut slots,
+            &observed,
+            &hellos,
+            OrderCaptureLimits::default(),
+        )
+        .unwrap();
+        let parameters =
+            OrderedProtocolCapture::from_canonical(&slots[1].value, OrderCaptureLimits::default())
+                .unwrap();
+        assert_eq!(
+            slots.iter().map(|slot| slot.kind).collect::<Vec<_>>(),
+            [
+                CapturedSlotKind::QuicOuterParameters,
+                CapturedSlotKind::QuicParameters
+            ]
+        );
+        let outer_parameters =
+            OrderedProtocolCapture::from_canonical(&slots[0].value, OrderCaptureLimits::default())
+                .unwrap();
+        assert_eq!(
+            outer_parameters
+                .fields
+                .iter()
+                .map(|field| field.id)
+                .collect::<Vec<_>>(),
+            [1]
+        );
+        assert_eq!(
+            parameters
+                .fields
+                .iter()
+                .map(|field| field.id)
+                .collect::<Vec<_>>(),
+            [1, 4]
+        );
+        let ordinary = ServerClientHellos::new(Some(&outer), None, None);
+        let mut slots = Vec::new();
+        append_quic_parameter_slots(
+            &mut slots,
+            &observed,
+            &ordinary,
+            OrderCaptureLimits::default(),
+        )
+        .unwrap();
+        let parameters =
+            OrderedProtocolCapture::from_canonical(&slots[0].value, OrderCaptureLimits::default())
+                .unwrap();
+        assert_eq!(
+            parameters
+                .fields
+                .iter()
+                .map(|field| field.id)
+                .collect::<Vec<_>>(),
+            [1]
+        );
     }
 }

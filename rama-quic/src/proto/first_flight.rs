@@ -147,6 +147,13 @@ impl IncomingProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::Wake,
+    };
 
     /// A ClientHello handshake message with `extensions` bytes of opaque extension payload.
     fn client_hello(extensions: usize) -> Vec<u8> {
@@ -293,14 +300,6 @@ mod tests {
 
     #[test]
     fn progress_wakes_the_registered_waker() {
-        use std::{
-            sync::{
-                Arc,
-                atomic::{AtomicUsize, Ordering},
-            },
-            task::Wake,
-        };
-
         struct Count(AtomicUsize);
         impl Wake for Count {
             fn wake(self: Arc<Self>) {

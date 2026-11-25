@@ -168,6 +168,7 @@ const MAX_ACK_DELAY: Duration = Duration::from_millis(1 << 14);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::{Instant, connection::spaces::PacketSpace};
 
     #[test]
     fn requested_delay_respects_a_peer_minimum_above_the_rtt() {
@@ -236,8 +237,6 @@ mod tests {
 
     #[test]
     fn received_delays_enforce_microsecond_boundaries_and_ignore_stale_frames() {
-        use crate::proto::{Instant, connection::spaces::PacketSpace};
-
         for micros in [
             0,
             999,

@@ -1,10 +1,12 @@
 use crate::extensions::Extension;
 use core::num::NonZeroUsize;
-use rama_utils::{macros::generate_set_and_with, octets::kib};
+use rama_utils::{
+    macros::{generate_set_and_with, nonzero},
+    octets::{kib, mib},
+};
 
 /// Default for [`ParseConfig::with_max_line_bytes`]: far above any line a real peer sends.
-pub const DEFAULT_MAX_LINE_BYTES: NonZeroUsize =
-    NonZeroUsize::new(rama_utils::octets::mib(16)).expect("16 MiB is not zero");
+pub const DEFAULT_MAX_LINE_BYTES: NonZeroUsize = nonzero!(mib(16));
 
 /// Controls how the parser deals with lines that contain no JSON values.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -105,8 +107,7 @@ impl ParseConfig {
 }
 
 /// Default maximum encoded size of one element in a streamed JSON array.
-pub const DEFAULT_MAX_ELEMENT_BYTES: NonZeroUsize =
-    NonZeroUsize::new(kib(32)).expect("32 KiB is positive");
+pub const DEFAULT_MAX_ELEMENT_BYTES: NonZeroUsize = nonzero!(kib(32));
 
 /// Bounds how many encoded bytes can be buffered for a single JSON array element.
 #[derive(Debug, Clone, Copy, Extension)]

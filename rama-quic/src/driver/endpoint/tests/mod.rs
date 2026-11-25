@@ -3,7 +3,10 @@
 use super::*;
 use crate::driver::sockets::RESPONSE_WORK_LIMIT;
 use crate::driver::udp::SEND_WORK_LIMIT;
-use rama_udp::{DatagramCapabilities, DatagramError, DatagramSender, DatagramSocket, SendDatagram};
+use rama_udp::{
+    DatagramCapabilities, DatagramError, DatagramSender, DatagramSocket, PrefixedDatagramSocket,
+    RetainedDatagram, SendDatagram,
+};
 use std::assert_matches;
 use std::collections::VecDeque;
 use std::{num::NonZeroUsize, task::Wake};
@@ -247,8 +250,6 @@ fn metadata(len: usize, segment_size: Option<usize>) -> DatagramMetadata {
 
 #[test]
 fn retained_datagrams_use_temporary_space_only_within_the_udp_bound() {
-    use rama_udp::{PrefixedDatagramSocket, RetainedDatagram};
-
     for len in [1200, 8192, 65536, 65537] {
         let mut config = EndpointConfig::try_with_rand_key().unwrap();
         config.max_udp_payload_size(1231).unwrap();

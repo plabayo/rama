@@ -111,8 +111,9 @@ pub struct RelayErrorContext<'a> {
     pub reason: RelayErrorReason,
 }
 
-#[derive(Clone)]
-struct ErrorResponse {
+/// The relay error response hook shared by the HTTP/1-2 and HTTP/3 relays.
+#[derive(Clone, Default)]
+pub(super) struct ErrorResponse {
     handler: Option<Arc<dyn Fn(RelayErrorContext<'_>) -> Response + Send + Sync>>,
     abort_on_middleware_error: bool,
 }
@@ -124,6 +125,38 @@ impl std::fmt::Debug for ErrorResponse {
 }
 
 impl ErrorResponse {
+    /// Build every relay error response with `f` instead of the default one.
+    pub(super) fn set_handler(
+        &mut self,
+        f: impl Fn(RelayErrorContext<'_>) -> Response + Send + Sync + 'static,
+    ) {
+        self.handler = Some(Arc::new(f));
+    }
+
+    /// The response for `context`, leaving connection and stream handling to the relay.
+    pub(super) fn response(&self, context: RelayErrorContext<'_>) -> Response {
+        let mut response = self.handler.as_ref().map_or_else(
+            || DefaultErrorResponse.into(),
+            |f| f(context).with_extensions(Default::default()),
+        );
+        // A failed request never gets the tunnel or protocol switch a hook's status would announce.
+        if response.status().is_informational()
+            || (*context.method == Method::CONNECT && response.status().is_success())
+        {
+            *response.status_mut() = StatusCode::BAD_GATEWAY;
+        }
+        if matches!(
+            context.version,
+            Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11
+        ) {
+            response
+                .headers_mut()
+                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+        }
+        response
+    }
+
+    /// Build the response for the configured proxy error policy.
     fn build(&self, context: RelayErrorContext<'_>, ingress: &WeakScope) -> Response {
         let abort = match context.reason {
             RelayErrorReason::ProtocolMismatch | RelayErrorReason::EgressClosed => true,
@@ -136,18 +169,7 @@ impl ErrorResponse {
         if abort {
             ingress.abort(CLOSE_INGRESS);
         }
-        let mut response = self.handler.as_ref().map_or_else(
-            || DefaultErrorResponse.into(),
-            |f| f(context).with_extensions(Default::default()),
-        );
-        if matches!(
-            context.version,
-            Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11
-        ) {
-            response
-                .headers_mut()
-                .insert(header::CONNECTION, HeaderValue::from_static("close"));
-        }
+        let response = self.response(context);
         if context.reason == RelayErrorReason::NeverProcessed {
             response
                 .extensions()
@@ -230,10 +252,7 @@ impl HttpMitmRelay {
             http_server,
             middleware: ArcLayer::new(),
             scope,
-            error_response: ErrorResponse {
-                handler: None,
-                abort_on_middleware_error: false,
-            },
+            error_response: ErrorResponse::default(),
             authority: None,
             eager_peer_settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
             max_mirrored_h2_connection_credit: DEFAULT_MAX_MIRRORED_H2_CONNECTION_CREDIT,
@@ -252,7 +271,7 @@ impl<M, P> HttpMitmRelay<M, P> {
         mut self,
         f: impl Fn(RelayErrorContext<'_>) -> Response + Send + Sync + 'static,
     ) -> Self {
-        self.error_response.handler = Some(Arc::new(f));
+        self.error_response.set_handler(f);
         self
     }
 
@@ -1136,6 +1155,45 @@ mod tests {
             .iter()
             .map(|setting| (u16::from(setting.id), setting.value))
             .collect()
+    }
+
+    #[test]
+    fn a_hook_never_answers_a_failed_tunnel_or_switch_as_established() {
+        let error_response = ErrorResponse {
+            handler: Some(Arc::new(|context: RelayErrorContext<'_>| {
+                let mut response = Response::new(Body::from("hook"));
+                if context.uri.path_or_root().as_ref() == "/switch" {
+                    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+                } else if context.uri.path_or_root().as_ref() == "/early" {
+                    *response.status_mut() = StatusCode::EARLY_HINTS;
+                }
+                response
+            })),
+            abort_on_middleware_error: false,
+        };
+        let connect: Uri = Uri::parse_authority_form("origin.example:443").unwrap();
+        let switch: Uri = "http://origin.example/switch".parse().unwrap();
+        let plain: Uri = "http://origin.example/".parse().unwrap();
+        let early: Uri = "http://origin.example/early".parse().unwrap();
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for (method, uri, status) in [
+                (Method::CONNECT, &connect, StatusCode::BAD_GATEWAY),
+                (Method::GET, &switch, StatusCode::BAD_GATEWAY),
+                (Method::GET, &early, StatusCode::BAD_GATEWAY),
+                (Method::GET, &plain, StatusCode::OK),
+            ] {
+                let response = error_response.build(
+                    RelayErrorContext {
+                        version,
+                        method: &method,
+                        uri,
+                        reason: RelayErrorReason::RequestFailed,
+                    },
+                    &WeakScope::detached(),
+                );
+                assert_eq!(response.status(), status, "{version:?} {method} {uri}");
+            }
+        }
     }
 
     #[test]

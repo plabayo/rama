@@ -24,7 +24,6 @@ use super::{
     connection::Shared,
     frame::{FrameDecoder, FrameEvent},
     headers, qlog,
-    qpack::EncodeField,
     quic::RecvStream,
     transport::BoxedStreamHandle,
 };
@@ -428,7 +427,7 @@ pub(crate) fn encode_trailers(
     shared.encode(
         id,
         headers::outgoing_trailer_fields(headers, allowed)
-            .map(|(name, value)| EncodeField::from_header(name, value)),
+            .map(|(name, value)| headers::outgoing_field(name, value)),
         None,
     )
 }

@@ -1,19 +1,5 @@
 //! Pull-driven capture: the first attempt and the retry coordinator take turns
 //! driving the same source, writer, and partially written frame.
-use super::{
-    RetryBody, SourceBody,
-    storage::{ReplaySource, ReplayWriter},
-};
-use crate::{
-    HeaderMap, StreamingBody,
-    body::{Frame, SizeHint},
-};
-use parking_lot::Mutex;
-use rama_core::{
-    bytes::Bytes,
-    error::BoxError,
-    futures::future::{BoxFuture, FutureExt as _, Shared},
-};
 use std::{
     fmt,
     future::{Future, poll_fn},
@@ -22,7 +8,24 @@ use std::{
     task::{Context, Poll, Waker, ready},
     time::Duration,
 };
-use tokio::time::{Instant, Sleep};
+
+use parking_lot::Mutex;
+use rama_core::{
+    bytes::Bytes,
+    error::BoxError,
+    futures::future::{BoxFuture, FutureExt as _, Shared},
+};
+use rama_utils::time::deadline_after;
+use tokio::time::{Instant, Sleep, sleep_until};
+
+use super::{
+    RetryBody, SourceBody,
+    storage::{ReplaySource, ReplayWriter},
+};
+use crate::{
+    HeaderMap, StreamingBody,
+    body::{Frame, SizeHint},
+};
 
 type SharedError = Arc<dyn std::error::Error + Send + Sync>;
 type Resolution = Result<Option<Arc<dyn ReplaySource>>, SharedError>;
@@ -73,6 +76,7 @@ pub(super) fn capture(
     writer: Box<dyn ReplayWriter>,
     max_bytes: u64,
     timeout: Duration,
+    handoff: Duration,
 ) -> (RetryBody, Capture) {
     let shared = Arc::new(Mutex::new(SharedStream {
         tee: Some(Tee {
@@ -90,6 +94,9 @@ pub(super) fn capture(
         owner: Owner::Attempt,
         first_reader_alive: true,
         attempt_finished: false,
+        handoff,
+        handoff_deadline: None,
+        released_at: None,
         takeover_waiter: None,
         waiter: None,
     }));
@@ -105,6 +112,8 @@ pub(super) fn capture(
 }
 
 fn replay_future(coordinator: Arc<Mutex<SharedStream>>) -> ReplayFuture {
+    // Own timer: the tee's deadline timer wakes whichever reader armed it last.
+    let mut reader_wait: Option<Pin<Box<Sleep>>> = None;
     poll_fn(move |cx| {
         let mut state = coordinator.lock();
         match state.owner {
@@ -113,7 +122,40 @@ fn replay_future(coordinator: Arc<Mutex<SharedStream>>) -> ReplayFuture {
                 state.takeover_waiter = Some(cx.waker().clone());
                 return Poll::Pending;
             }
-            Owner::Attempt => state.owner = Owner::Coordinator,
+            Owner::Attempt => {
+                if let Some(tee) = &state.tee
+                    && state.first_reader_alive
+                    && !tee.eof
+                {
+                    // A live reader, e.g. in a connection task, gets the handoff timeout to finish.
+                    let Some(capture_deadline) = tee
+                        .deadline
+                        .as_ref()
+                        .filter(|_| tee.possible())
+                        .map(|d| d.at)
+                    else {
+                        return Poll::Ready(Ok(None));
+                    };
+                    let handoff = state.handoff;
+                    let deadline = *state.handoff_deadline.get_or_insert_with(|| {
+                        deadline_after(Instant::now(), handoff).min(capture_deadline)
+                    });
+                    let timer = reader_wait.get_or_insert_with(|| Box::pin(sleep_until(deadline)));
+                    if timer.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(Ok(None));
+                    }
+                    state.takeover_waiter = Some(cx.waker().clone());
+                    return Poll::Pending;
+                }
+                // The release time decides, not when this future is polled again.
+                if let (Some(deadline), Some(released_at)) =
+                    (state.handoff_deadline, state.released_at)
+                    && released_at > deadline
+                {
+                    return Poll::Ready(Ok(None));
+                }
+                state.owner = Owner::Coordinator;
+            }
             Owner::Coordinator => (),
         }
         state.waiter = Some(cx.waker().clone());
@@ -130,26 +172,19 @@ fn replay_future(coordinator: Arc<Mutex<SharedStream>>) -> ReplayFuture {
 }
 
 impl Capture {
-    pub(super) fn allow_replay_after_attempt(&self) -> bool {
+    /// Mark the first attempt as returned, so the replay can resolve.
+    pub(super) fn attempt_returned(&self) {
         let waiter = {
             let mut state = self.pending.resolver.shared.lock();
-            let Some(tee) = &state.tee else {
-                return false;
-            };
-            // The result can contain the live reader, even behind another body
-            // adapter. Leave its remaining frames with it, including pending writes.
-            if (state.first_reader_alive && !tee.eof) || !tee.possible() {
-                return false;
-            }
             state.attempt_finished = true;
             state.takeover_waiter.take()
         };
         if let Some(waiter) = waiter {
             waiter.wake();
         }
-        true
     }
 
+    /// Wait for the first attempt to make its replay body available.
     pub(super) async fn finish(&self) -> Result<bool, BoxError> {
         self.pending
             .resolver
@@ -159,6 +194,7 @@ impl Capture {
             .map_err(|error| Box::new(error) as BoxError)
     }
 
+    /// Access the body retained for the pending attempt.
     pub(super) fn pending_body(&self) -> RetryBody {
         RetryBody::pending(self.pending.clone())
     }
@@ -198,6 +234,12 @@ struct SharedStream {
     owner: Owner,
     first_reader_alive: bool,
     attempt_finished: bool,
+    // Longest wait for a live first reader to release the upload to a retry.
+    handoff: Duration,
+    // Set once a retry starts waiting for the live first reader.
+    handoff_deadline: Option<Instant>,
+    // When the first reader was dropped or reached EOF.
+    released_at: Option<Instant>,
     takeover_waiter: Option<Waker>,
     waiter: Option<Waker>,
 }
@@ -208,11 +250,17 @@ impl Drop for Forward {
     fn drop(&mut self) {
         let mut state = self.0.lock();
         state.first_reader_alive = false;
+        state.released_at.get_or_insert_with(Instant::now);
         if matches!(state.owner, Owner::Released) {
             state.tee = None;
         }
         if !matches!(state.owner, Owner::Coordinator) {
             state.waiter = None;
+        }
+        let coordinator = state.takeover_waiter.take();
+        drop(state);
+        if let Some(waker) = coordinator {
+            waker.wake();
         }
     }
 }
@@ -249,7 +297,17 @@ impl StreamingBody for Forward {
             return Poll::Ready(None);
         };
         let frame = tee.poll_frame(cx, false);
+        // A coordinator waiting for this reader can take over at EOF, or give up.
+        let settled = tee.eof || !tee.possible();
+        if tee.eof {
+            state.released_at.get_or_insert_with(Instant::now);
+        }
         state.waiter = frame.is_pending().then(|| cx.waker().clone());
+        let coordinator = settled.then(|| state.takeover_waiter.take()).flatten();
+        drop(state);
+        if let Some(waker) = coordinator {
+            waker.wake();
+        }
         frame
     }
 
@@ -278,7 +336,7 @@ struct Deadline {
 impl Deadline {
     fn new(timeout: Duration) -> Self {
         Self {
-            at: rama_utils::time::deadline_after(Instant::now(), timeout),
+            at: deadline_after(Instant::now(), timeout),
             timer: None,
         }
     }
@@ -290,7 +348,7 @@ impl Deadline {
     fn arm(&mut self, cx: &mut Context<'_>) {
         let timer = self
             .timer
-            .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(self.at)));
+            .get_or_insert_with(|| Box::pin(sleep_until(self.at)));
         if timer.as_mut().poll(cx).is_ready() {
             // The deadline elapsed between the caller's check and registration.
             cx.waker().wake_by_ref();

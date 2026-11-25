@@ -148,6 +148,9 @@ fn upstream_advertised_revocation(original: &X509) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::TlsConnectorData;
+    use crate::proxy::mitm::TlsMitmRelay;
+    use crate::proxy::mitm::revocation::{MitmCa, ProxyHostedRevocation};
     use rama_boring::{
         asn1::{Asn1Object, Asn1Time},
         bn::{BigNum, MsbOption},
@@ -157,7 +160,9 @@ mod tests {
         ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode},
         x509::{X509, X509Builder, X509Extension, X509NameBuilder},
     };
+    use rama_core::{ServiceInput, io::BridgeIo};
     use rama_net::uri::Uri;
+    use rama_tls::client::{ServerVerifyMode, TlsClientConfig};
     use rama_tls::server::{CertificateKeyKind, CertificateSubject, SelfSignedCaConfig};
     use std::assert_matches;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -454,8 +459,6 @@ mod tests {
     /// responder's proxy-hosted pointers (the `None` arm is covered elsewhere).
     #[tokio::test]
     async fn with_revocation_stamps_proxy_hosted_pointers() {
-        use crate::proxy::mitm::revocation::{MitmCa, ProxyHostedRevocation};
-
         let (ca_crt, ca_key) = generate_certificate_authority_x509(&ca_config(
             "rama-mitm-with-revoc-ca.example",
             None,
@@ -567,11 +570,6 @@ mod tests {
     /// ([`ServiceInput`] wraps the duplex ends for the `ExtensionsRef` bound.)
     #[tokio::test]
     async fn e2e_relay_handshake_staples_mirrored_leaf() {
-        use crate::client::TlsConnectorData;
-        use crate::proxy::mitm::TlsMitmRelay;
-        use rama_core::{ServiceInput, io::BridgeIo};
-        use rama_tls::client::{ServerVerifyMode, TlsClientConfig};
-
         // Upstream TLS server presenting a cert that advertises OCSP.
         let (upstream_key, upstream_x509) = upstream_identity(Revocation::Ocsp);
         let mut up = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server()).unwrap();
@@ -653,11 +651,6 @@ mod tests {
     /// acceptor; a different upstream cert gets its own entry.
     #[tokio::test]
     async fn relay_reuses_cached_acceptor_per_upstream_cert() {
-        use crate::client::TlsConnectorData;
-        use crate::proxy::mitm::TlsMitmRelay;
-        use rama_core::{ServiceInput, io::BridgeIo};
-        use rama_tls::client::{ServerVerifyMode, TlsClientConfig};
-
         fn upstream_acceptor(revocation: Revocation) -> SslAcceptor {
             let (key, x509) = upstream_identity(revocation);
             let mut up = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server()).unwrap();

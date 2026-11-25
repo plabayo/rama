@@ -49,6 +49,9 @@ use rama::{
 };
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
+#[cfg(feature = "fuzz-utils")]
+use rama::http::core::h3::fuzz::RequestEncoder;
+
 mod bench_alloc;
 fn main() {
     divan::main();
@@ -468,6 +471,52 @@ fn qpack_round_trip(bencher: divan::Bencher, dynamic: bool) {
         id += 4;
         divan::black_box(fields);
     });
+}
+
+/// A browser-like request head, as sent; `rewritten` adds fields the encoder must leave out or
+/// rewrite: a connection-specific field, an unusable Host and a value with outer whitespace.
+#[cfg(feature = "fuzz-utils")]
+fn browser_request(rewritten: bool) -> Request<()> {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri("https://www.example.com/assets/app/main.js?v=20261123&lang=en")
+        .header(
+            "user-agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
+             Chrome/131.0.0.0 Safari/537.36",
+        )
+        .header("accept", "*/*")
+        .header("accept-language", "en-US,en;q=0.9")
+        .header("accept-encoding", "gzip, deflate, br, zstd")
+        .header(
+            "sec-ch-ua",
+            "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
+        )
+        .header("sec-ch-ua-mobile", "?0")
+        .header("sec-ch-ua-platform", "\"Linux\"")
+        .header("sec-fetch-site", "same-origin")
+        .header("sec-fetch-mode", "no-cors")
+        .header("sec-fetch-dest", "script")
+        .header("referer", "https://www.example.com/")
+        .header("cookie", "session=0123456789abcdef; theme=dark")
+        .header("priority", "u=1");
+    if rewritten {
+        request = request
+            .header("connection", "keep-alive")
+            .header("host", "not a host")
+            .header("x-padded", " padded value ");
+    }
+    request.body(()).unwrap()
+}
+
+/// Request head encoding on the client, including the record of the fields it sent.
+#[cfg(feature = "fuzz-utils")]
+#[divan::bench(args = [false, true])]
+fn request_head_encode(bencher: divan::Bencher, rewritten: bool) {
+    let mut encoder = RequestEncoder::new();
+    bencher
+        .with_inputs(|| browser_request(rewritten))
+        .bench_local_values(|request| encoder.encode(request).unwrap());
 }
 
 // Unknown cancellations are valid feedback even when no dynamic section was

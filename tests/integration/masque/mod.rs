@@ -1493,7 +1493,7 @@ async fn quic_mitm_with(
     let route = service_fn(move |input: InputWithQuicClientHello<MitmAssociation>| {
         let terminate = terminate.clone();
         async move {
-            let name = input.peeked.client_hello.ext_server_name().cloned();
+            let name = input.peeked.client_hello.ext_server_domain().cloned();
             if name.is_some_and(|name| name.as_str() == "localhost") {
                 terminate.serve(input).await
             } else {

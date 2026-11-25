@@ -43,6 +43,8 @@ pub(crate) use paired::PairedSocket;
 pub(crate) use imp::UdpSocketState;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) use imp::set_socket_option;
+#[cfg(windows)]
+pub(crate) use imp::stop_time_exceeded_reports;
 pub(crate) const BATCH_SIZE: usize = imp::BATCH_SIZE;
 
 #[derive(Debug, Copy, Clone)]

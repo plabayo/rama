@@ -7,8 +7,8 @@ use std::{
 };
 
 use parking_lot::{Condvar, Mutex};
-use rama_boring::x509::store::X509StoreBuilder;
-use rama_core::error::BoxErrorExt as _;
+use rama_boring::{error::ErrorStack, x509::store::X509StoreBuilder};
+use rama_core::error::{BoxErrorExt as _, CauseExt as _};
 use tokio::sync::Notify;
 
 use super::*;
@@ -20,10 +20,13 @@ fn derived_store_cache_is_bounded() {
     let cache = owner.stores();
     let store: BoringServerVerification =
         Either::A(Arc::new(X509StoreBuilder::new().unwrap().build()));
-    let trust = TlsServerTrust::native_roots();
-    for _ in 0..(capacity.get() + 8) {
-        let roots = Certificates::from([]);
-        cache.insert(store_key(&trust, Some(&roots)), store.clone());
+    for index in 0..(capacity.get() + 8) {
+        let anchors = TlsServerTrustAnchors::try_new([CertificateDer::from(vec![index as u8])]);
+        let trust = TlsServerTrust::custom(anchors.unwrap());
+        cache.insert(
+            ServerTrustSnapshot::read(&trust).unwrap().key(),
+            store.clone(),
+        );
     }
     cache.run_pending_tasks();
     assert!((1..=capacity.get() as u64).contains(&cache.entry_count()));
@@ -36,7 +39,7 @@ async fn concurrent_uncached_verification_does_not_block_the_runtime() -> Result
     static BUILDS: AtomicUsize = AtomicUsize::new(0);
     let cache = BoringServerTrustCache::default();
 
-    let build = |_: &TlsServerTrust, _: Option<&Certificates>| {
+    let build = |_: &ServerTrustSnapshot| {
         BUILDS.fetch_add(1, Ordering::Relaxed);
         STARTED.notify_one();
         let mut released = RELEASE.0.lock();
@@ -72,4 +75,16 @@ async fn concurrent_uncached_verification_does_not_block_the_runtime() -> Result
     }
     assert_eq!(BUILDS.load(Ordering::Relaxed), 1);
     Ok(())
+}
+
+#[test]
+fn cached_verification_errors_keep_their_source() {
+    let invalid = TlsServerTrustAnchors::try_new([CertificateDer::from(vec![1])]).unwrap();
+    let trust = TlsServerTrust::custom(invalid);
+    let extensions = Extensions::new();
+    extensions.insert(trust);
+    let Err(error) = BoringServerTrustCache::default().server_verification(&extensions) else {
+        panic!("an unparsable anchor must fail");
+    };
+    assert!(error.find_cause::<ErrorStack>().is_some());
 }

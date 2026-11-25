@@ -9,6 +9,7 @@ use std::{
 };
 
 use rama_core::error::BoxError;
+use rama_net::tls::ServerName;
 use windows_sys::Win32::{
     Foundation::{
         CERT_E_CN_NO_MATCH, CERT_E_EXPIRED, CERT_E_INVALID_NAME, CERT_E_UNTRUSTEDROOT,
@@ -446,10 +447,12 @@ impl Verifier {
         &self,
         end_entity: &CertificateDer<'_>,
         intermediates: &[CertificateDer<'_>],
-        server_name: &str,
+        server_name: &ServerName,
         ocsp_response: Option<&[u8]>,
         now: SystemTime,
     ) -> Result<Vec<CertificateDer<'static>>, PlatformVerifyError> {
+        let server_name_text = super::server_name_str(server_name);
+        let server_name = server_name_text.as_ref();
         let mut store = CertificateStore::new()?;
         let mut leaf = store.add_cert(end_entity)?;
         for intermediate in intermediates {

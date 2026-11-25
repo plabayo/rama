@@ -266,6 +266,9 @@ mod tests {
                 headers::{
                     HeaderCapture, HeaderCapturePolicy, HeaderOccurrence, HeaderValueSource,
                 },
+                joint::{
+                    CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
+                },
             },
             evidence::ProfileEvidence,
             format::archive::{ProfileArchiveEntry, ProfileArchiveWriter},
@@ -357,9 +360,6 @@ mod tests {
 
     #[test]
     fn streamed_joint_preserves_slot_shape_and_canonical_fallback() {
-        use rama::ua::profile::capture::joint::{
-            CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
-        };
         let capture = HeaderCapture {
             completeness: ProfileCaptureCompleteness::Complete,
             version: Version::HTTP_2,

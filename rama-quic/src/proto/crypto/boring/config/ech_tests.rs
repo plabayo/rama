@@ -1,11 +1,3 @@
-use super::super::tests::{configs, handshake};
-use super::*;
-use crate::{
-    Endpoint, ServerConfig,
-    client::{QuicConnector, SharedQuicEndpoint},
-    proto::crypto::{ClientConfig as _, HandshakeEvent, ServerConfig as _},
-    tls::BoringTlsProvider,
-};
 use rama_core::{
     Service,
     error::CauseExt as _,
@@ -24,18 +16,24 @@ use rama_tls::{
         ClientHelloHandshakePrefix, EchRequirement, TlsEchAccepted,
         parse_client_hello_message_prefix,
     },
+    server::{CertificateIssuanceContext, DynamicCertIssuer, ServerAuthData, TlsServerAuth},
+};
+use rama_tls_boring::server::{
+    BoringServerConfigExt as _, CacheKind, EchServerKey, EchServerKeys, ReloadableEchServerKeys,
+    ServerCertIssuerData,
 };
 
-const SERVER_ECH_CONFIG: &[u8] = &[
-    0xfe, 0x0d, 0x00, 0x3a, 0x01, 0x00, 0x20, 0x00, 0x20, 0x7e, 0xfb, 0x5f, 0xee, 0xa2, 0xa2, 0x74,
-    0xb3, 0xff, 0xfe, 0x69, 0x51, 0x9e, 0xfa, 0xe1, 0xfa, 0x49, 0x8c, 0x61, 0x2c, 0xfa, 0xd0, 0x0f,
-    0x8c, 0x22, 0x87, 0x0e, 0xbc, 0xb0, 0x2d, 0x76, 0x25, 0x00, 0x08, 0x00, 0x01, 0x00, 0x01, 0x00,
-    0x01, 0x00, 0x03, 0x00, 0x07, 0x65, 0x63, 0x68, 0x2e, 0x63, 0x6f, 0x6d, 0x00, 0x00,
-];
-const SERVER_ECH_KEY: &[u8] = &[
-    0xa7, 0x35, 0x44, 0x24, 0x6c, 0xfe, 0xb0, 0x53, 0x4c, 0x62, 0x7e, 0xca, 0x2e, 0x11, 0x8f, 0x56,
-    0x3c, 0xc0, 0x2e, 0x6a, 0xa2, 0xe7, 0xaf, 0x3a, 0x7d, 0xb4, 0x72, 0x13, 0x1e, 0x88, 0xb6, 0x85,
-];
+use super::{
+    super::tests::{configs, handshake},
+    *,
+};
+use crate::{
+    Endpoint, ServerConfig,
+    client::{QuicConnector, SharedQuicEndpoint},
+    proto::crypto::{ClientConfig as _, HandshakeEvent, ServerConfig as _},
+    test_helpers::ech_keys::{SERVER_ECH_CONFIG, SERVER_ECH_KEY},
+    tls::BoringTlsProvider,
+};
 
 fn ech_server(config: &TlsServerConfig) -> QuicServerConfig {
     let mut keys = SslEchKeys::builder().unwrap();
@@ -66,6 +64,43 @@ fn ech_config(target: HostWithPort) -> TargetEchConfig {
     let mut bytes = (SERVER_ECH_CONFIG.len() as u16).to_be_bytes().to_vec();
     bytes.extend_from_slice(SERVER_ECH_CONFIG);
     TargetEchConfig::new(target, bytes)
+}
+
+#[test]
+fn native_session_checks_the_ech_resolution_it_constructs() {
+    for ready in [false, true] {
+        let (client, server) = configs();
+        let target: HostWithPort = "localhost:443".parse().unwrap();
+        client
+            .as_extensions()
+            .insert(ConnectorTarget(target.clone()));
+        if ready {
+            client.as_extensions().insert(ech_config(target.clone()));
+        }
+        let prepared = QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap();
+        assert_eq!(prepared.ech.is_some(), ready);
+        if ready {
+            client
+                .as_extensions()
+                .insert(TlsEncryptedClientHello(false));
+        } else {
+            client.as_extensions().insert(ech_config(target));
+        }
+        let final_config = QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap();
+        assert_eq!(final_config.ech.is_some(), !ready);
+        let params = |id| TransportParameters {
+            initial_src_cid: Some(ConnectionId::new(&[id])),
+            ..TransportParameters::default()
+        };
+        let mut client = Arc::new(final_config)
+            .start_session(Version::V1, "localhost", &params(1))
+            .unwrap();
+        let mut server = Arc::new(ech_server(&server))
+            .start_session(Version::V1, &params(2))
+            .unwrap();
+        handshake(&mut *client, &mut *server).unwrap();
+        assert_eq!(client.ech_accepted(), Some(!ready));
+    }
 }
 
 #[test]
@@ -118,7 +153,7 @@ fn real_ech_resumes_only_in_the_ech_partition_and_disables_early_data() {
             else {
                 panic!("generated outer ClientHello is not complete");
             };
-            assert_eq!(outer.ext_server_name().unwrap().as_str(), "ech.com");
+            assert_eq!(outer.ext_server_domain().unwrap().as_str(), "ech.com");
             // This backend omits outer PSK entirely; a future GREASE PSK
             // implementation must instead prove its identities are synthetic.
             assert!(
@@ -289,9 +324,9 @@ fn endpoint_ech_requires_independent_physical_target_and_origin_identity() {
         .insert(ConnectorTarget("alt.example:9443".parse().unwrap()));
     let native = QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap();
     let (identity, _) = native
-        .configure_ssl(Host::from_static("localhost"))
+        .configure_ssl(Some(ServerName::from(Domain::from_static("localhost"))))
         .unwrap();
-    assert_eq!(identity, Host::from_static("localhost"));
+    assert_eq!(identity, ServerName::from(Domain::from_static("localhost")));
     let cache = crate::tls::ClientConfigCache::new(
         Arc::new(crate::tls::BoringTlsProvider::new()),
         TlsOptions::default(),
@@ -299,7 +334,7 @@ fn endpoint_ech_requires_independent_physical_target_and_origin_identity() {
     cache
         .client_config(&client, client.as_extensions())
         .unwrap_err();
-    client.set_server_name(Host::from_static("localhost"));
+    client.set_server_name(Domain::from_static("localhost"));
     cache
         .client_config(&client, client.as_extensions())
         .unwrap();
@@ -367,9 +402,6 @@ fn service_binding_reliance_uses_final_quic_intent() {
 
 #[test]
 fn prepared_server_keys_rotate_without_replacing_quic_contexts() {
-    use rama_tls_boring::server::{
-        BoringServerConfigExt as _, EchServerKey, EchServerKeys, ReloadableEchServerKeys,
-    };
     let keys = |config: &[u8]| {
         EchServerKeys::new([EchServerKey::new(config, SERVER_ECH_KEY, true)]).unwrap()
     };
@@ -416,7 +448,7 @@ fn prepared_server_keys_rotate_without_replacing_quic_contexts() {
             handshake(&mut *c, &mut *s).unwrap();
             assert_eq!(s.ech_accepted(), Some(true));
             let inner = s.effective_client_hello().unwrap();
-            assert_eq!(inner.ext_server_name().unwrap().as_str(), "localhost");
+            assert_eq!(inner.ext_server_domain().unwrap().as_str(), "localhost");
             assert!(inner.extensions().iter().any(|extension| matches!(
                 extension,
                 rama_tls::client::ClientHelloExtension::EncryptedClientHello(
@@ -432,13 +464,6 @@ fn prepared_server_keys_rotate_without_replacing_quic_contexts() {
 
 #[tokio::test]
 async fn ech_pending_issuer_receives_inner_and_rejection_public_names() {
-    use rama_tls::server::{
-        CertificateIssuanceContext, DynamicCertIssuer, ServerAuthData, TlsServerAuth,
-    };
-    use rama_tls_boring::server::{
-        BoringServerConfigExt as _, CacheKind, EchServerKey, EchServerKeys, ServerCertIssuerData,
-    };
-
     struct Issuer {
         auth: ServerAuthData,
         names: Arc<parking_lot::Mutex<Vec<String>>>,
@@ -452,7 +477,7 @@ async fn ech_pending_issuer_receives_inner_and_rejection_public_names() {
             self.names.lock().push(
                 context
                     .client_hello
-                    .ext_server_name()
+                    .ext_server_domain()
                     .unwrap()
                     .as_str()
                     .to_owned(),

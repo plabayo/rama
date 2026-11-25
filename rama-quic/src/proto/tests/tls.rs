@@ -1,4 +1,4 @@
-use std::{assert_matches, task::Context};
+use std::{assert_matches, error::Error as _, task::Context};
 
 use rama_quic_proto::{ConnectionId, Side, TransportError, TransportErrorCode, packet::SpaceId};
 
@@ -79,21 +79,31 @@ impl crypto::Session for FailingInitialKeys {
     ) -> Result<crypto::Keys, TransportError> {
         Err(failure())
     }
+
     fn switch_version(&mut self, _: Version) -> Result<(), crypto::UnsupportedVersion> {
         Err(crypto::UnsupportedVersion)
     }
+
     fn handshake_summary(&self) -> Option<crypto::NegotiatedTlsParameters> {
         None
     }
+
+    fn ech_accepted(&self) -> Option<bool> {
+        None
+    }
+
     fn effective_client_hello(&self) -> Option<rama_tls::client::ClientHello> {
         None
     }
+
     fn negotiated_alpn(&self) -> Option<&[u8]> {
         None
     }
+
     fn negotiated_key_exchange_group(&self) -> Option<u16> {
         None
     }
+
     fn early_crypto(
         &self,
     ) -> Option<(
@@ -110,9 +120,11 @@ impl crypto::Session for FailingInitialKeys {
     fn early_data_accepted(&self) -> Option<bool> {
         None
     }
+
     fn is_handshaking(&self) -> bool {
         true
     }
+
     fn poll_pending_callbacks(
         &mut self,
         _: &mut Context<'_>,
@@ -129,21 +141,26 @@ impl crypto::Session for FailingInitialKeys {
     ) -> Result<bool, TransportError> {
         Err(failure())
     }
+
     fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError> {
         Err(failure())
     }
+
     fn poll_handshake(&mut self) -> Result<Option<crypto::HandshakeEvent>, TransportError> {
         Err(failure())
     }
+
     fn next_1rtt_keys(
         &mut self,
     ) -> Result<Option<crypto::KeyPair<Box<dyn rama_quic_proto::crypto::PacketKey>>>, TransportError>
     {
         Err(failure())
     }
+
     fn is_valid_retry(&self, _: &ConnectionId, _: &[u8], _: &[u8]) -> bool {
         false
     }
+
     fn export_keying_material(
         &self,
         _: &mut [u8],
@@ -161,7 +178,6 @@ fn failure() -> TransportError {
 
 #[test]
 fn failed_client_session_releases_reserved_cid() {
-    use std::error::Error as _;
     for initial_keys in [false, true] {
         let mut endpoint = Endpoint::new(
             Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
@@ -196,7 +212,6 @@ fn failed_client_session_releases_reserved_cid() {
 
 #[test]
 fn failed_server_session_releases_reserved_and_preferred_cids() {
-    use std::error::Error as _;
     for initial_keys in [false, true] {
         let mut config = server_config();
         config.crypto = ServerCrypto::Fixed(Arc::new(FailingServer(

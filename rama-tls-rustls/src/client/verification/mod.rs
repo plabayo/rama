@@ -6,19 +6,21 @@ use std::{
 use moka::sync::Cache;
 use rama_core::{
     combinators::Either,
-    error::{BoxError, ErrorContext as _, ErrorExt as _},
+    error::{ArcError, BoxError, ErrorContext as _},
     extensions::Extensions,
-    telemetry::tracing::trace,
+    telemetry::tracing::{debug, trace},
 };
 use rama_crypto::{native_certs, pki_types::CertificateDer, platform_verifier::PlatformVerifier};
 use rama_tls::client::{
-    DynTlsServerCertChainPolicy, NativeTrustPolicy, PlatformTrustPolicy, ServerTrustSource,
-    ServerVerifyMode, TlsComponentIdentity, TlsServerCertPins, TlsServerTrust,
-    TlsServerTrustAnchors, TlsServerVerify, server_trust_anchors, server_trust_anchors_async,
+    DynTlsServerCertChainPolicy, ServerTrustKey, ServerTrustRoots, ServerTrustSnapshot,
+    ServerVerifyMode, SharedServerTrustRoots, TlsServerCertPins, TlsServerTrust,
+    TlsServerTrustAnchors, TlsServerVerify, shared_platform_verifier,
+    shared_platform_verifier_async,
 };
-use rustls::RootCertStore;
+use rustls::{ClientConfig, RootCertStore};
+use tokio::{runtime::Handle, task::spawn_blocking};
 
-use super::{RustlsServerCertVerifier, RustlsServerVerification};
+use super::{NativeConfigKey, RustlsServerCertVerifier};
 
 static NATIVE: LazyLock<Arc<RootCertStore>> = LazyLock::new(|| {
     Arc::new(builtin(
@@ -29,6 +31,9 @@ static NATIVE: LazyLock<Arc<RootCertStore>> = LazyLock::new(|| {
 static WEBPKI: LazyLock<Arc<RootCertStore>> =
     LazyLock::new(|| Arc::new(builtin(native_certs::bundled_root_certs(), "WebPKI")));
 
+// The trust of connections without a policy, which reads no trust store.
+static NATIVE_TRUST: TlsServerTrust = TlsServerTrust::native_roots();
+
 pub(super) fn native() -> Arc<RootCertStore> {
     NATIVE.clone()
 }
@@ -37,36 +42,59 @@ pub(super) fn webpki() -> Arc<RootCertStore> {
     WEBPKI.clone()
 }
 
-fn builtin(anchors: &[CertificateDer<'static>], source: &'static str) -> RootCertStore {
+fn builtin(anchors: &[CertificateDer<'static>], kind: &'static str) -> RootCertStore {
     let mut roots = RootCertStore::empty();
-    let (added, ignored) = roots.add_parsable_certificates(anchors.iter().cloned());
+    for anchor in anchors {
+        if let Err(err) = roots.add(CertificateDer::from(anchor.as_ref())) {
+            debug!(%err, trust_anchor_kind = kind, "rustls connector: failed to add built-in trust anchor");
+        }
+    }
     trace!(
-        added,
-        ignored, source, "initialised shared rustls root store"
+        added = roots.len(),
+        trust_anchor_kind = kind,
+        "rustls connector: root store built from built-in trust anchors"
     );
     roots
 }
 
-type AnchorSlice = [CertificateDer<'static>];
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum SharedRoots {
-    Native,
-    WebPki,
-    Platform,
+/// Server verification derived from one trust snapshot, bound to that snapshot's key.
+///
+/// Acquire it through [`RustlsServerTrustCache`]. The key travels with the
+/// verifier, so sessions a configuration resumes end with that trust generation.
+#[derive(Debug, Clone)]
+pub struct RustlsServerVerification {
+    pub(super) verifier: Either<Arc<RootCertStore>, Arc<PlatformVerifier>>,
+    pub(super) trust_key: ServerTrustKey,
 }
 
-static PLATFORM: OnceLock<Arc<PlatformVerifier>> = OnceLock::new();
-/// Bounded cache of derived Rustls trust stores and platform verifiers.
+impl RustlsServerVerification {
+    /// The root store or operating system verifier.
+    #[must_use]
+    pub fn verifier(&self) -> &Either<Arc<RootCertStore>, Arc<PlatformVerifier>> {
+        &self.verifier
+    }
+
+    /// The key of the trust snapshot the verifier was derived from.
+    #[must_use]
+    pub fn trust_key(&self) -> &ServerTrustKey {
+        &self.trust_key
+    }
+}
+
+/// Bounded cache of derived Rustls trust stores, platform verifiers and
+/// native client configurations.
 ///
-/// The default capacity is eight derived stores. Each instance owns its
-/// derived stores, and cloning shares that instance. Static built-in stores
-/// are shared process-wide.
+/// The default capacity is eight derived stores and eight configurations.
+/// Each instance owns its entries, and cloning shares that instance. Static
+/// built-in stores are shared process-wide. A cached configuration carries
+/// the session tickets of its connections, so connections resume only
+/// under an identical policy and trust snapshot.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RustlsServerTrustCache {
     capacity: NonZeroUsize,
-    derived: OnceLock<Cache<TrustKey, RustlsServerVerification>>,
+    derived: OnceLock<Cache<ServerTrustKey, RustlsServerVerification>>,
+    configs: OnceLock<Cache<NativeConfigKey, Arc<ClientConfig>>>,
 }
 
 impl Default for RustlsServerTrustCache {
@@ -80,6 +108,7 @@ impl Clone for RustlsServerTrustCache {
         Self {
             capacity: self.capacity,
             derived: OnceLock::from(self.cache().clone()),
+            configs: OnceLock::from(self.configs().clone()),
         }
     }
 }
@@ -93,12 +122,35 @@ impl RustlsServerTrustCache {
         Self {
             capacity,
             derived: OnceLock::new(),
+            configs: OnceLock::new(),
         }
     }
 
-    fn cache(&self) -> &Cache<TrustKey, RustlsServerVerification> {
+    /// Access the shared native verification cache.
+    fn cache(&self) -> &Cache<ServerTrustKey, RustlsServerVerification> {
         self.derived
             .get_or_init(|| Cache::new(self.capacity.get() as u64))
+    }
+
+    /// Access the cached native TLS configurations.
+    fn configs(&self) -> &Cache<NativeConfigKey, Arc<ClientConfig>> {
+        self.configs
+            .get_or_init(|| Cache::new(self.capacity.get() as u64))
+    }
+
+    /// The cached native configuration under `key`, built on a miss.
+    pub(super) fn client_config(
+        &self,
+        key: NativeConfigKey,
+        build: impl FnOnce() -> Result<ClientConfig, BoxError>,
+    ) -> Result<Arc<ClientConfig>, BoxError> {
+        self.configs()
+            .try_get_with(key, || build().map(Arc::new).map_err(ArcError::from))
+            .map_err(|error| {
+                ArcError::clone(&error)
+                    .context("construct rustls client configuration")
+                    .into()
+            })
     }
 
     /// Acquire the verifier for a connection. This may block on trust-store IO.
@@ -111,7 +163,6 @@ impl RustlsServerTrustCache {
     ) -> Result<Option<RustlsServerVerification>, BoxError> {
         match verification_source(extensions) {
             VerificationSource::Policy(trust) => self.acquire(trust).map(Some),
-            VerificationSource::Native => Ok(Some(SharedRoots::Native.acquire())),
             VerificationSource::Unused => Ok(None),
         }
     }
@@ -124,50 +175,44 @@ impl RustlsServerTrustCache {
     ) -> Result<Option<RustlsServerVerification>, BoxError> {
         match verification_source(extensions) {
             VerificationSource::Policy(trust) => self.acquire_async(trust).await.map(Some),
-            VerificationSource::Native => SharedRoots::Native.acquire_async().await.map(Some),
             VerificationSource::Unused => Ok(None),
         }
     }
 
+    /// Acquire verification state for this policy.
     fn acquire(&self, trust: &TlsServerTrust) -> Result<RustlsServerVerification, BoxError> {
-        let additional = trust.additional_anchors();
-        let roots = match Source::for_trust(trust) {
-            Source::Shared(shared) if additional.is_none() => return Ok(shared.acquire()),
-            Source::Shared(shared) => StoreRoots::Shared(shared),
-            Source::Custom(anchors) => StoreRoots::Custom(anchors.clone()),
-            Source::Reloadable(source) => {
-                StoreRoots::snapshot(source, server_trust_anchors(source)?)
-            }
-        };
-        let key = roots.key(additional);
-        cached(self.cache(), roots, key)
+        let snapshot = ServerTrustSnapshot::read(trust)?;
+        if let Some(shared) = snapshot.shared() {
+            return Ok(RustlsServerVerification {
+                verifier: acquire_shared(shared),
+                trust_key: snapshot.key(),
+            });
+        }
+        cached(self.cache(), &snapshot)
     }
 
+    /// Acquire verification state after asynchronous trust preparation.
     async fn acquire_async(
         &self,
         trust: &TlsServerTrust,
     ) -> Result<RustlsServerVerification, BoxError> {
-        let additional = trust.additional_anchors();
-        let roots = match Source::for_trust(trust) {
-            Source::Shared(shared) if additional.is_none() => return shared.acquire_async().await,
-            Source::Shared(shared) => StoreRoots::Shared(shared),
-            Source::Custom(anchors) => StoreRoots::Custom(anchors.clone()),
-            Source::Reloadable(source) => {
-                StoreRoots::snapshot(source, server_trust_anchors_async(source).await?)
-            }
-        };
-        let key = roots.key(additional);
+        let snapshot = ServerTrustSnapshot::read_async(trust).await?;
+        if let Some(shared) = snapshot.shared() {
+            return Ok(RustlsServerVerification {
+                verifier: acquire_shared_async(shared).await?,
+                trust_key: snapshot.key(),
+            });
+        }
         let cache = self.cache();
-        if let Some(verification) = cache.get(&key) {
+        if let Some(verification) = cache.get(&snapshot.key()) {
             return Ok(verification);
         }
         let cache = cache.clone();
-        tokio::task::spawn_blocking(move || cached(&cache, roots, key)).await?
+        spawn_blocking(move || cached(&cache, &snapshot)).await?
     }
 }
 
 enum VerificationSource<'a> {
-    Native,
     Policy(&'a TlsServerTrust),
     Unused,
 }
@@ -178,199 +223,105 @@ fn verification_source(extensions: &Extensions) -> VerificationSource<'_> {
         .map(|verify| verify.0)
         .unwrap_or_default();
     match mode {
-        ServerVerifyMode::Auto if !extensions.contains::<RustlsServerCertVerifier>() => extensions
-            .get_ref::<TlsServerTrust>()
-            .map_or(VerificationSource::Native, VerificationSource::Policy),
+        ServerVerifyMode::Auto if !extensions.contains::<RustlsServerCertVerifier>() => {
+            VerificationSource::Policy(extensions.get_ref().unwrap_or(&NATIVE_TRUST))
+        }
         // The pin-only verifier uses the default store for signature verification setup.
         ServerVerifyMode::Disable
             if extensions.contains::<TlsServerCertPins>()
                 && !extensions.contains::<DynTlsServerCertChainPolicy>() =>
         {
-            VerificationSource::Native
+            VerificationSource::Policy(&NATIVE_TRUST)
         }
         _ => VerificationSource::Unused,
     }
 }
 
-impl SharedRoots {
-    fn acquire(self) -> RustlsServerVerification {
-        match self {
-            Self::Native => Either::A(native()),
-            Self::WebPki => Either::A(webpki()),
-            Self::Platform => Either::B(PLATFORM.get_or_init(PlatformVerifier::shared).clone()),
-        }
-    }
-
-    async fn acquire_async(self) -> Result<RustlsServerVerification, BoxError> {
-        if let Some(verification) = self.ready() {
-            return Ok(verification);
-        }
-        Ok(tokio::task::spawn_blocking(move || self.acquire()).await?)
-    }
-
-    fn ready(self) -> Option<RustlsServerVerification> {
-        match self {
-            Self::Native => LazyLock::get(&NATIVE).cloned().map(Either::A),
-            Self::WebPki => LazyLock::get(&WEBPKI).cloned().map(Either::A),
-            Self::Platform => PLATFORM.get().cloned().map(Either::B),
-        }
+fn acquire_shared(
+    shared: SharedServerTrustRoots,
+) -> Either<Arc<RootCertStore>, Arc<PlatformVerifier>> {
+    match shared {
+        SharedServerTrustRoots::Native => Either::A(native()),
+        SharedServerTrustRoots::WebPki => Either::A(webpki()),
+        SharedServerTrustRoots::Platform => Either::B(shared_platform_verifier()),
     }
 }
 
-enum Source<'a> {
-    Shared(SharedRoots),
-    Custom(&'a TlsServerTrustAnchors),
-    Reloadable(&'a ServerTrustSource),
-}
-
-impl<'a> Source<'a> {
-    fn for_trust(trust: &'a TlsServerTrust) -> Self {
-        match trust.source() {
-            ServerTrustSource::WebPki => Self::Shared(SharedRoots::WebPki),
-            ServerTrustSource::Native(policy) if policy == &NativeTrustPolicy::new() => {
-                Self::Shared(SharedRoots::Native)
-            }
-            ServerTrustSource::Platform(policy) if policy == &PlatformTrustPolicy::new() => {
-                Self::Shared(if PlatformVerifier::IS_AVAILABLE {
-                    SharedRoots::Platform
-                } else {
-                    SharedRoots::Native
-                })
-            }
-            ServerTrustSource::Custom(anchors) => Self::Custom(anchors),
-            source => Self::Reloadable(source),
+async fn acquire_shared_async(
+    shared: SharedServerTrustRoots,
+) -> Result<Either<Arc<RootCertStore>, Arc<PlatformVerifier>>, BoxError> {
+    let store = match shared {
+        SharedServerTrustRoots::Native => &NATIVE,
+        SharedServerTrustRoots::WebPki => &WEBPKI,
+        SharedServerTrustRoots::Platform => {
+            return shared_platform_verifier_async().await.map(Either::B);
         }
+    };
+    // A built store without leaving the task; a first build runs off the async worker.
+    if let Some(roots) = LazyLock::get(store) {
+        return Ok(Either::A(roots.clone()));
     }
-}
-
-enum StoreRoots {
-    Shared(SharedRoots),
-    Custom(TlsServerTrustAnchors),
-    Snapshot {
-        platform: bool,
-        anchors: Arc<AnchorSlice>,
-    },
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-enum RootKey {
-    Shared(SharedRoots),
-    Custom(TlsServerTrustAnchors),
-    Snapshot {
-        platform: bool,
-        // Retain the anchor allocation while its address is a cache key.
-        anchors: TlsComponentIdentity<AnchorSlice>,
-    },
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct TrustKey {
-    base: RootKey,
-    additional: Option<TlsServerTrustAnchors>,
-}
-
-impl StoreRoots {
-    fn snapshot(source: &ServerTrustSource, anchors: Arc<AnchorSlice>) -> Self {
-        Self::Snapshot {
-            platform: PlatformVerifier::IS_AVAILABLE
-                && matches!(source, ServerTrustSource::Platform(_)),
-            anchors,
-        }
-    }
-
-    fn key(&self, additional: Option<&TlsServerTrustAnchors>) -> TrustKey {
-        let base = match self {
-            Self::Shared(roots) => RootKey::Shared(*roots),
-            Self::Custom(anchors) => RootKey::Custom(anchors.clone()),
-            Self::Snapshot { platform, anchors } => RootKey::Snapshot {
-                platform: *platform,
-                anchors: TlsComponentIdentity::shared(anchors),
-            },
-        };
-        TrustKey {
-            base,
-            additional: additional.cloned(),
-        }
+    let force = move || Either::A(LazyLock::force(store).clone());
+    match Handle::try_current() {
+        Ok(runtime) => Ok(runtime.spawn_blocking(force).await?),
+        Err(_no_runtime) => Ok(force()),
     }
 }
 
 pub(super) fn acquire(trust: &TlsServerTrust) -> Result<RustlsServerVerification, BoxError> {
-    let additional = trust.additional_anchors();
-    let roots = match Source::for_trust(trust) {
-        Source::Shared(shared) if additional.is_none() => return Ok(shared.acquire()),
-        Source::Shared(shared) => StoreRoots::Shared(shared),
-        Source::Custom(anchors) => StoreRoots::Custom(anchors.clone()),
-        Source::Reloadable(source) => StoreRoots::snapshot(source, server_trust_anchors(source)?),
+    let snapshot = ServerTrustSnapshot::read(trust)?;
+    let verifier = match snapshot.shared() {
+        Some(shared) => acquire_shared(shared),
+        None => derive(&snapshot)?,
     };
-    derive(roots, additional)
+    Ok(RustlsServerVerification {
+        verifier,
+        trust_key: snapshot.key(),
+    })
 }
 
 fn cached(
-    cache: &Cache<TrustKey, RustlsServerVerification>,
-    roots: StoreRoots,
-    key: TrustKey,
+    cache: &Cache<ServerTrustKey, RustlsServerVerification>,
+    snapshot: &ServerTrustSnapshot,
 ) -> Result<RustlsServerVerification, BoxError> {
-    let additional = key.additional.clone();
+    let trust_key = snapshot.key();
     cache
-        .try_get_with(key, || derive(roots, additional.as_ref()))
+        .try_get_with(trust_key.clone(), || {
+            derive(snapshot)
+                .map(|verifier| RustlsServerVerification {
+                    verifier,
+                    trust_key,
+                })
+                .map_err(ArcError::from)
+        })
         .map_err(|error| {
-            error
-                .to_string()
+            ArcError::clone(&error)
                 .context("construct rustls server verification")
+                .into()
         })
 }
 
 fn derive(
-    base: StoreRoots,
-    additional: Option<&TlsServerTrustAnchors>,
-) -> Result<RustlsServerVerification, BoxError> {
-    let mut store = match base {
-        StoreRoots::Shared(SharedRoots::Native) => native().as_ref().clone(),
-        StoreRoots::Shared(SharedRoots::WebPki) => webpki().as_ref().clone(),
-        StoreRoots::Shared(SharedRoots::Platform) => {
-            return build_platform_verifier(
-                &native_certs::shared_extra_trust_anchors(),
-                additional,
-            );
+    snapshot: &ServerTrustSnapshot,
+) -> Result<Either<Arc<RootCertStore>, Arc<PlatformVerifier>>, BoxError> {
+    let mut store = match snapshot.roots() {
+        ServerTrustRoots::Shared(SharedServerTrustRoots::Platform)
+        | ServerTrustRoots::PlatformExtras(_) => {
+            return snapshot.platform_verifier().map(Either::B);
         }
-        StoreRoots::Snapshot {
-            platform: true,
-            anchors,
-        } => {
-            return build_platform_verifier(&anchors, additional);
-        }
-        StoreRoots::Snapshot {
-            platform: false,
-            anchors,
-        } => {
+        ServerTrustRoots::Shared(SharedServerTrustRoots::Native) => native().as_ref().clone(),
+        ServerTrustRoots::Shared(SharedServerTrustRoots::WebPki) => webpki().as_ref().clone(),
+        ServerTrustRoots::Native(anchors) => builtin(anchors, "native"),
+        ServerTrustRoots::Custom(anchors) => {
             let mut roots = RootCertStore::empty();
-            roots.add_parsable_certificates(anchors.iter().cloned());
-            roots
-        }
-        StoreRoots::Custom(anchors) => {
-            let mut roots = RootCertStore::empty();
-            add_configured_roots(&mut roots, &anchors)?;
+            add_configured_roots(&mut roots, anchors)?;
             roots
         }
     };
-    if let Some(anchors) = additional {
+    if let Some(anchors) = snapshot.additional_anchors() {
         add_configured_roots(&mut store, anchors)?;
     }
     Ok(Either::A(Arc::new(store)))
-}
-
-fn build_platform_verifier(
-    extras: &AnchorSlice,
-    additional: Option<&TlsServerTrustAnchors>,
-) -> Result<RustlsServerVerification, BoxError> {
-    let roots = extras.iter().chain(
-        additional
-            .into_iter()
-            .flat_map(TlsServerTrustAnchors::certificates),
-    );
-    Ok(Either::B(Arc::new(PlatformVerifier::try_with_extra_roots(
-        roots.cloned(),
-    )?)))
 }
 
 fn add_configured_roots(
@@ -379,7 +330,7 @@ fn add_configured_roots(
 ) -> Result<(), BoxError> {
     for certificate in anchors.certificates() {
         roots
-            .add(certificate.clone())
+            .add(CertificateDer::from(certificate.as_ref()))
             .context("add configured server trust anchor to rustls root store")?;
     }
     Ok(())

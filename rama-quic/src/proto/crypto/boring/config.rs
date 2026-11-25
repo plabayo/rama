@@ -6,7 +6,7 @@ use std::{
 
 use parking_lot::Mutex;
 use rama_core::{
-    error::{ArcError, BoxError, BoxErrorExt as _},
+    error::{ArcError, BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::{Extension, Extensions},
 };
 use rama_crypto::dep::boring::{
@@ -19,7 +19,7 @@ use rama_crypto::dep::boring::{
 use rama_net::{
     address::Host,
     client::ConnectorTarget,
-    tls::{AlpnPolicy, TargetEchConfig, TlsAlpn},
+    tls::{AlpnPolicy, ServerName, TargetEchConfig, TlsAlpn},
 };
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, Version, transport_parameters::TransportParameters,
@@ -28,8 +28,8 @@ use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
     alpn::{self, AlpnError},
     client::{
-        EchRequirement, TlsClientConfig, TlsEncryptedClientHello, resolve_target_ech,
-        target_ech_required,
+        EchRequirement, TargetEchResolution, TlsClientConfig, TlsEncryptedClientHello,
+        TlsProfilePreparation, resolve_target_ech,
     },
     server::TlsServerConfig,
 };
@@ -45,14 +45,15 @@ use super::{
     ServerVerification, packet,
     session::{TlsSession, crypto_error},
 };
-use crate::tls::ClientHandshake;
-
-use crate::proto::{
-    ConnectError, ServerCrypto,
-    crypto::{
-        self,
-        config::{ClientSessionPolicy, ServerSessionPolicy, TlsConfigError, TlsOptions},
+use crate::{
+    proto::{
+        ConnectError, ServerCrypto,
+        crypto::{
+            self,
+            config::{ClientSessionPolicy, ServerSessionPolicy, TlsConfigError, TlsOptions},
+        },
     },
+    tls::ClientHandshake,
 };
 
 /// Per-connection TLS setup, in a TLS configuration's extensions: callbacks a relay needs on
@@ -157,7 +158,7 @@ struct ClientEchConfig {
 /// Preparation retains the first native SSL object; retries use the same context
 /// and initializer but obtain their own ephemeral handshake state.
 struct PreparedClient {
-    peer: Host,
+    peer: ServerName,
     first: Mutex<Option<Ssl>>,
 }
 
@@ -175,7 +176,7 @@ impl ClientSessions {
         &self,
         context: &TlsConnectorContext,
         ssl: &mut SslRef,
-        host: &Host,
+        host: &ServerName,
         version: Version,
         ech: bool,
     ) -> Result<Option<TransportParameters>, BoxError> {
@@ -234,43 +235,67 @@ impl QuicClientConfig {
         options: TlsOptions,
         verification: Option<&ServerVerification>,
     ) -> Result<Self, TlsConfigError> {
+        let config = config.clone();
         let extensions = config.as_extensions();
-        let (requirement, intent) = EchRequirement::effective(extensions)?;
-        let target = extensions.get_ref::<ConnectorTarget>();
-        let ech = if let Some(config) = extensions.get_ref::<TargetEchConfig>() {
-            if let Some(target) = target {
-                let resolution = resolve_target_ech(extensions, &target.0, true)?;
-                let requirement = if resolution.required {
-                    EchRequirement::Required
-                } else {
-                    requirement
-                };
-                resolution.config.map(|_| ClientEchConfig {
-                    config: config.clone(),
-                    requirement,
-                })
-            } else if requirement == EchRequirement::Required {
-                return Err(TlsConfigError::InvalidConfiguration(
-                    BoxError::from_static_str(
-                        "required QUIC ECH needs an explicit physical endpoint",
-                    ),
-                ));
-            } else {
-                None
+        let resolution = extensions
+            .get_ref::<ConnectorTarget>()
+            .map(|target| resolve_target_ech(extensions, &target.0, true))
+            .transpose()?;
+        if let Some(resolution) = &resolution {
+            TlsProfilePreparation::apply(resolution, extensions, extensions)?;
+        }
+        Self::from_rama_with_resolved_ech(&config, options, verification, resolution.as_ref())
+    }
+
+    pub(crate) fn from_rama_with_resolved_ech(
+        config: &TlsClientConfig,
+        options: TlsOptions,
+        verification: Option<&ServerVerification>,
+        resolution: Option<&TargetEchResolution>,
+    ) -> Result<Self, TlsConfigError> {
+        let resolved;
+        let config = if resolution.is_some() {
+            resolved = config.clone();
+            // With a profile, ECH follows the profile and the target's resolution.
+            let extensions = config.as_extensions();
+            if resolution.is_some_and(|resolution| resolution.config.is_some())
+                && (extensions.contains::<TlsProfilePreparation>()
+                    || !extensions.contains::<TlsEncryptedClientHello>())
+            {
+                resolved
+                    .as_extensions()
+                    .insert(TlsEncryptedClientHello(true));
             }
+            &resolved
         } else {
-            let required = match target {
-                Some(target) => target_ech_required(extensions, &target.0, true)?,
-                None => requirement == EchRequirement::Required,
+            config
+        };
+        let extensions = config.as_extensions();
+        let ech = if let Some((target, resolution)) =
+            extensions.get_ref::<ConnectorTarget>().zip(resolution)
+        {
+            let requirement = if resolution.required {
+                EchRequirement::Required
+            } else {
+                EchRequirement::Optional
             };
-            if required {
+            resolution.config.clone().map(|bytes| ClientEchConfig {
+                config: TargetEchConfig::new(target.0.clone(), bytes),
+                requirement,
+            })
+        } else {
+            let (requirement, _) = EchRequirement::effective(extensions)?;
+            if requirement == EchRequirement::Required {
                 return Err(TlsConfigError::InvalidConfiguration(
-                    BoxError::from_static_str("required QUIC ECH has no endpoint configuration"),
+                    BoxError::from_static_str(if extensions.contains::<TargetEchConfig>() {
+                        "required QUIC ECH needs an explicit physical endpoint"
+                    } else {
+                        "required QUIC ECH has no endpoint configuration"
+                    }),
                 ));
             }
             None
         };
-        debug_assert!(intent || ech.is_none());
         validate_versions(extensions.get_ref::<TlsSupportedVersions>())?;
         validate_alpn(extensions.get_ref::<TlsAlpn>(), options)?;
         let handshake = extensions
@@ -342,7 +367,7 @@ impl QuicClientConfig {
 impl QuicClientConfig {
     pub(crate) fn prepare_fresh(
         config: &TlsClientConfig,
-        peer: Host,
+        peer: ServerName,
     ) -> Result<Self, TlsConfigError> {
         Self::from_rama(
             config,
@@ -354,7 +379,7 @@ impl QuicClientConfig {
     pub(crate) fn prepare_client(
         config: &TlsClientConfig,
         options: TlsOptions,
-        peer: Host,
+        peer: ServerName,
         handshake: ClientHandshake,
     ) -> Result<Self, TlsConfigError> {
         Self::from_rama(config, options)?.with_handshake(peer, handshake)
@@ -362,7 +387,7 @@ impl QuicClientConfig {
 
     pub(crate) fn with_handshake(
         mut self,
-        peer: Host,
+        peer: ServerName,
         handshake: ClientHandshake,
     ) -> Result<Self, TlsConfigError> {
         match (&mut self.sessions, handshake) {
@@ -377,8 +402,8 @@ impl QuicClientConfig {
         self.prepare_ssl(peer)
     }
 
-    fn prepare_ssl(mut self, peer: Host) -> Result<Self, TlsConfigError> {
-        let (_, mut ssl) = self.configure_ssl(peer.clone())?;
+    fn prepare_ssl(mut self, peer: ServerName) -> Result<Self, TlsConfigError> {
+        let (_, mut ssl) = self.configure_ssl(Some(peer.clone()))?;
         if let Some(initializer) = &self.initializer {
             (initializer.0)(&mut ssl)?;
         }
@@ -389,7 +414,8 @@ impl QuicClientConfig {
         Ok(self)
     }
 
-    fn configure_ssl(&self, peer: Host) -> Result<(Host, Ssl), BoxError> {
+    /// Configure one session for the configured server name, or else `peer`.
+    fn configure_ssl(&self, peer: Option<ServerName>) -> Result<(ServerName, Ssl), BoxError> {
         let mut data = self.context.configure()?;
         if let Some(ech) = &self.ech {
             let extensions = Extensions::new();
@@ -398,8 +424,13 @@ impl QuicClientConfig {
             extensions.insert(TlsEncryptedClientHello(true));
             data.configure_target_ech(&extensions, ech.config.target())?;
         }
-        let host = data.server_name.get_or_insert(peer).clone();
-        Ok((host, data.into_ssl()?))
+        let server_name = data
+            .server_name
+            .take()
+            .or(peer)
+            .context("server identity is not a DNS name or IP address")?;
+        data.server_name = Some(server_name.clone());
+        Ok((server_name, data.into_ssl()?))
     }
 }
 
@@ -413,9 +444,11 @@ impl crypto::ClientConfig for QuicClientConfig {
         let wire = packet::wire(version).ok_or(ConnectError::UnsupportedVersion)?;
         let host = Host::try_from(server_name)
             .map_err(|_error| ConnectError::InvalidServerName(server_name.into()))?;
+        // A configured server name still serves a connect name that is not one.
+        let peer = ServerName::try_from(host).ok();
         // Reject another destination before consuming the prepared session.
         let (host, mut ssl, initializer) = if let Some(prepared) = &self.prepared {
-            if host != prepared.peer {
+            if peer.as_ref() != Some(&prepared.peer) {
                 return Err(ConnectError::InvalidServerName(server_name.into()));
             }
             let first = prepared.first.lock().take();
@@ -423,7 +456,7 @@ impl crypto::ClientConfig for QuicClientConfig {
                 ssl
             } else {
                 let (_, mut ssl) = self
-                    .configure_ssl(host.clone())
+                    .configure_ssl(Some(prepared.peer.clone()))
                     .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
                 if let Some(initializer) = &self.initializer {
                     (initializer.0)(&mut ssl)
@@ -431,10 +464,10 @@ impl crypto::ClientConfig for QuicClientConfig {
                 }
                 ssl
             };
-            (host, ssl, None)
+            (prepared.peer.clone(), ssl, None)
         } else {
             let (host, ssl) = self
-                .configure_ssl(host)
+                .configure_ssl(peer)
                 .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
             (host, ssl, self.initializer.as_ref())
         };
@@ -478,10 +511,10 @@ impl crypto::ClientConfig for QuicClientConfig {
         if sessions.offer == ClientHandshake::Full {
             return None;
         }
-        let host = Host::try_from(server_name).ok()?;
+        let name = ServerName::try_from(Host::try_from(server_name).ok()?).ok()?;
         let key = self
             .context
-            .session_key(&host)?
+            .session_key(&name)?
             .with_ech(self.ech.is_some());
         let keys = [Version::V1, Version::V2].map(|version| (key.clone(), version));
         sessions
@@ -496,10 +529,10 @@ impl QuicClientConfig {
     /// ticket from one version to a server session in another.
     #[cfg(test)]
     pub(super) fn relabel_tickets(&self, server_name: &str, from: Version, to: Version) {
-        let host = Host::try_from(server_name).unwrap();
+        let name = server_name.parse::<ServerName>().unwrap();
         let key = self
             .context
-            .session_key(&host)
+            .session_key(&name)
             .unwrap()
             .with_ech(self.ech.is_some());
         let sessions = self.sessions.as_ref().unwrap();
@@ -825,6 +858,7 @@ impl QuicServerConfig {
             Arc::new(Mutex::new(None)),
         )?;
         session.store_peer_chain = self.store_peer_chain;
+        session.server_ech = self.ech;
         Ok(Box::new(session))
     }
 }
@@ -832,11 +866,57 @@ impl QuicServerConfig {
 #[cfg(test)]
 mod tests {
     use rama_net::tls::ApplicationProtocol;
-
-    use super::super::tests::{configs, handshake};
-    use super::*;
-    use crate::proto::crypto::{ClientConfig as _, ServerConfig as _, config::application_context};
     use rama_quic_proto::transport_parameters::TransportParameters;
+
+    use super::{
+        super::tests::{configs, handshake},
+        *,
+    };
+    use crate::proto::crypto::{ClientConfig as _, ServerConfig as _, config::application_context};
+
+    #[test]
+    fn native_builds_prepare_in_an_independent_overlay() {
+        let (client, _) = configs();
+        client
+            .as_extensions()
+            .insert(ConnectorTarget("localhost:443".parse().unwrap()));
+        client
+            .as_extensions()
+            .insert(TlsProfilePreparation::new(|_, effective, request| {
+                effective.insert(ClientHandshake::Full);
+                request.insert(ClientHandshake::Full);
+                Ok(Extensions::new())
+            }));
+        let entries = client.as_extensions().self_iter_all().count();
+        for _ in 0..3 {
+            QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap();
+            assert_eq!(client.as_extensions().self_iter_all().count(), entries);
+            assert!(
+                client
+                    .as_extensions()
+                    .get_ref::<ClientHandshake>()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn server_without_ech_keys_reports_no_acceptance() {
+        let (client, server) = configs();
+        let client = Arc::new(QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap());
+        let server = Arc::new(QuicServerConfig::from_rama(&server, TlsOptions::default()).unwrap());
+        let params = |id| TransportParameters {
+            initial_src_cid: Some(ConnectionId::new(&[id])),
+            ..TransportParameters::default()
+        };
+        let mut c = client
+            .start_session(Version::V1, "localhost", &params(1))
+            .unwrap();
+        let mut s = server.start_session(Version::V1, &params(2)).unwrap();
+        handshake(&mut *c, &mut *s).unwrap();
+        assert_eq!(c.ech_accepted(), Some(false));
+        assert_eq!(s.ech_accepted(), None);
+    }
 
     #[test]
     fn early_context_changes_reject_old_tickets_and_accept_new_ones() {

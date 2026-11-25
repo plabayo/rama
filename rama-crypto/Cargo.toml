@@ -33,14 +33,12 @@ native-certs = [
     "dep:core-foundation",
     "dep:schannel",
     "dep:windows-sys",
-    "dep:openssl-probe",
     "dep:ahash",
     "dep:jni",
     "dep:ndk-context",
+    "dep:libc",
+    "dep:parking_lot",
 ]
-
-[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-openssl-probe = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true, optional = true }
@@ -48,6 +46,7 @@ ndk-context = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 ahash = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 core-foundation = { workspace = true, optional = true }

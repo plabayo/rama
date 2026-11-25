@@ -26,7 +26,7 @@ use rama::{
         },
         proxy::IoForwardService,
         test_utils::client::{MockConnectorService, MockSocket},
-        tls::ApplicationProtocol,
+        tls::{ApplicationProtocol, ServerName},
     },
     quic::{
         Connection, ServerConfig, TransportConfig,
@@ -36,7 +36,7 @@ use rama::{
     service::{BoxService, service_fn},
     tls::{
         boring::server::TlsAcceptorLayer,
-        client::{ServerVerifyMode, TlsClientConfig, TlsServerName, TlsServerVerify},
+        client::{ServerVerifyMode, TlsClientConfig, TlsServerVerify},
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
 };
@@ -671,7 +671,7 @@ impl Case {
                 bag.insert(PoolPartition::of::<TenantA>());
             }
             Bag::Name(name) => {
-                bag.insert(TlsServerName(name.parse().unwrap()));
+                bag.insert(name.parse::<ServerName>().unwrap());
             }
             Bag::Verify(mode) => {
                 bag.insert(TlsServerVerify(mode));
@@ -697,7 +697,7 @@ impl Case {
             Tenant::B => PoolPartition::of::<TenantB>(),
         });
         if let Some(name) = self.origin_name {
-            extensions.insert(TlsServerName(name.parse().unwrap()));
+            extensions.insert(name.parse::<ServerName>().unwrap());
         }
         let bag = self.bag().map(ProxyConnectionExtensions);
         match (self.route.address(), self.hop_on_route) {

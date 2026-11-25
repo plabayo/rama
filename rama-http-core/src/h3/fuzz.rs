@@ -9,7 +9,7 @@ use super::{
         ReceiveEnd, Semantics,
     },
     frame::{FrameDecoder, FrameEvent},
-    headers::{encode_request, request_head as decode_request_head},
+    headers::{encode_request, encode_request_fields, request_head as decode_request_head},
     observation::Recorder,
     qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig, FieldPair},
     quic::RecvStream,
@@ -23,7 +23,7 @@ use rama_core::{
 };
 use rama_http::datagram::ViolationPolicy;
 use rama_http_types::{
-    Method,
+    Method, Request,
     proto::{
         ext::Protocol,
         h3::{Code, Settings, StreamType, observation::ObservationLimits},
@@ -33,6 +33,7 @@ use rama_utils::octets;
 use std::{
     cell::RefCell,
     future::Future,
+    mem,
     pin::Pin,
     rc::Rc,
     sync::{Arc, atomic::AtomicBool},
@@ -285,6 +286,42 @@ struct NoAbort;
 
 impl AbortRequest for NoAbort {
     fn abort_request(&self) {}
+}
+
+/// A client connection's request head encoding, from the request to its QPACK field section
+/// and the record of the fields it sent, so it can be timed without a connection.
+pub struct RequestEncoder {
+    shared: Arc<Shared>,
+    next_stream: u64,
+}
+
+impl RequestEncoder {
+    /// An encoder on a connection whose peer allows no dynamic table, as before its SETTINGS.
+    #[must_use]
+    #[expect(clippy::expect_used, reason = "the default configuration is valid")]
+    pub fn new() -> Self {
+        Self {
+            shared: Shared::new(Config::default(), Role::Client, Default::default())
+                .expect("default connection state"),
+            next_stream: 0,
+        }
+    }
+
+    /// Encode `request` on the next request stream and record the fields it sent, as the
+    /// client does; returns the field section size and the number of recorded fields.
+    pub fn encode(&mut self, mut request: Request<()>) -> Result<(usize, usize), Error> {
+        let id = self.next_stream;
+        self.next_stream += 4;
+        let (block, sent) = encode_request_fields(&self.shared, id, &request)?;
+        let recorded = sent.of(mem::take(request.headers_mut()));
+        Ok((block.len(), recorded.len()))
+    }
+}
+
+impl Default for RequestEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Synchronous access to the demux critical sections, which run under the connection's
@@ -704,7 +741,7 @@ pub fn request_head(input: &[u8]) -> usize {
             && match outgoing_host(request.headers()) {
                 OutgoingHost::Absent => http_scheme,
                 OutgoingHost::Unusable => true,
-                OutgoingHost::Usable(..) => false,
+                OutgoingHost::Usable { .. } => false,
             };
         let encoded = encode_request(&shared, 0, &request);
         assert_eq!(encoded.is_err(), unroutable, "an accepted head re-encodes");

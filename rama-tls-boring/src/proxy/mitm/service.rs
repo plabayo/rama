@@ -1,8 +1,3 @@
-use crate::{
-    TlsStream,
-    client::TlsConnectorData,
-    proxy::{TlsMitmRelay, TlsMitmRelayError},
-};
 use rama_core::{
     Service,
     error::{BoxError, ErrorExt},
@@ -10,13 +5,12 @@ use rama_core::{
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
-use rama_net::{address::Domain, client::ConnectorTarget};
+use rama_net::{client::ConnectorTarget, tls::ServerName};
 use rama_tls::{
     SecureTransport,
-    client::{ClientHello, TlsClientConfig, TlsServerName},
+    client::{ClientHello, TlsClientConfig, TlsClientSni},
     server::InputWithClientHello,
 };
-
 #[cfg(feature = "http")]
 use {
     crate::client::{AlpsCoupling, set_alpn_with_coupled_alps},
@@ -26,6 +20,11 @@ use {
 
 use super::egress::{
     server_name as relay_server_name, tls_client_config as egress_tls_client_config,
+};
+use crate::{
+    TlsStream,
+    client::TlsConnectorData,
+    proxy::{TlsMitmRelay, TlsMitmRelayError, TlsMitmRelayErrorDirection},
 };
 
 /// Prefer a concrete target HTTP version only when the ingress side can use the
@@ -102,9 +101,15 @@ fn connector_target(input: &impl ExtensionsRef) -> Option<rama_net::address::Hos
         .map(|ConnectorTarget(target)| target.clone())
 }
 
-fn config_sni(config: &TlsClientConfig) -> Option<Domain> {
-    let server_name = config.as_extensions().get_ref::<TlsServerName>()?;
-    super::server_name_as_sni(&server_name.0)
+fn config_sni(config: &TlsClientConfig) -> Option<ServerName> {
+    let server_name = config.as_extensions().get_ref::<ServerName>()?;
+    config
+        .as_extensions()
+        .get_ref::<TlsClientSni>()
+        .copied()
+        .unwrap_or_default()
+        .sends(server_name)
+        .then(|| server_name.clone())
 }
 
 #[derive(Debug, Clone, ExtensionsRef)]
@@ -125,7 +130,7 @@ pub struct TlsMitmRelayService<Issuer, Inner> {
 struct PreparedEgress {
     connector_data: TlsConnectorData,
     connector_target: Option<rama_net::address::HostWithPort>,
-    effective_sni: Option<Domain>,
+    effective_sni: Option<ServerName>,
 }
 
 impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
@@ -143,11 +148,16 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
         flow_extensions: &Extensions,
         client_hello: Option<&ClientHello>,
     ) -> Result<PreparedEgress, TlsMitmRelayError> {
-        let maybe_sni = client_hello.and_then(ClientHello::ext_server_name).cloned();
+        let maybe_sni = client_hello.and_then(ClientHello::ext_server_name);
         let connector_target = connector_target(flow_extensions);
         let server_auth = self.relay.egress_server_auth_ref();
-        let server_name =
-            relay_server_name(maybe_sni.as_ref(), connector_target.as_ref(), server_auth);
+        let server_name = relay_server_name(maybe_sni, connector_target.as_ref(), server_auth)
+            .map_err(|error| {
+                TlsMitmRelayError::config(
+                    error.context("tls mitm relay: resolve egress server name"),
+                )
+                .maybe_with_connector_target(connector_target.clone())
+            })?;
         let keylog = self.relay.keylog_intent_ref().clone();
 
         let config = egress_tls_client_config(
@@ -191,6 +201,7 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
                 // mirrored client which did not offer it.
                 if let Some(hello) = client_hello {
                     fallback.set_encrypted_client_hello(hello.has_encrypted_client_hello());
+                    fallback.set_sni_policy(config.as_extensions().get_ref::<TlsClientSni>().copied().unwrap_or_default());
                 }
                 #[cfg(feature = "http")]
                 apply_target_http_version(client_hello, flow_extensions, &fallback);
@@ -241,8 +252,16 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
             .handshake(input, Some(connector_data))
             .await
             .map_err(|err| {
-                err.maybe_with_connector_target(connector_target)
-                    .maybe_with_sni(effective_sni)
+                let err = err.maybe_with_connector_target(connector_target);
+                // A handshake error carries the name its own side used.
+                match err.direction() {
+                    _ if err.sni().is_some() => err,
+                    Some(TlsMitmRelayErrorDirection::Ingress) => err.maybe_with_sni(
+                        client_hello.and_then(ClientHello::ext_server_name).cloned(),
+                    ),
+                    Some(TlsMitmRelayErrorDirection::Egress) => err,
+                    None => err.maybe_with_sni(effective_sni),
+                }
             })?;
 
         self.inner
@@ -301,16 +320,31 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{
+        assert_matches,
+        net::{IpAddr, Ipv6Addr},
+        sync::Arc,
+    };
+
     use parking_lot::Mutex;
     use rama_boring::{
-        ssl::{SslConnector, SslContentType, SslMethod, SslRef, SslVerifyMode, SslVersion},
+        ssl::{
+            NameType, Ssl, SslConnector, SslContentType, SslMethod, SslRef, SslVerifyMode,
+            SslVersion,
+        },
         x509::store::X509StoreBuilder,
     };
+    use rama_boring_tokio::SslStreamBuilder;
     use rama_core::{Layer, ServiceInput, service::service_fn};
-    use rama_crypto::{cert::generate_server_auth, pki_types::CertificateDer};
+    use rama_crypto::{
+        cert::{
+            CertificateAuthorityData, CertificateIdentity, LeafCertRequest,
+            boring::generate_certificate_authority_x509, generate_server_auth,
+        },
+        pki_types::CertificateDer,
+    };
     use rama_net::{
-        address::{Host, HostWithPort},
+        address::{Domain, Host, HostWithPort},
         stream::service::EchoService,
         tls::{ApplicationProtocol, TlsAlpn},
     };
@@ -324,23 +358,11 @@ mod tests {
         fingerprint::Ja4S,
         server::{
             GeneratedServerAuthConfig, SelfSignedCaConfig, ServerAuthData, ServerHello,
-            TlsServerConfig,
+            TlsServerConfig, peek_client_hello_from_input,
         },
     };
-    use std::assert_matches;
-    use std::sync::Arc;
-
-    use crate::{
-        client::{
-            BoringCipherSuites, BoringClientConfigExt as _, BoringServerVerifyCertStore,
-            tls_connect,
-        },
-        proxy::mitm::{
-            HandshakeRelayClassification, TlsMitmEgressServerAuth, TlsMitmRelayErrorDirection,
-            TlsMitmRelayErrorKind,
-        },
-        server::TlsAcceptorLayer,
-    };
+    use rama_utils::octets::kib;
+    use tokio::io::duplex;
     #[cfg(feature = "compression")]
     use {
         crate::certificate_compression::test_util::CountingBrotli,
@@ -352,7 +374,19 @@ mod tests {
     use {
         crate::client::BoringAlps,
         rama_net::http::{TargetHttpVersion, Version},
-        rama_tls::server::peek_client_hello_from_input,
+    };
+
+    use super::*;
+    use crate::{
+        client::{
+            BoringCipherSuites, BoringClientConfigExt as _, BoringServerVerifyCertStore,
+            tls_connect,
+        },
+        proxy::mitm::{
+            HandshakeRelayClassification, TlsMitmEgressServerAuth, TlsMitmRelayErrorDirection,
+            TlsMitmRelayErrorKind,
+        },
+        server::{TlsAcceptorData, TlsAcceptorLayer},
     };
 
     fn hello_with_sni(sni: &Domain) -> ClientHello {
@@ -360,8 +394,26 @@ mod tests {
             ProtocolVersion::TLSv1_3,
             Vec::new(),
             Vec::new(),
-            vec![ClientHelloExtension::ServerName(Some(sni.clone()))],
+            vec![ClientHelloExtension::ServerName(Some(sni.clone().into()))],
         )
+    }
+
+    #[derive(Clone, Copy)]
+    struct CaptureHello;
+
+    impl<S: Io + Unpin + ExtensionsRef> Service<TlsStream<S>> for CaptureHello {
+        type Output = ClientHello;
+
+        type Error = BoxError;
+
+        async fn serve(&self, stream: TlsStream<S>) -> Result<Self::Output, Self::Error> {
+            Ok(stream
+                .extensions()
+                .get_ref::<SecureTransport>()
+                .and_then(SecureTransport::client_hello)
+                .cloned()
+                .unwrap())
+        }
     }
 
     // Regression (boring extensions refactor): `new_from_client_hello`
@@ -371,7 +423,7 @@ mod tests {
     // failure). Pin that the egress connector data keeps the ingress SNI.
     #[test]
     fn egress_config_carries_ingress_sni() {
-        let sni = Domain::from_static("example.com");
+        let sni = Domain::example();
         let hello = hello_with_sni(&sni);
 
         let config = egress_tls_client_config(
@@ -399,7 +451,7 @@ mod tests {
             .with_webpki_roots();
         let config = egress_tls_client_config(
             None,
-            Some(Host::from_static("example.com")),
+            Some(ServerName::from(Domain::example())),
             KeyLogIntent::Disabled,
             Some(&policy),
         );
@@ -450,7 +502,7 @@ mod tests {
         let policy = TlsMitmEgressServerAuth::new();
         let config = egress_tls_client_config(
             None,
-            Some(Host::from_static("example.com")),
+            Some(ServerName::from(Domain::example())),
             KeyLogIntent::Disabled,
             Some(&policy),
         );
@@ -463,7 +515,10 @@ mod tests {
         );
     }
 
-    async fn connect_to_private_ca_with_server_name<F>(server_name: Host, make_policy: F) -> bool
+    async fn connect_to_private_ca_with_server_name<F>(
+        server_name: ServerName,
+        make_policy: F,
+    ) -> bool
     where
         F: FnOnce(CertificateDer<'static>) -> Option<TlsMitmEgressServerAuth>,
     {
@@ -506,7 +561,11 @@ mod tests {
     where
         F: FnOnce(CertificateDer<'static>) -> Option<TlsMitmEgressServerAuth>,
     {
-        connect_to_private_ca_with_server_name(Host::from_static("localhost"), make_policy).await
+        connect_to_private_ca_with_server_name(
+            ServerName::from(Domain::tld_localhost()),
+            make_policy,
+        )
+        .await
     }
 
     #[tokio::test]
@@ -628,7 +687,7 @@ mod tests {
             tokio::spawn(async move { upstream.serve(ServiceInput::new(upstream_io)).await });
         let ingress_connector_data = TlsConnectorData::try_from(
             &TlsClientConfig::new()
-                .with_server_name(Host::from_static("localhost"))
+                .with_server_name(Domain::tld_localhost())
                 .with_server_verify(ServerVerifyMode::Disable)
                 .with_keylog(KeyLogIntent::Disabled),
         )
@@ -695,7 +754,7 @@ mod tests {
         relay_ingress
             .extensions()
             .insert(ConnectorTarget(HostWithPort::new(
-                Host::from_static("localhost"),
+                Domain::tld_localhost().into_host(),
                 443,
             )));
         let ingress_connector_data = TlsConnectorData::try_from(
@@ -719,6 +778,171 @@ mod tests {
         drop(bridged);
         drop(ingress_tls);
         drop(upstream_handle.await);
+    }
+
+    /// Relay a client that targets `target` to an upstream whose leaf names
+    /// `identities`, and report whether the client verified the minted certificate.
+    async fn relay_to_ip_target(target: IpAddr, identities: Vec<CertificateIdentity>) -> bool {
+        let upstream_ca =
+            CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+        let upstream_auth = ServerAuthData::new_issued_by(
+            &upstream_ca,
+            LeafCertRequest {
+                config: Default::default(),
+                identities,
+            },
+        )
+        .unwrap();
+        let upstream =
+            TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(upstream_auth))
+                .into_layer(EchoService::new());
+        let (ca_cert, ca_key) =
+            generate_certificate_authority_x509(&SelfSignedCaConfig::default()).unwrap();
+        let mitm_anchor = CertificateDer::from(ca_cert.to_der().unwrap());
+        let relay =
+            TlsMitmRelay::new_in_memory(ca_cert, ca_key).with_keylog_intent(KeyLogIntent::Disabled);
+
+        let (client_io, relay_ingress_io) = duplex(usize::MAX);
+        let (relay_egress_io, upstream_io) = duplex(usize::MAX);
+        let upstream_handle =
+            tokio::spawn(async move { upstream.serve(ServiceInput::new(upstream_io)).await });
+        let relay_ingress = ServiceInput::new(relay_ingress_io);
+        relay_ingress
+            .extensions()
+            .insert(ConnectorTarget(HostWithPort::new(
+                Host::Address(target),
+                443,
+            )));
+        // The client verifies the minted certificate against the address it dialled.
+        let client = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_name(target)
+                .try_with_server_trust_anchors([mitm_anchor])
+                .unwrap()
+                .with_keylog(KeyLogIntent::Disabled),
+        )
+        .unwrap();
+        let (_relay, client) = tokio::join!(
+            relay.handshake(
+                BridgeIo(relay_ingress, ServiceInput::new(relay_egress_io)),
+                None,
+            ),
+            tls_connect(ServiceInput::new(client_io), Some(client)),
+        );
+        let verified = client.is_ok();
+        drop(client);
+        upstream_handle.abort();
+        verified
+    }
+
+    #[tokio::test]
+    async fn relayed_ip_targets_verify_against_mirrored_address_names() {
+        let v4 = IpAddr::from([127, 0, 0, 1]);
+        let v6 = IpAddr::from(Ipv6Addr::LOCALHOST);
+        for target in [v4, v6] {
+            assert!(
+                relay_to_ip_target(target, vec![CertificateIdentity::Ip(target)]).await,
+                "{target}"
+            );
+        }
+        // An upstream without the address keeps the minted certificate without it.
+        assert!(
+            !relay_to_ip_target(v4, vec![CertificateIdentity::Dns(Domain::tld_localhost())]).await
+        );
+        assert!(!relay_to_ip_target(v6, vec![CertificateIdentity::Ip(v4)]).await);
+    }
+
+    #[tokio::test]
+    async fn relay_mirrors_ip_literal_sni_and_its_absence() {
+        for target in [
+            Host::Address(IpAddr::from([127, 0, 0, 1])),
+            Host::Address(IpAddr::from(Ipv6Addr::LOCALHOST)),
+            Domain::tld_localhost().into_host(),
+        ] {
+            for policy in [TlsClientSni::IncludeIp, TlsClientSni::Disabled] {
+                let upstream_ca =
+                    CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+                let auth = ServerAuthData::new_issued_by(
+                    &upstream_ca,
+                    LeafCertRequest {
+                        identities: vec![CertificateIdentity::try_from(&target).unwrap()],
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let upstream = TlsAcceptorLayer::new(TlsServerConfig::new().with_server_auth(auth))
+                    .with_store_client_hello(true)
+                    .into_layer(CaptureHello);
+                let (ca_cert, ca_key) =
+                    generate_certificate_authority_x509(&SelfSignedCaConfig::default()).unwrap();
+                let anchor = CertificateDer::from(ca_cert.to_der().unwrap());
+                let relay = TlsMitmRelay::new_in_memory(ca_cert, ca_key).with_egress_server_auth(
+                    TlsMitmEgressServerAuth::new()
+                        .with_server_verify(ServerVerifyMode::Auto)
+                        .try_with_server_trust_anchors([upstream_ca.certificate_chain()[0].clone()])
+                        .unwrap(),
+                );
+                let service = TlsMitmRelayService::new(
+                    relay,
+                    service_fn(|_input| async { Ok::<_, BoxError>(()) }),
+                );
+                let (client_io, ingress_io) = duplex(64 * 1024);
+                let (egress_io, upstream_io) = duplex(64 * 1024);
+                let upstream =
+                    tokio::spawn(
+                        async move { upstream.serve(ServiceInput::new(upstream_io)).await },
+                    );
+                let client = TlsConnectorData::try_from(
+                    &TlsClientConfig::new()
+                        .with_server_name(ServerName::try_from(target.clone()).unwrap())
+                        .with_sni_policy(policy)
+                        .try_with_server_trust_anchors([anchor])
+                        .unwrap(),
+                )
+                .unwrap();
+                let relaying = async {
+                    let (ingress, hello) =
+                        peek_client_hello_from_input(ServiceInput::new(ingress_io))
+                            .await
+                            .unwrap();
+                    ingress
+                        .extensions()
+                        .insert(ConnectorTarget(HostWithPort::new(target.clone(), 443)));
+                    service
+                        .serve(InputWithClientHello {
+                            input: BridgeIo(ingress, ServiceInput::new(egress_io)),
+                            client_hello: hello.unwrap(),
+                        })
+                        .await
+                        .unwrap();
+                };
+                let (_, connected) = tokio::join!(
+                    relaying,
+                    tls_connect(ServiceInput::new(client_io), Some(client))
+                );
+                connected.unwrap();
+                let hello = upstream.await.unwrap().unwrap();
+                if policy == TlsClientSni::Disabled {
+                    assert!(
+                        hello
+                            .ext_server_name()
+                            .and_then(|name| name.as_ip())
+                            .is_none()
+                    );
+                    assert!(hello.ext_server_domain().is_none());
+                } else {
+                    match CertificateIdentity::try_from(&target).unwrap() {
+                        CertificateIdentity::Ip(ip) => assert_eq!(
+                            hello.ext_server_name().and_then(|name| name.as_ip()),
+                            Some(ip)
+                        ),
+                        CertificateIdentity::Dns(name) => {
+                            assert_eq!(hello.ext_server_domain(), Some(&name))
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// A full client, relay and upstream handshake whose upstream leg is
@@ -755,7 +979,7 @@ mod tests {
         relay_ingress
             .extensions()
             .insert(ConnectorTarget(HostWithPort::new(
-                Host::from_static("localhost"),
+                Domain::tld_localhost().into_host(),
                 443,
             )));
         let ingress_connector_data = TlsConnectorData::try_from(
@@ -793,27 +1017,32 @@ mod tests {
     #[tokio::test]
     async fn trusted_upstream_still_checks_the_effective_dns_identity() {
         assert!(
-            connect_to_private_ca_with_server_name(Host::from_static("localhost"), |anchor| {
-                Some(
-                    TlsMitmEgressServerAuth::new()
-                        .with_server_verify(ServerVerifyMode::Auto)
-                        .try_with_server_trust_anchors([anchor])
-                        .unwrap(),
-                )
-            })
+            connect_to_private_ca_with_server_name(
+                ServerName::from(Domain::tld_localhost()),
+                |anchor| {
+                    Some(
+                        TlsMitmEgressServerAuth::new()
+                            .with_server_verify(ServerVerifyMode::Auto)
+                            .try_with_server_trust_anchors([anchor])
+                            .unwrap(),
+                    )
+                }
+            )
             .await,
             "trusted upstream accepts its certificate identity"
         );
-        let mismatch_accepted =
-            connect_to_private_ca_with_server_name(Host::from_static("wrong.example"), |anchor| {
+        let mismatch_accepted = connect_to_private_ca_with_server_name(
+            ServerName::from(Domain::from_static("wrong.example")),
+            |anchor| {
                 Some(
                     TlsMitmEgressServerAuth::new()
                         .with_server_verify(ServerVerifyMode::Auto)
                         .try_with_server_trust_anchors([anchor])
                         .unwrap(),
                 )
-            })
-            .await;
+            },
+        )
+        .await;
         assert!(
             !mismatch_accepted,
             "trusted upstream still rejects a hostname mismatch"
@@ -852,7 +1081,7 @@ mod tests {
         let upstream_handle =
             tokio::spawn(async move { upstream.serve(ServiceInput::new(upstream_io)).await });
 
-        let effective_sni = Domain::from_static("localhost");
+        let effective_sni = Domain::tld_localhost();
         let target = HostWithPort::new(effective_sni.clone().into(), 443);
         let ingress = ServiceInput::new(relay_ingress);
         ingress.extensions().insert(ConnectorTarget(target.clone()));
@@ -881,7 +1110,7 @@ mod tests {
             }
         );
         assert_eq!(error.connector_target(), Some(&target));
-        assert_eq!(error.sni(), Some(&effective_sni));
+        assert!(error.sni().is_none());
         drop(upstream_handle.await);
     }
 
@@ -890,7 +1119,7 @@ mod tests {
         let target = HostWithPort::new(Host::from_static("target.example"), 443);
         let config = egress_tls_client_config(
             None,
-            relay_server_name(None, Some(&target), None),
+            relay_server_name(None, Some(&target), None).unwrap(),
             KeyLogIntent::Disabled,
             None,
         );
@@ -905,7 +1134,7 @@ mod tests {
         let policy = TlsMitmEgressServerAuth::new();
         let config = egress_tls_client_config(
             None,
-            relay_server_name(None, Some(&target), Some(&policy)),
+            relay_server_name(None, Some(&target), Some(&policy)).unwrap(),
             KeyLogIntent::Disabled,
             Some(&policy),
         );
@@ -920,13 +1149,21 @@ mod tests {
         let policy = TlsMitmEgressServerAuth::new().with_server_verify(ServerVerifyMode::Auto);
         let config = egress_tls_client_config(
             None,
-            relay_server_name(None, Some(&target), Some(&policy)),
+            relay_server_name(None, Some(&target), Some(&policy)).unwrap(),
             KeyLogIntent::Disabled,
             Some(&policy),
         );
 
         let data = TlsConnectorData::try_from(&config).expect("build fallback connector data");
-        assert_eq!(data.server_name, Some(target.host));
+        assert_eq!(data.server_name.map(Host::from), Some(target.host));
+    }
+
+    #[test]
+    fn verifying_server_auth_refuses_a_connector_target_that_is_not_a_server_name() {
+        let target = HostWithPort::new("[v1.foo]".parse::<Host>().unwrap(), 443);
+        let policy = TlsMitmEgressServerAuth::new().with_server_verify(ServerVerifyMode::Auto);
+        relay_server_name(None, Some(&target), Some(&policy)).unwrap_err();
+        assert_eq!(relay_server_name(None, Some(&target), None).unwrap(), None);
     }
 
     #[test]
@@ -936,20 +1173,99 @@ mod tests {
             .with_server_cert_pins(TlsServerCertPins::new(CertificateDer::from(vec![1, 2, 3])));
         let config = egress_tls_client_config(
             None,
-            relay_server_name(None, Some(&target), Some(&policy)),
+            relay_server_name(None, Some(&target), Some(&policy)).unwrap(),
             KeyLogIntent::Disabled,
             Some(&policy),
         );
 
         let data = TlsConnectorData::try_from(&config).expect("build pinned connector data");
-        assert_eq!(data.server_name, Some(target.host));
+        assert_eq!(data.server_name.map(Host::from), Some(target.host));
+    }
+
+    #[tokio::test]
+    async fn handshake_errors_report_the_name_of_the_failed_side() {
+        let ingress_name = Domain::from_static("ingress.test");
+        let egress_name = Domain::from_static("egress.test");
+        for (reject_ingress, peek) in [(false, false), (false, true), (true, false), (true, true)] {
+            let (cert_chain, private_key) =
+                generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
+            let upstream =
+                TlsAcceptorLayer::new(TlsServerConfig::new().with_server_auth(ServerAuthData {
+                    cert_chain,
+                    private_key,
+                    ocsp: None,
+                }))
+                .into_layer(EchoService::new());
+            let policy = TlsMitmEgressServerAuth::new()
+                .with_server_name(egress_name.clone())
+                .with_server_verify(if reject_ingress {
+                    ServerVerifyMode::Disable
+                } else {
+                    ServerVerifyMode::Auto
+                })
+                .with_webpki_roots();
+            let relay =
+                TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+                    .unwrap()
+                    .with_egress_server_auth(policy);
+            let service = TlsMitmRelayService::new(
+                relay,
+                service_fn(async |_: BridgeIo<_, _>| Ok::<_, BoxError>(())),
+            );
+            let (client_io, relay_ingress) = duplex(kib(16));
+            let (relay_egress, upstream_io) = duplex(kib(16));
+            let upstream =
+                tokio::spawn(async move { upstream.serve(ServiceInput::new(upstream_io)).await });
+            let client = TlsConnectorData::try_from(
+                &TlsClientConfig::new()
+                    .with_server_name(ingress_name.clone())
+                    .with_webpki_roots(),
+            )
+            .unwrap();
+            let input = BridgeIo(
+                ServiceInput::new(relay_ingress),
+                ServiceInput::new(relay_egress),
+            );
+            let relayed = async {
+                if peek {
+                    service
+                        .serve(InputWithClientHello {
+                            input,
+                            client_hello: hello_with_sni(&ingress_name),
+                        })
+                        .await
+                } else {
+                    service.serve(input).await
+                }
+            };
+            let (relayed, client) = tokio::join!(
+                relayed,
+                tls_connect(ServiceInput::new(client_io), Some(client))
+            );
+            client.unwrap_err();
+            let error = relayed.unwrap_err();
+            let (direction, name) = if reject_ingress {
+                (TlsMitmRelayErrorDirection::Ingress, &ingress_name)
+            } else {
+                (TlsMitmRelayErrorDirection::Egress, &egress_name)
+            };
+            assert_eq!(
+                error.kind(),
+                TlsMitmRelayErrorKind::Handshake {
+                    direction,
+                    classification: HandshakeRelayClassification::CertTrust,
+                }
+            );
+            assert_eq!(error.sni(), Some(&ServerName::from(name.clone())));
+            drop(upstream.await.unwrap());
+        }
     }
 
     #[test]
     fn configured_identity_overrides_ingress_sni() {
         let ingress_sni = Domain::from_static("ingress.example");
         let policy =
-            TlsMitmEgressServerAuth::new().with_server_name(Host::from_static("policy.example"));
+            TlsMitmEgressServerAuth::new().with_server_name(Domain::from_static("policy.example"));
         let config = egress_tls_client_config(
             Some(&hello_with_sni(&ingress_sni)),
             Some(ingress_sni.into()),
@@ -958,7 +1274,10 @@ mod tests {
         );
 
         let data = TlsConnectorData::try_from(&config).expect("build connector data");
-        assert_eq!(data.server_name, Some(Host::from_static("policy.example")));
+        assert_eq!(
+            data.server_name,
+            Some(ServerName::from(Domain::from_static("policy.example")))
+        );
     }
 
     #[test]
@@ -1012,7 +1331,7 @@ mod tests {
         let policy = TlsMitmEgressServerAuth::new().with_server_verify(ServerVerifyMode::Auto);
         let config = egress_tls_client_config(
             Some(&hello),
-            Some(Host::from_static("example.com")),
+            Some(ServerName::from(Domain::example())),
             KeyLogIntent::Disabled,
             Some(&policy),
         );
@@ -1042,7 +1361,7 @@ mod tests {
             .with_server_verify_cert_store(store);
         let config = egress_tls_client_config(
             None,
-            Some(Host::from_static("example.com")),
+            Some(ServerName::from(Domain::example())),
             KeyLogIntent::Disabled,
             Some(&policy),
         );
@@ -1089,7 +1408,7 @@ mod tests {
         ] {
             let config = egress_tls_client_config(
                 Some(&hello),
-                Some(Host::from_static("example.com")),
+                Some(ServerName::from(Domain::example())),
                 KeyLogIntent::Disabled,
                 None,
             );
@@ -1482,6 +1801,55 @@ mod tests {
                     .to_human_string()
             };
             assert_eq!(ja4s(&received), ja4s(&sent), "{version:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ip_literal_ingress_servername_is_relayed() {
+        for literal in ["127.0.0.1", "::1"] {
+            let (cert_chain, private_key) =
+                generate_server_auth(GeneratedServerAuthConfig::default())
+                    .expect("generate private upstream identity");
+            let upstream = TlsAcceptorData::try_from(&TlsServerConfig::new().with_single_cert(
+                ServerAuthData {
+                    cert_chain,
+                    private_key,
+                    ocsp: None,
+                },
+            ))
+            .unwrap()
+            .into_static_acceptor_builder()
+            .unwrap()
+            .build();
+            let mut client = SslConnector::builder(SslMethod::tls_client()).unwrap();
+            client.set_verify(SslVerifyMode::NONE);
+            let mut client = client.build().configure().unwrap();
+            // Send the literal as SNI, as some clients do, instead of the connect name.
+            client.set_use_server_name_indication(false);
+            client.set_hostname(literal).unwrap();
+            let client_hello = ClientHello::new(
+                ProtocolVersion::TLSv1_3,
+                vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
+                Vec::new(),
+                Vec::new(),
+            );
+            let stream = relay_flow(client_hello, client, |io| {
+                tokio::spawn(async move {
+                    let ssl = Ssl::new(upstream.context()).unwrap();
+                    drop(
+                        SslStreamBuilder::new(ssl, io)
+                            .accept()
+                            .await
+                            .expect("upstream TLS"),
+                    );
+                })
+            })
+            .await;
+            assert_eq!(
+                stream.ssl().servername(NameType::HOST_NAME),
+                Some(literal),
+                "{literal}"
+            );
         }
     }
 

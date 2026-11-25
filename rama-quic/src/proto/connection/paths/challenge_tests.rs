@@ -3,11 +3,10 @@
 //! A response names only the token, so the rules here are what keep a small datagram from
 //! ever standing in for an expanded one (RFC 9000 §8.2.1).
 
-use crate::proto::{MIN_INITIAL_SIZE, connection::paths::Challenge};
+use crate::proto::{Duration, Instant, MIN_INITIAL_SIZE, connection::paths::Challenge};
 
 #[test]
 fn retransmission_waits_and_stays_bounded_when_rtt_changes() {
-    use crate::proto::{Duration, Instant};
     let mut now = Instant::now();
     let mut challenge = Challenge::of_address(0x1234, 7);
     for attempt in 0..3 {

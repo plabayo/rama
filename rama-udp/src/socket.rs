@@ -13,6 +13,9 @@ use rama_net::{
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 use rama_net::socket::{DeviceName, SocketOptions, opts::Domain};
 
+#[cfg(windows)]
+use crate::sys::stop_time_exceeded_reports;
+
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 // `SO_BINDTODEVICE` applies to IP sockets. This helper creates an IPv4 UDP
 // socket because its API takes only a device name and provides no IP-family
@@ -35,6 +38,10 @@ pub use tokio::net::UdpSocket;
 /// Connecting a UDP socket configures its default remote peer and
 /// restricts incoming datagrams to that peer. It does not perform a
 /// handshake or guarantee reachability.
+///
+/// A port-unreachable reply to an earlier send fails a later send or receive,
+/// as `ConnectionRefused` on Unix and `ConnectionReset` on Windows. A time-exceeded
+/// reply does not: Windows reports it unless its provider can turn that off.
 pub async fn bind_udp_socket_with_connect(
     address: impl Into<HostWithPort>,
     extensions: Option<&Extensions>,
@@ -83,6 +90,10 @@ pub(crate) fn udp_connect_target(
 /// Binding with a port number of 0 will request that the OS assigns a port
 /// to this listener. The port allocated can be queried via the `local_addr`
 /// method.
+///
+/// On Windows a port-unreachable reply to an earlier send fails the next receive
+/// (`ConnectionReset`), connected or not, so a socket connected later keeps that
+/// signal; a time-exceeded reply does not, where the provider can turn it off.
 pub async fn bind_udp_with_address<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
     addr: A,
 ) -> Result<UdpSocket, BoxError> {
@@ -91,6 +102,8 @@ pub async fn bind_udp_with_address<A: TryInto<SocketAddress, Error: Into<BoxErro
     let socket = UdpSocket::bind(tokio_socket_addr)
         .await
         .context("bind to udp socket")?;
+    #[cfg(windows)]
+    stop_time_exceeded_reports(&socket);
     Ok(socket)
 }
 
@@ -99,6 +112,7 @@ pub async fn bind_udp_with_address<A: TryInto<SocketAddress, Error: Into<BoxErro
 /// Creates a new [`UdpSocket`], which will be bound to the specified socket.
 ///
 /// The returned socket is ready for accepting connections and connecting to others.
+/// ICMP replies are reported as for [`bind_udp_with_address`].
 pub async fn bind_udp_with_socket(
     socket: rama_net::socket::core::Socket,
 ) -> Result<UdpSocket, BoxError> {
@@ -115,6 +129,7 @@ pub async fn bind_udp_with_socket(
 /// This convenience helper currently creates an IPv4 UDP socket.
 ///
 /// The returned socket is ready for accepting connections and connecting to others.
+/// ICMP replies are reported as for [`bind_udp_with_address`].
 pub async fn bind_udp_with_device<
     N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static,
 >(
@@ -135,6 +150,8 @@ fn bind_socket_internal(socket: rama_net::socket::core::Socket) -> Result<UdpSoc
     socket
         .set_nonblocking(true)
         .context("set socket as non-blocking")?;
+    #[cfg(windows)]
+    stop_time_exceeded_reports(&socket);
     Ok(UdpSocket::from_std(socket)?)
 }
 

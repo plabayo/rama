@@ -11,7 +11,7 @@ use rama_crypto::{
     pki_types::CertificateDer,
     platform_verifier::{PlatformVerifier, PlatformVerifyErrorKind},
 };
-use rama_net::address::{Domain, Host};
+use rama_net::{address::Domain, tls::ServerName};
 
 use crate::harness::{Test, ensure};
 
@@ -74,7 +74,7 @@ fn a_private_ca_is_not_trusted() -> Result<(), String> {
         PlatformVerifier::new().verify_server_chain(
             &leaf,
             &[],
-            &Host::from_static(NAME),
+            &ServerName::from(Domain::from_static(NAME)),
             None,
             SystemTime::now(),
         ),
@@ -88,7 +88,7 @@ fn extra_roots_trust_a_private_ca() -> Result<(), String> {
         .verify_server_chain(
             &leaf,
             &[],
-            &Host::from_static(NAME),
+            &ServerName::from(Domain::from_static(NAME)),
             None,
             SystemTime::now(),
         )
@@ -108,7 +108,7 @@ fn the_server_name_must_match() -> Result<(), String> {
         trusting(&ca)?.verify_server_chain(
             &leaf,
             &[],
-            &Host::from_static("other.rama.test"),
+            &ServerName::from(Domain::from_static("other.rama.test")),
             None,
             SystemTime::now(),
         ),
@@ -121,13 +121,13 @@ fn ip_identities_match_ip_names() -> Result<(), String> {
     let [leaf, ca] = chain(ip)?;
     let verifier = trusting(&ca)?;
     verifier
-        .verify_server_chain(&leaf, &[], &Host::from(ip), None, SystemTime::now())
+        .verify_server_chain(&leaf, &[], &ServerName::from(ip), None, SystemTime::now())
         .map_err(|err| err.to_string())?;
     rejected_with(
         verifier.verify_server_chain(
             &leaf,
             &[],
-            &Host::from(IpAddr::from(Ipv4Addr::new(127, 0, 0, 2))),
+            &ServerName::from(IpAddr::from(Ipv4Addr::new(127, 0, 0, 2))),
             None,
             SystemTime::now(),
         ),
@@ -140,7 +140,13 @@ fn an_expired_leaf_is_rejected() -> Result<(), String> {
     // Generated leaves live 90 days.
     let later = SystemTime::now() + Duration::from_hours(365 * 24);
     rejected_with(
-        trusting(&ca)?.verify_server_chain(&leaf, &[], &Host::from_static(NAME), None, later),
+        trusting(&ca)?.verify_server_chain(
+            &leaf,
+            &[],
+            &ServerName::from(Domain::from_static(NAME)),
+            None,
+            later,
+        ),
         PlatformVerifyErrorKind::Expired,
     )
 }
@@ -152,7 +158,7 @@ fn a_malformed_certificate_leaves_the_verifier_usable() -> Result<(), String> {
         verifier.verify_server_chain(
             &leaf,
             &[CertificateDer::from(vec![0x30, 0x03, 0x02, 0x01, 0x00])],
-            &Host::from_static(NAME),
+            &ServerName::from(Domain::from_static(NAME)),
             None,
             SystemTime::now(),
         ),
@@ -163,7 +169,7 @@ fn a_malformed_certificate_leaves_the_verifier_usable() -> Result<(), String> {
         .verify_server_chain(
             &leaf,
             &[],
-            &Host::from_static(NAME),
+            &ServerName::from(Domain::from_static(NAME)),
             None,
             SystemTime::now(),
         )
@@ -178,7 +184,7 @@ fn overlong_chains_are_refused() -> Result<(), String> {
         trusting(&ca)?.verify_server_chain(
             &leaf,
             &intermediates,
-            &Host::from_static(NAME),
+            &ServerName::from(Domain::from_static(NAME)),
             None,
             SystemTime::now(),
         ),
@@ -197,7 +203,7 @@ fn threads_verify_concurrently() -> Result<(), String> {
                     .verify_server_chain(
                         &leaf,
                         &[],
-                        &Host::from_static(NAME),
+                        &ServerName::from(Domain::from_static(NAME)),
                         None,
                         SystemTime::now(),
                     )

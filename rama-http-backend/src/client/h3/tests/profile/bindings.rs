@@ -1,7 +1,10 @@
 use super::*;
-use rama_net::{address::Host, tls::TlsAlpn};
+use rama_net::{
+    address::{Domain, Host},
+    tls::{ServerName, TlsAlpn},
+};
 use rama_quic_proto::transport_parameters::TransportParameterId;
-use rama_tls::client::{ServerVerifyMode, TlsServerName, TlsServerVerify};
+use rama_tls::client::{ServerVerifyMode, TlsClientSni, TlsServerVerify};
 use rama_ua::profile::{
     capture::{joint::CapturedSlotKind, order::ProtocolValue},
     replay::request::{
@@ -74,7 +77,7 @@ async fn caller_security_and_reuse_survive_derived_wire_settings() {
 }
 
 #[tokio::test]
-async fn caller_quic_recipe_is_retained_and_the_captured_one_reported() {
+async fn an_earlier_quic_profile_is_replaced_by_the_captured_one() {
     let fixture = fixture().await;
     let input = fixture.input();
     let (context, _) = selection::selected(
@@ -85,11 +88,7 @@ async fn caller_quic_recipe_is_retained_and_the_captured_one_reported() {
     );
     context.publish(input.extensions());
     fixture.prepare_connection(&input).await.unwrap();
-    assert!(reported(
-        &input,
-        &lowered(LoweredProfileItem::CallerQuicProfile)
-    ));
-    assert_eq!(
+    assert_ne!(
         input.extensions().get_ref::<QuicProfile>().unwrap(),
         &fixture.profile
     );
@@ -170,17 +169,21 @@ async fn unsupported_original_flight_is_reported_before_dial() {
 
 #[tokio::test]
 async fn destination_identity_overrides_and_reports_captured_sni_presence() {
-    let fixture = fixture().await;
-    let input = fixture.input();
-    fixture.install(&input);
-    input
-        .extensions()
-        .insert(TlsServerName(Host::try_from("127.0.0.1").unwrap()));
-    fixture.prepare_connection(&input).await.unwrap();
-    assert!(reported(
-        &input,
-        &lowered(LoweredProfileItem::TlsServerNamePresence)
-    ));
+    // An IP address spelled as a name is still an IP identity, sent without SNI.
+    let ip_as_name = Host::Name(Domain::try_from("127.0.0.1").unwrap());
+    for server_name in [Host::try_from("127.0.0.1").unwrap(), ip_as_name] {
+        let fixture = fixture().await;
+        let input = fixture.input();
+        fixture.install(&input);
+        input
+            .extensions()
+            .insert(ServerName::try_from(server_name).unwrap());
+        fixture.prepare_connection(&input).await.unwrap();
+        assert!(reported(
+            &input,
+            &lowered(LoweredProfileItem::TlsServerNamePresence)
+        ));
+    }
 }
 
 #[tokio::test]
@@ -226,4 +229,58 @@ async fn explicit_alpn_order_and_extra_protocols_are_retained_and_reported() {
     let captures = fixture.task.take().unwrap().await.unwrap();
     assert_eq!(captures.len(), 2);
     assert_eq!(captures[1].0, fixture.capture);
+}
+
+#[tokio::test]
+async fn unchanged_ech_and_caller_settings_reuse_the_admitted_quic_recipe() {
+    let fixture = fixture().await;
+    let input = fixture.target();
+    fixture.install(&input);
+    let (mut preparation, compiled) = prepare(
+        &input,
+        fixture.connector.tls_config(),
+        fixture.connector.tls_provider(),
+    )
+    .unwrap()
+    .unwrap();
+    preparation.apply_http(&input).unwrap();
+    <CompiledConnection as InstalledConnectionProfile<ConnectRequest>>::apply(
+        compiled,
+        input.extensions(),
+    );
+    let installed = input.extensions().get_arc::<TlsClientSni>().unwrap();
+    prepare_h3(&fixture.connector, &input).await.unwrap();
+    assert!(Arc::ptr_eq(
+        &installed,
+        &input.extensions().get_arc::<TlsClientSni>().unwrap()
+    ));
+}
+
+#[tokio::test]
+async fn late_caller_sni_suppression_survives_final_quic_preparation() {
+    let fixture = fixture().await;
+    let input = fixture.target();
+    fixture.install(&input);
+    let (mut preparation, compiled) = prepare(
+        &input,
+        fixture.connector.tls_config(),
+        fixture.connector.tls_provider(),
+    )
+    .unwrap()
+    .unwrap();
+    preparation.apply_http(&input).unwrap();
+    <CompiledConnection as InstalledConnectionProfile<ConnectRequest>>::apply(
+        compiled,
+        input.extensions(),
+    );
+    assert_ne!(
+        input.extensions().get_ref::<TlsClientSni>(),
+        Some(&TlsClientSni::Disabled)
+    );
+    input.extensions().insert(TlsClientSni::Disabled);
+    prepare_h3(&fixture.connector, &input).await.unwrap();
+    assert_eq!(
+        input.extensions().get_ref::<TlsClientSni>(),
+        Some(&TlsClientSni::Disabled)
+    );
 }

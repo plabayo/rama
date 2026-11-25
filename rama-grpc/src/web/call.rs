@@ -3,14 +3,15 @@
     reason = "gRPC-Web codec arms gated on caller-validated state that the type system can't enforce"
 )]
 
-use std::fmt;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll, ready};
+use std::{
+    fmt,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll, ready},
+};
 
 use base64::Engine as _;
 use pin_project_lite::pin_project;
-
 use rama_core::{
     bytes::{Buf, BufMut, Bytes, BytesMut},
     futures::Stream,
@@ -23,9 +24,8 @@ use rama_http_types::{
 };
 use rama_utils::{bytes::trim_ows, octets::kib};
 
-use crate::{Status, codec::DEFAULT_MAX_RECV_MESSAGE_SIZE};
-
 use self::content_types::*;
+use crate::{Status, codec::DEFAULT_MAX_RECV_MESSAGE_SIZE};
 
 // A grpc header is u8 (flag) + u32 (msg len)
 const GRPC_HEADER_SIZE: usize = 1 + 4;
@@ -88,8 +88,34 @@ pin_project! {
         client: bool,
         client_done: bool,
         trailers: Option<HeaderMap>,
-        // Largest frame payload a client buffers before the codec sees it.
-        max_frame_size: usize,
+        // Largest frame payloads a client buffers before the codec sees them.
+        frame_limits: FrameLimits,
+    }
+}
+
+/// Largest payloads, in bytes, of the response frames a grpc-web client buffers.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameLimits {
+    pub(crate) message: usize,
+    pub(crate) trailers: usize,
+}
+
+impl Default for FrameLimits {
+    fn default() -> Self {
+        Self {
+            message: DEFAULT_MAX_RECV_MESSAGE_SIZE,
+            trailers: DEFAULT_MAX_RECV_MESSAGE_SIZE,
+        }
+    }
+}
+
+impl FrameLimits {
+    fn for_flag(self, flag: u8) -> usize {
+        if flag == GRPC_WEB_TRAILERS_BIT {
+            self.trailers
+        } else {
+            self.message
+        }
     }
 }
 
@@ -105,7 +131,7 @@ impl<B: Default> Default for GrpcWebCall<B> {
             client: Default::default(),
             client_done: false,
             trailers: Default::default(),
-            max_frame_size: DEFAULT_MAX_RECV_MESSAGE_SIZE,
+            frame_limits: FrameLimits::default(),
         }
     }
 }
@@ -123,9 +149,9 @@ impl<B> GrpcWebCall<B> {
         Self::new_client(inner, Direction::Encode, Encoding::None)
     }
 
-    pub(crate) fn client_response(inner: B, max_frame_size: usize) -> Self {
+    pub(crate) fn client_response(inner: B, frame_limits: FrameLimits) -> Self {
         Self {
-            max_frame_size,
+            frame_limits,
             ..Self::new_client(inner, Direction::Decode, Encoding::None)
         }
     }
@@ -144,7 +170,7 @@ impl<B> GrpcWebCall<B> {
             client: true,
             client_done: false,
             trailers: None,
-            max_frame_size: DEFAULT_MAX_RECV_MESSAGE_SIZE,
+            frame_limits: FrameLimits::default(),
         }
     }
 
@@ -162,7 +188,7 @@ impl<B> GrpcWebCall<B> {
             client: false,
             client_done: false,
             trailers: None,
-            max_frame_size: DEFAULT_MAX_RECV_MESSAGE_SIZE,
+            frame_limits: FrameLimits::default(),
         }
     }
 
@@ -218,7 +244,7 @@ impl<B> GrpcWebCall<B> {
                     this.decoded[3],
                     this.decoded[4],
                 ]),
-                *this.max_frame_size,
+                this.frame_limits.for_flag(flag),
             )?;
             if !take_to(this.decoded, this.chunk, frame_len) {
                 return Ok(None);
@@ -235,7 +261,7 @@ impl<B> GrpcWebCall<B> {
             return Ok(None);
         }
 
-        match find_trailers(this.chunk, *this.max_frame_size)? {
+        match find_trailers(this.chunk, *this.frame_limits)? {
             FindTrailers::Trailer(len) => {
                 let messages = this.chunk.split_to(len);
                 *this.trailers = decode_trailers_frame(std::mem::take(this.chunk))?;
@@ -257,6 +283,69 @@ impl<B> GrpcWebCall<B>
 where
     B: StreamingBody<Data: Buf, Error: fmt::Display>,
 {
+    fn poll_frame_inner(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Status>>> {
+        if self.client && self.direction == Direction::Decode {
+            loop {
+                if self.client_done {
+                    return Poll::Ready(
+                        self.as_mut()
+                            .project()
+                            .trailers
+                            .take()
+                            .map(|trailers| Ok(Frame::trailers(trailers))),
+                    );
+                }
+
+                // Drain complete buffered frames before polling the transport again.
+                if let Some(messages) = self.as_mut().client_frames()? {
+                    return Poll::Ready(Some(Ok(Frame::data(messages))));
+                }
+                if self.client_done {
+                    continue;
+                }
+
+                // Empty DATA and incomplete headers are not EOF; only the inner
+                // body ending (or a complete trailers frame) ends this decoder.
+                match ready!(self.as_mut().poll_decode(cx)) {
+                    Some(Ok(frame)) => match frame.into_data() {
+                        Ok(data) => *self.as_mut().project().chunk = data,
+                        Err(frame) => {
+                            let trailers = frame
+                                .into_trailers()
+                                .map_err(|_frame| internal_error("unexpected frame type"))?;
+                            let this = self.as_mut().project();
+                            *this.client_done = true;
+                            if !this.decoded.is_empty() {
+                                return Poll::Ready(Some(Err(internal_error(
+                                    "incomplete gRPC-Web frame before HTTP trailers",
+                                ))));
+                            }
+                            *this.trailers = Some(trailers);
+                        }
+                    },
+                    Some(Err(error)) => return Poll::Ready(Some(Err(error))),
+                    None => {
+                        *self.as_mut().project().client_done = true;
+                        if !self.decoded.is_empty() {
+                            return Poll::Ready(Some(Err(internal_error(
+                                "unexpected EOF in gRPC-Web frame",
+                            ))));
+                        }
+                    }
+                }
+            }
+        }
+
+        match self.direction {
+            Direction::Decode => self.poll_decode(cx),
+            Direction::Encode => self.poll_encode(cx),
+            Direction::Empty => Poll::Ready(None),
+        }
+    }
+
     // Poll body for data, decoding (e.g. via Base64 if necessary) and returning frames
     // to the caller. If the caller is a client, it should look for trailers before
     // returning these frames.
@@ -352,79 +441,33 @@ where
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        if self.client && self.direction == Direction::Decode {
-            loop {
-                if self.client_done {
-                    return Poll::Ready(
-                        self.as_mut()
-                            .project()
-                            .trailers
-                            .take()
-                            .map(|trailers| Ok(Frame::trailers(trailers))),
-                    );
-                }
-
-                // Drain complete buffered frames before polling the transport again.
-                if let Some(messages) = self.as_mut().client_frames()? {
-                    return Poll::Ready(Some(Ok(Frame::data(messages))));
-                }
-                if self.client_done {
-                    continue;
-                }
-
-                // Empty DATA and incomplete headers are not EOF; only the inner
-                // body ending (or a complete trailers frame) ends this decoder.
-                match ready!(self.as_mut().poll_decode(cx)) {
-                    Some(Ok(frame)) => match frame.into_data() {
-                        Ok(data) => *self.as_mut().project().chunk = data,
-                        Err(frame) => {
-                            let trailers = frame
-                                .into_trailers()
-                                .map_err(|_frame| internal_error("unexpected frame type"))?;
-                            let this = self.as_mut().project();
-                            *this.client_done = true;
-                            if !this.decoded.is_empty() {
-                                return Poll::Ready(Some(Err(internal_error(
-                                    "incomplete gRPC-Web frame before HTTP trailers",
-                                ))));
-                            }
-                            *this.trailers = Some(trailers);
-                        }
-                    },
-                    Some(Err(error)) => return Poll::Ready(Some(Err(error))),
-                    None => {
-                        *self.as_mut().project().client_done = true;
-                        if !self.decoded.is_empty() {
-                            return Poll::Ready(Some(Err(internal_error(
-                                "unexpected EOF in gRPC-Web frame",
-                            ))));
-                        }
-                    }
-                }
-            }
+        let polled = self.as_mut().poll_frame_inner(cx);
+        if let Poll::Ready(Some(Err(_))) = &polled {
+            // An error ends the body, so a consumer that keeps polling sees its end.
+            let this = self.project();
+            *this.direction = Direction::Empty;
+            *this.trailers = None;
+            *this.chunk = Bytes::new();
+            *this.decoded = BytesMut::new();
+            *this.buf = BytesMut::new();
         }
-
-        match self.direction {
-            Direction::Decode => self.poll_decode(cx),
-            Direction::Encode => self.poll_encode(cx),
-            Direction::Empty => Poll::Ready(None),
-        }
+        polled
     }
 
     fn is_end_stream(&self) -> bool {
-        if self.client && self.direction == Direction::Decode {
-            self.client_done && self.trailers.is_none()
-        } else {
-            self.inner.is_end_stream()
+        match self.direction {
+            Direction::Empty => true,
+            Direction::Decode if self.client => self.client_done && self.trailers.is_none(),
+            Direction::Decode | Direction::Encode => self.inner.is_end_stream(),
         }
     }
 
     fn size_hint(&self) -> SizeHint {
-        if self.client && self.direction == Direction::Decode {
+        match self.direction {
+            Direction::Empty => SizeHint::with_exact(0),
             // Encoded trailer bytes disappear and message bytes may be buffered.
-            SizeHint::default()
-        } else {
-            self.inner.size_hint()
+            Direction::Decode if self.client => SizeHint::default(),
+            Direction::Decode | Direction::Encode => self.inner.size_hint(),
         }
     }
 }
@@ -549,11 +592,11 @@ fn frame_len(payload_len: u32, max_payload: usize) -> Result<usize, Status> {
         .ok()
         .filter(|len| *len <= max_payload)
         .and_then(|len| len.checked_add(GRPC_HEADER_SIZE))
-        .ok_or_else(|| Status::out_of_range("rama-grpc-web: frame exceeds the message size limit"))
+        .ok_or_else(|| Status::out_of_range("rama-grpc-web: frame exceeds the size limit"))
 }
 
 /// Locate a complete trailer frame or a prefix of complete message frames.
-fn find_trailers(buf: &[u8], max_payload: usize) -> Result<FindTrailers, Status> {
+fn find_trailers(buf: &[u8], limits: FrameLimits) -> Result<FindTrailers, Status> {
     let mut len = 0;
     let mut remaining = buf;
 
@@ -569,7 +612,7 @@ fn find_trailers(buf: &[u8], max_payload: usize) -> Result<FindTrailers, Status>
         if !matches!(flag, 0 | 1 | GRPC_WEB_TRAILERS_BIT) {
             return Err(internal_error(format!("invalid frame flag {flag}")));
         }
-        let payload_len = frame_len(remaining.get_u32(), max_payload)? - GRPC_HEADER_SIZE;
+        let payload_len = frame_len(remaining.get_u32(), limits.for_flag(flag))? - GRPC_HEADER_SIZE;
         if payload_len > remaining.len() {
             break;
         }
@@ -697,7 +740,7 @@ mod tests {
             128, 0, 0, 0, 15, 103, 114, 112, 99, 45, 115, 116, 97, 116, 117, 115, 58, 48, 13, 10,
         ];
 
-        let out = find_trailers(&buf[..], DEFAULT_MAX_RECV_MESSAGE_SIZE).unwrap();
+        let out = find_trailers(&buf[..], FrameLimits::default()).unwrap();
 
         assert_eq!(out, FindTrailers::Trailer(0));
     }
@@ -714,7 +757,7 @@ mod tests {
             15, 103, 114, 112, 99, 45, 115, 116, 97, 116, 117, 115, 58, 48, 13, 10,
         ];
 
-        let out = find_trailers(&buf[..], DEFAULT_MAX_RECV_MESSAGE_SIZE).unwrap();
+        let out = find_trailers(&buf[..], FrameLimits::default()).unwrap();
 
         assert_eq!(out, FindTrailers::Trailer(81));
 
@@ -756,7 +799,7 @@ mod tests {
             105, 116, 116, 101, 110, 32, 98, 121, 32,
         ];
 
-        let out = find_trailers(&buf[..], DEFAULT_MAX_RECV_MESSAGE_SIZE).unwrap();
+        let out = find_trailers(&buf[..], FrameLimits::default()).unwrap();
 
         assert_eq!(out, FindTrailers::IncompleteBuf);
     }
@@ -796,10 +839,15 @@ mod tests {
 
 #[cfg(test)]
 mod client_response_tests {
+    use std::{assert_matches, collections::VecDeque, convert::Infallible, task::Waker};
+
+    use rama_http_types::body::util::BodyExt;
+
     use super::*;
-    use std::assert_matches;
-    use std::collections::VecDeque;
-    use std::convert::Infallible;
+    use crate::{
+        Code,
+        codec::{DecodeBuf, Decoder, Streaming},
+    };
 
     struct Frames(VecDeque<Frame<Bytes>>);
     impl StreamingBody for Frames {
@@ -816,7 +864,7 @@ mod client_response_tests {
         }
     }
     fn client_response<B>(inner: B) -> GrpcWebCall<B> {
-        GrpcWebCall::client_response(inner, DEFAULT_MAX_RECV_MESSAGE_SIZE)
+        GrpcWebCall::client_response(inner, FrameLimits::default())
     }
     fn poll(body: &mut GrpcWebCall<Frames>) -> Option<Frame<Bytes>> {
         match Pin::new(body).poll_frame(&mut Context::from_waker(std::task::Waker::noop())) {
@@ -1056,7 +1104,7 @@ mod client_response_tests {
     #[test]
     fn malformed_flags_and_trailers_remain_errors() {
         assert!(
-            find_trailers(&[2, 0, 0, 0, 0], DEFAULT_MAX_RECV_MESSAGE_SIZE)
+            find_trailers(&[2, 0, 0, 0, 0], FrameLimits::default())
                 .unwrap_err()
                 .message()
                 .contains("invalid frame flag")
@@ -1064,7 +1112,7 @@ mod client_response_tests {
         let mut wire = make_trailers_frame(trailers()).to_vec();
         wire.extend_from_slice(&message());
         assert!(
-            find_trailers(&wire, DEFAULT_MAX_RECV_MESSAGE_SIZE)
+            find_trailers(&wire, FrameLimits::default())
                 .unwrap_err()
                 .message()
                 .contains("unexpected data after")
@@ -1150,9 +1198,6 @@ mod client_response_tests {
 
     #[tokio::test]
     async fn grpc_streaming_receives_coalesced_status_and_metadata() {
-        use crate::codec::{DecodeBuf, Decoder, Streaming};
-        use rama_http_types::body::util::BodyExt;
-
         struct BytesDecoder;
         impl Decoder for BytesDecoder {
             type Item = Bytes;
@@ -1255,7 +1300,11 @@ mod client_response_tests {
                 } else {
                     VecDeque::from([Frame::data(wire.clone())])
                 };
-                let mut body = GrpcWebCall::client_response(Frames(frames), limit);
+                let limits = FrameLimits {
+                    message: limit,
+                    ..FrameLimits::default()
+                };
+                let mut body = GrpcWebCall::client_response(Frames(frames), limits);
                 let mut data = BytesMut::new();
                 let mut failed = false;
                 let mut got_trailers = None;
@@ -1285,5 +1334,129 @@ mod client_response_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn trailers_frame_limit_holds_when_the_message_limit_is_raised() {
+        let mut trailers = trailers();
+        trailers.insert("x-pad", "p".repeat(64).parse().unwrap());
+        let trailers_frame = make_trailers_frame(trailers.clone());
+        let trailers_payload_len = trailers_frame.len() - GRPC_HEADER_SIZE;
+        let mut wire = BytesMut::from(message().as_ref());
+        wire.extend_from_slice(&trailers_frame);
+        let wire = wire.freeze();
+
+        for (max_trailers, accepted) in [
+            (trailers_payload_len - 1, false),
+            (trailers_payload_len, true),
+        ] {
+            let limits = FrameLimits {
+                message: 2 * DEFAULT_MAX_RECV_MESSAGE_SIZE,
+                trailers: max_trailers,
+            };
+            for frames in [
+                VecDeque::from([Frame::data(wire.clone())]),
+                VecDeque::from([
+                    Frame::data(wire.slice(..message().len() + 2)),
+                    Frame::data(wire.slice(message().len() + 2..)),
+                ]),
+            ] {
+                let mut body = GrpcWebCall::client_response(Frames(frames), limits);
+                let mut outcome = None;
+                while let Poll::Ready(Some(frame)) =
+                    Pin::new(&mut body).poll_frame(&mut Context::from_waker(Waker::noop()))
+                {
+                    match frame {
+                        Ok(frame) => {
+                            if let Ok(received) = frame.into_trailers() {
+                                outcome = Some(Ok(received));
+                            }
+                        }
+                        Err(status) => {
+                            outcome = Some(Err(status.code()));
+                            break;
+                        }
+                    }
+                }
+                match outcome {
+                    Some(Ok(received)) => {
+                        assert!(accepted, "limit={max_trailers}");
+                        assert_eq!(received, trailers);
+                    }
+                    Some(Err(code)) => {
+                        assert!(!accepted, "limit={max_trailers}");
+                        assert_eq!(code, Code::OutOfRange);
+                    }
+                    None => panic!("limit={max_trailers}: neither trailers nor an error"),
+                }
+            }
+        }
+    }
+
+    fn poll_result<B>(body: &mut GrpcWebCall<B>) -> Option<Result<Frame<Bytes>, Status>>
+    where
+        B: StreamingBody<Data = Bytes, Error: fmt::Display> + Unpin,
+    {
+        match Pin::new(body).poll_frame(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("ready-only fixture unexpectedly pending"),
+        }
+    }
+
+    fn assert_ends_after_error<B>(body: &mut GrpcWebCall<B>, code: Code)
+    where
+        B: StreamingBody<Data = Bytes, Error: fmt::Display> + Unpin,
+    {
+        assert_eq!(poll_result(body).unwrap().unwrap_err().code(), code);
+        assert!(body.is_end_stream());
+        assert!(poll_result(body).is_none());
+        assert!(poll_result(body).is_none());
+    }
+
+    #[test]
+    fn oversized_message_frame_ends_the_body() {
+        let mut body = client_response(Frames(VecDeque::from([
+            Frame::data(Bytes::from_static(&[0, 0xff, 0xff, 0xff, 0xff, b'a'])),
+            Frame::data(message()),
+            Frame::data(make_trailers_frame(trailers())),
+        ])));
+        assert_ends_after_error(&mut body, Code::OutOfRange);
+    }
+
+    #[test]
+    fn oversized_trailers_frame_ends_the_body() {
+        let limits = FrameLimits {
+            trailers: 1,
+            ..FrameLimits::default()
+        };
+        let mut body = GrpcWebCall::client_response(
+            Frames(VecDeque::from([
+                Frame::data(message()),
+                Frame::data(make_trailers_frame(trailers())),
+                Frame::data(message()),
+            ])),
+            limits,
+        );
+        assert_eq!(
+            poll_result(&mut body)
+                .unwrap()
+                .unwrap()
+                .into_data()
+                .unwrap(),
+            message()
+        );
+        assert_ends_after_error(&mut body, Code::OutOfRange);
+    }
+
+    #[test]
+    fn invalid_base64_request_ends_the_body() {
+        let mut body = GrpcWebCall::request(
+            Frames(VecDeque::from([
+                Frame::data(Bytes::from_static(b"!!!!")),
+                Frame::data(Bytes::from_static(b"AAAAAAFh")),
+            ])),
+            Encoding::Base64,
+        );
+        assert_ends_after_error(&mut body, Code::Internal);
     }
 }

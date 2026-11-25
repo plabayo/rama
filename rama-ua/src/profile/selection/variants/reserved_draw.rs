@@ -9,7 +9,7 @@ use rama_quic_proto::{
 use crate::profile::{
     capture::{
         http3::{H3CapturedEvent, H3ClientSequenceCapture, H3SequenceCaptureLimits},
-        joint::{CapturedSlotKind, JointCapture, JointCaptureLimits},
+        joint::{CapturedSlotKind, JointCapture},
         order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProtocolValue},
         quic::{QuicFlightCapture, QuicFlightCaptureLimits},
         reserved::{
@@ -17,7 +17,7 @@ use crate::profile::{
             VERSION_SLOT,
         },
     },
-    format::canonical::{CanonicalValue, ProfileDataError},
+    format::canonical::ProfileDataError,
     selection::{ProfileDraw, ProfileDrawContext, ProfileSeed},
 };
 
@@ -187,17 +187,17 @@ impl ReservedDraws {
     }
 }
 
-/// The selected capture with every reserved slot replaced by a drawn identifier.
+/// Replace every reserved slot of `joint` by a drawn identifier; returns whether any was drawn.
 pub(super) fn draw_reserved(
-    capture: CanonicalValue,
+    joint: &mut JointCapture,
     draws: ReservedDraws,
-) -> Result<CanonicalValue, ProfileDataError> {
-    let limits = JointCaptureLimits::default();
-    let mut joint = JointCapture::from_canonical(&capture, limits)?;
+) -> Result<bool, ProfileDataError> {
     let mut changed = false;
     for slot in &mut joint.slots {
         let drawn = match slot.kind {
-            CapturedSlotKind::QuicParameters | CapturedSlotKind::QuicVersions => {
+            CapturedSlotKind::QuicParameters
+            | CapturedSlotKind::QuicOuterParameters
+            | CapturedSlotKind::QuicVersions => {
                 let limits = OrderCaptureLimits::default();
                 let mut order = OrderedProtocolCapture::from_canonical(&slot.value, limits)?;
                 draws.order(&mut order)?.then(|| order.canonical(limits))
@@ -221,11 +221,7 @@ pub(super) fn draw_reserved(
             changed = true;
         }
     }
-    if changed {
-        joint.canonical(limits)
-    } else {
-        Ok(capture)
-    }
+    Ok(changed)
 }
 
 #[cfg(test)]
@@ -247,7 +243,7 @@ mod tests {
         capture::{
             CAPTURE_REVISION,
             completeness::ProfileCaptureCompleteness,
-            joint::{CaptureLevel, CapturedSlot},
+            joint::{CaptureLevel, CapturedSlot, JointCaptureLimits},
             observation::ProfileCapture,
             order::OrderedProtocolField,
         },
@@ -256,7 +252,7 @@ mod tests {
             ingestion::ObservationId,
             window::{ProfileWindowLimits, RetainedBucketWindow},
         },
-        format::canonical::{CanonicalDomain, ValueId},
+        format::canonical::{CanonicalDomain, CanonicalValue, ValueId},
         model::identity::{ConnectionContext, ProfileKey},
         selection::{DrawDomain, DrawKey},
     };
@@ -581,7 +577,10 @@ mod tests {
                 slot: 0,
             },
         };
-        carried(&draw_reserved(capture, draws).unwrap())
+        let limits = JointCaptureLimits::default();
+        let mut joint = JointCapture::from_canonical(&capture, limits).unwrap();
+        draw_reserved(&mut joint, draws).unwrap();
+        carried(&joint.canonical(limits).unwrap())
     }
 
     #[test]

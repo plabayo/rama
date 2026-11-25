@@ -10,12 +10,16 @@ use rama::{
     extensions::ExtensionsRef as _,
     graceful::WeakScope,
     http::{
-        Body, Method, Request, Response, StatusCode, Version,
+        Body, HeaderValue, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
         client::{EasyHttpWebClient, ProxyConnector, masque_quic_transport},
-        conn::TargetHttpVersion,
+        conn::{H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion},
         header,
         layer::upgrade::{EagerHttpProxyConnector, UpgradeLayer},
+        proto::h2::{
+            PseudoHeader, PseudoHeaderOrder,
+            frame::{EarlyFrame, EarlyFrameCapture, Setting, Settings},
+        },
         proxy::{HttpProxyConnectMatcher, PlaintextHttpProxyMode},
         server::HttpServer,
     },
@@ -423,6 +427,137 @@ async fn connect_udp_to_h3_origin(proxy_version: Version) {
     .unwrap();
 }
 
+/// A SETTINGS entry no implementation sends on its own.
+fn marked_setting() -> Setting {
+    Setting::new(0xfefe_u16, 99)
+}
+
+fn marked_h2_inputs() -> H2ClientContextParams {
+    H2ClientContextParams {
+        initial_settings: Some(Arc::new(
+            Settings::from_ordered_entries([marked_setting(), Setting::new(1_u16, 8_192)].into())
+                .unwrap(),
+        )),
+        headers_pseudo_order: Some(PseudoHeaderOrder::from_iter([
+            PseudoHeader::Authority,
+            PseudoHeader::Method,
+            PseudoHeader::Path,
+            PseudoHeader::Scheme,
+        ])),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn h2_inputs_shape_the_origin_connection_and_not_the_one_to_the_proxy() {
+    timeout(DEADLINE, async {
+        let (origin, origin_wire, _origin) = recording_tls_origin(Version::HTTP_2).await;
+        let proxy = Proxy::start().await;
+        let request = get(&format!("https://{origin}/"), proxy.https(Version::HTTP_2));
+        request.extensions().insert(marked_h2_inputs());
+        let response = client().serve(request).await.unwrap();
+        assert_eq!(body(response).await, "HTTP/2.0 origin");
+
+        let origin_wire = origin_wire.lock().clone();
+        assert!(origin_wire[0].settings.contains(&marked_setting()));
+        assert_eq!(
+            origin_wire[0]
+                .pseudo_order
+                .as_ref()
+                .and_then(|order| order.iter().next()),
+            Some(PseudoHeader::Authority)
+        );
+
+        let proxy_wire = proxy.wire();
+        assert_eq!(proxy.seen(), [(Method::CONNECT, Version::HTTP_2)]);
+        assert!(
+            !proxy_wire[0].settings.is_empty()
+                && !proxy_wire[0].settings.contains(&marked_setting()),
+            "the origin's SETTINGS reached the connection to the proxy"
+        );
+        assert_eq!(
+            proxy_wire[0]
+                .pseudo_order
+                .as_ref()
+                .and_then(|order| order.iter().next()),
+            Some(PseudoHeader::Method),
+            "the origin's pseudo-header order reached the connection to the proxy"
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_request_pseudo_header_order_shapes_the_origin_request_and_not_the_one_to_the_proxy() {
+    timeout(DEADLINE, async {
+        let (origin, origin_wire, _origin) = recording_tls_origin(Version::HTTP_2).await;
+        let proxy = Proxy::start().await;
+        let request = get(&format!("https://{origin}/"), proxy.https(Version::HTTP_2));
+        let order = PseudoHeaderOrder::from_iter([
+            PseudoHeader::Authority,
+            PseudoHeader::Path,
+            PseudoHeader::Scheme,
+            PseudoHeader::Method,
+        ]);
+        request.extensions().insert(order.clone());
+        let response = client().serve(request).await.unwrap();
+        assert_eq!(body(response).await, "HTTP/2.0 origin");
+
+        assert_eq!(origin_wire.lock()[0].pseudo_order, Some(order));
+        assert_eq!(proxy.seen(), [(Method::CONNECT, Version::HTTP_2)]);
+        assert_eq!(
+            proxy.wire()[0]
+                .pseudo_order
+                .as_ref()
+                .and_then(|order| order.iter().next()),
+            Some(PseudoHeader::Method),
+            "the origin request's pseudo-header order reached the request to the proxy"
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn h1_title_casing_shapes_the_origin_connection_and_not_the_one_to_the_proxy() {
+    timeout(DEADLINE, async {
+        let (origin, origin_wire, _origin) = recording_tls_origin(Version::HTTP_11).await;
+        let proxy = Proxy::start().await;
+        let mut request = get(&format!("https://{origin}/"), proxy.https(Version::HTTP_11));
+        request
+            .headers_mut()
+            .insert("x-marked", HeaderValue::from_static("1"));
+        request.extensions().insert(Http1ClientContextParams {
+            title_header_case: true,
+        });
+        let response = client().serve(request).await.unwrap();
+        assert_eq!(body(response).await, "HTTP/1.1 origin");
+
+        let origin_wire = origin_wire.lock().clone();
+        assert!(
+            origin_wire[0]
+                .header_names
+                .iter()
+                .any(|name| &**name == "X-Marked"),
+            "{:?}",
+            origin_wire[0].header_names
+        );
+        let proxy_wire = proxy.wire();
+        assert_eq!(proxy.seen(), [(Method::CONNECT, Version::HTTP_11)]);
+        assert!(
+            proxy_wire[0]
+                .header_names
+                .iter()
+                .any(|name| &**name == "host"),
+            "the origin's title casing reached the connection to the proxy: {:?}",
+            proxy_wire[0].header_names
+        );
+    })
+    .await
+    .unwrap();
+}
+
 fn get(uri: &str, proxy: ProxyAddress) -> Request {
     let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
     request.extensions().insert(ProxyRoute::Proxy(proxy));
@@ -534,6 +669,7 @@ impl Proxy {
                             .headers()
                             .get(header::PROXY_AUTHORIZATION)
                             .map(|value| value.to_str().unwrap().to_owned()),
+                        wire: Wire::of(&request),
                     });
                     request
                 }),
@@ -560,6 +696,7 @@ impl Proxy {
             );
         let mut http = HttpServer::auto(scope.clone());
         http.h2_mut().set_enable_connect_protocol();
+        http.h2_mut().set_observe_early_frames(true);
         let tcp = TlsAcceptorLayer::new(tls).into_layer(http.service(service.clone()));
 
         let mut h3 = HttpServer::new_http3(scope.clone());
@@ -642,6 +779,14 @@ impl Proxy {
             .len()
     }
 
+    fn wire(&self) -> Vec<Wire> {
+        self.seen
+            .lock()
+            .iter()
+            .map(|seen| seen.wire.clone())
+            .collect()
+    }
+
     fn credentials(&self) -> Vec<String> {
         self.seen
             .lock()
@@ -656,6 +801,43 @@ struct Seen {
     version: Version,
     peer: Option<SocketAddress>,
     credential: Option<String>,
+    wire: Wire,
+}
+
+/// How a request and the connection it came on looked on the wire.
+#[derive(Debug, Clone, Default)]
+struct Wire {
+    /// The entries of the first SETTINGS frame of an HTTP/2 connection.
+    settings: Vec<Setting>,
+    /// The pseudo-header order of the request.
+    pseudo_order: Option<PseudoHeaderOrder>,
+    /// Header names as spelled on the wire.
+    header_names: Vec<Box<str>>,
+}
+
+impl Wire {
+    fn of(request: &Request) -> Self {
+        let settings = request
+            .extensions()
+            .get_ref::<EarlyFrameCapture>()
+            .and_then(|capture| {
+                capture.iter().find_map(|frame| match frame {
+                    EarlyFrame::Settings(settings) => settings.observation.as_ref(),
+                    _ => None,
+                })
+            })
+            .map(|observation| observation.entries.to_vec())
+            .unwrap_or_default();
+        Self {
+            settings,
+            pseudo_order: request.extensions().get_ref::<PseudoHeaderOrder>().cloned(),
+            header_names: request
+                .headers()
+                .keys()
+                .map(|name| name.as_original_str().into())
+                .collect(),
+        }
+    }
 }
 
 fn quic_server_config(tls: &TlsServerConfig) -> ServerConfig {
@@ -694,6 +876,38 @@ async fn tls_origin(version: Version) -> (SocketAddress, Tasks) {
             .await;
     });
     (address, Tasks::new(vec![task], None))
+}
+
+/// [`tls_origin`], recording how each request looked on the wire.
+async fn recording_tls_origin(version: Version) -> (SocketAddress, Arc<Mutex<Vec<Wire>>>, Tasks) {
+    let scope = WeakScope::detached();
+    let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+    let alpn = if version == Version::HTTP_2 {
+        ApplicationProtocol::HTTP_2
+    } else {
+        ApplicationProtocol::HTTP_11
+    };
+    let tls = TlsServerConfig::new()
+        .with_server_auth(auth)
+        .with_alpn([alpn].into_iter().collect());
+    let wire = Arc::new(Mutex::new(Vec::new()));
+    let recorded = wire.clone();
+    let mut http = HttpServer::auto(scope.clone());
+    http.h2_mut().set_observe_early_frames(true);
+    let http = http.service(service_fn(move |request: Request| {
+        recorded.lock().push(Wire::of(&request));
+        origin_response(request)
+    }));
+    let listener = TcpListener::bind_address("127.0.0.1:0", scope)
+        .await
+        .unwrap();
+    let address = SocketAddress::from(listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        listener
+            .serve(TlsAcceptorLayer::new(tls).into_layer(http))
+            .await;
+    });
+    (address, wire, Tasks::new(vec![task], None))
 }
 
 async fn plaintext_origin() -> (SocketAddress, Tasks) {

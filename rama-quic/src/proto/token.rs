@@ -472,6 +472,12 @@ pub(crate) fn reset_token(key: &HmacSha2, id: ConnectionId) -> ResetToken {
 #[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
 mod test {
     use super::*;
+    use crate::proto::{
+        Duration, UNIX_EPOCH,
+        cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
+    };
+    use rama_quic_proto::ConnectionId;
+    use std::net::Ipv6Addr;
 
     /// A timestamp is read from a token this endpoint sealed, but a malformed or hostile one must
     /// still not overflow the clock.
@@ -502,7 +508,6 @@ mod test {
     /// the reset token is the first 16 bytes of HMAC-SHA256(key, cid).
     #[test]
     fn reset_tokens_are_the_hmac_prefix_and_differ_per_key_and_cid() {
-        use rama_quic_proto::ConnectionId;
         let key_bytes: [u8; 32] = std::array::from_fn(|i| i as u8);
         let other_key_bytes: [u8; 32] = std::array::from_fn(|i| i as u8 + 1);
         let key = hkdf_free_hmac(&key_bytes);
@@ -587,11 +592,6 @@ mod test {
 
     #[test]
     fn retry_token_sanity() {
-        use crate::proto::cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator};
-        use crate::proto::{Duration, UNIX_EPOCH};
-
-        use std::net::Ipv6Addr;
-
         let address_1 = SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 4433);
         let orig_dst_cid_1 = RandomConnectionIdGenerator::of_max_size().generate_cid();
         let issued_1 = UNIX_EPOCH + Duration::from_secs(42); // Fractional seconds would be lost
@@ -619,10 +619,6 @@ mod test {
 
     #[test]
     fn validation_token_sanity() {
-        use crate::proto::{Duration, UNIX_EPOCH};
-
-        use std::net::Ipv6Addr;
-
         let ip_1 = Ipv6Addr::LOCALHOST.into();
         let issued_1 = UNIX_EPOCH + Duration::from_secs(42); // Fractional seconds would be lost
 

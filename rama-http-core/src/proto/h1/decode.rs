@@ -11,16 +11,20 @@ use rama_core::{
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, body::Frame, header::trailer::is_never_a_trailer,
 };
-use rama_utils::octets::kib_u64;
+use rama_utils::octets::{kib, kib_u64};
 
 use self::Kind::{Chunked, Eof, Length};
 use super::{DecodedLength, io::MemRead};
-use crate::proto::{DEFAULT_MAX_HEADER_LIST_SIZE, DEFAULT_MAX_HEADERS};
+use crate::proto::DEFAULT_MAX_HEADERS;
 
 /// Maximum amount of bytes allowed in chunked extensions.
 ///
 /// This limit is currentlty applied for the entire body, not per chunk.
 const CHUNKED_EXTENSIONS_LIMIT: u64 = kib_u64(16);
+
+/// Maximum amount of bytes allowed for all trailer fields, unless a maximum
+/// header size is configured.
+const DEFAULT_MAX_TRAILER_SIZE: usize = kib(16);
 
 /// Decoders to handle different Transfer-Encodings.
 ///
@@ -183,7 +187,7 @@ impl Decoder {
                 h1_max_header_size,
             } => {
                 let h1_max_headers = h1_max_headers.unwrap_or(DEFAULT_MAX_HEADERS);
-                let h1_max_header_size = h1_max_header_size.unwrap_or(DEFAULT_MAX_HEADER_LIST_SIZE);
+                let h1_max_header_size = h1_max_header_size.unwrap_or(DEFAULT_MAX_TRAILER_SIZE);
                 loop {
                     let mut buf = None;
                     // advances the chunked state
@@ -284,7 +288,8 @@ macro_rules! put_u8 {
     ($trailers_buf:expr, $byte:expr, $limit:expr) => {
         $trailers_buf.put_u8($byte);
 
-        if $trailers_buf.len() >= $limit {
+        // A section of exactly the limit passes, as a head does.
+        if $trailers_buf.len() > $limit {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "chunk trailers bytes over limit",
@@ -691,7 +696,10 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
                     value.set_sensitive(true);
                 }
 
-                trailers.append(name, value);
+                // A configured max_headers can pass the names a map holds.
+                trailers.try_append(name, value).map_err(|_error| {
+                    io::Error::new(io::ErrorKind::InvalidData, "too many trailer fields")
+                })?;
             }
 
             Ok(trailers)
@@ -720,6 +728,7 @@ mod tests {
     use std::{pin::Pin, time::Duration};
 
     use rama_core::bytes::Buf;
+    use rama_utils::octets::mib;
     use tokio::io::{AsyncRead, ReadBuf};
 
     use super::*;
@@ -806,7 +815,7 @@ mod tests {
                             trailers_buf: &mut None,
                             trailers_cnt: &mut trailers_cnt,
                             max_headers_cnt: DEFAULT_MAX_HEADERS,
-                            max_headers_bytes: DEFAULT_MAX_HEADER_LIST_SIZE,
+                            max_headers_bytes: DEFAULT_MAX_TRAILER_SIZE,
                         },
                     )
                 })
@@ -838,7 +847,7 @@ mod tests {
                             trailers_buf: &mut None,
                             trailers_cnt: &mut trailers_cnt,
                             max_headers_cnt: DEFAULT_MAX_HEADERS,
-                            max_headers_bytes: DEFAULT_MAX_HEADER_LIST_SIZE,
+                            max_headers_bytes: DEFAULT_MAX_TRAILER_SIZE,
                         },
                     )
                 })
@@ -1241,25 +1250,126 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
+    fn chunked_with_trailers(trailers: impl IntoIterator<Item = Box<str>>) -> Bytes {
+        let mut scratch = vec![];
+        scratch.extend(b"10\r\n1234567890abcdef\r\n0\r\n");
+        for trailer in trailers {
+            scratch.extend(trailer.as_bytes());
+        }
+        scratch.extend(b"\r\n");
+        Bytes::from(scratch)
+    }
+
     #[tokio::test]
-    async fn test_trailer_defaults_follow_the_header_limits() {
+    async fn test_trailer_count_default_follows_the_header_limit() {
         for (count, accepted) in [
             (DEFAULT_MAX_HEADERS, true),
             (DEFAULT_MAX_HEADERS + 1, false),
         ] {
-            let mut scratch = vec![];
-            scratch.extend(b"10\r\n1234567890abcdef\r\n0\r\n");
-            for i in 0..count {
-                scratch.extend(format!("trailer{i}: {i}\r\n").as_bytes());
-            }
-            scratch.extend(b"\r\n");
-            let mut mock_buf = Bytes::from(scratch);
+            let mut mock_buf = chunked_with_trailers(
+                (0..count).map(|i| format!("trailer{i}: {i}\r\n").into_boxed_str()),
+            );
 
-            let mut decoder = Decoder::chunked(None, None);
+            // The size default is below what this many fields take.
+            let mut decoder = Decoder::chunked(None, Some(mib(1)));
             decoder.decode_fut(&mut mock_buf).await.unwrap();
             let trailers = decoder.decode_fut(&mut mock_buf).await;
             assert_eq!(trailers.is_ok(), accepted, "{count} trailer fields");
         }
+    }
+
+    #[tokio::test]
+    async fn test_trailer_size_default_without_a_configured_limit() {
+        for (value_len, accepted) in [
+            (DEFAULT_MAX_TRAILER_SIZE / 2, true),
+            (DEFAULT_MAX_TRAILER_SIZE, false),
+        ] {
+            let mut mock_buf =
+                chunked_with_trailers([
+                    format!("x-big: {}\r\n", "v".repeat(value_len)).into_boxed_str()
+                ]);
+
+            let mut decoder = Decoder::chunked(None, None);
+            decoder.decode_fut(&mut mock_buf).await.unwrap();
+            let trailers = decoder.decode_fut(&mut mock_buf).await;
+            match trailers {
+                Ok(frame) => {
+                    assert!(accepted, "{value_len} byte trailer value");
+                    let trailers = frame.into_trailers().expect("trailers frame");
+                    assert_eq!(trailers.get("x-big").unwrap().len(), value_len);
+                }
+                Err(e) => {
+                    assert!(!accepted, "{value_len} byte trailer value: {e}");
+                    assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trailer_size_limit_allows_a_section_of_exactly_the_limit() {
+        for (configured, limit) in [(None, DEFAULT_MAX_TRAILER_SIZE), (Some(512), 512)] {
+            for (size, accepted) in [(limit - 1, true), (limit, true), (limit + 1, false)] {
+                // `x: `, the value and CRLF, then the empty line ending the section.
+                let section = format!("x: {}\r\n", "v".repeat(size - 7)).into_boxed_str();
+                let mut mock_buf = chunked_with_trailers([section]);
+                let mut decoder = Decoder::chunked(None, configured);
+                decoder.decode_fut(&mut mock_buf).await.unwrap();
+                let trailers = decoder.decode_fut(&mut mock_buf).await;
+                assert_eq!(trailers.is_ok(), accepted, "{configured:?}: {size} bytes");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trailer_size_follows_a_configured_limit_above_the_default() {
+        let value_len = DEFAULT_MAX_TRAILER_SIZE * 2;
+        let mut mock_buf = chunked_with_trailers([
+            format!("x-big: {}\r\n", "v".repeat(value_len)).into_boxed_str()
+        ]);
+
+        let mut decoder = Decoder::chunked(None, Some(DEFAULT_MAX_TRAILER_SIZE * 4));
+        decoder.decode_fut(&mut mock_buf).await.unwrap();
+        let trailers = decoder
+            .decode_fut(&mut mock_buf)
+            .await
+            .expect("trailers within the configured limit")
+            .into_trailers()
+            .expect("trailers frame");
+        assert_eq!(trailers.get("x-big").unwrap().len(), value_len);
+    }
+
+    #[test]
+    fn test_decode_trailers_keeps_wire_order_and_casing() {
+        let mut buf = BytesMut::from(&b"X-B: 1\r\nx-a: 2\r\nX-B: 3\r\nGrpc-Status: 0\r\n\r\n"[..]);
+        let trailers = decode_trailers(&mut buf, 4).expect("decode_trailers");
+        let ordered: Vec<_> = trailers
+            .ordered_iter()
+            .map(|(name, value)| (name.as_original_str(), value.to_str().unwrap()))
+            .collect();
+        assert_eq!(
+            ordered,
+            [
+                ("X-B".into(), "1"),
+                ("x-a".into(), "2"),
+                ("X-B".into(), "3"),
+                ("Grpc-Status".into(), "0"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trailer_refuses_more_names_than_a_header_map_holds() {
+        let mut mock_buf =
+            chunked_with_trailers((0..25_000).map(|i| format!("x-h-{i}: v\r\n").into_boxed_str()));
+
+        let mut decoder = Decoder::chunked(Some(30_000), Some(mib(1)));
+        decoder.decode_fut(&mut mock_buf).await.unwrap();
+        let err = decoder
+            .decode_fut(&mut mock_buf)
+            .await
+            .expect_err("more trailer names than a header map holds");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[tokio::test]

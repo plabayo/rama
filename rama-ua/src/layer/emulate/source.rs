@@ -115,12 +115,14 @@ impl ProfileSelectFallback {
             relaxed.push(ProfileSelector {
                 client: selector.client.clone(),
                 latest_versions: selector.latest_versions,
+                ech_ready: selector.ech_ready,
                 ..ProfileSelector::default()
             });
         }
         if self == Self::Any {
             let any = ProfileSelector {
                 latest_versions: selector.latest_versions,
+                ech_ready: selector.ech_ready,
                 ..ProfileSelector::default()
             };
             if any != *selector {

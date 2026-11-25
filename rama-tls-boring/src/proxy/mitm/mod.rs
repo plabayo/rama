@@ -1,3 +1,11 @@
+use std::{
+    fmt,
+    num::{NonZeroU64, NonZeroUsize},
+    slice,
+    sync::Arc,
+    time::Duration,
+};
+
 use moka::future::Cache;
 use rama_boring::{
     pkey::{PKey, Private},
@@ -11,29 +19,24 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::{
-    address::{Domain, Host, HostWithPort},
-    tls::ApplicationProtocol,
+    address::HostWithPort,
+    tls::{ApplicationProtocol, ServerName},
 };
 use rama_tls::{
-    CertificateCompressionAlgorithm, KeyLogIntent, ProtocolVersion, client::TlsServerIdentity,
+    CertificateCompressionAlgorithm, KeyLogIntent, ProtocolVersion,
+    keylog::{KeyLogSink, open_intent_sink},
     server::SelfSignedCaConfig,
 };
 use rama_utils::str::any_submatch_ignore_ascii_case;
-use std::{
-    fmt,
-    num::{NonZeroU64, NonZeroUsize},
-    slice,
-    sync::Arc,
-    time::Duration,
-};
 
-use crate::certificate_compression::add_certificate_compressors;
-use crate::client::BoringServerTrustCache;
-use crate::core::ssl::{
-    ExtensionType, SslAcceptor, SslMethod, SslOptions, SslRef, SslSessionCacheMode, SslVersion,
+use crate::{
+    certificate_compression::add_certificate_compressors,
+    client::BoringServerTrustCache,
+    core::ssl::{
+        ExtensionType, SslAcceptor, SslMethod, SslOptions, SslRef, SslSessionCacheMode, SslVersion,
+    },
+    server::select_alpn_by_server_preference,
 };
-use crate::server::select_alpn_by_server_preference;
-use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 
 // Plaintext alert injection remains disabled: transport close preserves
 // intercepted clients' established retry behavior.
@@ -369,12 +372,13 @@ impl
 pub struct TlsMitmRelayError {
     kind: TlsMitmRelayErrorKind,
     connector_target: Option<HostWithPort>,
-    sni: Option<Domain>,
+    sni: Option<ServerName>,
     inner: BoxError,
 }
 
 impl TlsMitmRelayError {
     #[inline(always)]
+    /// Construct an error caused by TLS configuration.
     fn config(error: impl Into<BoxError>) -> Self {
         Self {
             kind: TlsMitmRelayErrorKind::Config,
@@ -384,6 +388,7 @@ impl TlsMitmRelayError {
         }
     }
 
+    /// Construct an error caused by client authentication.
     fn client_auth(error: impl Into<BoxError>) -> Self {
         let mut error = Self::config(error);
         error.kind = TlsMitmRelayErrorKind::ClientAuth;
@@ -391,6 +396,7 @@ impl TlsMitmRelayError {
     }
 
     #[inline(always)]
+    /// Construct an error caused by a TLS handshake.
     fn handshake(
         direction: TlsMitmRelayErrorDirection,
         error: impl Into<BoxError>,
@@ -418,6 +424,7 @@ impl TlsMitmRelayError {
     }
 
     #[inline(always)]
+    /// Construct an error from handshake I/O.
     fn handshake_io(direction: TlsMitmRelayErrorDirection, error: impl Into<BoxError>) -> Self {
         Self {
             kind: TlsMitmRelayErrorKind::Handshake {
@@ -431,6 +438,7 @@ impl TlsMitmRelayError {
     }
 
     #[inline(always)]
+    /// Construct an error from a native TLS handshake failure.
     fn handshake_ssl(direction: TlsMitmRelayErrorDirection, err: SslErrorStack) -> Self {
         let classification = classify_handshake_reasons(err.iter().filter_map(|e| e.reason()));
 
@@ -446,6 +454,7 @@ impl TlsMitmRelayError {
     }
 
     #[inline(always)]
+    /// Construct an error from serving the secured stream.
     fn tls_serve(error: impl Into<BoxError>) -> Self {
         Self {
             kind: TlsMitmRelayErrorKind::TlsServe,
@@ -456,12 +465,14 @@ impl TlsMitmRelayError {
     }
 
     #[inline(always)]
+    /// The connector target associated with this error.
     pub fn connector_target(&self) -> Option<&HostWithPort> {
         self.connector_target.as_ref()
     }
 
     #[inline(always)]
-    pub fn sni(&self) -> Option<&Domain> {
+    /// The effective server name sent during the failed handshake.
+    pub fn sni(&self) -> Option<&ServerName> {
         self.sni.as_ref()
     }
 
@@ -494,7 +505,7 @@ impl TlsMitmRelayError {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        fn sni(mut self, sni: Option<Domain>) -> Self {
+        fn sni(mut self, sni: Option<ServerName>) -> Self {
             self.sni = sni;
             self
         }
@@ -663,17 +674,6 @@ fn reason_is_cert_trust_signal(reason: &str) -> bool {
     any_submatch_ignore_ascii_case(reason, CERT_TRUST_REASON_SUBSTRINGS)
 }
 
-/// Project a TLS server identity onto the DNS-only SNI namespace.
-///
-/// IP identities remain valid for certificate verification and pin scoping but
-/// must never be serialized as SNI.
-fn server_name_as_sni(server_name: &Host) -> Option<Domain> {
-    match TlsServerIdentity::try_from(server_name).ok()? {
-        TlsServerIdentity::Dns(domain) => Some(domain.into_owned()),
-        TlsServerIdentity::Ip(_) => None,
-    }
-}
-
 impl<Issuer> TlsMitmRelay<Issuer>
 where
     Issuer: self::issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
@@ -816,12 +816,14 @@ impl<S, Issuer: Clone> Layer<S> for TlsMitmRelay<Issuer> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
+    use rama_boring::ssl::ErrorCode;
+
     use super::{
         HandshakeRelayClassification, TlsMitmRelayError, TlsMitmRelayErrorDirection,
         TlsMitmRelayErrorKind, classify_handshake_reasons, reason_is_cert_trust_signal,
     };
-    use rama_boring::ssl::ErrorCode;
-    use std::assert_matches;
 
     // The plaintext TLS Alert helpers (`encode_plain_alert`,
     // `write_plain_alert`) and their wire-format pins live in

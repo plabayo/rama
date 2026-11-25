@@ -87,6 +87,16 @@ def main():
     cargo("test", "-p", "rama-http-backend", "--lib", "mixed_transport")
     cargo("test", "-p", "rama-http-backend", "--lib", "--features", "quic", "mixed_transport")
 
+    # Relays mirror both sides of a connection without user-agent profile support.
+    for package, features in (
+        ("rama-http-backend", "tls,quic,boring"),
+        ("rama-tls-boring", "http"),
+        ("rama-quic", "boring"),
+        ("rama-masque", ""),
+    ):
+        check(package, features)
+        cargo("test", "-p", package, "--features", features)
+
     # Both HTTP tiers and the actual relay example must remain UA-independent.
     for features in ("http", "http,boring", "http-full,boring"):
         check("rama", features)

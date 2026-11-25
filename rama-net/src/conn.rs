@@ -1,10 +1,22 @@
 //! Connection utilities
 
-use std::{io, time::Duration};
+use std::{
+    io,
+    pin::Pin,
+    sync::Weak,
+    task::{Context, Poll, ready},
+    time::Duration,
+};
 
 use rama_core::extensions::{Extension, Extensions};
-use rama_utils::reactive::{ChangeListener, Changed, Reactive, ReactiveRepr};
-use std::sync::Weak;
+use rama_utils::{
+    reactive::{ChangeListener, Changed, Reactive, ReactiveRepr},
+    time::deadline_after,
+};
+use tokio::{
+    runtime::{Handle, Id},
+    time::{Instant, Sleep, sleep, sleep_until},
+};
 
 /// Check if the error is a connection error,
 /// in which case the error can be ignored.
@@ -56,6 +68,67 @@ impl AcceptBackoff {
         let delay = self.next.unwrap_or(Self::MIN_DELAY);
         self.next = Some((delay * 2).min(Self::MAX_DELAY));
         Some(delay)
+    }
+}
+
+/// An [`AcceptBackoff`] for an accept polled in a loop, such as a stream of connections:
+/// the pause a failed accept asks for passes before the next one is attempted.
+#[derive(Debug, Default)]
+pub struct PolledAcceptBackoff {
+    backoff: AcceptBackoff,
+    pause: Option<Pin<Box<Sleep>>>,
+    runtime: Option<Id>,
+    waiting: bool,
+}
+
+impl PolledAcceptBackoff {
+    /// Create a backoff in its initial state.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            backoff: AcceptBackoff::new(),
+            pause: None,
+            runtime: None,
+            waiting: false,
+        }
+    }
+
+    /// Accept with `accept` once any pending pause has passed, recording its outcome.
+    pub fn poll_accept<T>(
+        &mut self,
+        cx: &mut Context<'_>,
+        accept: impl FnOnce(&mut Context<'_>) -> Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>> {
+        if self.waiting
+            && let Some(pause) = self.pause.as_mut()
+        {
+            let runtime = Handle::current().id();
+            if self.runtime != Some(runtime) {
+                *pause = Box::pin(sleep_until(pause.deadline()));
+                self.runtime = Some(runtime);
+            }
+            ready!(pause.as_mut().poll(cx));
+            self.waiting = false;
+        }
+        let result = ready!(accept(cx));
+        match &result {
+            Ok(_) => self.backoff.reset(),
+            Err(err) => {
+                if let Some(delay) = self.backoff.on_error(err) {
+                    let runtime = Handle::current().id();
+                    if self.runtime == Some(runtime)
+                        && let Some(pause) = self.pause.as_mut()
+                    {
+                        pause.as_mut().reset(deadline_after(Instant::now(), delay));
+                    } else {
+                        self.pause = Some(Box::pin(sleep(delay)));
+                        self.runtime = Some(runtime);
+                    }
+                    self.waiting = true;
+                }
+            }
+        }
+        Poll::Ready(result)
     }
 }
 
@@ -338,7 +411,82 @@ mod tests {
 
 #[cfg(test)]
 mod accept_backoff_tests {
+    use std::{cell::Cell, ptr::from_ref, task::Waker};
+
+    use tokio::{runtime::Builder, time::advance};
+
     use super::*;
+
+    #[test]
+    fn a_polled_accept_can_start_a_pause_on_another_runtime() {
+        let mut backoff = PolledAcceptBackoff::new();
+        for _ in 0..2 {
+            Builder::new_current_thread()
+                .enable_time()
+                .start_paused(true)
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let mut cx = Context::from_waker(Waker::noop());
+                    let failed = backoff.poll_accept(&mut cx, |_| {
+                        Poll::Ready(Err::<(), _>(io::Error::other("too many open files")))
+                    });
+                    assert!(matches!(failed, Poll::Ready(Err(_))));
+                    assert!(
+                        backoff
+                            .poll_accept(&mut cx, |_| Poll::Ready(Ok(())))
+                            .is_pending()
+                    );
+                    advance(AcceptBackoff::MIN_DELAY).await;
+                    assert!(matches!(
+                        backoff.poll_accept(&mut cx, |_| Poll::Ready(Ok(()))),
+                        Poll::Ready(Ok(()))
+                    ));
+                });
+        }
+    }
+
+    #[test]
+    fn a_pending_accept_pause_migrates_to_another_runtime() {
+        let a = Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        let b = Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        let mut backoff = PolledAcceptBackoff::new();
+        a.block_on(async {
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(matches!(
+                backoff.poll_accept(&mut cx, |_| Poll::Ready(Err::<(), _>(io::Error::other(
+                    "listener unavailable"
+                )))),
+                Poll::Ready(Err(_))
+            ));
+            assert!(
+                backoff
+                    .poll_accept(&mut cx, |_| Poll::Ready(Ok(())))
+                    .is_pending()
+            );
+        });
+        b.block_on(async {
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(
+                backoff
+                    .poll_accept(&mut cx, |_| Poll::Ready(Ok(())))
+                    .is_pending()
+            );
+            advance(AcceptBackoff::MIN_DELAY * 2).await;
+            assert!(matches!(
+                backoff.poll_accept(&mut cx, |_| Poll::Ready(Ok(()))),
+                Poll::Ready(Ok(()))
+            ));
+        });
+    }
 
     #[test]
     fn connection_errors_do_not_pause() {
@@ -365,5 +513,85 @@ mod accept_backoff_tests {
 
         backoff.reset();
         assert_eq!(backoff.on_error(&emfile), Some(Duration::from_millis(10)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_polled_accept_waits_out_the_pause_of_a_listener_error() {
+        let mut backoff = PolledAcceptBackoff::new();
+        let mut cx = Context::from_waker(Waker::noop());
+        let attempts = Cell::new(0);
+        let accept = |fails: bool| {
+            let attempts = &attempts;
+            move |_: &mut Context<'_>| {
+                attempts.set(attempts.get() + 1);
+                Poll::Ready(if fails {
+                    Err(io::Error::other("too many open files"))
+                } else {
+                    Ok(())
+                })
+            }
+        };
+        assert!(matches!(
+            backoff.poll_accept(&mut cx, accept(true)),
+            Poll::Ready(Err(_))
+        ));
+        assert!(backoff.poll_accept(&mut cx, accept(false)).is_pending());
+        assert_eq!(attempts.get(), 1);
+
+        advance(Duration::from_millis(10)).await;
+        assert!(matches!(
+            backoff.poll_accept(&mut cx, accept(false)),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(attempts.get(), 2);
+
+        // A connection error does not pause the next accept.
+        let reset =
+            |_: &mut Context<'_>| Poll::Ready(Err::<(), _>(io::ErrorKind::ConnectionReset.into()));
+        assert!(backoff.poll_accept(&mut cx, reset).is_ready());
+        assert!(backoff.poll_accept(&mut cx, accept(false)).is_ready());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_polled_accept_reuses_its_timer_between_pauses() {
+        let mut backoff = PolledAcceptBackoff::new();
+        let mut cx = Context::from_waker(Waker::noop());
+        let fails = |_: &mut Context<'_>| {
+            Poll::Ready(Err::<(), _>(io::Error::other("too many open files")))
+        };
+        let succeeds = |_: &mut Context<'_>| Poll::Ready(Ok(()));
+
+        assert!(matches!(
+            backoff.poll_accept(&mut cx, fails),
+            Poll::Ready(Err(_))
+        ));
+        let timer = backoff.pause.as_deref().map(from_ref);
+        assert!(timer.is_some());
+        assert!(backoff.poll_accept(&mut cx, succeeds).is_pending());
+        advance(AcceptBackoff::MIN_DELAY).await;
+        assert!(matches!(
+            backoff.poll_accept(&mut cx, succeeds),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(backoff.pause.as_deref().map(from_ref), timer);
+        assert!(matches!(
+            backoff.poll_accept(&mut cx, succeeds),
+            Poll::Ready(Ok(()))
+        ));
+
+        for delay in [AcceptBackoff::MIN_DELAY, AcceptBackoff::MIN_DELAY * 2] {
+            assert!(matches!(
+                backoff.poll_accept(&mut cx, fails),
+                Poll::Ready(Err(_))
+            ));
+            assert_eq!(backoff.pause.as_deref().map(from_ref), timer);
+            assert!(backoff.poll_accept(&mut cx, fails).is_pending());
+            advance(delay).await;
+        }
+        assert!(matches!(
+            backoff.poll_accept(&mut cx, succeeds),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(backoff.pause.as_deref().map(from_ref), timer);
     }
 }

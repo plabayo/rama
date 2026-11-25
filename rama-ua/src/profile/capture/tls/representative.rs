@@ -1,4 +1,6 @@
-use rama_net::address::Domain;
+use std::net::IpAddr;
+
+use rama_net::{address::Domain, tls::ServerName};
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup,
@@ -40,8 +42,11 @@ impl TlsCapture {
 fn representative_extension(id: u16, value: &Value) -> ClientHelloExtension {
     let extension = ExtensionId::from(id);
     match (extension, value) {
+        (ExtensionId::SERVER_NAME, Value::IpServerName) => {
+            ClientHelloExtension::ServerName(Some(ServerName::from(IpAddr::from([192, 0, 2, 1]))))
+        }
         (ExtensionId::SERVER_NAME, Value::ServerName { present }) => {
-            ClientHelloExtension::ServerName(present.then_some(PLACEHOLDER_SERVER_NAME))
+            ClientHelloExtension::ServerName(present.then(|| PLACEHOLDER_SERVER_NAME.into()))
         }
         (ExtensionId::SUPPORTED_GROUPS, Value::U16List(values)) => {
             ClientHelloExtension::SupportedGroups(
@@ -117,7 +122,7 @@ fn opaque(value: &Value) -> Vec<u8> {
             data
         }
         Value::Protocols(values) => values.iter().flat_map(|value| value.to_vec()).collect(),
-        Value::ServerName { .. } | Value::EchInner => Vec::new(),
+        Value::ServerName { .. } | Value::IpServerName | Value::EchInner => Vec::new(),
         Value::KeyShares(shares) => {
             let mut entries = Vec::new();
             for share in shares {

@@ -37,6 +37,7 @@ impl KeyLogSink for NoopKeyLogSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex;
 
     #[test]
     fn noop_sink_drops_lines() {
@@ -46,8 +47,6 @@ mod tests {
 
     #[test]
     fn arc_blanket_forwards_to_inner() {
-        use parking_lot::Mutex;
-
         #[derive(Debug, Default)]
         struct Capture(Mutex<Vec<String>>);
         impl KeyLogSink for Capture {

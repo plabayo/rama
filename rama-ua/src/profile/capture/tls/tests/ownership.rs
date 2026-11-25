@@ -11,7 +11,7 @@ fn tls_capture_discards_connection_secrets_while_retaining_shapes_and_order() {
     psk.extend_from_slice(&[0, 33, 32]);
     psk.extend_from_slice(&[b'p'; 32]);
     let observed = hello(vec![
-        ClientHelloExtension::ServerName(Some(Domain::try_from("private.example").unwrap())),
+        ClientHelloExtension::ServerName(Some(Domain::try_from("private.example").unwrap().into())),
         opaque(35, secret.to_vec()),
         opaque(51, shares),
         opaque(57, secret.to_vec()),
@@ -145,7 +145,9 @@ fn ech_and_sni_secret_changes_keep_only_their_capture_shapes() {
     let limits = TlsCaptureLimits::default();
     let observed = |secret: &[u8], config_id, name: &str| {
         hello(vec![
-            ClientHelloExtension::ServerName(Some(Domain::try_from(name.to_owned()).unwrap())),
+            ClientHelloExtension::ServerName(Some(
+                Domain::try_from(name.to_owned()).unwrap().into(),
+            )),
             ClientHelloExtension::EncryptedClientHello(
                 serde_json::from_value(json!({"Outer": {
                     "cipher_suite": { "kdf_id": 1, "aead_id": 1 }, "config_id": config_id,
@@ -226,7 +228,9 @@ fn destination_names_and_padding_do_not_become_profile_values() {
     for size in 1..=63 {
         let observed = hello(vec![
             ClientHelloExtension::ServerName(Some(
-                Domain::try_from(format!("{}.example", "x".repeat(size))).unwrap(),
+                Domain::try_from(format!("{}.example", "x".repeat(size)))
+                    .unwrap()
+                    .into(),
             )),
             opaque(21, vec![0; size * 8]),
         ]);

@@ -1,14 +1,16 @@
+use std::marker::PhantomData;
+
 use rama_http_types::{HeaderName, header::MaxSizeReached};
 
-pub(crate) use self::as_encoding_agnostic_metadata_key::AsEncodingAgnosticMetadataKey;
-pub(crate) use self::as_metadata_key::AsMetadataKey;
-pub(crate) use self::into_metadata_key::IntoMetadataKey;
-
-use super::encoding::{Ascii, Binary, ValueEncoding};
-use super::key::{InvalidMetadataKey, MetadataKey};
-use super::value::MetadataValue;
-
-use std::marker::PhantomData;
+pub(crate) use self::{
+    as_encoding_agnostic_metadata_key::AsEncodingAgnosticMetadataKey,
+    as_metadata_key::AsMetadataKey, into_metadata_key::IntoMetadataKey,
+};
+use super::{
+    encoding::{Ascii, Binary, ValueEncoding},
+    key::{InvalidMetadataKey, MetadataKey},
+    value::MetadataValue,
+};
 
 /// A set of gRPC custom metadata entries.
 #[derive(Clone, Debug, Default)]
@@ -579,32 +581,8 @@ impl MetadataMap {
     /// Fails, leaving `self` partially merged, when the merged map would exceed
     /// the maximum number of distinct names a [`rama_http_types::HeaderMap`] holds.
     pub(crate) fn try_merge(&mut self, other: Self) -> Result<(), MaxSizeReached> {
-        try_extend_replacing(&mut self.headers, other.headers)
+        self.headers.try_insert_map(other.headers)
     }
-}
-
-/// Move `source` into `target`, with `source` values replacing same-named ones.
-///
-/// Fails instead of panicking once `target` would exceed the header map size limit.
-pub(crate) fn try_extend_replacing(
-    target: &mut rama_http_types::HeaderMap,
-    source: rama_http_types::HeaderMap,
-) -> Result<(), MaxSizeReached> {
-    let mut last_name: Option<HeaderName> = None;
-    for (name, value) in source {
-        match name {
-            Some(name) => {
-                target.try_insert(name.clone(), value)?;
-                last_name = Some(name);
-            }
-            None => {
-                if let Some(name) = last_name.as_ref() {
-                    target.try_append(name, value)?;
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 // ===== impl Iter =====
@@ -1200,9 +1178,10 @@ mod into_metadata_key {
 }
 
 mod as_metadata_key {
+    use rama_http_types::header::{Entry, GetAll, HeaderValue};
+
     use super::{MetadataMap, MetadataValue, ValueEncoding};
     use crate::metadata::key::{InvalidMetadataKey, MetadataKey};
-    use rama_http_types::header::{Entry, GetAll, HeaderValue};
 
     /// A marker trait used to identify values that can be used as search keys
     /// to a `MetadataMap`.
@@ -1584,6 +1563,8 @@ mod as_encoding_agnostic_metadata_key {
 
 #[cfg(test)]
 mod tests {
+    use rama_http_types::{HeaderMap, HeaderValue};
+
     use super::*;
 
     fn distinct_names(prefix: &str, count: usize) -> MetadataMap {
@@ -1618,6 +1599,46 @@ mod tests {
         let b: Vec<_> = parts.get_all("x-b").iter().collect();
         assert_eq!(b, ["2", "3"]);
         assert_eq!(parts.get("x-c").unwrap(), "4");
+    }
+
+    #[test]
+    fn merge_keeps_replaced_slots_and_trailer_casing_in_order() {
+        let mut parts = HeaderMap::new();
+        parts.insert("x-b", HeaderValue::from_static("1"));
+        parts.insert("x-a", HeaderValue::from_static("1"));
+        let mut trailers = HeaderMap::new();
+        trailers.insert(
+            HeaderName::from_bytes(b"X-B").unwrap(),
+            HeaderValue::from_static("2"),
+        );
+        trailers.append(
+            HeaderName::from_bytes(b"x-B").unwrap(),
+            HeaderValue::from_static("3"),
+        );
+        trailers.insert(
+            HeaderName::from_bytes(b"X-C").unwrap(),
+            HeaderValue::from_static("4"),
+        );
+
+        let mut parts = MetadataMap::from_headers(parts);
+        parts
+            .try_merge(MetadataMap::from_headers(trailers))
+            .unwrap();
+
+        let lines: Vec<_> = parts
+            .into_headers()
+            .into_ordered_iter()
+            .map(|(name, value)| (name.as_original_str().into_owned(), value))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("X-B".to_owned(), HeaderValue::from_static("2")),
+                ("x-a".to_owned(), HeaderValue::from_static("1")),
+                ("x-B".to_owned(), HeaderValue::from_static("3")),
+                ("X-C".to_owned(), HeaderValue::from_static("4")),
+            ]
+        );
     }
 
     #[test]

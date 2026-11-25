@@ -22,6 +22,7 @@ use std::{
     collections::VecDeque,
     convert::Infallible,
     fmt::Debug,
+    future,
     net::SocketAddr,
     sync::{
         Arc,
@@ -45,7 +46,7 @@ use rama::{
     dns::client::DnsConnector,
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
-    futures::{StreamExt as _, stream},
+    futures::{StreamExt as _, future::BoxFuture, stream},
     graceful::{Scope, WeakScope},
     http::{
         Body, HeaderMap, Method, Request, Response, StatusCode, Version,
@@ -74,19 +75,22 @@ use rama::{
     layer::MapInputLayer,
     net::{
         Protocol,
-        address::{Host, HostWithPort, ProxyAddress, SocketAddress},
+        address::{Domain, HostWithPort, ProxyAddress, SocketAddress},
         client::{
             ConnectRequest, ConnectorTarget, ProxyRoute, ProxyRoutes,
             pool::{ConnectionReuse, ReuseKey},
         },
         conn::MaxConcurrency,
         proxy::IoForwardService,
-        tls::ApplicationProtocol,
+        tls::{ApplicationProtocol, ServerName},
     },
     quic::{
         ClientConfig, Endpoint, ServerConfig, TransportConfig,
         client::SharedQuicEndpoint,
-        tls::{QuicClientConfigProvider, TlsConfigError, TlsOptions},
+        tls::{
+            ClientConfigRequest, QuicClientConfigProvider, TlsConfigError, TlsOptions,
+            acquire_cached_client_config,
+        },
     },
     service::service_fn,
     tcp::{
@@ -1040,7 +1044,7 @@ async fn request_tls_overrides_do_not_poison_shared_alternatives() {
         let mismatched_name = origin.request();
         mismatched_name.extensions().extend(
             TlsClientConfig::new()
-                .with_server_name(Host::EXAMPLE_NAME)
+                .with_server_name(Domain::example())
                 .as_extensions(),
         );
         let before = alternative.accepted.load(Ordering::SeqCst);
@@ -1631,7 +1635,7 @@ fn explicit_tls_policy(auth: &ServerAuthData) -> TlsClientConfig {
         .try_with_server_trust_anchors(auth.cert_chain.clone())
         .unwrap()
         .with_server_verify(ServerVerifyMode::Auto)
-        .with_server_name(Host::LOCALHOST_NAME)
+        .with_server_name(Domain::tld_localhost())
         .with_server_cert_pins(TlsServerCertPins::new(TlsServerCertPin::ExactDer(
             auth.cert_chain[0].clone(),
         )))
@@ -1728,7 +1732,7 @@ async fn changed_request_tls_identity_cannot_borrow_an_authenticated_connection(
             explicit_tls_policy(&auth)
                 .try_with_server_trust_anchors(untrusted.cert_chain)
                 .unwrap(),
-            explicit_tls_policy(&auth).with_server_name(Host::EXAMPLE_NAME),
+            explicit_tls_policy(&auth).with_server_name(Domain::example()),
         ];
         for (index, policy) in invalid_policies.into_iter().enumerate() {
             let request = origin.request();
@@ -2148,9 +2152,27 @@ impl QuicClientConfigProvider for CountingQuicProvider {
         &self,
         extensions: &Extensions,
         leaf: &CertificateDer<'_>,
-        name: &Host,
+        name: &ServerName,
     ) -> bool {
         self.inner.peer_matches_name(extensions, leaf, name)
+    }
+
+    fn acquire_client_config(
+        &self,
+        request: ClientConfigRequest<'_>,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        acquire_cached_client_config(self, request)
+    }
+
+    fn acquire_client_config_async<'a>(
+        &'a self,
+        request: ClientConfigRequest<'a>,
+    ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
+        Box::pin(future::ready(self.acquire_client_config(request)))
+    }
+
+    fn allows_early_data(&self, _extensions: &Extensions) -> bool {
+        true
     }
 
     fn client_config(

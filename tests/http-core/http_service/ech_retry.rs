@@ -427,3 +427,6 @@ async fn slow_alt_dns_retains_primary_real_ech_connection() {
 
 #[cfg(feature = "ua-embed-profiles")]
 mod profile;
+
+#[cfg(feature = "quic")]
+mod quic;

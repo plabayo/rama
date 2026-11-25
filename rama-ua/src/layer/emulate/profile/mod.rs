@@ -13,13 +13,21 @@ use rama_http::{
     layer::alt_svc::SendAltUsed,
     proto::h3::qpack::{FieldSectionBase, encoding::HeaderPreferences},
 };
+#[cfg(feature = "tls")]
+use rama_net::{ConnectorTargetInputExt as _, tls::TargetEchConfig};
 use rama_net::{
     ProtocolInputExt as _, TargetHttpVersionInputExt as _,
     tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
 };
+#[cfg(feature = "tls")]
+use rama_tls::client::resolve_target_ech;
 use rama_utils::{macros::define_inner_service_accessors, octets::kib};
 use rand::RngExt as _;
 
+use super::{
+    SelectedUserAgentProfile, preserve,
+    source::{ProfileSelectFallback, ProfileSource, is_no_match},
+};
 use crate::{
     UserAgent,
     profile::{
@@ -43,11 +51,6 @@ use crate::{
             },
         },
     },
-};
-
-use super::{
-    SelectedUserAgentProfile, preserve,
-    source::{ProfileSelectFallback, ProfileSource, is_no_match},
 };
 
 const MAXIMUM_FETCH_CONTEXT_BYTES: usize = kib(16);
@@ -327,6 +330,19 @@ impl<S, P: ProfileSource> ProfileEmulateService<S, P> {
                 .copied()
                 .unwrap_or(config.pins),
         };
+        #[cfg(feature = "tls")]
+        if req
+            .target_protocol()
+            .is_some_and(|protocol| protocol.is_secure())
+            && let Some(config) = req.extensions().get_ref::<TargetEchConfig>()
+            && let Some(target) = req.connector_target()
+            && config.matches_target(&target)
+        {
+            request.client.ech_ready = Some(
+                resolve_target_ech(req.extensions(), &target, true)
+                    .is_ok_and(|resolution| resolution.config.is_some()),
+            );
+        }
         let fallback = req
             .extensions()
             .get_ref::<ProfileSelectFallback>()

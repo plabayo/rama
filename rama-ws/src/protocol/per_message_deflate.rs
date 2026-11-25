@@ -4,10 +4,11 @@
 
 use crate::{
     ProtocolError,
-    protocol::{IncompleteMessageType, PerMessageDeflateConfig, Role, frame::RETAINED_BUFFER_LEN},
+    protocol::{IncompleteMessageType, PerMessageDeflateConfig, Role},
 };
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 use rama_core::error::{BoxError, ErrorContext};
+use rama_utils::octets::RETAINED_BUFFER_LEN;
 
 #[derive(Debug)]
 pub(super) struct PerMessageDeflateState {

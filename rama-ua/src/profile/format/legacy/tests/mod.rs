@@ -282,7 +282,9 @@ fn legacy_tls_keeps_transport_and_override_absence_without_connection_secrets() 
         vec![CipherSuite::from(0x1301)],
         vec![CompressionAlgorithm::from(0)],
         vec![
-            ClientHelloExtension::ServerName(Some(Domain::try_from("private.example").unwrap())),
+            ClientHelloExtension::ServerName(Some(
+                Domain::try_from("private.example").unwrap().into(),
+            )),
             ClientHelloExtension::Opaque {
                 id: ExtensionId::from(35),
                 data: b"legacy-ticket-canary".to_vec(),

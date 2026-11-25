@@ -28,4 +28,4 @@
 
 mod listener;
 #[doc(inline)]
-pub use listener::{UnixListener, UnixListenerBuilder};
+pub use listener::{UnixListener, UnixListenerBuilder, UnixListenerStream};

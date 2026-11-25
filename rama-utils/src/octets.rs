@@ -30,6 +30,9 @@ pub const fn mib(n: usize) -> usize {
     kib(kib(n))
 }
 
+/// Capacity above which a drained reusable buffer is released instead of kept.
+pub const RETAINED_BUFFER_LEN: usize = kib(256);
+
 /// `u32` variant of [`kib`].
 ///
 /// ```

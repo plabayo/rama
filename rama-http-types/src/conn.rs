@@ -20,7 +20,7 @@ use crate::proto::h2::{
 use rama_core::extensions::Extension;
 
 #[derive(Debug, Clone, Default, Extension)]
-#[extension(tags(http))]
+#[extension(tags(http), scope(connection))]
 /// Optional parameters that can be set in the [`Extensions`] of a (h1) request
 /// to customise the connection of the h1 connection.
 ///
@@ -37,7 +37,7 @@ pub struct Http1ClientContextParams {
 }
 
 #[derive(Debug, Clone, Default, Extension)]
-#[extension(tags(http))]
+#[extension(tags(http), scope(connection))]
 /// Optional parameters that can be set in the [`Extensions`] of a (h2) request
 /// to customise the connection of the h2 connection.
 ///
@@ -124,7 +124,7 @@ pub struct H2ClientContextParams {
 pub use rama_net::http::{FallbackHttpVersion, TargetHttpVersion};
 
 #[derive(Debug, Clone, Default, Extension)]
-#[extension(tags(http))]
+#[extension(tags(http), scope(connection))]
 /// Per-conn override for the h2 server's initial SETTINGS frame, set on
 /// the IO's [`Extensions`]. Any field left `None` retains the builder
 /// default. `Some(value)` overrides one-to-one; this type can't express
@@ -257,7 +257,7 @@ impl H2SettingsLimits {
 }
 
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(http))]
+#[extension(tags(http), scope(connection))]
 /// The peer's initial (first non-ACK) h2 [`Settings`] frame, set as an
 /// extension on every h2 client response. Captured once per connection;
 /// subsequent SETTINGS updates are not reflected. Stored once in

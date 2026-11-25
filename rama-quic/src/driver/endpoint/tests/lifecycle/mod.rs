@@ -30,7 +30,10 @@ use crate::{
         queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK},
         sockets::MAX_RETAINED_SOCKETS,
     },
-    proto::{CongestionControl, RetryRefused, TransportConfig},
+    proto::{
+        CongestionControl, HashedConnectionIdGenerator, RetryRefused, StatelessResetKey,
+        TransportConfig,
+    },
 };
 
 pub(super) fn configs() -> (ClientConfig, ServerConfig) {
@@ -7202,8 +7205,6 @@ async fn switching_to_an_identifier_is_not_using_it_until_a_datagram_leaves() {
 /// terminate connections established by its predecessor.
 #[tokio::test]
 async fn a_restarted_endpoint_uses_its_configured_reset_key() {
-    use crate::proto::{HashedConnectionIdGenerator, StatelessResetKey};
-
     let (client_config, server_config) = configs();
     let mut config = EndpointConfig::try_with_rand_key().unwrap();
     config

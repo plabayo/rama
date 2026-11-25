@@ -6,7 +6,8 @@
 //! only malformed or protocol-invalid captures fail.
 
 use rama_boring::ssl::{
-    GreaseValues, Padding, SslCipher, SslCurve, SslSignatureAlgorithm, UnknownValues,
+    EchGreaseShape, GreaseValues, Padding, SslCipher, SslCurve, SslSignatureAlgorithm,
+    UnknownValues,
 };
 use rama_core::{
     bytes::Bytes,
@@ -16,7 +17,8 @@ use rama_core::{
 use rama_net::tls::ApplicationProtocol;
 use rama_tls::{
     CertificateCompressionAlgorithm, CompressionAlgorithm, ECPointFormat, ExtensionId,
-    ProtocolVersion, PskKeyExchangeMode, SignatureScheme, SupportedGroup, client::TlsClientConfig,
+    ProtocolVersion, PskKeyExchangeMode, SignatureScheme, SupportedGroup,
+    client::{TlsClientConfig, TlsClientSni},
     is_grease_u16,
 };
 use rama_ua::profile::{
@@ -28,10 +30,37 @@ use rama_ua::profile::{
     },
 };
 
-use super::super::{
-    BoringClientConfigExt as _, BoringExtensionPresence, BoringRequestedTrustAnchors,
-    BoringTlsConnectorConfig, ech::EchGrease,
+use crate::client::{
+    BoringClientConfigExt as _, BoringRequestedTrustAnchors, BoringTlsConnectorConfig,
+    config::{BoringExtensionPresence, set_alpn_list_with_coupled_alps},
+    ech::EchGrease,
 };
+
+/// Keep application settings within the final application protocol offer.
+#[doc(hidden)]
+pub fn narrow_alps(settings: &TlsClientConfig) {
+    if let Some(alpn) = settings.alpn() {
+        set_alpn_list_with_coupled_alps(settings.as_extensions(), alpn);
+    }
+}
+
+/// SNI policy implied by the effective captured hello, without retaining its destination.
+#[must_use]
+pub fn captured_sni_policy(capture: &TlsCapture) -> TlsClientSni {
+    capture
+        .extensions
+        .iter()
+        .find_map(
+            |extension| match (ExtensionId::from(extension.id), &extension.value) {
+                (ExtensionId::SERVER_NAME, Value::IpServerName) => Some(TlsClientSni::IncludeIp),
+                (ExtensionId::SERVER_NAME, Value::ServerName { present: true }) => {
+                    Some(TlsClientSni::Auto)
+                }
+                _ => None,
+            },
+        )
+        .unwrap_or(TlsClientSni::Disabled)
+}
 
 fn protocols(values: &[Box<[u8]>]) -> impl Iterator<Item = ApplicationProtocol> + '_ {
     values.iter().map(|value| value.as_ref().into())
@@ -197,9 +226,7 @@ fn compile_lowered(
     if !lowered.alps {
         config.set_alps(Vec::new(), false);
     }
-    if !lowered.cert_compression {
-        config.set_cert_compression(Vec::new());
-    }
+    config.set_cert_compression(Vec::new());
     config.set_delegated_credentials(Vec::new());
     config.set_record_size_limit(0);
     config.set_server_padding_request(None);
@@ -230,7 +257,10 @@ fn compile_lowered(
     let mut order = Vec::with_capacity(capture.extensions.len());
     for (index, extension) in capture.extensions.iter().enumerate() {
         match (ExtensionId::from(extension.id), &extension.value) {
-            (ExtensionId::SERVER_NAME, Value::ServerName { present: true }) => {}
+            (
+                ExtensionId::SERVER_NAME,
+                Value::ServerName { present: true } | Value::IpServerName,
+            ) => {}
             // Browsers pad by the same length rule as BoringSSL, last or before
             // pre_shared_key; the body length follows each connection's ClientHello.
             (ExtensionId::PADDING, Value::ConnectionLength(_))
@@ -398,12 +428,32 @@ fn compile_lowered(
                 },
             ) => {
                 config.set_encrypted_client_hello(true);
-                config.set_ech_grease(EchGrease::Shape {
+                let shape = EchGrease::Shape {
                     kdf_id: *kdf,
                     aead_id: *aead,
                     encapsulated_key_len: usize::from(*enc),
                     payload_len: usize::from(*payload),
-                });
+                };
+                let shape = if shape.native_shape().is_ok() {
+                    shape
+                } else {
+                    lower(
+                        report,
+                        LoweredProfileItem::TlsExtension {
+                            extension: extension.id,
+                        },
+                    );
+                    EchGrease::Shape {
+                        kdf_id: 1,
+                        aead_id: if (1..=3).contains(aead) { *aead } else { 1 },
+                        encapsulated_key_len: EchGreaseShape::ENCAPSULATED_KEY_LEN,
+                        payload_len: usize::from(*payload).clamp(
+                            EchGreaseShape::MIN_PAYLOAD_LEN,
+                            EchGreaseShape::MAX_PAYLOAD_LEN,
+                        ),
+                    }
+                };
+                config.set_ech_grease(shape);
             }
             (
                 ExtensionId::RENEGOTIATION_INFO,

@@ -21,7 +21,7 @@ use rama::{
         server::HttpServer,
     },
     net::{
-        address::{Domain, Host, SocketAddress},
+        address::{Domain, SocketAddress},
         tls::ApplicationProtocol,
     },
     quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions},
@@ -146,7 +146,7 @@ async fn tcp_request(engine: Arc<EngineHandle>, origin: SocketAddr, case: &str) 
             .await
             .unwrap();
         let config = TlsClientConfig::new()
-            .with_server_name(Host::from_static("localhost"))
+            .with_server_name(Domain::tld_localhost())
             .with_server_verify(ServerVerifyMode::Disable);
         stage.set("tls handshake");
         let Ok(mut stream) = tls_connect(

@@ -11,7 +11,9 @@
 
 use std::{
     convert::Infallible,
+    env,
     net::{Ipv4Addr, SocketAddr},
+    process::Command,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -23,18 +25,20 @@ use ahash::HashSet;
 use parking_lot::Mutex;
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
+    extensions::{Extensions, ExtensionsRef as _},
     graceful::WeakScope,
     service::service_fn,
 };
-use rama_crypto::cert::CertificateAuthorityData;
+use rama_crypto::{cert::CertificateAuthorityData, pem::PemEncode as _};
 use rama_net::{address::Domain, tls::ApplicationProtocol};
 use rama_quic::{
-    ClientConfig, Connection, ConnectionError, Endpoint, ServerConfig, TransportConfig,
-    tls::{QuicClientConfigProvider, QuicServerConfigProvider, TlsOptions},
+    ClientConfig, Connection, ConnectionError, Endpoint, NegotiatedTlsParameters, ServerConfig,
+    TransportConfig,
+    tls::{ClientConfigCache, QuicClientConfigProvider, QuicServerConfigProvider, TlsOptions},
 };
 use rama_quic_proto::{TransportErrorCode, VarInt};
 use rama_tls::{
-    client::TlsClientConfig,
+    client::{ChannelReloadTrigger, NativeTrustPolicy, TlsClientConfig},
     server::{
         CertificateIdentity, LeafCertRequest, SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
     },
@@ -350,8 +354,6 @@ async fn exchange(
 
 #[tokio::test]
 async fn native_root_rotation_invalidates_quic_sessions() {
-    use std::{env, process::Command};
-
     const CHILD: &str = "RAMA_QUIC_NATIVE_ROTATION_BUNDLE";
     let Some(bundle) = env::var_os(CHILD) else {
         let dir = rama_utils::fs::TempDir::new_sync().unwrap();
@@ -387,11 +389,6 @@ async fn assert_native_rotation(
     bundle: &std::path::Path,
     provider: Arc<impl QuicClientConfigProvider + QuicServerConfigProvider + 'static>,
 ) {
-    use rama_core::extensions::{Extensions, ExtensionsRef as _};
-    use rama_crypto::pem::PemEncode as _;
-    use rama_quic::{NegotiatedTlsParameters, tls::ClientConfigCache};
-    use rama_tls::client::{ChannelReloadTrigger, NativeTrustPolicy};
-
     let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
     let pem = ca.certificate_chain()[0].to_pem();
     std::fs::write(bundle, &pem).unwrap();
@@ -460,7 +457,6 @@ async fn assert_native_rotation(
 mod boring {
     use std::future::IntoFuture as _;
 
-    use rama_core::extensions::ExtensionsRef as _;
     use rama_crypto::cert::LeafCertConfig;
     use rama_quic::{EndpointConfig, NegotiatedTlsParameters, tls::BoringTlsProvider};
     use rama_tls::server::{CertificateIssuanceContext, DynamicCertIssuer};
@@ -931,7 +927,7 @@ mod boring {
             .unwrap()
             .unwrap();
         assert_eq!(
-            hello.ext_server_name().map(Domain::as_str),
+            hello.ext_server_domain().map(Domain::as_str),
             Some("early.test")
         );
         assert!(
@@ -1067,7 +1063,10 @@ mod boring {
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 mod rustls {
+    use rama_crypto::native_certs::bundled_root_certs;
+    use rama_net::tls::ServerName;
     use rama_quic::tls::RustlsTlsProvider;
+    use rama_tls::client::{TlsServerTrust, TlsServerTrustAnchors};
     use rama_tls_rustls::{
         dep::rustls,
         server::{DynamicConfigProvider, RustlsServerConfigExt as _},
@@ -1088,11 +1087,6 @@ mod rustls {
 
     #[tokio::test]
     async fn static_anchor_policies_retain_quic_sessions_after_store_eviction() {
-        use rama_core::extensions::ExtensionsRef as _;
-        use rama_crypto::native_certs::bundled_root_certs;
-        use rama_quic::{NegotiatedTlsParameters, tls::ClientConfigCache};
-        use rama_tls::client::{TlsServerTrust, TlsServerTrustAnchors};
-
         let provider = Arc::new(RustlsTlsProvider::new(crypto()));
         let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
         let tls = TlsServerConfig::new()
@@ -1155,16 +1149,17 @@ mod rustls {
     /// Builds a rustls configuration with a leaf for whatever name is asked.
     struct PerName {
         ca: Arc<CertificateAuthorityData>,
-        seen: Arc<Mutex<Vec<Option<String>>>>,
+        seen: Arc<Mutex<Vec<Option<Box<str>>>>>,
         fail: bool,
     }
 
     impl DynamicConfigProvider for PerName {
         async fn get_config(
             &self,
-            client_hello: rustls::server::ClientHello<'_>,
+            _client_hello: rustls::server::ClientHello<'_>,
+            server_name: Option<&ServerName>,
         ) -> Result<Arc<rustls::ServerConfig>, BoxError> {
-            let name = client_hello.server_name().map(str::to_owned);
+            let name = server_name.map(|name| name.to_string().into_boxed_str());
             self.seen.lock().push(name.clone());
             if self.fail {
                 return Err(BoxError::from_static_str("configuration unavailable"));
@@ -1207,7 +1202,10 @@ mod rustls {
         }
         assert_eq!(
             *seen.lock(),
-            [Some("a.test".to_owned()), Some("b.test".to_owned())]
+            [
+                Some(Box::<str>::from("a.test")),
+                Some(Box::<str>::from("b.test"))
+            ]
         );
 
         server.close(VarInt::from(0u32), b"done");
@@ -1266,7 +1264,7 @@ mod rustls {
         let config = client_config(&ca, alpn(), &provider);
         let relay = exchange_retransmitting_before_the_retry(&server, config).await;
         assert_eq!(relay.retries(), 1);
-        assert_eq!(*seen.lock(), [Some("a.test".to_owned())]);
+        assert_eq!(*seen.lock(), [Some(Box::<str>::from("a.test"))]);
 
         server.close(VarInt::from(0u32), b"done");
         timeout(DEADLINE, served).await.unwrap().unwrap();
@@ -1299,7 +1297,7 @@ mod rustls {
         .await
         .expect("a ClientHello of several KiB resolves");
         connection.close(VarInt::from(0u32), b"done");
-        assert_eq!(*seen.lock(), [Some("large.test".to_owned())]);
+        assert_eq!(*seen.lock(), [Some(Box::<str>::from("large.test"))]);
 
         server.close(VarInt::from(0u32), b"done");
         timeout(DEADLINE, served).await.unwrap().unwrap();
@@ -1330,7 +1328,7 @@ mod rustls {
         .await
         .unwrap_err();
         assert!(refused(&error), "{error:?}");
-        assert_eq!(*seen.lock(), [Some("a.test".to_owned())]);
+        assert_eq!(*seen.lock(), [Some(Box::<str>::from("a.test"))]);
 
         server.close(VarInt::from(0u32), b"done");
         timeout(DEADLINE, served).await.unwrap().unwrap();

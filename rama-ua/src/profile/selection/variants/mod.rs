@@ -2,6 +2,8 @@
 
 pub mod bootstrap;
 #[cfg(feature = "tls")]
+pub(crate) mod derived;
+#[cfg(feature = "tls")]
 mod extension_order;
 mod reserved_draw;
 pub(crate) mod shapes;
@@ -31,7 +33,11 @@ use crate::{
             order::AnalyzedOrderWeight,
             profile::{AnalyzedProfile, AnalyzedProfileScope},
         },
-        capture::{completeness::ProfileCaptureCompleteness, headers::HeaderCapturePolicy},
+        capture::{
+            completeness::ProfileCaptureCompleteness,
+            headers::HeaderCapturePolicy,
+            joint::{CapturedSlotKind, JointCapture, JointCaptureLimits},
+        },
         evidence::counts::ObservationWeight,
         format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
         model::{
@@ -49,21 +55,33 @@ use crate::{
     },
 };
 
+#[cfg(feature = "tls")]
+use crate::profile::capture::tls::TlsCaptureLimits;
+
 const SELECTION_PREFIX: &[u8] = b"rama-profile-selection\0";
 const MAXIMUM_IDENTITY_BYTES: usize = kib(16);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-/// Identity filters applied before a captured profile is drawn.
+/// Identity filters and evidence preferences applied before a captured profile is drawn.
+/// `ech_ready` prefers exact connection captures without excluding derived offers;
+/// leaving it unset preserves the observation weights.
 pub struct ProfileSelector {
     /// Exact User-Agent of the profiles to draw from, such as one auto-detected
     /// from the request. Emulation relaxes it to the browser family when no
     /// profile has this exact User-Agent.
     #[serde(default)]
     pub user_agent: Option<Box<str>>,
+    /// Captured client family.
     pub client: Option<Box<str>>,
+    /// Captured operating-system family.
     pub platform: Option<PlatformKind>,
+    /// Captured device class.
     pub device: Option<DeviceKind>,
+    /// Maximum number of newest versions per identity group.
     pub latest_versions: Option<usize>,
+    /// Known target readiness; exact offers receive twice the observation weight.
+    #[serde(default)]
+    pub ech_ready: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Extension)]
@@ -92,6 +110,8 @@ pub struct SelectedProfile {
     id: ValueId,
     profile: Arc<UserAgentProfile>,
     request_shapes: Arc<RequestShapeCache>,
+    #[cfg(feature = "tls")]
+    derived_database: Arc<derived::DatabaseEvidence>,
     required: CapabilitySet,
     flow: FlowKey,
     pins: VariantPins,
@@ -165,15 +185,25 @@ pub struct PreparedConnectionProfile {
     pub h3_settings_evidence: Option<H3SettingsReplayEvidence>,
 }
 
+/// The evidence used to prepare a connection offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionOfferMode {
+    Ordinary,
+    RealEch,
+    Grease,
+    Derived,
+}
+
 #[derive(Debug, Clone, Serialize, Extension)]
-#[extension(tags(ua))]
-/// Deterministic connection draw consumed by protocol connectors.
+#[extension(tags(ua), scope(connection))]
+/// Deterministic connection draw consumed by protocol connectors, and whether the target was ECH-ready.
 pub struct ConnectionSelection {
     pub profile: ValueId,
     pub variant: ValueId,
     pub draw: DrawKey,
     pub analysis_revision: u16,
     pub effective: PreparedConnectionProfile,
+    pub ech_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Extension)]
@@ -401,7 +431,8 @@ impl UserAgentDatabase {
             return Err(SelectionError::MissingCapabilities(request.required));
         }
         // Profile capabilities can come from request scopes alone; the connection step
-        // needs a captured connection for this transport and context.
+        // needs a captured connection for this transport and context. Endpoint ECH
+        // readiness is known only at connect, so matched pairs count here too.
         if request.pins.connection.is_none() {
             let context = flow_connection_context(&request.flow);
             matching.retain(|(profile, analysis, _distance)| {
@@ -412,13 +443,89 @@ impl UserAgentDatabase {
                         &context,
                         request.required,
                         true,
-                        false,
+                        ConnectionOffers::WithEch,
                     )
                     .is_empty()
                 })
             });
             if matching.is_empty() {
                 return Err(SelectionError::IncompatibleConnectionContext);
+            }
+        }
+        for (pin, connection) in [
+            (request.pins.connection, true),
+            (request.pins.request, false),
+        ] {
+            let Some(pin) = pin else { continue };
+            let context = flow_connection_context(&request.flow);
+            matching.retain(|(profile, analysis, _)| {
+                if connection {
+                    self.request_shape_cache(profile).is_some_and(|shapes| {
+                        connection_candidates(
+                            analysis,
+                            &shapes,
+                            &context,
+                            request.required,
+                            false,
+                            ConnectionOffers::WithEch,
+                        )
+                        .iter()
+                        .any(|(_, scope)| {
+                            scope
+                                .observations
+                                .variants
+                                .iter()
+                                .any(|variant| variant.value.id() == pin)
+                        })
+                    })
+                } else {
+                    analysis.scopes.iter().enumerate().any(|(index, scope)| {
+                        request_scope_usable(analysis, index, protocol)
+                            && scope_flow_distance(scope, &request.flow, flow.id).is_some()
+                            && scope
+                                .observations
+                                .variants
+                                .iter()
+                                .any(|variant| variant.value.id() == pin)
+                    })
+                }
+            });
+            if matching.is_empty() {
+                return Err(SelectionError::IncompatiblePin(pin));
+            }
+        }
+        if let Some(pin) = request.pins.request {
+            let context = flow_connection_context(&request.flow);
+            matching.retain(|(profile, analysis, _)| {
+                self.request_shape_cache(profile).is_some_and(|shapes| {
+                    connection_candidates(
+                        analysis,
+                        &shapes,
+                        &context,
+                        request.required,
+                        false,
+                        ConnectionOffers::WithEch,
+                    )
+                    .iter()
+                    .any(|(_, scope)| {
+                        scope_serves_request_pin(
+                            analysis,
+                            scope,
+                            &request.flow,
+                            pin,
+                            request.required,
+                        ) && request.pins.connection.is_none_or(|connection| {
+                            scope
+                                .observations
+                                .variants
+                                .iter()
+                                .any(|variant| variant.value.id() == connection)
+                        })
+                    })
+                })
+            });
+            if matching.is_empty() {
+                return Err(SelectionError::IncompatiblePin(pin));
             }
         }
         // Profiles that captured the flow itself win over those that only come close.
@@ -452,10 +559,56 @@ impl UserAgentDatabase {
                 slot: 0,
             },
         );
-        let weights = matching
+        let exact_ech = request.client.ech_ready.map(|ech| {
+            let context = flow_connection_context(&request.flow);
+            matching
+                .iter()
+                .map(|(profile, analysis, _)| {
+                    self.request_shape_cache(profile).is_some_and(|shapes| {
+                        connection_candidates(
+                            analysis,
+                            &shapes,
+                            &context,
+                            request.required,
+                            true,
+                            ConnectionOffers::WithEch,
+                        )
+                        .iter()
+                        .any(|(index, scope)| {
+                            if request.pins.request.is_some_and(|pin| {
+                                !scope_serves_request_pin(
+                                    analysis,
+                                    scope,
+                                    &request.flow,
+                                    pin,
+                                    request.required,
+                                )
+                            }) || request.pins.connection.is_some_and(|pin| {
+                                !scope
+                                    .observations
+                                    .variants
+                                    .iter()
+                                    .any(|variant| variant.value.id() == pin)
+                            }) {
+                                return false;
+                            }
+                            if ech {
+                                shapes.ech_connection(analysis, *index)
+                            } else {
+                                shapes.ordinary_connection(analysis, *index)
+                            }
+                        })
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+        let mut weights = matching
             .iter()
             .map(|(profile, _analysis, _distance)| observation_weight(profile.observation_weight()))
             .collect::<Result<Vec<_>, _>>()?;
+        if let Some(exact) = exact_ech {
+            prefer_exact_weights(&mut weights, &exact);
+        }
         let selected = draw.weighted_index(&weights)?;
         let (profile, analysis, _distance) = matching
             .get(selected)
@@ -467,6 +620,8 @@ impl UserAgentDatabase {
             request_shapes: self
                 .request_shape_cache(profile)
                 .ok_or(SelectionError::MissingProfile)?,
+            #[cfg(feature = "tls")]
+            derived_database: Arc::clone(&self.derived_evidence),
             required: request.required,
             flow: request.flow.clone(),
             pins: request.pins,
@@ -476,11 +631,13 @@ impl UserAgentDatabase {
 
 impl SelectedProfile {
     #[must_use]
+    /// Borrow the selected profile.
     pub fn profile(&self) -> &UserAgentProfile {
         &self.profile
     }
 
     #[must_use]
+    /// Return the selected profile identity.
     pub fn profile_id(&self) -> ValueId {
         self.id
     }
@@ -492,15 +649,18 @@ impl SelectedProfile {
     }
 
     #[must_use]
+    /// Return the requested variant pins.
     pub fn pins(&self) -> VariantPins {
         self.pins
     }
 
     #[must_use]
+    /// Borrow the selected request flow.
     pub fn flow(&self) -> &FlowKey {
         &self.flow
     }
 
+    /// Check that the profile supports the negotiated protocol.
     pub fn validate_negotiated_protocol(&self, version: Version) -> Result<(), SelectionError> {
         if protocol_supported(self.required, version) {
             Ok(())
@@ -510,6 +670,7 @@ impl SelectedProfile {
     }
 
     #[must_use]
+    /// Bind this selected profile to the supplied deterministic draw keys.
     pub fn emulation_context(
         self: Arc<Self>,
         seed: ProfileSeed,
@@ -526,6 +687,7 @@ impl SelectedProfile {
         }
     }
 
+    /// Draw a connection offer without endpoint ECH readiness.
     pub fn connection(
         &self,
         context: &ConnectionContext,
@@ -544,27 +706,69 @@ impl SelectedProfile {
         key: DrawKey,
         ech: bool,
     ) -> Result<ConnectionSelection, SelectionError> {
+        self.connection_with_offer_mode(context, seed, key, ech)
+            .map(|(selection, _)| selection)
+    }
+
+    /// Draw a connection and report whether its offer required derivation.
+    pub fn connection_with_offer_mode(
+        &self,
+        context: &ConnectionContext,
+        seed: ProfileSeed,
+        key: DrawKey,
+        ech: bool,
+    ) -> Result<(ConnectionSelection, ConnectionOfferMode), SelectionError> {
         let analysis = self
             .profile
             .captured
             .as_ref()
             .ok_or(SelectionError::MissingProfile)?;
-        let mut scopes = connection_candidates(
-            analysis,
-            &self.request_shapes,
-            context,
-            self.required,
-            self.pins.connection.is_none(),
-            ech,
-        );
+        // A GREASE offer replays only the variants whose outer the profile's ordinary offers show.
+        let offered = |index, variant, offers| {
+            offers != ConnectionOffers::GreaseFallback
+                || self.request_shapes.grease_variant(analysis, index, variant)
+        };
+        let pinned = |offers| {
+            let mut scopes = connection_candidates(
+                analysis,
+                &self.request_shapes,
+                context,
+                self.required,
+                self.pins.connection.is_none(),
+                offers,
+            );
+            if let Some(pin) = self.pins.request {
+                scopes.retain(|(_, scope)| {
+                    scope_serves_request_pin(analysis, scope, &self.flow, pin, self.required)
+                });
+            }
+            if let Some(pin) = self.pins.connection {
+                scopes.retain(|(index, scope)| {
+                    scope.observations.variants.iter().enumerate().any(
+                        |(variant_index, variant)| {
+                            variant.value.id() == pin && offered(*index, variant_index, offers)
+                        },
+                    )
+                });
+            }
+            scopes
+        };
+        let mut offers = if ech {
+            ConnectionOffers::WithEch
+        } else {
+            ConnectionOffers::Ordinary
+        };
+        let mut scopes = pinned(offers);
+        if scopes.is_empty() && !ech {
+            // A browser offers GREASE ECH where no ECH configuration is available.
+            offers = ConnectionOffers::GreaseFallback;
+            scopes = pinned(offers);
+        }
+        if scopes.is_empty() && !ech {
+            offers = ConnectionOffers::Derived;
+            scopes = pinned(offers);
+        }
         if let Some(pin) = self.pins.connection {
-            scopes.retain(|(_index, scope)| {
-                scope
-                    .observations
-                    .variants
-                    .iter()
-                    .any(|variant| variant.value.id() == pin)
-            });
             if scopes.is_empty() {
                 return Err(SelectionError::IncompatiblePin(pin));
             }
@@ -597,12 +801,24 @@ impl SelectedProfile {
             .get(scope_draw.weighted_index(&weights)?)
             .copied()
             .ok_or(SelectionError::IncompatibleConnectionContext)?;
+        if context.resumption == ResumptionContext::Fresh
+            && scope.context.connection.resumption == ResumptionContext::Unknown
+        {
+            tracing::debug!(
+                context_evidence = "unspecified-resumption",
+                "using a captured connection as a fresh template"
+            );
+        }
         let variant = if let Some(pin) = self.pins.connection {
             scope
                 .observations
                 .variants
                 .iter()
-                .find(|variant| variant.value.id() == pin)
+                .enumerate()
+                .find(|(variant_index, variant)| {
+                    variant.value.id() == pin && offered(scope_index, *variant_index, offers)
+                })
+                .map(|(_, variant)| variant)
         } else {
             let mut variant_draw = ProfileDraw::new(
                 seed,
@@ -619,7 +835,14 @@ impl SelectedProfile {
                 .observations
                 .variants
                 .iter()
-                .map(|variant| analyzed_weight(&variant.weight))
+                .enumerate()
+                .map(|(variant_index, variant)| {
+                    if offered(scope_index, variant_index, offers) {
+                        analyzed_weight(&variant.weight)
+                    } else {
+                        Ok(0)
+                    }
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             scope
                 .observations
@@ -634,31 +857,65 @@ impl SelectedProfile {
         })?;
         // Connection captures are never held compact, so this borrows.
         let capture = variant.value.canonical()?.into_owned();
-        let h3_settings_evidence =
-            H3SettingsReplayEvidence::for_profile(analysis, scope, &capture)?;
         let variant = capture.id;
+        // Decoded once: every per-connection draw below edits this one capture.
+        let limits = JointCaptureLimits::default();
+        let mut joint = JointCapture::from_canonical(&capture, limits)?;
         #[cfg(feature = "tls")]
-        let capture = extension_order::draw_extension_order(
-            self.request_shapes.tls_order_scope(analysis, scope_index),
-            capture,
-            &mut ProfileDraw::new(
-                seed,
-                ProfileDrawContext {
-                    profile: analysis.id,
-                    analysis_revision: analysis.classifier_revision,
-                    scope: scope.id,
-                    key,
-                    domain: DrawDomain::TlsExtensions,
-                    slot: 0,
-                },
-            ),
-        )?;
+        let derived_order = if offers == ConnectionOffers::Derived {
+            derived::derive(
+                &mut joint,
+                self.request_shapes.ordinary_evidence(analysis),
+                || self.derived_database.family_evidence(analysis.id),
+            )?
+        } else {
+            None
+        };
+        let h3_settings_evidence = H3SettingsReplayEvidence::for_profile(analysis, scope, &joint)?;
+        #[cfg(feature = "tls")]
+        let mut drawn = match derived_order {
+            Some(derived::DerivedExtensionOrder::Captured) => false,
+            Some(derived::DerivedExtensionOrder::Shuffled(pinned)) => {
+                let mut draw = ProfileDraw::new(
+                    seed,
+                    ProfileDrawContext {
+                        profile: analysis.id,
+                        analysis_revision: analysis.classifier_revision,
+                        scope: scope.id,
+                        key,
+                        domain: DrawDomain::TlsExtensions,
+                        slot: 0,
+                    },
+                );
+                joint.map_wire_tls(TlsCaptureLimits::default(), |tls| {
+                    tls.extensions = extension_order::shuffle(&tls.extensions, &pinned, &mut draw);
+                })?;
+                true
+            }
+            None => extension_order::draw_extension_order(
+                self.request_shapes.tls_order_scope(analysis, scope_index),
+                &mut joint,
+                &mut ProfileDraw::new(
+                    seed,
+                    ProfileDrawContext {
+                        profile: analysis.id,
+                        analysis_revision: analysis.classifier_revision,
+                        scope: scope.id,
+                        key,
+                        domain: DrawDomain::TlsExtensions,
+                        slot: 0,
+                    },
+                ),
+            )?,
+        };
+        #[cfg(not(feature = "tls"))]
+        let mut drawn = false;
         // Only QUIC connections carry reserved identifiers a client draws afresh.
-        let capture = if contains(analysis.components.quic.as_deref(), scope_index)
+        if contains(analysis.components.quic.as_deref(), scope_index)
             || contains(analysis.components.h3.as_deref(), scope_index)
         {
-            reserved_draw::draw_reserved(
-                capture,
+            drawn |= reserved_draw::draw_reserved(
+                &mut joint,
                 ReservedDraws {
                     seed,
                     context: ProfileDrawContext {
@@ -670,24 +927,45 @@ impl SelectedProfile {
                         slot: 0,
                     },
                 },
-            )?
+            )?;
+        }
+        let capture = if drawn || offers == ConnectionOffers::Derived {
+            joint.canonical(limits)?
         } else {
             capture
         };
-        Ok(ConnectionSelection {
-            profile: analysis.id,
-            variant,
-            draw: key,
-            analysis_revision: analysis.classifier_revision,
-            effective: PreparedConnectionProfile {
-                scope: scope.id,
-                capture,
-                context: scope.context.clone(),
-                h3_settings_evidence,
+        let mode = match offers {
+            ConnectionOffers::WithEch
+                if joint
+                    .slots
+                    .iter()
+                    .any(|slot| slot.kind == CapturedSlotKind::TlsOuter) =>
+            {
+                ConnectionOfferMode::RealEch
+            }
+            ConnectionOffers::Ordinary | ConnectionOffers::WithEch => ConnectionOfferMode::Ordinary,
+            ConnectionOffers::GreaseFallback => ConnectionOfferMode::Grease,
+            ConnectionOffers::Derived => ConnectionOfferMode::Derived,
+        };
+        Ok((
+            ConnectionSelection {
+                profile: analysis.id,
+                variant,
+                draw: key,
+                analysis_revision: analysis.classifier_revision,
+                effective: PreparedConnectionProfile {
+                    scope: scope.id,
+                    capture,
+                    context: scope.context.clone(),
+                    h3_settings_evidence,
+                },
+                ech_ready: ech,
             },
-        })
+            mode,
+        ))
     }
 
+    /// Draw a request variant for the selected connection and flow.
     pub fn request(
         &self,
         connection: &ConnectionSelection,
@@ -709,30 +987,15 @@ impl SelectedProfile {
             return Err(SelectionError::IncompatibleNegotiatedProtocol(protocol));
         }
         let canonical = flow.canonical(MAXIMUM_IDENTITY_BYTES)?;
-        let mut scopes = analysis
-            .scopes
-            .iter()
-            .enumerate()
-            .filter(|(index, scope)| {
-                connection_context_matches(
-                    &scope.context.connection,
-                    &connection.effective.context.connection,
-                ) && request_scope_usable(analysis, *index, protocol)
-            })
-            .filter_map(|(index, scope)| {
-                scope_flow_distance(scope, flow, canonical.id)
-                    .map(|distance| (index, scope, distance))
-            })
-            .collect::<Vec<_>>();
-        // Browsers send fetch metadata only in secure contexts. Over TLS, a request shape
-        // captured without it (a plaintext page) is not one this browser would send there.
-        if (self.required.tls_tcp || self.required.tls_quic)
-            && scopes
-                .iter()
-                .any(|(_index, scope, _distance)| has_fetch_metadata(scope))
-        {
-            scopes.retain(|(_index, scope, _distance)| has_fetch_metadata(scope));
-        }
+        let mut scopes = eligible_request_scopes(
+            analysis,
+            &connection.effective.context.connection,
+            flow,
+            canonical.id,
+            protocol,
+            self.required,
+        )
+        .collect::<Vec<_>>();
         if let Some(pin) = self.pins.request {
             scopes.retain(|(_index, scope, _distance)| {
                 scope
@@ -1005,14 +1268,31 @@ fn request_scope_usable(analysis: &AnalyzedProfile, index: usize, protocol: Vers
 }
 
 /// Connection scopes of `analysis` that can open a connection for `required` in `context`.
+/// The captured wire offers a connection draw may replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionOffers {
+    Ordinary,
+    WithEch,
+    GreaseFallback,
+    Derived,
+}
+
 fn connection_candidates<'a>(
     analysis: &'a AnalyzedProfile,
     shapes: &RequestShapeCache,
     context: &ConnectionContext,
     required: CapabilitySet,
     lower_h2: bool,
-    ech: bool,
+    offers: ConnectionOffers,
 ) -> Vec<(usize, &'a AnalyzedProfileScope)> {
+    let offered = |index| match offers {
+        ConnectionOffers::Ordinary => shapes.ordinary_connection(analysis, index),
+        ConnectionOffers::WithEch => {
+            shapes.ordinary_connection(analysis, index) || shapes.ech_connection(analysis, index)
+        }
+        ConnectionOffers::GreaseFallback => shapes.grease_connection(analysis, index),
+        ConnectionOffers::Derived => shapes.ech_connection(analysis, index),
+    };
     let candidates = |required| {
         analysis
             .scopes
@@ -1020,8 +1300,7 @@ fn connection_candidates<'a>(
             .enumerate()
             .filter(|(index, scope)| {
                 scope.context.flow.is_none()
-                    && (shapes.ordinary_connection(analysis, *index)
-                        || (ech && shapes.ech_connection(analysis, *index)))
+                    && offered(*index)
                     && connection_context_matches(&scope.context.connection, context)
                     && scope.observations.domain == CanonicalDomain::Joint
                     && connection_scope_supports(analysis, *index, required)
@@ -1064,10 +1343,72 @@ fn connection_scope_supports(
         && (!required.h3 || contains(analysis.components.h3.as_deref(), index))
 }
 
+fn scope_serves_request_pin(
+    analysis: &AnalyzedProfile,
+    connection: &AnalyzedProfileScope,
+    flow: &FlowKey,
+    pin: ValueId,
+    required: CapabilitySet,
+) -> bool {
+    let Ok(protocol) = flow_protocol(flow) else {
+        return false;
+    };
+    let Ok(canonical) = flow.canonical(MAXIMUM_IDENTITY_BYTES) else {
+        return false;
+    };
+    eligible_request_scopes(
+        analysis,
+        &connection.context.connection,
+        flow,
+        canonical.id,
+        protocol,
+        required,
+    )
+    .any(|(_index, scope, _distance)| {
+        scope
+            .observations
+            .variants
+            .iter()
+            .any(|variant| variant.value.id() == pin)
+    })
+}
+
+/// Request scopes a request draw on a connection captured in `connection` may use.
+fn eligible_request_scopes<'a>(
+    analysis: &'a AnalyzedProfile,
+    connection: &'a ConnectionContext,
+    flow: &'a FlowKey,
+    canonical: ValueId,
+    protocol: Version,
+    required: CapabilitySet,
+) -> impl Iterator<Item = (usize, &'a AnalyzedProfileScope, FlowDistance)> {
+    let candidates = move || {
+        analysis
+            .scopes
+            .iter()
+            .enumerate()
+            .filter(move |(index, scope)| {
+                connection_context_matches(&scope.context.connection, connection)
+                    && request_scope_usable(analysis, *index, protocol)
+            })
+            .filter_map(move |(index, scope)| {
+                scope_flow_distance(scope, flow, canonical).map(|distance| (index, scope, distance))
+            })
+    };
+    // Browsers send fetch metadata only in secure contexts. Over TLS, a request shape
+    // captured without it (a plaintext page) is not one this browser would send there.
+    let metadata_only = (required.tls_tcp || required.tls_quic)
+        && candidates().any(|(_index, scope, _distance)| has_fetch_metadata(scope));
+    candidates()
+        .filter(move |(_index, scope, _distance)| !metadata_only || has_fetch_metadata(scope))
+}
+
 fn connection_context_matches(left: &ConnectionContext, right: &ConnectionContext) -> bool {
     let resumption = match right.resumption {
-        ResumptionContext::Unknown => !matches!(left.resumption, ResumptionContext::Resumed),
-        requested => left.resumption == requested,
+        ResumptionContext::Unknown | ResumptionContext::Fresh => {
+            !matches!(left.resumption, ResumptionContext::Resumed)
+        }
+        ResumptionContext::Resumed => left.resumption == ResumptionContext::Resumed,
     };
     let early_data = match right.early_data {
         None => left.early_data != Some(true),
@@ -1271,6 +1612,23 @@ fn selection_scope(
         digest.update(candidate.0);
     }
     ValueId(digest.finalize().into())
+}
+
+fn prefer_exact_weights(weights: &mut [u64], exact: &[bool]) {
+    let total: u128 = weights
+        .iter()
+        .zip(exact)
+        .map(|(weight, exact)| u128::from(*weight) * if *exact { 2 } else { 1 })
+        .sum();
+    let positive = weights.iter().filter(|weight| **weight != 0).count() as u128;
+    let capacity = (u128::from(u64::MAX) - positive).max(1);
+    let divisor = total.div_ceil(capacity).max(1);
+    for (weight, exact) in weights.iter_mut().zip(exact) {
+        if *weight != 0 {
+            let preferred = u128::from(*weight) * if *exact { 2 } else { 1 };
+            *weight = (preferred / divisor).max(1) as u64;
+        }
+    }
 }
 
 fn observation_weight(

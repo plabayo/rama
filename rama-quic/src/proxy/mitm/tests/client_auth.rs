@@ -16,6 +16,7 @@ use rama_crypto::dep::boring::{
         store::{X509Store, X509StoreBuilder},
     },
 };
+use rama_net::address::Domain;
 use rama_quic_proto::Version as QuicVersion;
 use rama_tls::server::TlsServerConfig;
 
@@ -314,7 +315,7 @@ fn mapped_policy(resolved: Arc<AtomicUsize>) -> TlsMitmClientAuthPolicy {
             }
             assert_eq!(
                 input.server_name,
-                Some(Host::Name("localhost".parse().unwrap()))
+                Some(ServerName::from(Domain::from_static("localhost")))
             );
             Ok(
                 TlsMitmClientAuthPlan::new(service_fn(move |identity: TlsMitmClientIdentity| {

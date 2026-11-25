@@ -12,8 +12,9 @@ use jni::{
     objects::{Global, JByteArray, JObject, JThrowable, JValue},
 };
 use rama_core::error::{BoxError, BoxErrorExt as _};
+use rama_net::tls::ServerName;
 
-use super::{PlatformVerifyError, PlatformVerifyErrorKind, name};
+use super::{PlatformVerifyError, PlatformVerifyErrorKind};
 use crate::pki_types::CertificateDer;
 
 /// `id-kp-serverAuth`: a leaf that restricts its extended key usages must
@@ -60,25 +61,12 @@ impl Verifier {
         &self,
         end_entity: &CertificateDer<'_>,
         intermediates: &[CertificateDer<'_>],
-        server_name: &str,
+        server_name: &ServerName,
         ocsp_response: Option<&[u8]>,
         now: SystemTime,
     ) -> Result<Vec<CertificateDer<'static>>, PlatformVerifyError> {
-        // Android's trust manager does not check names: that is done here.
-        match name::leaf_matches(end_entity, server_name) {
-            Some(true) => {}
-            Some(false) => {
-                return Err(PlatformVerifyError::new(
-                    PlatformVerifyErrorKind::NotValidForName,
-                ));
-            }
-            None => {
-                return Err(PlatformVerifyError::new(
-                    PlatformVerifyErrorKind::BadEncoding,
-                ));
-            }
-        }
-
+        let server_name_text = super::server_name_str(server_name);
+        let server_name = server_name_text.as_ref();
         let now_millis: i64 = now
             .duration_since(UNIX_EPOCH)
             .ok()

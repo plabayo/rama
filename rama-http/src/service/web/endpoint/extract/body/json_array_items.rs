@@ -1,8 +1,12 @@
-use std::convert::Infallible;
+use std::future::ready;
 
 use rama_core::stream::json::{ArrayParseConfig, JsonArrayReadStream};
 use rama_http_types::{BodyDataStream, header};
 
+use super::{
+    json::InvalidJsonContentType,
+    json_content_type::{JsonContentTypePolicy, JsonPayload, accepts_json_content_type},
+};
 use crate::{
     Body, Request,
     request::Parts,
@@ -12,13 +16,15 @@ use crate::{
 };
 
 /// Extracts array elements as they arrive, using the request’s [`ArrayParseConfig`] extension when present.
+///
+/// Any `Content-Type` is accepted unless a [`JsonContentTypePolicy`] extension says otherwise.
 pub type JsonArrayItems<T> = JsonArrayReadStream<T, BodyDataStream>;
 
 impl<T> FromRequest for JsonArrayItems<T>
 where
     T: serde::de::DeserializeOwned + Send + Sync + 'static,
 {
-    type Rejection = Infallible;
+    type Rejection = InvalidJsonContentType;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
         let (parts, body) = req.into_parts();
@@ -35,6 +41,9 @@ where
         parts: &Parts,
         body: Body,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send + 'static {
+        if !accepts_json_content_type(parts, JsonPayload::Document, JsonContentTypePolicy::Any) {
+            return ready(Err(InvalidJsonContentType));
+        }
         let config = parts
             .extensions
             .get_ref::<ArrayParseConfig>()
@@ -48,7 +57,7 @@ impl<T> OptionalFromRequest for JsonArrayItems<T>
 where
     T: serde::de::DeserializeOwned + Send + Sync + 'static,
 {
-    type Rejection = Infallible;
+    type Rejection = InvalidJsonContentType;
 
     async fn from_request(req: Request) -> Result<Option<Self>, Self::Rejection> {
         let (parts, body) = req.into_parts();
@@ -83,13 +92,14 @@ where
 }
 #[cfg(test)]
 mod tests {
-    use crate::service::{client::HttpClientExt as _, web::Router};
+    use std::num::NonZeroUsize;
 
-    use super::{ArrayParseConfig, FromRequest, JsonArrayItems};
     use rama_core::stream::StreamExt as _;
     use rama_http_types::StatusCode;
     use serde::{Deserialize, Serialize};
-    use std::num::NonZeroUsize;
+
+    use super::{ArrayParseConfig, FromRequest, JsonArrayItems};
+    use crate::service::{client::HttpClientExt as _, web::Router};
 
     #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
     struct User {

@@ -5,9 +5,9 @@ use rama_core::{
     extensions::ExtensionsRef,
     graceful::{RunCutoff, WeakScope},
     io::{AbortIo, BridgeIo, Io},
+    rt::{IdleActivity, IdleGuard},
 };
 use rama_http_types::proto::capsule::CapsuleType;
-use rama_net::proxy::{IdleActivity, IdleGuard};
 use rama_utils::guard::DropGuard;
 use std::{
     io,

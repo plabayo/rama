@@ -544,7 +544,7 @@ pub(crate) async fn roundtrip_custom_protocol(
         TcpMode::Tls => {
             let config = TlsClientConfig::new()
                 .with_server_verify(ServerVerifyMode::Disable)
-                .with_server_name(Domain::from_static("127.0.0.1").into());
+                .with_server_name(Domain::from_static("127.0.0.1"));
             let connector = TlsConnectorData::try_from(&config).expect("build tls connector data");
             let tls_stream = tls_connect(stream, Some(connector))
                 .await

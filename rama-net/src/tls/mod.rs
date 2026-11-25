@@ -13,3 +13,6 @@ pub use ech::{TargetEchConfig, TargetEchServiceBinding};
 
 mod required;
 pub use required::TlsRequired;
+
+mod server_name;
+pub use server_name::ServerName;

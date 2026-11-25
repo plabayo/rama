@@ -13,6 +13,7 @@ use rama_net::{
     address::{Domain, HostWithPort},
     tls::ApplicationProtocol,
 };
+use rama_utils::macros::nonzero;
 use rand::seq::SliceRandom as _;
 
 use super::resolver::{DnsServiceBindingResolver, ServiceBindingRecord};
@@ -114,7 +115,7 @@ impl HttpsServiceBindings {
 
 /// Default maximum number of HTTPS AliasMode records to follow.
 /// This traversal limit is independent of per-RRset resolver limits.
-pub const DEFAULT_HTTPS_ALIAS_LIMIT: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+pub const DEFAULT_HTTPS_ALIAS_LIMIT: NonZeroUsize = nonzero!(8);
 
 /// Collect a complete SVCB or HTTPS RRset, ordered by increasing priority with
 /// random ordering among equal priorities (including AliasMode records).

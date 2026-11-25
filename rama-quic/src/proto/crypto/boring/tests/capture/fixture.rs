@@ -4,7 +4,7 @@ use super::*;
 use crate::{ClientConfig, profile::replay::tls};
 use rama_core::error::BoxError;
 use rama_crypto::dep::boring::ssl::Padding;
-use rama_net::address::Host;
+use rama_net::tls::ServerName;
 use rama_tls::client::ClientHello;
 use rama_tls_boring::client::BoringClientConfigExt as _;
 use rama_ua::profile::{
@@ -71,7 +71,7 @@ pub(super) fn policy() -> (TlsClientConfig, TlsServerConfig) {
 pub(super) fn prepare_tls(
     policy: &TlsClientConfig,
     options: TlsOptions,
-    peer: &Host,
+    peer: &ServerName,
     capture: &TlsCapture,
 ) -> Result<ClientConfig, BoxError> {
     let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), options);
@@ -82,7 +82,7 @@ pub(super) fn prepare_tls(
 pub(super) fn prepare_with_cache(
     cache: &ClientConfigCache,
     policy: &TlsClientConfig,
-    peer: &Host,
+    peer: &ServerName,
     capture: &TlsCapture,
 ) -> Result<ClientConfig, BoxError> {
     let wire = tls::compile(policy, capture, &mut ProfilePreservationReport::default())?;

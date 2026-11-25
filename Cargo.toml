@@ -167,7 +167,6 @@ mime_guess = { version = "2", default-features = false }
 moka = "0.12"
 ndk-context = "0.1"
 nom = "8.0.0"
-openssl-probe = "0.2"
 opentelemetry = { version = "0.33", default-features = false, features = ["trace", "internal-logs"] }
 opentelemetry-semantic-conventions = { version = "0.33", features = ["semconv_experimental"] }
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "rt-tokio"] }
@@ -887,6 +886,11 @@ required-features = ["http", "tls", "ua-embed-profiles"]
 harness = false
 
 [[bench]]
+name = "ua_profile_connect"
+required-features = ["http", "boring", "quic", "ua-embed-profiles"]
+harness = false
+
+[[bench]]
 name = "http_head_encode"
 required-features = ["http", "net"]
 harness = false
@@ -974,6 +978,12 @@ required-features = ["http-full", "grpc", "unix"]
 harness = false
 
 [[bench]]
+name = "grpc_status"
+path = "benches/grpc_status.rs"
+required-features = ["grpc"]
+harness = false
+
+[[bench]]
 name = "h2_tunnel"
 path = "benches/h2_tunnel.rs"
 required-features = ["http-full"]
@@ -983,6 +993,12 @@ harness = false
 name = "tls_mitm_issue"
 path = "benches/tls_mitm_issue.rs"
 required-features = ["boring", "crypto"]
+harness = false
+
+[[bench]]
+name = "tls_rustls_connect"
+path = "benches/tls_rustls_connect.rs"
+required-features = ["rustls", "aws-lc"]
 harness = false
 
 [[bench]]

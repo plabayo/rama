@@ -378,7 +378,9 @@ pub fn analyze_profile_evidence(
                     }
                     // A matched ECH outer adds no independent capability. Its
                     // effective TLS companion owns transport and resumption.
-                    CapturedSlotKind::TlsOuter | CapturedSlotKind::RuntimeMetadata => (),
+                    CapturedSlotKind::TlsOuter
+                    | CapturedSlotKind::QuicOuterParameters
+                    | CapturedSlotKind::RuntimeMetadata => (),
                 }
             }
         }

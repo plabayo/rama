@@ -1,14 +1,18 @@
 //! Request targets as received and as sent, shared by the HTTP/1, HTTP/2 and HTTP/3 codecs.
 
+use std::net::IpAddr;
+
+use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::{
     HeaderMap, HeaderValue,
-    header::{self, Entry},
+    header::{self, Entry, hop_by_hop::connection_header_names},
 };
 use rama_net::{
     Protocol,
-    address::{Authority, AuthorityRef},
+    address::{Authority, AuthorityRef, HostRef},
     uri::Uri,
 };
+use rama_utils::bytes::trim_ows;
 
 /// A received `:authority`: the URI grammar's reg-name, raw UTF-8 included, but never an empty
 /// host, which no `Host` could name.
@@ -133,9 +137,18 @@ fn set_host(headers: &mut HeaderMap, host: HeaderValue) {
 
 /// The `Host` of an outgoing request, as an encoder may use it.
 pub(crate) enum OutgoingHost<'a> {
+    /// No Host field is present.
     Absent,
-    /// One line without userinfo, parseable as a received authority.
-    Usable(&'a HeaderValue, AuthorityRef<'a>),
+    /// One line without userinfo, parseable as a received authority once its outer
+    /// whitespace is trimmed, as HTTP/2 and HTTP/3 send it.
+    Usable {
+        /// The trimmed value: what is parsed is what is sent.
+        bytes: &'a [u8],
+        /// The backing value, shared when the encoder stores its bytes separately.
+        value: &'a HeaderValue,
+        /// The authority parsed from the trimmed bytes.
+        parsed: AuthorityRef<'a>,
+    },
     /// Unparseable, carrying userinfo, or several lines: never sent next to a URI authority.
     Unusable,
 }
@@ -144,18 +157,60 @@ pub(crate) fn outgoing_host(headers: &HeaderMap) -> OutgoingHost<'_> {
     let mut hosts = headers.get_all(header::HOST).iter();
     match (hosts.next(), hosts.next()) {
         (None, _) => OutgoingHost::Absent,
-        (Some(host), None) => match AuthorityRef::parse(host.as_bytes()) {
-            Ok(parsed) if parsed.userinfo().is_none() => OutgoingHost::Usable(host, parsed),
-            _ => OutgoingHost::Unusable,
-        },
+        (Some(host), None) => {
+            let bytes = trim_ows(host.as_bytes());
+            match AuthorityRef::parse(bytes) {
+                Ok(parsed) if parsed.userinfo().is_none() => OutgoingHost::Usable {
+                    bytes,
+                    value: host,
+                    parsed,
+                },
+                _ => OutgoingHost::Unusable,
+            }
+        }
         _ => OutgoingHost::Unusable,
+    }
+}
+
+pub(crate) fn normalized_outgoing_host(headers: &HeaderMap) -> Option<HeaderValue> {
+    let OutgoingHost::Usable {
+        bytes,
+        value,
+        parsed,
+    } = outgoing_host(headers)
+    else {
+        return None;
+    };
+    if matches!(parsed.host(), HostRef::Address(IpAddr::V6(_))) && bytes.first() != Some(&b'[') {
+        return host_value(parsed, value.is_sensitive());
+    }
+    if bytes.len() == value.as_bytes().len() {
+        return None;
+    }
+    let bytes = Bytes::from(value.clone()).slice_ref(bytes);
+    let mut trimmed = HeaderValue::from_maybe_shared(bytes).ok()?;
+    trimmed.set_sensitive(value.is_sensitive());
+    Some(trimmed)
+}
+
+pub(crate) fn normalize_outgoing_host(headers: &mut HeaderMap) {
+    if let Some(value) = normalized_outgoing_host(headers) {
+        set_host(headers, value);
     }
 }
 
 /// The HTTP/1 form of the H2/H3 rule that one authority reaches the wire: an unusable
 /// `Host` gives way to the URI authority. `false` when there is none to send instead.
 pub(crate) fn repair_outgoing_h1_host(uri: &Uri, headers: &mut HeaderMap) -> bool {
-    if !matches!(outgoing_host(headers), OutgoingHost::Unusable) {
+    normalize_outgoing_host(headers);
+    let nominated = headers.contains_key(header::CONNECTION)
+        && connection_header_names(headers).any(|name| name == header::HOST);
+    if nominated {
+        // The next intermediary would strip a nominated `Host` (RFC 9110 §7.6.1).
+        unnominate_host(headers);
+    }
+    let nominated = nominated && headers.contains_key(header::HOST);
+    if !nominated && !matches!(outgoing_host(headers), OutgoingHost::Unusable) {
         return true;
     }
     let sensitive = headers
@@ -172,6 +227,49 @@ pub(crate) fn repair_outgoing_h1_host(uri: &Uri, headers: &mut HeaderMap) -> boo
         }
         None => false,
     }
+}
+
+/// Removes the `host` option from every `Connection` line, in place, keeping the other options
+/// as spelled; a line left without options is dropped, the others keep their position.
+fn unnominate_host(headers: &mut HeaderMap) {
+    headers.retain_values(header::CONNECTION, |value| {
+        match without_host_option(value) {
+            Some(kept) if kept.is_empty() => false,
+            Some(kept) => {
+                *value = kept;
+                true
+            }
+            None => true,
+        }
+    });
+}
+
+/// `value` without its `host` members, or `None` when it has none.
+fn without_host_option(value: &HeaderValue) -> Option<HeaderValue> {
+    let is_host = |member: &[u8]| trim_ows(member).eq_ignore_ascii_case(b"host");
+    let members = || value.as_bytes().split(|byte| *byte == b',');
+    if !members().any(is_host) {
+        return None;
+    }
+    if !members().any(|member| !is_host(member) && !trim_ows(member).is_empty()) {
+        let mut empty = HeaderValue::from_static("");
+        empty.set_sensitive(value.is_sensitive());
+        return Some(empty);
+    }
+    let mut line = BytesMut::with_capacity(value.len());
+    for (index, member) in members().filter(|member| !is_host(member)).enumerate() {
+        if index > 0 {
+            line.extend_from_slice(b",");
+        }
+        line.extend_from_slice(member);
+    }
+    let line = line.freeze();
+    let line = line.slice_ref(trim_ows(&line));
+    // The kept bytes come from a valid value, so they form one too.
+    let mut kept =
+        HeaderValue::from_maybe_shared(line).unwrap_or_else(|_| HeaderValue::from_static(""));
+    kept.set_sensitive(value.is_sensitive());
+    Some(kept)
 }
 
 /// Whether an outgoing `:authority` takes the `Host` bytes: a `Host` naming another host or port
@@ -197,6 +295,10 @@ fn host_value(authority: AuthorityRef<'_>, sensitive: bool) -> Option<HeaderValu
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
+    use rama_http_types::HeaderName;
+
     use super::*;
 
     /// A `Host` that is the only authority is read with the received grammar too: raw UTF-8
@@ -384,6 +486,49 @@ mod tests {
         normalize_received(&mut uri, &mut headers, false);
         assert!(headers[header::HOST].is_sensitive());
         assert_eq!(headers[header::HOST], "example.com");
+    }
+
+    /// A `Host` option is dropped even without a `Host` line, and a line emptied before a kept
+    /// one is dropped without moving the kept line.
+    #[test]
+    fn host_options_leave_every_connection_line() {
+        for (lines, expected) in [
+            (
+                &[("Connection", "host"), ("X-End", "1")][..],
+                &[("X-End", "1")][..],
+            ),
+            (
+                &[
+                    ("Connection", "Host"),
+                    ("Host", "example.test"),
+                    ("connection", "keep-alive"),
+                ],
+                &[("Host", "example.test"), ("connection", "keep-alive")],
+            ),
+            (
+                &[("Connection", ", Host,, x-hop ,"), ("Host", "example.test")],
+                &[("Connection", ",, x-hop ,"), ("Host", "example.test")],
+            ),
+        ] {
+            let mut headers = HeaderMap::new();
+            for (name, value) in lines {
+                headers.append(
+                    HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                    HeaderValue::from_static(value),
+                );
+            }
+            let uri = Uri::parse("http://example.test/").unwrap();
+            assert!(repair_outgoing_h1_host(&uri, &mut headers));
+            let sent: Vec<_> = headers
+                .ordered_iter()
+                .map(|(name, value)| (name.as_original_str(), value.to_str().unwrap()))
+                .collect();
+            let expected: Vec<_> = expected
+                .iter()
+                .map(|(name, value)| (Cow::Borrowed(*name), *value))
+                .collect();
+            assert_eq!(sent, expected, "{lines:?}");
+        }
     }
 
     #[test]

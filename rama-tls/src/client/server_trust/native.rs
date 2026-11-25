@@ -1,9 +1,16 @@
 use std::{
-    sync::{Arc, LazyLock},
+    hash::{Hash, Hasher},
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
-use rama_core::error::BoxError;
+use rama_core::{
+    error::BoxError,
+    futures::{StreamExt as _, stream::BoxStream},
+};
 use rama_crypto::{native_certs, pki_types::CertificateDer, platform_verifier::PlatformVerifier};
 use rama_utils::macros::generate_set_and_with;
 
@@ -15,8 +22,49 @@ use crate::client::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct NativeTrustState {
-    reload: Option<NativeTrustReload>,
+    reload: Option<Reload>,
     max_age: Option<Duration>,
+}
+
+/// A reload controller and the number of trigger events it consumed.
+#[derive(Debug, Clone)]
+struct Reload {
+    controller: NativeTrustReload,
+    events: Arc<AtomicU64>,
+}
+
+impl Reload {
+    fn new(scope: NativeTrustScope, trigger: Option<BoxStream<'static, ()>>) -> Self {
+        let events = Arc::new(AtomicU64::new(0));
+        let counted = events.clone();
+        // Counting at the source sees every event, including those coalesced into one refresh.
+        let trigger = trigger.map(|trigger| {
+            trigger
+                .inspect(move |()| {
+                    counted.fetch_add(1, Ordering::Relaxed);
+                })
+                .boxed()
+        });
+        Self {
+            controller: NativeTrustReload::new(scope, trigger),
+            events,
+        }
+    }
+}
+
+// The event counter belongs to its controller, which alone identifies the policy.
+impl PartialEq for Reload {
+    fn eq(&self, other: &Self) -> bool {
+        self.controller == other.controller
+    }
+}
+
+impl Eq for Reload {}
+
+impl Hash for Reload {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.controller.hash(state);
+    }
 }
 
 impl NativeTrustState {
@@ -30,7 +78,7 @@ impl NativeTrustState {
         scope: NativeTrustScope,
         trigger: impl IntoNativeTrustReloadTrigger<T>,
     ) {
-        self.reload = Some(NativeTrustReload::new(
+        self.reload = Some(Reload::new(
             scope,
             Some(Box::pin(trigger.into_reload_stream())),
         ));
@@ -39,12 +87,12 @@ impl NativeTrustState {
     fn set_max_age(&mut self, scope: NativeTrustScope, max_age: Option<Duration>) {
         self.max_age = max_age;
         if max_age.is_some() && self.reload.is_none() {
-            self.reload = Some(NativeTrustReload::new(scope, None));
+            self.reload = Some(Reload::new(scope, None));
         } else if max_age.is_none()
             && self
                 .reload
                 .as_ref()
-                .is_some_and(|reload| !reload.has_trigger())
+                .is_some_and(|reload| !reload.controller.has_trigger())
         {
             self.reload = None;
         }
@@ -89,6 +137,9 @@ impl PlatformTrustPolicy {
         /// On targets without an operating system verifier, refresh the full
         /// native store. A trigger stream requests a refresh and the platform
         /// decides which roots the policy reloads.
+        ///
+        /// With an operating system verifier, every event also ends resumption
+        /// of earlier TLS sessions, since system trust may have changed.
         pub fn reload_trigger<T>(mut self, trigger: impl IntoNativeTrustReloadTrigger<T>) -> Self {
             self.state.set_trigger(Self::SCOPE, trigger);
             self
@@ -129,7 +180,7 @@ pub fn server_trust_anchors(
     if let Some(state) = native_state(source)
         && let Some(reload) = &state.reload
     {
-        return reload.pin(state.max_age);
+        return reload.controller.pin(state.max_age);
     }
     Ok(static_trust_anchors(source))
 }
@@ -144,7 +195,7 @@ pub async fn server_trust_anchors_async(
     if let Some(state) = native_state(source)
         && let Some(reload) = &state.reload
     {
-        return reload.pin_async(state.max_age).await;
+        return reload.controller.pin_async(state.max_age).await;
     }
     match source {
         ServerTrustSource::Platform(_) if PlatformVerifier::IS_AVAILABLE => {
@@ -157,6 +208,33 @@ pub async fn server_trust_anchors_async(
             Ok(static_trust_anchors(source))
         }
     }
+}
+
+/// The reloaded anchors of `source` when they can be pinned without a trust-store read.
+pub(super) fn ready_trust_anchors(
+    source: &ServerTrustSource,
+) -> Option<Arc<[CertificateDer<'static>]>> {
+    let state = native_state(source)?;
+    state.reload.as_ref()?.controller.pin_ready(state.max_age)
+}
+
+/// Whether a reload policy applies to `source`.
+pub(super) fn is_reloadable(source: &ServerTrustSource) -> bool {
+    native_state(source).is_some_and(|state| state.reload.is_some())
+}
+
+/// Whether a reload trigger can still report trust changes for `source`.
+pub(super) fn has_reload_trigger(source: &ServerTrustSource) -> bool {
+    native_state(source)
+        .and_then(|state| state.reload.as_ref())
+        .is_some_and(|reload| reload.controller.has_live_trigger())
+}
+
+/// Trigger events consumed so far by the reload policy of `source`.
+pub(super) fn trigger_events(source: &ServerTrustSource) -> u64 {
+    native_state(source)
+        .and_then(|state| state.reload.as_ref())
+        .map_or(0, |reload| reload.events.load(Ordering::Relaxed))
 }
 
 fn native_state(source: &ServerTrustSource) -> Option<&NativeTrustState> {

@@ -332,10 +332,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::{Cli, CliCommands, cmd::ua::UaSubcommand};
+    use clap::Parser as _;
     use rama::ua::profile::{
         capture::{
             CAPTURE_REVISION,
             completeness::ProfileCaptureCompleteness,
+            http2::{H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting},
             joint::{
                 CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
             },
@@ -356,10 +359,6 @@ mod tests {
     };
     #[test]
     fn cli_requires_one_explicit_comparison_mode() {
-        use crate::cmd::ua::UaSubcommand;
-        use crate::{Cli, CliCommands};
-        use clap::Parser as _;
-
         for (flag, mode) in [
             ("--literal", ComparisonMode::Literal),
             ("--replay", ComparisonMode::Replay),
@@ -404,9 +403,6 @@ mod tests {
     }
     #[test]
     fn replay_mode_uses_the_same_coverage_gate_and_reports_its_exclusions() {
-        use rama::ua::profile::capture::http2::{
-            H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting,
-        };
         let archive = |ack| {
             let mut frames = vec![H2CapturedFrame::Settings {
                 ack: false,

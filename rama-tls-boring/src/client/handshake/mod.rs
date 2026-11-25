@@ -6,13 +6,13 @@
 
 use std::fmt;
 
-use rama_boring::ssl::Ssl;
+use rama_boring::ssl::{NameType, Ssl};
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
     io::Io,
 };
-use rama_net::address::Host;
+use rama_net::tls::ServerName;
 use rama_tls::client::ClientHandshake;
 
 use super::{TlsConnectError, TlsConnectorData};
@@ -25,7 +25,7 @@ use crate::TlsStream;
 /// Consuming this value starts exactly one handshake with that configuration.
 pub struct PreparedClient {
     ssl: Ssl,
-    server_name: Option<Host>,
+    server_name: Option<ServerName>,
     ech_required: bool,
 }
 
@@ -73,7 +73,17 @@ impl PreparedClient {
         let stream = rama_boring_tokio::SslStreamBuilder::new(ssl, stream)
             .connect()
             .await
-            .map_err(|error| TlsConnectError::Handshake { error, server_name })?;
+            .map_err(|error| {
+                let outgoing_sni = error
+                    .ssl()
+                    .and_then(|ssl| ssl.servername(NameType::HOST_NAME))
+                    .and_then(ServerName::parse);
+                TlsConnectError::Handshake {
+                    error,
+                    server_name,
+                    outgoing_sni,
+                }
+            })?;
         let accepted = stream.ssl().ech_accepted();
         if ech_required && !accepted {
             return Err(TlsConnectError::Builder(BoxError::from_static_str(

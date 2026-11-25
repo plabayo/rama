@@ -33,27 +33,30 @@
 //! without a retry or disk spill. Replay is also skipped if capture takes
 //! longer than 30 seconds or storage fails. Source errors reach the first reader.
 //!
-//! If the first attempt drops an unfinished body and the policy requests a
-//! retry, this layer drains the remaining frames before the next attempt.
-//! A read error, capture failure, or expired deadline during this handoff
-//! returns the first attempt's policy-supplied result. If the inner service
-//! retains the unfinished reader, the layer returns its result immediately
-//! and skips the retry decision so that reader can continue streaming.
+//! The policy classifies every attempt it holds a cloned request for, even when
+//! the replay became unavailable; a retry then returns its fallback result.
+//! When it requests a retry while the first reader is still alive, this layer
+//! waits up to the store's handoff timeout (within the capture deadline) for
+//! that reader to finish or be dropped, then drains the remaining frames
+//! before the next attempt.
+//! A read error, capture failure, or expired timeout during this handoff
+//! returns the first attempt's policy-supplied result, and a live reader keeps streaming.
 //!
 //! [`follow_redirect`](crate::layer::follow_redirect) follows the same rules for redirect hops. Keep
 //! that middleware outside this one, so a retry replays one hop instead of the entire chain.
+
+use rama_core::{
+    Service,
+    bytes::{Buf as _, Bytes},
+    error::BoxError,
+    extensions::ExtensionsRef,
+};
+use rama_utils::macros::define_inner_service_accessors;
 
 use crate::{
     Body, Request, StreamingBody,
     body::util::{BodyExt as _, Full, combinators::UnsyncBoxBody},
 };
-use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsRef;
-use rama_core::{
-    Service,
-    bytes::{Buf as _, Bytes},
-};
-use rama_utils::macros::define_inner_service_accessors;
 
 mod layer;
 mod policy;
@@ -73,8 +76,10 @@ mod preparation_tests;
 #[cfg(test)]
 mod tests;
 
-pub use self::layer::RetryLayer;
-pub use self::policy::{Policy, PolicyResult};
+pub use self::{
+    layer::RetryLayer,
+    policy::{Policy, PolicyResult},
+};
 
 /// Configure retrying requests of "failed" responses.
 ///
@@ -165,10 +170,8 @@ where
             let Some(cloned) = candidate.take() else {
                 break result;
             };
-            if let Some(capture) = &capture
-                && !capture.allow_replay_after_attempt()
-            {
-                break result;
+            if let Some(capture) = &capture {
+                capture.attempt_returned();
             }
             let (mut next, fallback) = match self.policy.retry(cloned, result).await {
                 PolicyResult::Abort(result) => break result,
@@ -229,7 +232,19 @@ where
             return (RetryBody::new(bytes), None);
         }
     }
-    let (live, capture) = tee::capture(box_source(body), hint, store.start(), max_bytes, timeout);
+    let mut expected = hint;
+    if let Some(upper) = hint.upper() {
+        expected.set_upper(upper.min(max_bytes));
+    }
+    let writer = store.start(&expected);
+    let (live, capture) = tee::capture(
+        box_source(body),
+        hint,
+        writer,
+        max_bytes,
+        timeout,
+        store.handoff_timeout(),
+    );
     (live, Some(capture))
 }
 
@@ -269,14 +284,16 @@ async fn ready_for_retry(capture: Option<tee::Capture>, next: &mut RetryBody) ->
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::{
-        BodyExtractExt, Response, StatusCode,
-        body::{CollectOptions, SizeHint},
-        layer::retry::managed::DoNotRetry,
-        request::Parts,
-        service::web::response::IntoResponse,
+    use std::{
+        future::ready,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
     };
+
+    use parking_lot::Mutex;
     use rama_core::{
         Layer,
         error::BoxErrorExt,
@@ -284,12 +301,15 @@ mod test {
         service::service_fn,
     };
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
-    use std::{
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-        time::Duration,
+    use storage::MemoryReplay;
+
+    use super::*;
+    use crate::{
+        BodyExtractExt, HeaderMap, HeaderName, HeaderValue, Response, StatusCode,
+        body::{CollectOptions, SizeHint},
+        layer::retry::managed::DoNotRetry,
+        request::Parts,
+        service::web::response::IntoResponse,
     };
 
     #[tokio::test]
@@ -539,6 +559,14 @@ mod test {
                 Some(CollectOptions::new())
             }
 
+            fn replay_store(&self, _: &Parts) -> &dyn storage::ReplayStore {
+                &MemoryReplay::DEFAULT
+            }
+
+            async fn next_attempt(&self) -> bool {
+                true
+            }
+
             async fn retry(
                 &self,
                 req: Request<RetryBody>,
@@ -600,5 +628,125 @@ mod test {
             3
         );
         assert!(!caller_extensions.contains::<AttemptOnly>());
+    }
+
+    #[tokio::test]
+    async fn attempts_resolve_caller_connection_facts_but_not_previous_attempt_ones() {
+        #[derive(Debug, Extension)]
+        #[extension(scope(connection))]
+        struct CallerConnection;
+
+        #[derive(Debug, Extension)]
+        #[extension(scope(connection))]
+        struct AttemptConnection;
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner_attempts = attempts.clone();
+        let service = RetryLayer::new(ManagedPolicy::default()).into_layer(service_fn(
+            move |req: Request<RetryBody>| {
+                let attempt = inner_attempts.fetch_add(1, Ordering::SeqCst);
+                // A plain fork per attempt: the caller's connection stays visible,
+                // the connection an earlier attempt used does not.
+                assert!(req.extensions().contains::<CallerConnection>());
+                assert!(!req.extensions().contains::<AttemptConnection>());
+                req.extensions().insert(AttemptConnection);
+                let status = if attempt == 0 {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::OK
+                };
+                async move { Ok::<_, BoxError>(status.into_response()) }
+            },
+        ));
+
+        let request: Request = Request::builder().body("x".into()).unwrap();
+        request.extensions().insert(CallerConnection);
+        let caller_extensions = request.extensions().clone();
+        assert_eq!(
+            service.serve(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(!caller_extensions.contains::<AttemptConnection>());
+    }
+
+    #[tokio::test]
+    async fn replayed_attempts_keep_header_order_casing_and_reserved_slots() {
+        fn ordered(headers: &HeaderMap) -> Vec<(Box<str>, HeaderValue)> {
+            headers
+                .ordered_iter()
+                .map(|(name, value)| (name.as_original_str().into(), value.clone()))
+                .collect()
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let policy = ManagedPolicy::new(
+            |mut req: Request<RetryBody>, result: Result<Response, BoxError>| {
+                let retry = matches!(&result, Ok(res) if res.status().is_server_error());
+                // A rewritten value keeps the slot of the field it replaces.
+                req.headers_mut().insert(
+                    HeaderName::from_bytes(b"X-Attempt").unwrap(),
+                    HeaderValue::from_static("2"),
+                );
+                ready((req, result, retry))
+            },
+        );
+        let service = RetryLayer::new(policy).into_layer(service_fn({
+            let seen = seen.clone();
+            move |mut req: Request<RetryBody>| {
+                // Claims the slot the caller reserved before `accept`.
+                req.headers_mut().insert(
+                    HeaderName::from_static("x-late"),
+                    HeaderValue::from_static("1"),
+                );
+                let mut seen = seen.lock();
+                seen.push(ordered(req.headers()));
+                let status = if seen.len() == 1 {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::OK
+                };
+                async move { Ok::<_, BoxError>(status.into_response()) }
+            }
+        }));
+
+        let mut request: Request = Request::builder().body("x".into()).unwrap();
+        let headers = request.headers_mut();
+        headers.insert(
+            HeaderName::from_bytes(b"X-Zeta").unwrap(),
+            HeaderValue::from_static("z"),
+        );
+        headers.insert(
+            HeaderName::from_bytes(b"X-Attempt").unwrap(),
+            HeaderValue::from_static("1"),
+        );
+        headers.reserve_position(HeaderName::from_static("x-late"));
+        headers.insert(
+            HeaderName::from_bytes(b"ACCEPT").unwrap(),
+            HeaderValue::from_static("*/*"),
+        );
+        headers.append(
+            HeaderName::from_bytes(b"x-zeta").unwrap(),
+            HeaderValue::from_static("zz"),
+        );
+
+        assert_eq!(
+            service.serve(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let seen = seen.lock();
+        let expected = |attempt: &'static str| -> Vec<(Box<str>, HeaderValue)> {
+            [
+                ("X-Zeta", "z"),
+                ("X-Attempt", attempt),
+                ("x-late", "1"),
+                ("ACCEPT", "*/*"),
+                ("x-zeta", "zz"),
+            ]
+            .into_iter()
+            .map(|(name, value)| (name.into(), HeaderValue::from_static(value)))
+            .collect()
+        };
+        assert_eq!(seen.as_slice(), [expected("1"), expected("2")]);
     }
 }

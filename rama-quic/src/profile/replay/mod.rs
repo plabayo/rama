@@ -7,10 +7,11 @@
 //! TLS session and connection I/O; it never receives a counted profile.
 //!
 //! Supply the same fixed policy and provider to the compiler and native connector.
-//! Current request overrides retain their ordinary precedence. The common UA
+//! The profile inserts its settings when it prepares a connection, so a setting
+//! inserted after that wins and an earlier one is replaced. The common UA
 //! modifier applies admitted HTTP settings before connecting and publishes profile
 //! facts only after its inner connector succeeds. Its context check is at that
-//! boundary; this compiler introduces no native callback or generated-hello check.
+//! boundary; a connection-scoped recipe adapts its offer to final endpoint ECH.
 //!
 //! The ticket namespace combines the stable profile identity with the caller's
 //! scope, independently of each connection draw. A private UA marker shares the
@@ -28,44 +29,44 @@ pub(in crate::profile) mod transport;
 
 use std::sync::Arc;
 
-use crate::tls::QuicClientConfigProvider;
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
 };
+#[cfg(feature = "boring")]
+use rama_net::tls::ServerName;
 use rama_net::{AuthorityInputExt, ProtocolInputExt};
 use rama_quic_proto::profile::{InitialFlightLayout, QuicProfile};
-use rama_tls::client::{TlsClientConfig, TlsDerivedPolicy};
+use rama_tls::client::{TlsClientConfig, TlsClientSni, TlsDerivedPolicy, TlsProfilePreparation};
 use rama_ua::profile::{
     capture::joint::CapturedSlotKind,
     replay::connection::{
         PreparedConnectionComponents,
         compiler::{
             CompiledConnectionProfile, ConnectionProfileCompiler as Compiler,
-            InstalledConnectionProfile,
+            ConnectionProfileInput, InstalledConnectionProfile,
         },
+        preparation::ConnectionPreparation,
     },
     selection::variants::ConnectionSelection,
 };
-
 #[cfg(feature = "boring")]
 use {
     crate::tls::BoringTlsProvider,
     rama_core::{extensions::Extension, telemetry::tracing},
-    rama_net::{
-        address::Host,
-        tls::{ApplicationProtocol, TlsAlpn},
-    },
+    rama_net::tls::{ApplicationProtocol, TlsAlpn},
     rama_tls::{
         alpn::required_alpn_override,
         client::{
-            TlsClientConfigProvider as _, TlsConnectionReuse, TlsServerName, TlsSessionProfileScope,
+            TlsClientConfigProvider as _, TlsConnectionReuse, TlsSessionProfileScope,
+            target_ech_ready,
         },
     },
+    rama_tls_boring::client::profile::wire,
     rama_ua::{
         TlsAgent, UserAgent,
         profile::{
-            capture::tls::{TlsCaptureTransport, TlsCapturedExtensionValue},
+            capture::tls::TlsCaptureTransport,
             replay::request::{
                 LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport,
             },
@@ -74,10 +75,13 @@ use {
     rama_utils::fmt::hex,
 };
 
+use crate::tls::QuicClientConfigProvider;
+
 /// Register with the outer UA connect modifier around a native QUIC connector.
 ///
-/// Supply the same fixed TLS policy and provider as that connector. Request
-/// overrides retain their normal precedence. Compile once for each connection
+/// Supply the same fixed TLS policy and provider as that connector. The profile
+/// inserts its settings when it prepares a connection, so a setting inserted
+/// after that wins and an earlier one is replaced. Compile once for each connection
 /// input; use a fresh input to select a different native recipe. Captured TLS
 /// currently requires BoringSSL; other providers report unsupported components
 /// during admission.
@@ -102,19 +106,8 @@ where
     fn ech_ready(&self, input: &Input) -> bool {
         #[cfg(feature = "boring")]
         {
-            if self.provider.pool_classifier() != BoringTlsProvider::new().pool_classifier()
-                || input
-                    .target_protocol()
-                    .is_none_or(|protocol| !protocol.is_secure())
-            {
-                return false;
-            }
-            let Some(target) = rama_net::ConnectorTargetInputExt::connector_target(input) else {
-                return false;
-            };
-            let effective = input.extensions().with_base(self.policy.as_extensions());
-            rama_tls::client::resolve_target_ech(&effective, &target, true)
-                .is_ok_and(|resolution| resolution.config.is_some())
+            self.provider.pool_classifier() == BoringTlsProvider::new().pool_classifier()
+                && target_ech_ready(input, self.policy.as_extensions())
         }
         #[cfg(not(feature = "boring"))]
         {
@@ -129,15 +122,82 @@ where
         selection: &ConnectionSelection,
         components: &mut PreparedConnectionComponents,
     ) -> Result<CompiledConnection, BoxError> {
-        if components.tls_outer.is_some() {
-            if !self.ech_ready(input) {
-                return Err(BoxError::from_static_str(
-                    "matched ECH profile needs an enabled endpoint configuration",
-                ));
-            }
-            components.use_ech_outer_for_replay()?;
+        #[cfg(feature = "boring")]
+        let captured_policy = if selection.ech_ready {
+            components.tls.as_ref().map(wire::captured_sni_policy)
+        } else {
+            None
+        };
+        #[cfg(not(feature = "boring"))]
+        let captured_policy = None;
+        components.use_ech_outer_for_replay(selection.ech_ready)?;
+        let mut compiled = self.compile_recipe(input, selection, components, captured_policy)?;
+        if let Some(native) = &mut compiled.native {
+            let original = ConnectionProfileInput::new(input);
+            let selection = selection.clone();
+            let compiler = self.clone();
+            #[cfg(feature = "boring")]
+            let early_facts = {
+                let facts = Extensions::new();
+                facts.insert(selection.clone());
+                facts.insert(components.preservation_report.clone());
+                facts
+            };
+            native.profile = Some(TlsProfilePreparation::new(
+                move |resolution, effective, request| {
+                    #[cfg(feature = "boring")]
+                    if selection.ech_ready == resolution.config.is_some() {
+                        if let Some(report) = request.get_arc::<ProfilePreservationReport>() {
+                            let facts = Extensions::new();
+                            facts.insert(selection.clone());
+                            facts.insert_arc(report);
+                            return Ok(facts);
+                        }
+                        return Ok(early_facts.clone());
+                    }
+                    let input = ConnectionProfileInput::new(&original);
+                    let selected =
+                        input.selection_for_ech(&selection, resolution.config.is_some())?;
+                    let (components, compiled) =
+                        selected.prepare_for_replay_with(|components| {
+                            #[cfg(feature = "boring")]
+                            let captured = selected
+                                .ech_ready
+                                .then(|| components.tls.as_ref().map(wire::captured_sni_policy))
+                                .flatten();
+                            #[cfg(not(feature = "boring"))]
+                            let captured = None;
+                            components.use_ech_outer_for_replay(selected.ech_ready)?;
+                            compiler.compile_recipe(&input, &selected, components, captured)
+                        })?;
+                    let native = compiled.native.ok_or_else(|| {
+                        BoxError::from_static_str("drawn QUIC offer cannot be prepared")
+                    })?;
+                    native.tls.write_to(effective);
+                    native.tls.write_to(request);
+                    if let Some(transport) = native.transport {
+                        request.insert_arc(transport);
+                    }
+                    effective.insert(native.reuse.clone());
+                    request.insert(native.reuse);
+                    #[cfg(feature = "boring")]
+                    {
+                        effective.insert(native.scope.clone());
+                        request.insert(native.scope);
+                    }
+                    let report = ConnectionPreparation::apply_reprepared_http(
+                        selected.clone(),
+                        components,
+                        request,
+                    )?;
+                    let facts = Extensions::new();
+                    facts.insert(selected);
+                    facts.insert(report);
+                    Ok(facts)
+                },
+            ));
         }
-        self.compile_recipe(input, selection, components)
+        Ok(compiled)
     }
 }
 
@@ -157,8 +217,9 @@ pub struct CompiledConnection {
 #[derive(Debug)]
 struct CompiledQuic {
     tls: TlsClientConfig,
-    transport: Option<QuicProfile>,
+    transport: Option<Arc<QuicProfile>>,
     reuse: TlsDerivedPolicy,
+    profile: Option<TlsProfilePreparation>,
     #[cfg(feature = "boring")]
     scope: AppliedSessionScope,
 }
@@ -168,7 +229,7 @@ struct CompiledQuic {
 // share their existing storage; no native session or copied settings are kept.
 #[cfg(feature = "boring")]
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(ua))]
+#[extension(tags(ua), scope(connection))]
 struct AppliedSessionScope {
     caller: Option<Arc<TlsSessionProfileScope>>,
     installed: Arc<TlsSessionProfileScope>,
@@ -196,9 +257,9 @@ impl CompiledConnectionProfile for CompiledConnection {
                     InitialFlightLayout::Recorded(_)
                 )
             }),
-            CapturedSlotKind::QuicParameters | CapturedSlotKind::QuicVersions => {
-                native.transport.is_some()
-            }
+            CapturedSlotKind::QuicParameters
+            | CapturedSlotKind::QuicOuterParameters
+            | CapturedSlotKind::QuicVersions => native.transport.is_some(),
             _ => false,
         }
     }
@@ -214,9 +275,12 @@ impl<Input> InstalledConnectionProfile<Input> for CompiledConnection {
         if let Some(native) = self.native {
             native.tls.write_to(extensions);
             if let Some(transport) = native.transport {
-                extensions.insert(transport);
+                extensions.insert_arc(transport);
             }
             extensions.insert(native.reuse);
+            if let Some(profile) = native.profile {
+                extensions.insert(profile);
+            }
             #[cfg(feature = "boring")]
             extensions.insert(native.scope);
         }
@@ -230,6 +294,7 @@ impl ConnectionProfileCompiler {
         _input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
         _selection: &ConnectionSelection,
         _components: &mut PreparedConnectionComponents,
+        _captured_policy: Option<TlsClientSni>,
     ) -> Result<CompiledConnection, BoxError> {
         let _ = (&self.policy, &self.provider);
         Ok(CompiledConnection {
@@ -244,13 +309,14 @@ impl ConnectionProfileCompiler {
         input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
         selection: &ConnectionSelection,
         components: &mut PreparedConnectionComponents,
+        captured_policy: Option<TlsClientSni>,
     ) -> Result<CompiledConnection, BoxError> {
         let unsupported = || CompiledConnection {
             native: None,
             caller_tls_transport: None,
         };
         if components.tls.is_none() && caller_keeps_tls(input.extensions()) {
-            return caller_tls_transport(input.extensions(), components);
+            return caller_tls_transport(components);
         }
         if self.provider.pool_classifier() != BoringTlsProvider::new().pool_classifier() {
             return Ok(unsupported());
@@ -280,37 +346,45 @@ impl ConnectionProfileCompiler {
             )
         });
         let policy = self.policy.clone().with_overrides(input.extensions());
-        let identity = policy
-            .as_extensions()
-            .get_ref::<TlsServerName>()
-            .map_or(&authority.host, |name| &name.0);
-        let captured_sni = capture.extensions.iter().any(|extension| {
-            matches!(
-                extension.value,
-                TlsCapturedExtensionValue::ServerName { present: true }
-            )
-        });
+        let captured_policy =
+            captured_policy.unwrap_or_else(|| wire::captured_sni_policy(&capture));
+        let captured_sni = captured_policy != TlsClientSni::Disabled;
         let report = &mut components.preservation_report;
-        if captured_sni != matches!(identity, Host::Name(_)) {
+        let sni_policy = policy
+            .as_extensions()
+            .get_ref::<TlsClientSni>()
+            .copied()
+            .unwrap_or(captured_policy);
+        let sends_sni = match policy.as_extensions().get_ref::<ServerName>() {
+            Some(name) => sni_policy.sends(name),
+            None => sni_policy.sends(&ServerName::try_from(&authority.host)?),
+        };
+        if captured_sni != sends_sni {
             // SNI presence follows the destination identity.
             lower(report, LoweredProfileItem::TlsServerNamePresence);
         }
-        let transport = compile_transport(input.extensions(), components, true)?;
+        let transport = compile_transport(components, true, selection.ech_ready)?.map(Arc::new);
         let report = &mut components.preservation_report;
         let mut wire = tls::compile(&policy, &capture, report)?;
-        if let Some(caller) = &caller_alpn {
-            let captured = wire.as_extensions().get_ref::<TlsAlpn>();
-            if captured.is_none_or(|captured| {
-                !caller
-                    .0
-                    .iter()
-                    .map(ApplicationProtocol::as_bytes)
-                    .eq(captured.0.iter().map(ApplicationProtocol::as_bytes))
-            }) {
-                lower(report, LoweredProfileItem::CallerTlsAlpn);
-                wire.set_alpn(caller.0.clone());
-            }
+        let caller_alpn_differs = caller_alpn.as_ref().is_some_and(|caller| {
+            wire.as_extensions()
+                .get_ref::<TlsAlpn>()
+                .is_none_or(|captured| {
+                    !caller
+                        .0
+                        .iter()
+                        .map(ApplicationProtocol::as_bytes)
+                        .eq(captured.0.iter().map(ApplicationProtocol::as_bytes))
+                })
+        });
+        wire.set_sni_policy(sni_policy);
+        if caller_alpn_differs {
+            lower(report, LoweredProfileItem::CallerTlsAlpn);
         }
+        if let Some(caller) = caller_alpn {
+            wire.set_alpn(caller.0);
+        }
+        wire::narrow_alps(&wire);
         let current_scope = policy.as_extensions().get_arc::<TlsSessionProfileScope>();
         let caller_scope = match input.extensions().get_ref::<AppliedSessionScope>() {
             Some(previous)
@@ -349,6 +423,7 @@ impl ConnectionProfileCompiler {
                 tls: wire,
                 transport,
                 reuse,
+                profile: None,
                 scope: AppliedSessionScope {
                     caller: caller_scope,
                     installed,
@@ -371,43 +446,163 @@ fn caller_keeps_tls(extensions: &Extensions) -> bool {
 /// packets, so the recorded layout is left out and admission reports the flight.
 #[cfg(feature = "boring")]
 fn caller_tls_transport(
-    extensions: &Extensions,
     components: &mut PreparedConnectionComponents,
 ) -> Result<CompiledConnection, BoxError> {
     Ok(CompiledConnection {
         native: None,
-        caller_tls_transport: compile_transport(extensions, components, false)?,
+        caller_tls_transport: compile_transport(components, false, false)?,
     })
 }
 
-/// Compile the captured parameter tuple unless the caller installed its own transport.
+/// Compile the captured parameter tuple.
 #[cfg(feature = "boring")]
 fn compile_transport(
-    extensions: &Extensions,
     components: &mut PreparedConnectionComponents,
     recorded_layout: bool,
+    ech: bool,
 ) -> Result<Option<QuicProfile>, BoxError> {
     let flight = components.quic_first_flight.take();
-    let transport = match components.quic_parameters.take() {
+    let outer_parameters = components.quic_outer_parameters.take();
+    let distinct_outer = outer_parameters.is_some();
+    if distinct_outer
+        || ech
+            && flight
+                .as_ref()
+                .zip(components.quic_parameters.as_ref())
+                .is_some_and(|(flight, parameters)| {
+                    !flight
+                        .flight
+                        .parameters
+                        .iter()
+                        .copied()
+                        .map(u64::from)
+                        .eq(parameters.fields.iter().map(|field| field.id))
+                })
+    {
+        lower(
+            &mut components.preservation_report,
+            LoweredProfileItem::QuicEchOuterParameters,
+        );
+    }
+    let parameters = components.quic_parameters.take();
+    let transport = match &parameters {
         Some(parameters) => transport::prepare(
-            &parameters,
+            parameters,
             components.quic_versions.take().as_ref(),
             flight.as_ref(),
-            recorded_layout,
+            recorded_layout && !distinct_outer,
+            ech || distinct_outer,
         )?,
         None => None,
     };
-    if transport.as_ref().is_some_and(|transport| {
-        extensions
-            .get_ref::<QuicProfile>()
-            .is_some_and(|caller| caller != transport)
-    }) {
-        // The caller's transport profile stays installed.
-        lower(
-            &mut components.preservation_report,
-            LoweredProfileItem::CallerQuicProfile,
-        );
-        return Ok(None);
+    if transport.is_some()
+        && !ech
+        && let Some(outer) = &outer_parameters
+        && let Some(parameters) = &parameters
+    {
+        for field in &parameters.fields {
+            if !outer.fields.iter().any(|captured| captured.id == field.id) {
+                lower(
+                    &mut components.preservation_report,
+                    LoweredProfileItem::QuicAddedTransportParameter {
+                        parameter: field.id,
+                    },
+                );
+            }
+        }
     }
     Ok(transport)
+}
+
+#[cfg(all(test, feature = "boring"))]
+mod tests {
+    use rama_core::extensions::NoExtensionsTransfer;
+    use rama_quic_proto::{
+        Version, transport_parameters::TransportParameterId, version::VersionInformation,
+    };
+    use rama_ua::profile::capture::{
+        completeness::ProfileCaptureCompleteness,
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+    };
+
+    use super::*;
+
+    #[test]
+    fn applied_session_scope_stops_at_child_connections() {
+        let extensions = Extensions::new();
+        extensions.insert(AppliedSessionScope {
+            caller: None,
+            installed: Arc::new(TlsSessionProfileScope("profile".into())),
+        });
+        assert!(has_captured_tls(&extensions.fork()));
+        assert!(!has_captured_tls(
+            &extensions.fork_connection(&NoExtensionsTransfer::new())
+        ));
+    }
+
+    #[test]
+    fn a_clear_offer_reports_each_parameter_added_to_the_captured_outer() {
+        let mut information = Vec::new();
+        VersionInformation::new(Version::V2, vec![Version::V2]).write(&mut information);
+        let limits = OrderCaptureLimits::default();
+        let outer = OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            OrderNamespace::QuicParameter,
+            [
+                (
+                    u64::from(TransportParameterId::InitialSourceConnectionId),
+                    &[][..],
+                ),
+                (
+                    u64::from(TransportParameterId::VersionInformation),
+                    information.as_slice(),
+                ),
+            ],
+            limits,
+        )
+        .unwrap();
+        let mut parameters = outer.clone();
+        let extra = OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            OrderNamespace::QuicParameter,
+            [(u64::from(TransportParameterId::InitialMaxData), &[1][..])],
+            limits,
+        )
+        .unwrap();
+        parameters.fields = parameters
+            .fields
+            .into_vec()
+            .into_iter()
+            .chain(extra.fields)
+            .collect();
+        let mut components = PreparedConnectionComponents {
+            tls: None,
+            tls_outer: None,
+            quic_parameters: Some(parameters),
+            quic_outer_parameters: Some(outer),
+            h3_peer_settings: None,
+            h3_settings_evidence: None,
+            quic_versions: None,
+            h2_early_frames: None,
+            quic_first_flight: None,
+            h3_sequence: None,
+            h3_bootstrap: None,
+            preservation_report: ProfilePreservationReport::default(),
+        };
+        let profile = compile_transport(&mut components, false, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(profile.versions().original(), Version::V2);
+        let added = components
+            .preservation_report
+            .differences
+            .iter()
+            .filter_map(|difference| match difference {
+                ProfilePreservationDifference::LoweredProfileItem {
+                    item: LoweredProfileItem::QuicAddedTransportParameter { parameter },
+                } => Some(*parameter),
+                _ => None,
+            });
+        assert!(added.eq([u64::from(TransportParameterId::InitialMaxData)]));
+    }
 }

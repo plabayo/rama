@@ -65,7 +65,7 @@ impl CaptureLevel {
 pub enum CapturedSlotKind {
     /// Request header names, order and capture-safe value bindings.
     Headers,
-    /// Ordered QUIC transport parameters offered by the client.
+    /// Ordered effective QUIC parameters, from the inner when ECH is accepted.
     QuicParameters,
     /// HTTP/3 SETTINGS sent on the client's control stream.
     Http3Settings,
@@ -91,6 +91,8 @@ pub enum CapturedSlotKind {
     Http3Bootstrap,
     /// Wire outer paired with the effective inner in the TLS slot of this connection.
     TlsOuter,
+    /// Wire outer parameters when ECH carries a different effective parameter tuple.
+    QuicOuterParameters,
 }
 
 impl CapturedSlotKind {
@@ -116,6 +118,7 @@ impl CapturedSlotKind {
             Self::LegacyField => 11,
             Self::Http3Bootstrap => 12,
             Self::TlsOuter => 13,
+            Self::QuicOuterParameters => 14,
         }
     }
 
@@ -135,6 +138,7 @@ impl CapturedSlotKind {
             11 => Ok(Self::LegacyField),
             12 => Ok(Self::Http3Bootstrap),
             13 => Ok(Self::TlsOuter),
+            14 => Ok(Self::QuicOuterParameters),
             _ => Err(ProfileDataError::Unsupported("joint slot kind")),
         }
     }
@@ -160,7 +164,7 @@ impl CapturedSlotKind {
             | Self::TcpTls
             | Self::QuicTls
             | Self::Http2EarlyFrames => None,
-            Self::QuicParameters => Some(OrderNamespace::QuicParameter),
+            Self::QuicParameters | Self::QuicOuterParameters => Some(OrderNamespace::QuicParameter),
             Self::Http3Settings => Some(OrderNamespace::Http3Setting),
             Self::QuicVersions => Some(OrderNamespace::QuicVersion),
         }
@@ -429,6 +433,7 @@ fn encode_joint(
             | CapturedSlotKind::QuicFirstFlight
             | CapturedSlotKind::QuicTls
             | CapturedSlotKind::QuicParameters
+            | CapturedSlotKind::QuicOuterParameters
             | CapturedSlotKind::Http3Settings
             | CapturedSlotKind::QuicVersions => Some(1),
         };
@@ -577,20 +582,30 @@ fn decode_joint(
     Ok(capture)
 }
 
-/// Inspect the slot tags of an already validated tuple without requiring TLS support.
+/// Visit the slot tags and value bytes of a trusted joint capture without decoding TLS.
 #[cfg(feature = "embed-profiles")]
-pub(in crate::profile) fn has_ech_outer(value: &CanonicalValue) -> Result<bool, ProfileDataError> {
+fn for_each_joint_slot<'a>(
+    value: &'a CanonicalValue,
+    mut visit: impl FnMut(u16, &'a [u8]),
+) -> Result<(), ProfileDataError> {
     let limits = JointCaptureLimits::default();
     let mut reader = CanonicalReader::new(&value.bytes, JOINT_DOMAIN)?;
     let _level = reader.u8()?;
     let _completeness = reader.u8()?;
-    let count = reader.count(limits.slots)?;
-    let mut paired = false;
-    for _ in 0..count {
-        paired |= reader.u16()? == CapturedSlotKind::TlsOuter.tag();
-        let _bytes = reader.bytes(limits.value_bytes)?;
+    for _ in 0..reader.count(limits.slots)? {
+        let tag = reader.u16()?;
+        visit(tag, reader.bytes(limits.value_bytes)?);
     }
-    reader.finish()?;
+    reader.finish()
+}
+
+/// Inspect the slot tags of an already validated tuple without requiring TLS support.
+#[cfg(feature = "embed-profiles")]
+pub(in crate::profile) fn has_ech_outer(value: &CanonicalValue) -> Result<bool, ProfileDataError> {
+    let mut paired = false;
+    for_each_joint_slot(value, |tag, _bytes| {
+        paired |= tag == CapturedSlotKind::TlsOuter.tag();
+    })?;
     Ok(paired)
 }
 
@@ -599,21 +614,13 @@ pub(in crate::profile) fn has_ech_outer(value: &CanonicalValue) -> Result<bool, 
 pub(in crate::profile) fn joint_slot_values(
     value: &CanonicalValue,
 ) -> Result<Vec<CanonicalValue>, ProfileDataError> {
-    let limits = JointCaptureLimits::default();
-    let mut reader = CanonicalReader::new(&value.bytes, JOINT_DOMAIN)?;
-    let _level = reader.u8()?;
-    let _completeness = reader.u8()?;
-    let count = reader.count(limits.slots)?;
-    let mut slots = Vec::with_capacity(count);
-    for _ in 0..count {
-        let _kind = reader.u16()?;
-        let bytes = reader.bytes(limits.value_bytes)?;
+    let mut slots = Vec::new();
+    for_each_joint_slot(value, |_tag, bytes| {
         slots.push(CanonicalValue {
             id: ValueId(Sha256::digest(bytes).into()),
             bytes: value.bytes.slice_ref(bytes),
         });
-    }
-    reader.finish()?;
+    })?;
     Ok(slots)
 }
 

@@ -55,7 +55,9 @@ impl ServerCertVerifier for PinnedServerCertVerifier {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        let pin_server_name = Host::rama_try_from(server_name).ok();
+        let pin_server_name = Host::rama_try_from(server_name)
+            .ok()
+            .and_then(|host| rama_net::tls::ServerName::try_from(host).ok());
         match self.pins.check(pin_server_name.as_ref(), end_entity) {
             TlsServerCertPinCheck::Matched | TlsServerCertPinCheck::NotApplicable => {}
             TlsServerCertPinCheck::Mismatched => {
@@ -183,6 +185,11 @@ impl ServerCertVerifier for NoServerCertVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    use crate::dep::rustls::{RootCertStore, client::WebPkiServerVerifier};
+    #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
+    use rama_net::address::Domain;
     use std::assert_matches;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -292,7 +299,7 @@ mod tests {
         let verifier = PinnedServerCertVerifier::new(
             TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1]))
-                    .with_server_name(Host::from_static("other.example.com")),
+                    .with_server_name(Domain::from_static("other.example.com")),
             ),
             child.clone(),
         );
@@ -317,11 +324,10 @@ mod tests {
         let verifier = PinnedServerCertVerifier::new(
             TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1]))
-                    .with_server_name(Host::from_static("example.com")),
+                    .with_server_name(Domain::example()),
             )
             .with_pin_set(
-                TlsServerCertPinSet::new(cert.clone())
-                    .with_server_name(Host::from_static("example.com")),
+                TlsServerCertPinSet::new(cert.clone()).with_server_name(Domain::example()),
             ),
             child.clone(),
         );
@@ -369,7 +375,7 @@ mod tests {
         let verifier = PinnedServerCertVerifier::pin_only(
             TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1]))
-                    .with_server_name(Host::from_static("other.example.com")),
+                    .with_server_name(Domain::from_static("other.example.com")),
             ),
             child.clone(),
         );
@@ -390,9 +396,6 @@ mod tests {
     #[cfg(any(feature = "aws-lc", feature = "ring"))]
     #[test]
     fn matching_pin_still_requires_child_verification() {
-        use crate::dep::rustls::{RootCertStore, client::WebPkiServerVerifier};
-        use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
-
         crate::ensure_default_crypto_provider();
         let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
         let leaf = chain[0].clone();
@@ -427,9 +430,6 @@ mod tests {
     #[cfg(any(feature = "aws-lc", feature = "ring"))]
     #[test]
     fn spki_pin_matches_leaf_key_through_full_verification() {
-        use crate::dep::rustls::{RootCertStore, client::WebPkiServerVerifier};
-        use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
-
         crate::ensure_default_crypto_provider();
         let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
         let leaf = chain[0].clone();

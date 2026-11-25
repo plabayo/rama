@@ -1,11 +1,9 @@
-use super::*;
-use crate::{
-    inspect::{ProfileExport, tests::store},
-    profile::{
-        analysis::profile::ProfileAnalysisLimits, format::canonical::CanonicalDomain,
-        selection::database::UserAgentDatabase,
-    },
+use std::{
+    collections::BTreeSet,
+    convert::Infallible,
+    sync::{Arc, OnceLock},
 };
+
 #[cfg(feature = "tls")]
 use rama_core::extensions::{Extensions, Ingress};
 use rama_core::{Layer, Service, extensions::ExtensionsRef, service::service_fn};
@@ -30,12 +28,24 @@ use rama_quic_proto::{
 };
 #[cfg(feature = "tls")]
 use rama_tls::{
-    CipherSuite, CompressionAlgorithm, ProtocolVersion, SecureTransport, client::ClientHello,
+    CipherSuite, CompressionAlgorithm, ExtensionId, ProtocolVersion, SecureTransport,
+    client::{ClientHello, ClientHelloExtension, ECHClientHello},
+    inspect::TlsObservation,
+    server::publish_server_client_hellos,
 };
-use std::{
-    collections::BTreeSet,
-    convert::Infallible,
-    sync::{Arc, OnceLock},
+
+use super::*;
+#[cfg(feature = "tls")]
+use crate::profile::selection::{
+    DrawKey,
+    variants::{ConnectionSelection, PreparedConnectionProfile},
+};
+use crate::{
+    inspect::{ProfileExport, tests::store},
+    profile::{
+        analysis::profile::ProfileAnalysisLimits, format::canonical::CanonicalDomain,
+        selection::database::UserAgentDatabase,
+    },
 };
 
 fn literal() -> ObservedFieldRepresentation {
@@ -303,7 +313,14 @@ fn incomplete_h3_capture_cannot_become_complete_during_export() {
     request.connection = Arc::new(snapshot);
     request.first_request = Arc::new(OnceLock::from(request.connection.clone()));
     parts.extensions.insert(request);
-    H3ProfileConnection::capture(&parts).facts().unwrap_err();
+    let metadata = CaptureMetadata::default();
+    capture(&parts, &metadata);
+    metadata
+        .connection
+        .get_ref::<H3ProfileConnection>()
+        .unwrap()
+        .facts()
+        .unwrap_err();
 }
 
 #[tokio::test]
@@ -524,3 +541,157 @@ fn first_request_survives_pending_native_publication_without_another_observe() {
 }
 
 mod bootstrap;
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn accepted_quic_parameters_export_into_the_effective_replay_tuple() {
+    let store = store(UserAgentDatabase::default());
+    let connection_id = store
+        .begin_connection_if_enabled(None, Protocol::HTTPS, None)
+        .unwrap();
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |_: Request| {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
+    let parts = parts();
+    parts
+        .extensions
+        .insert(SecureTransport::with_client_hello(parameter_hello(
+            vec![1, 1, 1],
+            false,
+        )));
+    publish_server_client_hellos(
+        &parts.extensions,
+        Some(true),
+        Some(parameter_hello(vec![1, 1, 1, 4, 1, 2], true)),
+    );
+    parts.extensions.insert(ConnectionId(connection_id));
+    service
+        .serve(Request::from_parts(parts, Body::empty()))
+        .await
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap();
+    let details = store.details(1).await.unwrap();
+    let day = u32::try_from(details.summary.started_at.as_second() / 86_400).unwrap();
+    let mut export = ProfileExport::new(&store, &[1].into(), &BTreeSet::new());
+    let analysis = export
+        .next_evidence(day, 14, [9; 32], ProfileAnalysisLimits::default())
+        .await
+        .unwrap()
+        .unwrap()
+        .analyze(false, day, 14, ProfileAnalysisLimits::default())
+        .unwrap()
+        .analysis;
+    let scope = analysis
+        .scopes
+        .iter()
+        .find(|scope| {
+            scope.context.flow.is_none() && scope.observations.domain == CanonicalDomain::Joint
+        })
+        .unwrap();
+    let selection = ConnectionSelection {
+        profile: analysis.id,
+        variant: scope.observations.variants[0].value.id(),
+        draw: DrawKey([1; 32]),
+        analysis_revision: analysis.classifier_revision,
+        effective: PreparedConnectionProfile {
+            scope: scope.id,
+            capture: scope.observations.variants[0]
+                .value
+                .canonical()
+                .unwrap()
+                .into_owned(),
+            context: scope.context.clone(),
+            h3_settings_evidence: None,
+        },
+        ech_ready: true,
+    };
+    let mut prepared = selection.prepare_components().unwrap();
+    prepared.use_ech_outer_for_replay(true).unwrap();
+    assert!(
+        prepared
+            .quic_parameters
+            .unwrap()
+            .fields
+            .iter()
+            .map(|field| field.id)
+            .eq([1, 4])
+    );
+    assert!(
+        prepared
+            .quic_outer_parameters
+            .unwrap()
+            .fields
+            .iter()
+            .map(|field| field.id)
+            .eq([1])
+    );
+}
+
+#[cfg(feature = "tls")]
+fn parameter_hello(parameters: Vec<u8>, inner: bool) -> ClientHello {
+    ClientHello::new(
+        ProtocolVersion::TLSv1_2,
+        vec![CipherSuite::from(4865)],
+        vec![CompressionAlgorithm::from(0)],
+        vec![
+            ClientHelloExtension::Opaque {
+                id: ExtensionId::QUIC_TRANSPORT_PARAMETERS,
+                data: parameters,
+            },
+            ClientHelloExtension::EncryptedClientHello(if inner {
+                ECHClientHello::Inner
+            } else {
+                serde_json::from_value(serde_json::json!({ "Outer": {
+                    "cipher_suite": { "kdf_id": 1, "aead_id": 1 },
+                    "config_id": 0, "enc": vec![0; 32], "payload": vec![0; 16]
+                }}))
+                .unwrap()
+            }),
+        ],
+    )
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn quic_collection_reuses_the_retained_tls_snapshot_across_publication() {
+    let parts = parts();
+    parts
+        .extensions
+        .insert(SecureTransport::with_client_hello(parameter_hello(
+            vec![1, 1, 1],
+            false,
+        )));
+    let metadata = CaptureMetadata::default();
+    TlsObservation::capture(&parts.extensions, &metadata.connection);
+    publish_server_client_hellos(
+        &parts.extensions,
+        Some(true),
+        Some(parameter_hello(vec![1, 1, 1, 4, 1, 2], true)),
+    );
+    capture(&parts, &metadata);
+    let facts = metadata
+        .connection
+        .get_ref::<H3ProfileConnection>()
+        .unwrap()
+        .facts()
+        .unwrap();
+    let parameters = facts
+        .slots
+        .iter()
+        .find(|slot| slot.kind == CapturedSlotKind::QuicParameters)
+        .unwrap();
+    let parameters =
+        OrderedProtocolCapture::from_canonical(&parameters.value, OrderCaptureLimits::default())
+            .unwrap();
+    assert!(parameters.fields.iter().map(|field| field.id).eq([1]));
+    assert!(
+        facts
+            .slots
+            .iter()
+            .all(|slot| slot.kind != CapturedSlotKind::QuicOuterParameters)
+    );
+}

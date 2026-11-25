@@ -49,7 +49,7 @@ use rama::{
     },
     net::{
         Protocol,
-        address::{Host, ProxyAddress, ProxyProtocol, SocketAddress},
+        address::{Domain, ProxyAddress, ProxyProtocol, SocketAddress},
         client::{ConnectorService as _, ConnectorTarget, ProxyRoute},
         socket::SocketOptions,
         stream::layer::TcpStreamOptionsLayer,
@@ -725,7 +725,7 @@ async fn tunnel_with_alpn(
     let io = handle_upgrade(&response).await.unwrap();
     let mut tls = TlsClientConfig::new()
         .with_server_verify(ServerVerifyMode::Disable)
-        .with_server_name(Host::from_static("localhost"))
+        .with_server_name(Domain::from_static("localhost"))
         .with_alpn(
             [if version == Version::HTTP_2 {
                 ApplicationProtocol::HTTP_2

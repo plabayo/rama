@@ -69,8 +69,10 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::server::TlsAcceptorLayer,
-    tls::server::{GeneratedServerAuthConfig, SniRequest, SniRouter, TlsServerConfig},
+    tls::{
+        boring::server::TlsAcceptorLayer,
+        server::{GeneratedServerAuthConfig, SniRequest, SniRouter, TlsServerConfig},
+    },
 };
 
 // everything else is provided by the standard library, community crates or tokio
@@ -148,9 +150,9 @@ where
         let fwd_interface = match sni {
             None => INTERFACE_BAZ,
             Some(ref sni) => {
-                if *sni == HOST_FOO {
+                if sni.as_domain() == Some(&HOST_FOO) {
                     INTERFACE_FOO
-                } else if *sni == HOST_BAR {
+                } else if sni.as_domain() == Some(&HOST_BAR) {
                     INTERFACE_BAR
                 } else {
                     tracing::debug!(
@@ -163,7 +165,7 @@ where
         };
 
         tracing::debug!(
-            server.address = %sni.as_ref().map(|s| s.as_str()).unwrap_or_default(),
+            server.address = ?sni,
             network.local.address = %fwd_interface.ip_addr,
             network.local.port = %fwd_interface.port,
             "forward incoming connection",

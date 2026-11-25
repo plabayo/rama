@@ -306,6 +306,10 @@ impl provider::Session for Session {
         })
     }
 
+    fn ech_accepted(&self) -> Option<bool> {
+        None
+    }
+
     fn effective_client_hello(&self) -> Option<ClientHello> {
         None
     }

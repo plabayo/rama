@@ -146,7 +146,7 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, scope: WeakScope) {
             let exclusions = DomainExclusionList::new(settings.exclude_domains.iter());
             let scope = scope.clone();
             let forward = forward.clone();
-            let name = input.peeked.client_hello.ext_server_name().cloned();
+            let name = input.peeked.client_hello.ext_server_domain().cloned();
             // As TCP does: an intercept the limiter refuses passes through untouched.
             let permit = name
                 .as_ref()

@@ -99,7 +99,7 @@ fn prepare(
     captured: &TlsCapture,
 ) -> Result<(CompiledConnection, ProfilePreservationReport), BoxError> {
     let mut report = ProfilePreservationReport::default();
-    let compiled = compiler.prepare_capture(request, captured, &mut report)?;
+    let compiled = compiler.prepare_capture(request, captured, None, &mut report)?;
     Ok((compiled, report))
 }
 

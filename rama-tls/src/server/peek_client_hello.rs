@@ -17,12 +17,11 @@ use rama_core::{
 };
 use rama_utils::{macros::nonzero, octets::kib};
 
+use super::{NoTlsRejectError, TlsEgressPredicate, peek::TLS_HEADER_PEEK_LEN};
 use crate::client::{
     ClientHello, ClientHelloHandshakePrefix, ClientHelloPeekStatus, ClientHelloReassemblyConfig,
     MalformedTlsPolicy, parse_client_hello_handshake_prefix_with_config,
 };
-
-use super::{NoTlsRejectError, TlsEgressPredicate, peek::TLS_HEADER_PEEK_LEN};
 
 /// A peek [`Service`] which returns the [`ClientHello`] to the inner
 /// service for tls-detected traffic, and otherwise make use of the Reject service.
@@ -453,38 +452,36 @@ where
 
 #[cfg(test)]
 mod test {
-    use rama_core::{
-        ServiceInput,
-        error::error_chain,
-        service::{RejectError, service_fn},
-    };
     use std::{
         convert::Infallible,
+        io::Cursor,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
         },
+        time::Duration,
     };
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use rama_core::{
+        Layer as _, ServiceInput,
+        error::error_chain,
         extensions::ExtensionsRef,
         graceful::{Scope, WeakScope, attach_scope},
         io::{
-            Io,
+            BridgeIo, Io,
             peek::{PeekCutoff, PeekCutoffError, PeekPrefixedIo},
         },
+        service::{RejectError, service_fn},
     };
-    use std::time::Duration;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
+    use crate::client::test_support::{fragments, hello, hello_for, record};
 
     type PeekedCursor = TlsClientHelloPrefixedIo<ServiceInput<std::io::Cursor<Vec<u8>>>>;
 
     #[tokio::test]
     async fn outer_capture_preserves_input_on_success_and_peek_failure() {
-        use rama_core::Layer as _;
-
         for (bytes, maximum, captured) in [
             (CH_ONE_ONE_ONE_ONE.to_vec(), kib(256), true),
             (CH_ONE_ONE_ONE_ONE.to_vec(), 32, false),
@@ -614,7 +611,6 @@ mod test {
 
     #[tokio::test]
     async fn tls_failure_policy_controls_fallback_and_marks_replayed_bytes() {
-        use crate::client::test_support::{fragments, hello, record};
         let message = hello(0);
         let full = fragments(&message, 2);
         let mut cases = vec![
@@ -674,7 +670,6 @@ mod test {
 
     #[tokio::test]
     async fn fallback_does_not_wait_past_reassembly_limits_and_keeps_unread_bytes() {
-        use crate::client::test_support::{fragments, hello, record};
         let message = hello(400);
         let single = record(&message);
         let mut split = record(&message[..1]);
@@ -719,8 +714,6 @@ mod test {
 
     #[tokio::test]
     async fn peek_status_shadows_stale_failures_and_preserves_bridge_extensions() {
-        use crate::client::test_support::{hello, record};
-        use rama_core::io::BridgeIo;
         for wire in [b"GET / HTTP/1.1\r\n".to_vec(), record(&hello(0))] {
             let input = ServiceInput::new(std::io::Cursor::new(wire));
             input.extensions().insert(ClientHelloPeekStatus {
@@ -773,7 +766,6 @@ mod test {
 
     #[tokio::test]
     async fn peeker_config_and_large_record_fragmented_hello_replay() {
-        use crate::client::test_support::{fragments, hello};
         let message = hello(60_000);
         let mut wire = fragments(&message, kib(16));
         wire.extend_from_slice(b"next record");
@@ -782,7 +774,7 @@ mod test {
                 TlsClientHelloPrefixedIo<ServiceInput<std::io::Cursor<Vec<u8>>>>,
             >| {
                 assert_eq!(
-                    req.client_hello.ext_server_name().unwrap().as_str(),
+                    req.client_hello.ext_server_domain().unwrap().as_str(),
                     "x.com"
                 );
                 let mut replay = Vec::new();
@@ -809,11 +801,43 @@ mod test {
     }
 
     #[tokio::test]
+    async fn ip_literal_sni_reaches_the_tls_service_under_the_reject_policy() {
+        let message = hello_for("10.20.30.40", 0);
+        // Contiguous, and split into records of a few bytes each.
+        for mut wire in [record(&message), fragments(&message, 7)] {
+            wire.extend_from_slice(b"next record");
+            let router = PeekTlsClientHelloService::new(service_fn(
+                async |mut req: InputWithClientHello<PeekedCursor>| {
+                    assert!(req.client_hello.ext_server_domain().is_none());
+                    assert_eq!(
+                        req.client_hello
+                            .ext_server_name()
+                            .and_then(|name| name.as_ip()),
+                        Some([10, 20, 30, 40].into())
+                    );
+                    let mut replay = Vec::new();
+                    req.input.read_to_end(&mut replay).await.unwrap();
+                    Ok::<_, Infallible>(replay)
+                },
+            ))
+            .with_fallback(service_fn(async || Ok::<_, Infallible>(Vec::<u8>::new())))
+            .with_malformed_tls_policy(MalformedTlsPolicy::Reject);
+            assert_eq!(
+                router
+                    .serve(ServiceInput::new(Cursor::new(wire.clone())))
+                    .await
+                    .unwrap(),
+                wire
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn test_client_hello_peek_service() {
         let tls_service = service_fn(async |input: InputWithClientHello<_>| {
             let sni = input
                 .client_hello
-                .ext_server_name()
+                .ext_server_domain()
                 .map(ToString::to_string);
             Ok::<_, Infallible>(sni)
         });
@@ -866,10 +890,10 @@ mod test {
             let mut v = Vec::default();
             _ = input.read_to_end(&mut v).await?;
             assert_eq!(CH_ONE_ONE_ONE_ONE, v);
-            assert!(client_hello.ext_server_name().is_some());
+            assert!(client_hello.ext_server_domain().is_some());
             assert_eq!(
                 "one.one.one.one",
-                client_hello.ext_server_name().unwrap().to_string()
+                client_hello.ext_server_domain().unwrap().to_string()
             );
             Ok("ok")
         }
@@ -1094,7 +1118,7 @@ mod test {
             let mut v = Vec::default();
             _ = input.read_to_end(&mut v).await?;
             assert_eq!(TLS_BUT_NO_SNI, v);
-            assert!(client_hello.ext_server_name().is_none());
+            assert!(client_hello.ext_server_domain().is_none());
             Ok("ok")
         }
         let tls_service = service_fn(tls_service_fn);
@@ -1123,7 +1147,6 @@ mod test {
         use std::time::Duration;
 
         use rama_core::{
-            Layer as _,
             io::BridgeIo,
             layer::{ScopeLayer, scope::ScopeAborted},
         };

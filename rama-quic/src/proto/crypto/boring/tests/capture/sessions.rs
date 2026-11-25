@@ -3,7 +3,7 @@
 use super::parameters::ParameterExpectation;
 use super::{fixture::*, *};
 
-use rama_net::address::Host;
+use rama_net::tls::ServerName;
 use rama_quic_proto::{
     capture::{CaptureLimits, transport_parameters_from_hello},
     transport_parameters::TransportParameterId,
@@ -30,7 +30,7 @@ fn captured_quic_tls_preparation_authenticates_with_fresh_native_sessions() {
         let prepared = prepare_tls(
             &policy,
             TlsOptions::default(),
-            &Host::try_from("localhost").unwrap(),
+            &"localhost".parse::<ServerName>().unwrap(),
             &source,
         )
         .unwrap()
@@ -67,7 +67,7 @@ fn wire_comparison_detects_native_tls_overrides() {
     let prepared = prepare_tls(
         &policy,
         TlsOptions::default(),
-        &Host::try_from("localhost").unwrap(),
+        &"localhost".parse::<ServerName>().unwrap(),
         &source,
     )
     .unwrap()
@@ -82,7 +82,7 @@ fn captured_parameter_length_cannot_replace_current_connection_parameters() {
     let prepared = prepare_tls(
         &policy,
         TlsOptions::default(),
-        &Host::try_from("localhost").unwrap(),
+        &"localhost".parse::<ServerName>().unwrap(),
         &source,
     )
     .unwrap()
@@ -115,7 +115,7 @@ fn captured_wire_choices_never_override_explicit_cipher_policy() {
     prepare_tls(
         &policy,
         TlsOptions::default(),
-        &Host::try_from("localhost").unwrap(),
+        &"localhost".parse::<ServerName>().unwrap(),
         &source,
     )
     .unwrap();
@@ -151,7 +151,7 @@ fn a_real_resumed_capture_without_a_current_ticket_offers_a_full_handshake() {
     let _session = prepare_tls(
         &policy,
         TlsOptions::default(),
-        &Host::try_from("localhost").unwrap(),
+        &"localhost".parse::<ServerName>().unwrap(),
         &resumed,
     )
     .unwrap()
@@ -181,7 +181,7 @@ fn checked_parameters(
     let client = prepare_tls(
         &policy,
         TlsOptions::default(),
-        &Host::try_from("localhost").unwrap(),
+        &"localhost".parse::<ServerName>().unwrap(),
         &capture(&hello),
     )
     .unwrap()

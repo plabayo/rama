@@ -2,7 +2,7 @@ use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::{macros::impl_deref, str::arcstr::ArcStr};
 use std::{fmt, marker::PhantomData};
 
-use crate::sse::parser::is_lf;
+use crate::sse::{RETAINED_BUFFER_LEN, parser::is_lf};
 
 pub(super) struct LinePrefixWriter<'a, W> {
     inner: &'a mut W,
@@ -140,9 +140,6 @@ impl EventDataWrite for String {
 /// Upper bound on the previous-payload capacity hint: one huge event must
 /// not make every following (possibly tiny) payload pre-reserve that much.
 const PAYLOAD_SIZE_HINT_CAP: usize = rama_utils::octets::mib(1);
-
-/// A reader buffer that grew past this for one large event is released once empty.
-const RETAINED_BUFFER_LEN: usize = rama_utils::octets::kib(256);
 
 #[derive(Debug)]
 /// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`String`].
@@ -405,7 +402,7 @@ mod tests {
             reader.read_line("{\"small\":true}").unwrap();
             assert!(reader.data(None).unwrap().is_some());
         }
-        assert!(reader.buf.capacity() <= rama_utils::octets::kib(256));
+        assert!(reader.buf.capacity() <= RETAINED_BUFFER_LEN);
     }
 
     #[test]

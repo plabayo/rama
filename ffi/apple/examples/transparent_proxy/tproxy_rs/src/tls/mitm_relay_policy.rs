@@ -6,11 +6,7 @@ use rama::{
     extensions::{self, ExtensionsRef},
     graceful::WeakScope,
     io::{BridgeIo, Io},
-    net::{
-        address::{Domain, Host},
-        client::ConnectorTarget,
-        proxy::IoForwardService,
-    },
+    net::{address::Host, client::ConnectorTarget, proxy::IoForwardService, tls::ServerName},
     telemetry::tracing,
     tls::{
         boring::{
@@ -28,7 +24,7 @@ use crate::policy::DomainExclusionList;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum PolicyKey {
-    Sni(Domain),
+    Sni(ServerName),
     Target(Host),
 }
 
@@ -135,7 +131,10 @@ where
         }: InputWithClientHello<BridgeIo<Ingress, Egress>>,
     ) -> Result<Self::Output, Self::Error> {
         if let Some(server_name) = client_hello.ext_server_name().cloned() {
-            if self.excluded_domains.is_excluded(&server_name) {
+            if server_name
+                .as_domain()
+                .is_some_and(|domain| self.excluded_domains.is_excluded(domain))
+            {
                 tracing::debug!(
                     %server_name,
                     "serving via fallback IO due to exclusion list"

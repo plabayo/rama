@@ -1,4 +1,5 @@
 use super::BytesRejection;
+use super::json_content_type::{JsonContentTypePolicy, JsonPayload, accepts_json_content_type};
 use crate::Request;
 use crate::body::util::BodyExt;
 use crate::service::web::extract::{
@@ -6,20 +7,15 @@ use crate::service::web::extract::{
 };
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use rama_core::bytes::Bytes;
-use rama_http_types::{
-    HeaderMap,
-    header::{self, content_type::parse_essence},
-};
-use rama_utils::str::ends_with_ignore_ascii_case;
+use rama_http_types::header;
 
 pub use crate::service::web::endpoint::response::Json;
 
 define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]
     #[body = "Json requests must have `Content-Type: application/json`"]
-    /// Rejection type for [`Json`]
-    /// used if the `Content-Type` header is missing
-    /// or its value is not `application/json`.
+    /// Rejection type for [`Json`] and [`JsonArrayItems`](super::JsonArrayItems)
+    /// used if the [`JsonContentTypePolicy`] rejects the `Content-Type`.
     pub struct InvalidJsonContentType;
 }
 
@@ -82,7 +78,8 @@ fn extract_json_bytes(
     parts: &crate::request::Parts,
     body: crate::Body,
 ) -> impl Future<Output = Result<Bytes, JsonRejection>> + Send + 'static {
-    let has_valid_content_type = json_content_type(&parts.headers);
+    let has_valid_content_type =
+        accepts_json_content_type(parts, JsonPayload::Document, JsonContentTypePolicy::Strict);
 
     async move {
         if !has_valid_content_type {
@@ -133,19 +130,6 @@ where
             }
         }
     }
-}
-
-fn json_content_type(headers: &HeaderMap) -> bool {
-    parse_essence(headers.get_all(header::CONTENT_TYPE))
-        .and_then(|essence| {
-            let (kind, subtype) = essence.split_once('/')?;
-            Some(
-                kind.eq_ignore_ascii_case("application")
-                    && (subtype.eq_ignore_ascii_case("json")
-                        || ends_with_ignore_ascii_case(subtype, "+json")),
-            )
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

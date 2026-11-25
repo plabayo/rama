@@ -10,13 +10,68 @@
 //! When several providers are enabled, `boring` is preferred. With none
 //! enabled, certificate-generation functions return an error.
 
-use std::{net::IpAddr, time::Duration};
+use std::{
+    net::IpAddr,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-use rama_core::error::{BoxError, BoxErrorExt as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _};
 use rama_net::address::{Domain, Host};
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
+use x509_parser::{
+    certificate::X509Certificate, prelude::FromDer as _, time::ASN1Time, x509::SubjectPublicKeyInfo,
+};
 
-use crate::pki_types::{CertificateDer, PrivateKeyDer};
+use crate::pki_types::{CertificateDer, PrivateKeyDer, SubjectPublicKeyInfoDer};
+
+/// Check the certificate's public key without applying peer certificate validation rules.
+pub fn ensure_certificate_public_key_matches(
+    certificate: &CertificateDer<'_>,
+    public_key: &SubjectPublicKeyInfoDer<'_>,
+) -> Result<(), BoxError> {
+    let (remaining, certificate) = X509Certificate::from_der(certificate)
+        .context("parse certificate for public key comparison")?;
+    if !remaining.is_empty() {
+        return Err(BoxError::from_static_str("trailing data after certificate"));
+    }
+    if certificate.public_key().raw != public_key.as_ref() {
+        return Err(BoxError::from_static_str(
+            "certificate and private key do not match",
+        ));
+    }
+    Ok(())
+}
+
+/// Check an authenticated restored X.509 credential's validity, or accept a complete raw public key.
+pub fn ensure_credential_valid_at(credential: &[u8], now: SystemTime) -> Result<(), BoxError> {
+    if let Ok((remaining, _)) = SubjectPublicKeyInfo::from_der(credential)
+        && remaining.is_empty()
+    {
+        return Ok(());
+    }
+    let (remaining, certificate) =
+        X509Certificate::from_der(credential).context("parse restored client certificate")?;
+    if !remaining.is_empty() {
+        return Err(BoxError::from_static_str(
+            "trailing data after restored client certificate",
+        ));
+    }
+    let seconds = now
+        .duration_since(UNIX_EPOCH)
+        .context("read credential verification time")?
+        .as_secs();
+    let now = i64::try_from(seconds)
+        .ok()
+        .and_then(|seconds| ASN1Time::from_timestamp(seconds).ok())
+        .ok_or_else(|| BoxError::from_static_str("credential verification time out of range"))?;
+    if !certificate.validity().is_valid_at(now) {
+        return Err(BoxError::from_static_str(
+            "restored client certificate is not valid at verification time",
+        ));
+    }
+    Ok(())
+}
 
 #[cfg(feature = "boring")]
 #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
@@ -41,18 +96,49 @@ impl CertificateIdentity {
 
         let domain = host.try_as_domain()?;
         Ok(domain
-            .as_str()
-            .parse()
-            .map_or_else(|_| Self::Dns(domain.into_owned()), Self::Ip))
+            .as_ip()
+            .map_or_else(|| Self::Dns(domain.into_owned()), Self::Ip))
     }
+
+    /// This identity with a DNS name that spells an IP address taken as that address,
+    /// so it is emitted as an `iPAddress` name rather than a `dNSName`.
+    #[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
+    fn canonical(&self) -> CanonicalIdentity<'_> {
+        match self {
+            Self::Dns(domain) => domain
+                .as_ip()
+                .map_or(CanonicalIdentity::Dns(domain), CanonicalIdentity::Ip),
+            Self::Ip(ip) => CanonicalIdentity::Ip(*ip),
+        }
+    }
+}
+
+#[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CanonicalIdentity<'a> {
+    Dns(&'a Domain),
+    Ip(IpAddr),
+}
+
+#[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
+fn unique_canonical_identities(
+    identities: &[CertificateIdentity],
+) -> impl Iterator<Item = CanonicalIdentity<'_>> {
+    identities
+        .iter()
+        .enumerate()
+        .filter_map(|(index, identity)| {
+            let canonical = identity.canonical();
+            (!identities[..index]
+                .iter()
+                .any(|earlier| earlier.canonical() == canonical))
+            .then_some(canonical)
+        })
 }
 
 impl From<Domain> for CertificateIdentity {
     fn from(domain: Domain) -> Self {
-        domain
-            .as_str()
-            .parse()
-            .map_or_else(|_| Self::Dns(domain), Self::Ip)
+        domain.as_ip().map_or_else(|| Self::Dns(domain), Self::Ip)
     }
 }
 
@@ -74,7 +160,10 @@ impl TryFrom<Host> for CertificateIdentity {
     type Error = BoxError;
 
     fn try_from(host: Host) -> Result<Self, Self::Error> {
-        Self::try_from_host(&host)
+        match host {
+            Host::Name(domain) => Ok(Self::from(domain)),
+            other => Self::try_from_host(&other),
+        }
     }
 }
 
@@ -193,7 +282,7 @@ impl Default for LeafCertRequest {
     fn default() -> Self {
         Self {
             config: LeafCertConfig::default(),
-            identities: vec![CertificateIdentity::Dns(Domain::from_static("localhost"))],
+            identities: vec![CertificateIdentity::Dns(Domain::tld_localhost())],
         }
     }
 }
@@ -303,7 +392,6 @@ impl CertificateAuthorityData {
         }
         validate_certificate_authority_key(&certificate_chain[0], &private_key)?;
         for (index, certificate) in certificate_chain.iter().enumerate() {
-            use rama_core::error::ErrorContext as _;
             let (_, parsed) = x509_parser::parse_x509_certificate(certificate.as_ref())
                 .context("parse certificate authority chain")?;
             let is_ca = parsed
@@ -460,10 +548,6 @@ impl Clone for CertificateAuthorityData {
 /// This is the industry-standard TLS pin input, usually exchanged in the
 /// `sha256/<base64 digest>` format.
 pub fn spki_sha256(certificate: &CertificateDer<'_>) -> Result<[u8; 32], BoxError> {
-    use rama_core::error::ErrorContext as _;
-    use sha2::Digest as _;
-    use x509_parser::prelude::FromDer as _;
-
     let (_, cert) = x509_parser::certificate::X509Certificate::from_der(certificate.as_ref())
         .context("parse x509 certificate for spki digest")?;
     Ok(sha2::Sha256::digest(cert.public_key().raw).into())
@@ -472,7 +556,6 @@ pub fn spki_sha256(certificate: &CertificateDer<'_>) -> Result<[u8; 32], BoxErro
 /// SHA-256 of `bytes`, e.g. a DER-encoded `SubjectPublicKeyInfo`.
 #[must_use]
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {
-    use sha2::Digest as _;
     sha2::Sha256::digest(bytes).into()
 }
 
@@ -494,8 +577,6 @@ pub fn generate_server_auth(
 pub fn generate_server_auth(
     _config: GeneratedServerAuthConfig,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
-    use rama_core::error::BoxErrorExt;
-
     Err(BoxError::from_static_str(
         "enable one of the rama-crypto cert providers (boring, aws-lc, ring) to generate server auth",
     ))
@@ -555,6 +636,8 @@ mod spki_tests {
     use base64::{Engine as _, prelude::BASE64_STANDARD};
 
     use super::*;
+    #[cfg(not(any(feature = "boring", feature = "aws-lc", feature = "ring")))]
+    use crate::pki_types::PrivatePkcs8KeyDer;
 
     const EXAMPLE_COM_CRT_B64: &str = "MIIE3DCCAsSgAwIBAgIJAN4TBpLFs4VhMA0GCSqGSIb3DQEBCwUAMBYxFDASBgNVBAMMC2V4YW1wbGUuY29tMB4XDTI0MTIwOTIwMDUxN1oXDTM0MTIwNzIwMDUxN1owFjEUMBIGA1UEAwwLZXhhbXBsZS5jb20wggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQC14A6yHqrF+5+VPljtBd9vgjTQxBCqQ7Af/7cNlFtZjOKmXz0bOCfZRjaxNNjjveztFH+VhRpH/JyM7Qd7R0FX84IyH4Z9a58jgKW/l/YM1Q4Y50WGpM9Sk5p9Q8xTWIoZPrjvh6zV4PKef87LxxqoO9QXv34d5g7dsQLbSwJ93SeggH0E5e1VvP1DW0kvu1BF6rsmF5eTyK/VNg/el9mGyMbcyhBKTpTyVT2FQYRFuZtHXHRnAocCdv887c/TsYVDffTwv7peVoOotO0twKn0SMdtybiNJyDEdcgw2bFbQu7oV/95cBurpxePzED31E64QI8emTvZ62L/c5QvP0OY3x2CSb5ctd6z7wWTJ8wkl7N8+y7Xgn1aAAfki4rWk5qfWAO3BNZo/TGyiWeoNttJ+NddfwI3+h6phK7X56vRhYSqwSnxWyQYlTJAnFQb7TMEP/k9ov2S9MzLTURLLeNiiXjvkOxi+12HzhlTNgk3X49y9f8PLxkNw37TghunAl4OvA+LdslSayFMmZbx9fm+6ZGkjcsDYnf1Mff+aoCkkUcAFg5DQFDkmvu08mJL2D+9I9OK/Yvn/qXWjhVdWLJ/k5hrQmLIs1KbQtlGvvYeC7kHY3yBK+3wt/Cnx9qwhOPJcufuEChiMcVcseGAZJhUT7gQM22v9jb9QZfhihGMpQIDAQABoy0wKzApBgNVHREEIjAgggtleGFtcGxlLmNvbYILZXhhbXBsZS5jb22HBAoAAAEwDQYJKoZIhvcNAQELBQADggIBAJBG9KcH0FG7xn2u4SA4nlwaP/v2ZWZlOwjVjHEQJF7AGaEZFVofzLoRncVnQs14Xr3SGstIBG/P30LC4zHO4Lhz0M+g/lbXhrDjTJLNX7ZNv2ZJj+6XBysJK2IuZX14YCtxhwFCuPBK1cxPDkP4nZm4u5tozLHPtZEHc4kGVQflurkTVmfhJMi5ndAOevXVgfAHRbHfh6x1kNZWDpybiPeeBvZOjRoxecsD7LA54knsSFCQe6zQRlfBUUD+RDI/ggDi3XnKdDHEkLZCH3/db4CcneyzzVkaNcvpOS6ZT6akDLmR8qAglTrADdsnNVzyWzNbBhXQEFoygY3F2rVQndTLoEFGMx7U2d3Fz8sVN/F2SzBYxtrwgj5rQC8tOhHZPVgQLXu6NRRZHEQgypDtGP0H4SUNcGb1Lw27E43KSIT9CpY8Z3SG34G4bYGfpdMN3wtoXG7BtrdmInNWiT+ygh+iJCSaSsAWtaPRnx/9uGLwUNVjzVxJhxGKBbf1hJ5g1x3zMeL73wrsiY6RBa6tWx9SHbRoq8htbkQAnP0tMOavGiTApFquBYDe2gYbuq5jh4yTbNyuxR4WW6m6Bvj7YhUREXQnTDonUwHzw2P29T95z52aPb5PaZYHgg4S26zRV+/Dc8E3oLkjgCyaDuQO4uUpmtT8ssTolIFNr2QUzD12";
 
@@ -576,8 +659,6 @@ mod spki_tests {
     #[cfg(not(any(feature = "boring", feature = "aws-lc", feature = "ring")))]
     #[test]
     fn certificate_authority_key_validation_requires_a_provider() {
-        use crate::pki_types::PrivatePkcs8KeyDer;
-
         let error = CertificateAuthorityData::try_new(
             vec![CertificateDer::from(vec![1])],
             PrivatePkcs8KeyDer::from(vec![1]).into(),
@@ -592,16 +673,127 @@ mod spki_tests {
 
 #[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
 mod tests {
-    use std::assert_matches;
+    use std::{assert_matches, net::Ipv4Addr};
+
     use x509_parser::prelude::*;
 
     use super::*;
+    #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    use crate::dep::rcgen::{
+        CertificateParams, CustomExtension, KeyPair, PublicKeyData as _, SanType,
+    };
+    use crate::pki_types::PrivatePkcs8KeyDer;
+
+    #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    #[test]
+    fn public_key_comparison_accepts_challenge_extensions_and_rejects_other_keys() {
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::default();
+        params.subject_alt_names = vec![SanType::IpAddress(IpAddr::from([127, 0, 0, 1]))];
+        params
+            .custom_extensions
+            .push(CustomExtension::new_acme_identifier(&[1; 32]));
+        let certificate = params.self_signed(&key).unwrap();
+        let public_key = SubjectPublicKeyInfoDer::from(key.subject_public_key_info());
+        ensure_certificate_public_key_matches(certificate.der(), &public_key).unwrap();
+        let other = KeyPair::generate().unwrap();
+        ensure_certificate_public_key_matches(
+            certificate.der(),
+            &SubjectPublicKeyInfoDer::from(other.subject_public_key_info()),
+        )
+        .unwrap_err();
+        ensure_certificate_public_key_matches(&CertificateDer::from(vec![1]), &public_key)
+            .unwrap_err();
+        let mut trailing = certificate.der().to_vec();
+        trailing.push(0);
+        ensure_certificate_public_key_matches(&CertificateDer::from(trailing), &public_key)
+            .unwrap_err();
+    }
 
     #[expect(clippy::expect_used)]
     fn parse_certificate<'a>(der: &'a CertificateDer<'_>) -> X509Certificate<'a> {
         X509Certificate::from_der(der.as_ref())
             .expect("parse certificate DER")
             .1
+    }
+
+    #[test]
+    fn dns_identities_spelling_an_address_become_ip_address_names() {
+        type Generate =
+            fn(
+                GeneratedServerAuthConfig,
+            )
+                -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError>;
+        let generators: &[(&str, Generate)] = &[
+            ("default", generate_server_auth),
+            #[cfg(any(feature = "aws-lc", feature = "ring"))]
+            ("rcgen", rcgen::generate_server_auth),
+        ];
+        for (name, generate) in generators {
+            let (chain, _) = generate(GeneratedServerAuthConfig::GeneratedCa {
+                ca: SelfSignedCaConfig::default(),
+                leaf: LeafCertRequest {
+                    config: Default::default(),
+                    identities: vec![
+                        CertificateIdentity::Dns(Domain::try_from("127.0.0.1").unwrap()),
+                        CertificateIdentity::Ip(Ipv4Addr::LOCALHOST.into()),
+                    ],
+                },
+            })
+            .unwrap();
+            let leaf = parse_certificate(&chain[0]);
+            let names = &leaf
+                .subject_alternative_name()
+                .unwrap()
+                .unwrap()
+                .value
+                .general_names;
+            assert_eq!(names.len(), 1, "{name}: {names:?}");
+            assert!(
+                matches!(names[0], GeneralName::IPAddress(bytes) if bytes == [127, 0, 0, 1]),
+                "{name}: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subject_alt_names_preserve_first_canonical_identity_order() {
+        type Generate =
+            fn(
+                GeneratedServerAuthConfig,
+            )
+                -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError>;
+        let generators: &[(&str, Generate)] = &[
+            ("default", generate_server_auth),
+            #[cfg(any(feature = "aws-lc", feature = "ring"))]
+            ("secondary", rcgen::generate_server_auth),
+        ];
+        let ip = IpAddr::from([192, 0, 2, 1]);
+        for (name, generate) in generators {
+            let (chain, _) = generate(GeneratedServerAuthConfig::SelfSignedLeaf(LeafCertRequest {
+                config: Default::default(),
+                identities: vec![
+                    CertificateIdentity::Dns(Domain::from_static("service.test")),
+                    CertificateIdentity::Ip(ip),
+                    CertificateIdentity::Dns(Domain::from_static("SERVICE.TEST")),
+                    CertificateIdentity::Dns(Domain::try_from("192.0.2.1").unwrap()),
+                    CertificateIdentity::Dns(Domain::example()),
+                ],
+            }))
+            .unwrap();
+            let leaf = parse_certificate(&chain[0]);
+            let names = &leaf
+                .subject_alternative_name()
+                .unwrap()
+                .unwrap()
+                .value
+                .general_names;
+            assert!(
+                matches!(names.as_slice(), [GeneralName::DNSName(first), GeneralName::IPAddress(address), GeneralName::DNSName(last)]
+                if *first == "service.test" && *address == [192, 0, 2, 1] && *last == Domain::example().as_str()),
+                "{name}: {names:?}"
+            );
+        }
     }
 
     #[test]
@@ -1122,8 +1314,6 @@ mod tests {
     #[cfg(feature = "boring")]
     #[test]
     fn certificate_authority_accepts_valid_intermediate_chain() {
-        use crate::pki_types::PrivatePkcs8KeyDer;
-
         let (root_cert, root_key) =
             boring::generate_certificate_authority_x509(&SelfSignedCaConfig {
                 subject: CertificateSubject {
@@ -1170,8 +1360,6 @@ mod tests {
     #[cfg(all(not(feature = "boring"), any(feature = "aws-lc", feature = "ring")))]
     #[test]
     fn rcgen_certificate_authority_accepts_valid_intermediate_chain() {
-        use crate::pki_types::PrivatePkcs8KeyDer;
-
         fn ca_params(common_name: &str) -> ::rcgen::CertificateParams {
             let mut params = ::rcgen::CertificateParams::new(Vec::new()).expect("CA parameters");
             params.distinguished_name = ::rcgen::DistinguishedName::new();

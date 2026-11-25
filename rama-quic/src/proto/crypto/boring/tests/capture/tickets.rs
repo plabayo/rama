@@ -2,7 +2,7 @@
 
 use super::{fixture::*, *};
 use crate::{ClientConfig, tls::ClientSessionPolicy};
-use rama_net::address::Host;
+use rama_net::tls::ServerName;
 use rama_ua::profile::capture::tls::{TlsCapture, TlsCapturedExtensionValue};
 
 fn prepared(
@@ -10,7 +10,13 @@ fn prepared(
     policy: &TlsClientConfig,
     source: &TlsCapture,
 ) -> ClientConfig {
-    prepare_with_cache(cache, policy, &Host::try_from("localhost").unwrap(), source).unwrap()
+    prepare_with_cache(
+        cache,
+        policy,
+        &"localhost".parse::<ServerName>().unwrap(),
+        source,
+    )
+    .unwrap()
 }
 
 fn exchange(
@@ -117,7 +123,7 @@ fn captured_resumed_offers_resume_only_with_the_current_peer_version_and_policy(
         let client = prepare_with_cache(
             &cache,
             &policy,
-            &Host::try_from("other.invalid").unwrap(),
+            &"other.invalid".parse::<ServerName>().unwrap(),
             &resumed,
         )
         .unwrap()
@@ -175,7 +181,7 @@ fn fresh_capture_cache_neither_retains_tickets_nor_resumes_a_resumed_offer() {
         prepare_with_cache(
             &fresh,
             &policy,
-            &Host::try_from("localhost").unwrap(),
+            &"localhost".parse::<ServerName>().unwrap(),
             &resumed,
         )
         .unwrap();

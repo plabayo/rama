@@ -4,7 +4,7 @@ use rama_crypto::{
     pki_types::CertificateDer,
     platform_verifier::{PlatformVerifier, PlatformVerifyErrorKind},
 };
-use rama_net::address::Host;
+use rama_net::{address::Domain, tls::ServerName};
 use std::time::SystemTime;
 
 pub(crate) static TESTS: &[Test] = &[
@@ -39,7 +39,7 @@ fn verify(
         .verify_server_chain(
             &CertificateDer::from(include_bytes!("../fixtures/leaf.der").as_slice()),
             &[],
-            &Host::from_static(host),
+            &ServerName::from(Domain::from_static(host)),
             None,
             SystemTime::now(),
         )

@@ -8,7 +8,10 @@ use rama_boring::{
         quic::{EncryptionLevel, HandshakeStatus, QuicConnection, QuicMethod},
     },
 };
-use rama_net::tls::ApplicationProtocol;
+use rama_net::{
+    address::Domain,
+    tls::{ApplicationProtocol, ServerName},
+};
 use rama_tls::{
     ExtensionId, ProtocolVersion,
     client::{
@@ -58,7 +61,7 @@ impl QuicMethod for FirstFlight {
 
 fn hello(config: &TlsClientConfig, parameters: &[u8]) -> ClientHello {
     let mut data = TlsConnectorData::try_from(config).unwrap();
-    data.server_name = Some(Host::try_from("example.test").unwrap());
+    data.server_name = Some(ServerName::from(Domain::from_static("example.test")));
     let output = Arc::new(FirstFlight::default());
     let mut connection = QuicConnection::new(data.into_ssl().unwrap(), output.clone()).unwrap();
     connection.set_connect_state();

@@ -426,6 +426,9 @@ const COMPACT_THRESHOLD: usize = 2 * MAX_CHUNKS;
 
 #[cfg(test)]
 mod test {
+    use rand::prelude::*;
+    use rand_pcg::Pcg32;
+
     use super::*;
 
     #[test]
@@ -962,22 +965,26 @@ mod test {
 
     #[test]
     fn unordered_compaction_preserves_unread_lower_offsets() {
-        let mut assembler = Assembler::new();
-        assembler.ensure_ordering(false).unwrap();
-        assembler
-            .insert(100, Bytes::from_static(b"xyz"), 3)
+        let mut x = Assembler::new();
+        x.ensure_ordering(false).unwrap();
+        x.insert(1_000_000, Bytes::from(vec![1; 4096]), 4096)
             .unwrap();
-        assert_eq!(assembler.read(3, false).unwrap().offset, 100);
-        assert_eq!(assembler.bytes_read, 3);
-        assembler
-            .insert(0, Bytes::from_static(b"ab"), 40_000)
-            .unwrap();
-        let chunk = assembler.read(2, false).unwrap();
-        assert_eq!(chunk.offset, 0);
-        assert_eq!(&chunk.bytes[..], b"ab");
-        assert_eq!(assembler.bytes_read, 5);
-        assert_eq!(assembler.buffered, 0);
-        assert_eq!(assembler.allocated, 0);
+        assert_eq!(x.read(usize::MAX, false).unwrap().bytes.len(), 4096);
+        // Small slices are copied out and never over-allocate, so only the chunk count compacts
+        let span = COMPACT_THRESHOLD as u64 + 1;
+        for offset in 0..span {
+            x.insert(offset, Bytes::from_static(b"x"), 1).unwrap();
+        }
+        assert_eq!(x.data.len(), 1, "the chunk count forced a compaction");
+        let mut unread = 0;
+        while let Some(chunk) = x.read(usize::MAX, false) {
+            assert_eq!(chunk.offset, unread);
+            unread += chunk.bytes.len() as u64;
+        }
+        assert_eq!(unread, span, "compaction discarded unread data");
+        assert_eq!(x.bytes_read, 4096 + span);
+        assert_eq!(x.buffered, 0);
+        assert_eq!(x.allocated, 0);
     }
 
     #[test]
@@ -1147,6 +1154,89 @@ mod test {
             Some(b"0123456789".as_slice()),
             "every byte is delivered exactly once"
         );
+    }
+
+    #[test]
+    fn assemble_random_ordered() {
+        random_stream(true);
+    }
+
+    #[test]
+    fn assemble_random_unordered() {
+        random_stream(false);
+    }
+
+    /// Shuffled, overlapping retransmissions with interleaved compactions, read back in bounded
+    /// pieces, must deliver every byte of the stream exactly once.
+    fn random_stream(ordered: bool) {
+        const LEN: usize = 2048;
+        let mut rng =
+            Pcg32::from_seed(0xdead_beef_dead_beef_dead_beef_dead_beef_u128.to_le_bytes());
+        let stream: Vec<u8> = (0..LEN).map(|_| rng.random()).collect();
+        for _ in 0..64 {
+            let mut frags = Vec::new();
+            let mut at = 0;
+            while at < LEN {
+                let size = rng.random_range(1..=32).min(LEN - at);
+                frags.push((at, size));
+                at += size;
+            }
+            // Retransmissions are refragmented, so they overlap the originals at arbitrary bounds
+            for _ in 0..frags.len() / 4 {
+                let start = rng.random_range(0..LEN);
+                let end = (start + rng.random_range(1..=64)).min(LEN);
+                let mut at = start;
+                while at < end {
+                    let size = rng.random_range(1..=32).min(end - at);
+                    frags.push((at, size));
+                    at += size;
+                }
+            }
+            frags.shuffle(&mut rng);
+
+            let mut x = Assembler::new();
+            if !ordered {
+                x.ensure_ordering(false).unwrap();
+            }
+            let mut delivered = vec![false; LEN];
+            for (offset, size) in frags {
+                let bytes = Bytes::copy_from_slice(&stream[offset..offset + size]);
+                // Half-used slices stay shared and are not marked defragmented on compaction
+                let allocated = if rng.random_ratio(1, 4) {
+                    size * 2
+                } else {
+                    size
+                };
+                x.insert(offset as u64, bytes, allocated).unwrap();
+                if rng.random_ratio(1, 8) {
+                    x.defragment(0);
+                }
+                if rng.random_ratio(1, 3) {
+                    let max = rng.random_range(1..=64);
+                    drain(&mut x, max, ordered, &stream, &mut delivered);
+                }
+            }
+            drain(&mut x, usize::MAX, ordered, &stream, &mut delivered);
+            assert!(
+                delivered.iter().all(|d| *d),
+                "stream did not fully assemble"
+            );
+        }
+    }
+
+    /// Read `x` dry in pieces of at most `max`, checking each against `stream` and that no
+    /// byte arrives twice.
+    #[track_caller]
+    fn drain(x: &mut Assembler, max: usize, ordered: bool, stream: &[u8], delivered: &mut [bool]) {
+        while let Some(chunk) = x.read(max, ordered) {
+            let start = chunk.offset as usize;
+            let end = start + chunk.bytes.len();
+            assert_eq!(&chunk.bytes[..], &stream[start..end]);
+            for d in &mut delivered[start..end] {
+                assert!(!*d, "offset {start} delivered twice");
+                *d = true;
+            }
+        }
     }
 
     fn next_unordered(x: &mut Assembler) -> Chunk {

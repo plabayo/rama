@@ -5,10 +5,10 @@ use rama_core::{
     extensions::Extension,
 };
 use rama_crypto::pki_types::CertificateDer;
-use rama_net::address::Host;
 use std::{borrow::Cow, fmt, sync::Arc};
 
 use super::{TlsComponentIdentity, TlsPoolComponent};
+use rama_net::tls::ServerName;
 
 /// A reject-only check of the server certificate chain.
 ///
@@ -43,7 +43,7 @@ pub enum ServerCertChainKind {
 #[derive(Debug, Clone)]
 pub struct ServerCertChain<'a> {
     kind: ServerCertChainKind,
-    server_name: Option<&'a Host>,
+    server_name: Option<&'a ServerName>,
     certificates: &'a [ServerChainCertificate<'a>],
 }
 
@@ -52,7 +52,7 @@ impl<'a> ServerCertChain<'a> {
     #[must_use]
     pub const fn new(
         kind: ServerCertChainKind,
-        server_name: Option<&'a Host>,
+        server_name: Option<&'a ServerName>,
         certificates: &'a [ServerChainCertificate<'a>],
     ) -> Self {
         Self {
@@ -70,7 +70,7 @@ impl<'a> ServerCertChain<'a> {
 
     /// The server identity the connection was made for, if any.
     #[must_use]
-    pub const fn server_name(&self) -> Option<&'a Host> {
+    pub const fn server_name(&self) -> Option<&'a ServerName> {
         self.server_name
     }
 

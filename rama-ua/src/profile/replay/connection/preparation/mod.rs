@@ -3,31 +3,34 @@
 //! Native state stays with its consuming connector. Only the admitted selection
 //! and preservation report become connection facts for later request emulation.
 
-use super::{PreparedConnectionComponents, compiler::CompiledConnectionProfile, h3_startup};
-use crate::profile::{
-    format::canonical::ProfileDataError,
-    model::identity::{ConnectionContext, FlowKey},
-    replay::h3_bootstrap::Insertions,
-    replay::request::{
-        H2ClientParameter, LoweredProfileItem, ProfilePreservationDifference,
-        ProfilePreservationReport,
-    },
-    selection::{
-        ProfileSeed,
-        variants::{ConnectionSelection, EmulationContext, ProfileConnectionReuse},
-    },
-};
+use std::sync::Arc;
+
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
-    extensions::{Extension, Extensions, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef},
     telemetry::tracing,
 };
-use rama_http::{
-    HeaderMap, Version,
-    conn::H2ClientContextParams,
-    proto::{h2::frame::EarlyFrame, h3::ClientSettingsProfile},
+use rama_http::{HeaderMap, Version, conn::H2ClientContextParams, proto::h2::frame::EarlyFrame};
+
+use super::{PreparedConnectionComponents, compiler::CompiledConnectionProfile, h3_startup};
+use crate::{
+    HttpAgent, UserAgent,
+    profile::{
+        format::canonical::ProfileDataError,
+        model::identity::{ConnectionContext, FlowKey},
+        replay::{
+            h3_bootstrap::Insertions,
+            request::{
+                H2ClientParameter, LoweredProfileItem, ProfilePreservationDifference,
+                ProfilePreservationReport,
+            },
+        },
+        selection::{
+            ProfileSeed,
+            variants::{ConnectionSelection, EmulationContext, ProfileConnectionReuse},
+        },
+    },
 };
-use std::sync::Arc;
 
 /// Locally owned result of one connection draw and whole-profile admission.
 #[derive(Debug)]
@@ -52,6 +55,7 @@ impl ConnectionPreparation {
         &self.admission.selection
     }
 
+    /// Separate the admission bindings from the prepared components.
     pub(crate) fn into_parts(self) -> (ConnectionAdmission, PreparedConnectionComponents) {
         (self.admission, self.components)
     }
@@ -123,6 +127,46 @@ impl ConnectionPreparation {
         )))
     }
 
+    /// Apply the HTTP components belonging to the offer selected at final TLS preparation.
+    pub fn apply_reprepared_http(
+        selection: ConnectionSelection,
+        components: PreparedConnectionComponents,
+        input: &impl ExtensionsRef,
+    ) -> Result<ProfilePreservationReport, BoxError> {
+        let Some(context) = EmulationContext::of(input.extensions()) else {
+            return Ok(components.preservation_report);
+        };
+        let mut preparation = Self {
+            admission: ConnectionAdmission {
+                selection,
+                seed: context.seed,
+                connection: input
+                    .extensions()
+                    .get_ref::<ConnectionContext>()
+                    .cloned()
+                    .unwrap_or_default(),
+            },
+            components,
+        };
+        if input
+            .extensions()
+            .get_ref::<UserAgent>()
+            .and_then(UserAgent::http_agent)
+            == Some(HttpAgent::Preserve)
+        {
+            preparation.components.preservation_report.push(
+                ProfilePreservationDifference::LoweredProfileItem {
+                    item: LoweredProfileItem::CallerHttp,
+                },
+            );
+        } else {
+            preparation.apply_http(input)?;
+        }
+        let report = preparation.components.preservation_report.clone();
+        input.extensions().insert(preparation.components);
+        Ok(report)
+    }
+
     /// Apply admitted HTTP recipes before the HTTP connector reads them. Native
     /// TLS/QUIC configuration is deliberately absent from the request store.
     pub fn apply_http(&mut self, input: &impl ExtensionsRef) -> Result<(), BoxError> {
@@ -192,19 +236,7 @@ impl ConnectionPreparation {
             .components
             .h3_client_settings(&mut self.admission.selection.h3_settings_draw(context.seed))?
         {
-            if input
-                .extensions()
-                .get_ref::<ClientSettingsProfile>()
-                .is_some_and(|caller| caller != &settings)
-            {
-                self.components.preservation_report.push(
-                    ProfilePreservationDifference::LoweredProfileItem {
-                        item: LoweredProfileItem::CallerHttp3Settings,
-                    },
-                );
-            } else {
-                input.extensions().insert(settings);
-            }
+            input.extensions().insert(settings);
         }
         if let Some(frames) = &self.components.h2_early_frames {
             apply_profile_h2_replay(
@@ -293,9 +325,7 @@ impl ConnectionAdmission {
     }
 }
 
-#[derive(Debug, Clone, Extension)]
-struct AppliedH2Replay(Arc<[EarlyFrame]>);
-
+/// Set the profile's replay, the one field of the current HTTP/2 parameters it owns.
 fn apply_profile_h2_replay(
     input: &impl ExtensionsRef,
     replay: Arc<[EarlyFrame]>,
@@ -306,25 +336,12 @@ fn apply_profile_h2_replay(
         .get_ref::<H2ClientContextParams>()
         .cloned()
         .unwrap_or_default();
-
-    let installed_replay = input
-        .extensions()
-        .get_ref::<AppliedH2Replay>()
-        .map(|applied| &applied.0)
-        .zip(params.replay_early_frames.as_ref())
-        .is_some_and(|(installed, current)| Arc::ptr_eq(installed, current));
-
     for parameter in h2_wire_parameters(&params) {
-        // A repeated connection attempt may retain our previous replay input.
-        // A caller replacement, even with equal contents, is still an override.
-        if parameter == H2ClientParameter::ReplayEarlyFrames && installed_replay {
-            continue;
+        if parameter != H2ClientParameter::ReplayEarlyFrames {
+            report.push(ProfilePreservationDifference::RetainedH2ClientParameter { parameter });
         }
-        report.push(ProfilePreservationDifference::RetainedH2ClientParameter { parameter });
     }
-
-    params.replay_early_frames = Some(replay.clone());
-    input.extensions().insert(AppliedH2Replay(replay));
+    params.replay_early_frames = Some(replay);
     input.extensions().insert(params);
 }
 

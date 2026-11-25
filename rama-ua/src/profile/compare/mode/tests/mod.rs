@@ -1,11 +1,19 @@
 use super::*;
+#[cfg(feature = "tls")]
+use crate::profile::capture::{
+    joint::{CaptureLevel, CapturedSlot, JointCapture},
+    tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport},
+};
 use crate::profile::{
     capture::{
         completeness::ProfileCaptureCompleteness,
         http2::{H2Capture, H2CapturedFrame, H2CapturedSetting},
+        http3::bootstrap::H3BootstrapCapture,
     },
     compare::{CaptureComparisonLimits, compare_retained_captures},
+    format::canonical::ValueId,
 };
+use rama_http::{Method, proto::h3::observation::ObservedEncoderBindings};
 
 fn h2(ack: Option<usize>, window: u32, setting: u32) -> CanonicalValue {
     let mut frames = vec![
@@ -126,10 +134,6 @@ fn replay_validates_identity_and_resource_budgets_before_matching() {
 
 #[cfg(feature = "tls")]
 fn joint(cipher: u16, window: u32, ack: Option<usize>) -> CanonicalValue {
-    use crate::profile::capture::{
-        joint::{CaptureLevel, CapturedSlot, JointCapture},
-        tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport},
-    };
     JointCapture {
         completeness: ProfileCaptureCompleteness::Complete,
         level: CaptureLevel::Connection,
@@ -183,10 +187,6 @@ mod qpack;
 
 #[test]
 fn replay_rebinds_bootstrap_stream_without_changing_the_request_recipe() {
-    use crate::profile::{
-        capture::http3::bootstrap::H3BootstrapCapture, format::canonical::ValueId,
-    };
-    use rama_http::{Method, proto::h3::observation::ObservedEncoderBindings};
     let mut capture = H3BootstrapCapture {
         request: ValueId([1; 32]),
         method: Method::GET,

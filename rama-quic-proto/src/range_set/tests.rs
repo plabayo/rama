@@ -122,6 +122,105 @@ macro_rules! common_set_tests {
             }
 
             #[test]
+            fn empty_ranges_change_nothing() {
+                let mut set = $set_type::new();
+                assert!(!set.insert(3..3));
+                assert!(!set.remove(3..3));
+                assert!(set.is_empty());
+                assert!(set.insert(2..6));
+                #[expect(clippy::reversed_empty_ranges, reason = "an inverted range is empty")]
+                let inverted = 5..4;
+                for range in [0..0, 2..2, 4..4, 6..6, 9..9, inverted] {
+                    assert!(!set.insert(range.clone()), "insert {range:?}");
+                    assert!(!set.remove(range.clone()), "remove {range:?}");
+                    assert_eq!(set.len(), 1, "{range:?}");
+                    assert_eq!(
+                        &set.elts().collect::<Vec<_>>()[..],
+                        [2, 3, 4, 5],
+                        "{range:?}"
+                    );
+                }
+            }
+
+            #[test]
+            fn contains_on_empty_set() {
+                let set = $set_type::new();
+                assert!(!set.contains(0));
+                assert!(!set.contains(u64::MAX));
+            }
+
+            #[test]
+            fn contains_single_range_boundaries() {
+                let mut set = $set_type::new();
+                assert!(set.insert(5..8));
+                assert!(!set.contains(4));
+                assert!(set.contains(5));
+                assert!(set.contains(7));
+                assert!(!set.contains(8));
+            }
+
+            #[test]
+            fn contains_first_last_and_between_ranges() {
+                let mut set = $set_type::new();
+                for start in [0, 10, 20, 30, 40] {
+                    assert!(set.insert(start..start + 3));
+                }
+                assert_eq!(set.len(), 5);
+                assert!(set.contains(0));
+                assert!(set.contains(2));
+                assert!(!set.contains(3));
+                assert!(!set.contains(9));
+                assert!(set.contains(20));
+                assert!(set.contains(22));
+                assert!(!set.contains(25));
+                assert!(set.contains(40));
+                assert!(set.contains(42));
+                assert!(!set.contains(43));
+                assert!(!set.contains(u64::MAX));
+            }
+
+            #[test]
+            fn adjacent_inserts_merge_and_stay_contained() {
+                let mut set = $set_type::new();
+                assert!(set.insert(10..12));
+                assert!(set.insert(14..16));
+                assert!(set.insert(12..14));
+                assert_eq!(set.len(), 1);
+                assert!(set.insert(8..10));
+                assert!(set.insert(16..18));
+                assert_eq!(set.len(), 1);
+                assert_eq!(set.iter().next(), Some(8..18));
+                assert!(!set.contains(7));
+                assert!(set.contains(8));
+                assert!(set.contains(17));
+                assert!(!set.contains(18));
+            }
+
+            #[test]
+            fn remove_at_range_boundaries() {
+                let mut set = $set_type::new();
+                assert!(set.insert(0..4));
+                assert!(set.insert(8..12));
+                assert!(!set.remove(4..8));
+                assert_eq!(set.len(), 2);
+                assert!(set.remove(3..9));
+                assert_eq!(&set.elts().collect::<Vec<_>>()[..], [0, 1, 2, 9, 10, 11]);
+                assert!(!set.remove(12..20));
+                assert!(set.remove(11..20));
+                assert_eq!(set.max(), Some(10));
+            }
+
+            #[test]
+            fn compare_contains_to_reference() {
+                const MAX_RANGE: u64 = 50;
+
+                let (set, reference) = create_initial_sets(MAX_RANGE);
+                for x in 0..MAX_RANGE {
+                    assert_eq!(set.contains(x), reference.contains(x), "contains({x})");
+                }
+            }
+
+            #[test]
             fn compare_insert_to_reference() {
                 const MAX_RANGE: u64 = 50;
 
@@ -183,6 +282,9 @@ macro_rules! common_set_tests {
                 assert_eq!(set.len(), reference.len());
                 assert_eq!(set.is_empty(), reference.is_empty());
                 assert_eq!(set.elts().collect::<Vec<_>>()[..], reference.elts()[..]);
+                for x in 0..reference.data.len() as u64 {
+                    assert_eq!(set.contains(x), reference.contains(x), "contains({x})");
+                }
             }
         }
     };
@@ -251,6 +353,10 @@ impl RefRangeSet {
         }
 
         result
+    }
+
+    fn contains(&self, x: u64) -> bool {
+        self.data.get(x as usize).copied().unwrap_or(false)
     }
 
     fn elts(&self) -> Vec<u64> {

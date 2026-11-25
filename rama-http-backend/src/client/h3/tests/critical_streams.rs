@@ -2,7 +2,11 @@
 
 use super::*;
 use rama_core::{
-    Service as _, bytes::Bytes, extensions::ExtensionsRef as _, graceful::WeakScope, rt::spawn,
+    Service as _,
+    bytes::Bytes,
+    extensions::{Extensions, ExtensionsRef as _},
+    graceful::WeakScope,
+    rt::spawn,
 };
 use rama_http_core::h3::{
     client,
@@ -13,7 +17,7 @@ use rama_http_core::h3::{
 use rama_http_types::{
     Body,
     proto::h3::{
-        FrameType,
+        ClientSettingsProfile, FrameType, Setting, SettingId, Settings,
         control::{ClientControlFrame, ClientControlPreferences},
         critical_streams::{Order, Preferences, Startup},
         qpack::EncoderPreferences,
@@ -27,7 +31,7 @@ use rama_net::{
 };
 use rama_quic::{Endpoint, ServerConfig, tls::TlsOptions};
 use rama_tls::{
-    client::TlsClientConfig,
+    client::{TlsClientConfig, TlsProfilePreparation},
     server::{LeafCertRequest, ServerAuthData, TlsServerConfig},
 };
 use std::{collections::BTreeMap, time::Duration};
@@ -179,6 +183,94 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
             drop(streams);
         }
         server.close(0u32, b"fixture complete");
+        server.shutdown().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn final_preparation_settings_and_qpack_preferences_reach_the_peer() {
+    timeout(Duration::from_secs(15), async {
+        let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
+        let server_tls = TlsServerConfig::new()
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
+            .with_server_auth(identity.clone());
+        let server = Endpoint::bind_server(
+            WeakScope::detached(),
+            ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap(),
+            SocketAddress::local_ipv4(0),
+        )
+        .await
+        .unwrap();
+        let address = server.local_addr().unwrap();
+        let tls = TlsClientConfig::new()
+            .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
+            .unwrap();
+        let connector = Http3Connector::builder(WeakScope::detached())
+            .with_tls_config(tls)
+            .build_lazy()
+            .unwrap();
+        let settings = |capacity| {
+            let mut settings = Settings::new();
+            settings
+                .insert(Setting {
+                    id: SettingId::QPACK_MAX_TABLE_CAPACITY,
+                    value: capacity,
+                })
+                .unwrap();
+            ClientSettingsProfile(Arc::new(settings))
+        };
+        let early = settings(128);
+        let final_settings = settings(256);
+        let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(address.port()))
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions()
+            .insert(ConnectorTarget(HostWithPort::local_ipv4(address.port())));
+        input.extensions().insert(early);
+        let expected = final_settings.clone();
+        input
+            .extensions()
+            .insert(TlsProfilePreparation::new(move |_, _, request| {
+                request.insert(final_settings.clone());
+                request.insert(EncoderPreferences {
+                    target_capacity: Some(256),
+                    huffman: Some(false),
+                    ..EncoderPreferences::default()
+                });
+                Ok(Extensions::new())
+            }));
+        let (connected, peer) = tokio::join!(connector.serve(input), async {
+            server.accept().await.unwrap().await.unwrap()
+        });
+        let transport = connected.unwrap().conn;
+        assert_eq!(transport.config.encoder.target_capacity, 256);
+        assert!(!transport.config.encoder.huffman);
+        let connection = transport.connection.clone();
+        let (_sender, driver) = client::handshake::<Body, _>(
+            transport.connection,
+            Arc::unwrap_or_clone(transport.config),
+            WeakScope::detached(),
+        )
+        .unwrap();
+        let driver = spawn(driver.run());
+        let mut control = peer.accept_uni().await.unwrap();
+        let mut stream_type = [0];
+        control.read_exact(&mut stream_type).await.unwrap();
+        assert_eq!(stream_type, [0]);
+        let mut frames = FrameDecoder::new(1024);
+        let observed = loop {
+            let chunk = control.read_chunk(1024, true).await.unwrap().unwrap();
+            frames.feed(&chunk.bytes).unwrap();
+            if let Some(FrameEvent::Settings(settings)) = frames.poll().unwrap() {
+                break settings;
+            }
+        };
+        assert_eq!(observed, *expected.0);
+        connection.close(0u32.into(), b"verified");
+        peer.close(0u32, b"verified");
+        driver.abort();
         server.shutdown().await;
     })
     .await

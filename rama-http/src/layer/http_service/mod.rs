@@ -87,6 +87,8 @@ use rama_http_types::{
     },
     proto::h2::alt_svc::AltSvcObserverExtension,
 };
+#[cfg(feature = "tls")]
+use rama_net::address::HostRef;
 use rama_net::{
     Protocol,
     client::{
@@ -96,12 +98,13 @@ use rama_net::{
     },
     conn::ConnectionHealthWatcher,
     http::{HttpRequestVersion, TargetHttpVersion},
-    tls::ApplicationProtocol,
+    tls::{ApplicationProtocol, ServerName},
     transport::TransportProtocol,
 };
 #[cfg(feature = "tls")]
 use rama_tls::client::{
-    NegotiatedTlsParameters, TlsServerAuthenticatedAliases, TlsServerAuthentication,
+    EchDiscoveryComplete, NegotiatedTlsParameters, TlsServerAuthenticatedAliases,
+    TlsServerAuthentication,
 };
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{
@@ -350,7 +353,7 @@ pub(super) fn authenticates<C: ExtensionsRef>(connection: &C, origin: &HttpOrigi
         .extensions()
         .get_ref::<TlsServerAuthentication>()
         .and_then(|identity| identity.0.as_ref())
-        .is_some_and(|identity| identity == &origin.authority().host)
+        .is_some_and(|identity| HostRef::from(identity) == HostRef::from(&origin.authority().host))
         || authenticates_alias(connection, origin)
 }
 
@@ -366,7 +369,10 @@ fn authenticates_alias<C: ExtensionsRef>(connection: &C, origin: &HttpOrigin) ->
     extensions
         .get_ref::<TlsServerAuthentication>()
         .zip(extensions.get_ref::<TlsServerAuthenticatedAliases>())
-        .is_some_and(|(current, aliases)| aliases.authenticates(current, &origin.authority().host))
+        .is_some_and(|(current, aliases)| {
+            ServerName::try_from(&origin.authority().host)
+                .is_ok_and(|origin| aliases.authenticates(current, &origin))
+        })
 }
 
 #[cfg(not(feature = "tls"))]
@@ -650,6 +656,8 @@ where
             }
             return Ok(established);
         }
+        #[cfg(feature = "tls")]
+        input.extensions().insert(EchDiscoveryComplete);
         // Snapshot discovery once; freshness and route backoff are rechecked
         // before each attempt because other requests can update the shared cache.
         let origin = origin(&input);
@@ -703,10 +711,12 @@ where
 
                 // Change the route and required protocol, never the logical
                 // authority or TLS policy (RFC 7838 §§2, 2.3).
-                let state = Arc::new(
-                    HttpServiceAttempt::new()
-                        .with_authenticated_peer(origin.authority().host.clone()),
-                );
+                // A certificate can only authenticate an origin named by a server name.
+                let Ok(origin_server_name) = ServerName::try_from(&origin.authority().host) else {
+                    continue;
+                };
+                let state =
+                    Arc::new(HttpServiceAttempt::new().with_authenticated_peer(origin_server_name));
                 let attempt = input.fork();
                 attempt
                     .extensions()

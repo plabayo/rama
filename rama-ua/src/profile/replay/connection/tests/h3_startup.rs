@@ -263,8 +263,8 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
     });
     assert_eq!(
         lowered(&caller, &sequence, Some(&bootstrap), true),
-        [LoweredProfileItem::CallerHttp3Startup],
-        "caller startup conflict stays explicit"
+        [],
+        "the profile's startup replaces an earlier one"
     );
 
     for case in 0..5 {
@@ -304,10 +304,7 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
         target_capacity: Some(1024),
         ..EncoderPreferences::default()
     });
-    assert_eq!(
-        lowered(&conflict, &sequence, Some(&bootstrap), false),
-        [LoweredProfileItem::CallerQpackEncoding]
-    );
+    assert_eq!(lowered(&conflict, &sequence, Some(&bootstrap), false), []);
 }
 
 #[test]
@@ -337,16 +334,31 @@ fn capacity_only_prefix_announces_its_capacity_before_the_first_section() {
     assert_eq!(encoding.defer_dynamic_first_section, Some(false));
     assert_eq!(encoding.capacity_before_first_section, Some(true));
 
-    for (caller, expected) in [
-        (Some(true), &[][..]),
-        (Some(false), &[LoweredProfileItem::CallerQpackEncoding][..]),
-    ] {
+    // The profile sets its own fields over whatever the current preferences say.
+    for earlier in [Some(true), Some(false)] {
         let extensions = Extensions::new();
         extensions.insert(EncoderPreferences {
-            capacity_before_first_section: caller,
+            capacity_before_first_section: earlier,
+            huffman: Some(false),
             ..EncoderPreferences::default()
         });
-        assert_eq!(lowered(&extensions, &sequence, None, false), expected);
+        h3_startup::prepare(
+            &extensions,
+            Some(&sequence),
+            None,
+            false,
+            &mut ProfilePreservationReport::default(),
+        )
+        .unwrap()
+        .unwrap()
+        .apply(&extensions);
+        let encoding = extensions.get_ref::<EncoderPreferences>().unwrap();
+        assert_eq!(encoding.capacity_before_first_section, Some(true));
+        assert_eq!(
+            encoding.huffman,
+            Some(false),
+            "fields the profile does not set are kept"
+        );
     }
 }
 

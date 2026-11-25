@@ -10,7 +10,7 @@ use rama::{
     http::Request,
     layer::IntoErrLayer,
     net::{
-        address::ProxyAddress,
+        address::{ProxyAddress, ip::IntoCanonicalIpAddr as _},
         client::{
             BypassRules, ConnectRequest, ProxyAddressLayer, ProxyBypassLayer, ProxyRoute,
             ProxyRoutes, ProxyRoutesLayer,
@@ -231,8 +231,6 @@ fn proxy_route_targets_listener(route: &ProxyRoute, listeners: &[SocketAddr]) ->
 }
 
 fn socket_ip_overlaps(left: IpAddr, right: IpAddr) -> bool {
-    use rama::net::address::ip::IntoCanonicalIpAddr as _;
-
     let left = left.into_canonical_ip_addr();
     let right = right.into_canonical_ip_addr();
     left.is_ipv4() == right.is_ipv4()

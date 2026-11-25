@@ -280,6 +280,99 @@ fn icmp_errors_have_valid_checksums_and_bounded_quotations() {
     assert_eq!(IpPacketQuote::parse(&body[8..]).unwrap().source, h.source);
 }
 
+/// Every kind an error is encoded with is the kind its received message classifies as,
+/// except IPv4 source policy, which RFC 792 has no code for and goes out as prohibited.
+#[test]
+fn encoded_icmp_errors_classify_as_the_kind_they_carry() {
+    let kinds = [
+        IcmpErrorKind::NoRoute,
+        IcmpErrorKind::HostUnreachable,
+        IcmpErrorKind::PortUnreachable,
+        IcmpErrorKind::AdministrativelyProhibited,
+        IcmpErrorKind::SourcePolicy,
+        IcmpErrorKind::PacketTooBig { mtu: 1280 },
+        IcmpErrorKind::HopLimitExceeded,
+    ];
+    let mut original = [0; 128];
+    let mut reply = [0; 1280];
+    for kind in kinds {
+        let n = ipv4().encode(&[], b"invoking", &mut original).unwrap();
+        let invoking = IpPacket::parse(&original[..n]).unwrap();
+        let n = encode_icmp_error(invoking, ipv4().destination.into(), kind, &mut reply)
+            .unwrap()
+            .unwrap();
+        let body = IpPacket::parse(&reply[..n])
+            .unwrap()
+            .upper_layer_payload()
+            .unwrap()
+            .to_vec();
+        let mtu = u32::from(u16::from_be_bytes([body[6], body[7]]));
+        let expected = match kind {
+            IcmpErrorKind::SourcePolicy => IcmpErrorKind::AdministrativelyProhibited,
+            kind => kind,
+        };
+        assert_eq!(
+            IcmpErrorKind::from_icmpv4(body[0], body[1], mtu),
+            Some(expected),
+            "{kind:?}"
+        );
+
+        let h = ipv6(IpProtocol::UDP);
+        let n = h.encode(b"invoking", &mut original).unwrap();
+        let invoking = IpPacket::parse(&original[..n]).unwrap();
+        let n = encode_icmp_error(invoking, h.destination.into(), kind, &mut reply)
+            .unwrap()
+            .unwrap();
+        let body = IpPacket::parse(&reply[..n])
+            .unwrap()
+            .upper_layer_payload()
+            .unwrap()
+            .to_vec();
+        let mtu = u32::from_be_bytes([body[4], body[5], body[6], body[7]]);
+        assert_eq!(
+            IcmpErrorKind::from_icmpv6(body[0], body[1], mtu),
+            Some(kind),
+            "{kind:?}"
+        );
+    }
+}
+
+/// Informational messages and errors without a modelled condition keep only their type and
+/// code, in the report's origin.
+#[test]
+fn unmodelled_icmp_messages_keep_their_type_and_code() {
+    // Echo reply, reassembly time exceeded, parameter problem, protocol unreachable.
+    for (icmp_type, code) in [(0, 0), (11, 1), (12, 0), (3, 2)] {
+        let report = IcmpErrorReport::icmpv4(icmp_type, code, 0);
+        assert_eq!(report.kind(), None);
+        assert_eq!(report.origin(), IcmpErrorOrigin::Icmpv4 { icmp_type, code });
+    }
+    // Echo reply, reassembly time exceeded, parameter problem, beyond scope of source.
+    for (icmp_type, code) in [(129, 0), (3, 1), (4, 0), (1, 2)] {
+        let report = IcmpErrorReport::icmpv6(icmp_type, code, 0);
+        assert_eq!(report.kind(), None);
+        assert_eq!(report.origin(), IcmpErrorOrigin::Icmpv6 { icmp_type, code });
+    }
+    // The MTU is read only from a packet-too-big message.
+    assert_eq!(
+        IcmpErrorReport::icmpv4(3, 4, 1400).kind(),
+        Some(IcmpErrorKind::PacketTooBig { mtu: 1400 })
+    );
+    assert_eq!(
+        IcmpErrorReport::icmpv4(3, 3, 1400).kind(),
+        Some(IcmpErrorKind::PortUnreachable)
+    );
+    let local = IcmpErrorReport::local(None)
+        .with_destination(crate::address::SocketAddress::local_ipv4(53))
+        .with_reporter(Ipv4Addr::LOCALHOST.into());
+    assert_eq!(local.origin(), IcmpErrorOrigin::Local);
+    assert_eq!(
+        local.destination(),
+        Some(crate::address::SocketAddress::local_ipv4(53))
+    );
+    assert_eq!(local.reporter(), Some(Ipv4Addr::LOCALHOST.into()));
+}
+
 #[test]
 fn arbitrary_inputs_and_single_byte_mutations_are_panic_free() {
     fn inspect(bytes: &[u8]) {

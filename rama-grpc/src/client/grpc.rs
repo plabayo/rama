@@ -2,6 +2,7 @@ use std::{fmt, pin::pin};
 
 use rama_core::{
     error::BoxError,
+    extensions::ExtensionsRef as _,
     futures::Stream,
     stream::{self, StreamExt},
 };
@@ -15,7 +16,8 @@ use crate::{
     Code, Request, Response, Status,
     client::GrpcService,
     codec::{
-        Codec, CompressionEncoding, Decoder, EnabledCompressionEncodings, EncodeBody, Streaming,
+        Codec, CompressionEncoding, DEFAULT_MAX_RECV_MESSAGE_SIZE, Decoder,
+        EnabledCompressionEncodings, EncodeBody, MaxDecodingMessageSize, Streaming,
     },
     request::SanitizeHeaders,
     status::metadata_limit_exceeded,
@@ -96,6 +98,9 @@ impl<T> Grpc<T> {
 
     rama_utils::macros::generate_set_and_with! {
         /// Limits the maximum size of a decoded message.
+        ///
+        /// A grpc-web client transport ([`crate::web::GrpcWebClientService`]) bounds
+        /// the response message frames it buffers by this same limit.
         pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.config.max_decoding_message_size = Some(limit);
             self
@@ -296,6 +301,12 @@ impl GrpcConfig {
             rama_http_types::Version::HTTP_2,
             SanitizeHeaders::Yes,
         );
+
+        // Written on every call, so a limit inherited from another client's request never applies.
+        request.extensions().insert(MaxDecodingMessageSize(
+            self.max_decoding_message_size
+                .unwrap_or(DEFAULT_MAX_RECV_MESSAGE_SIZE),
+        ));
 
         // Add the gRPC related HTTP headers
         request.headers_mut().typed_insert(Te::trailers());

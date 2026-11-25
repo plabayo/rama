@@ -1,19 +1,23 @@
 mod index;
 
+use std::{ptr, sync::Arc};
+
+use ahash::HashMap;
+use index::ProfileVersionIndex;
+pub use index::{ProfileCandidate, ProfileCandidateFilter, ProfileCapabilities, ProfileVersion};
+use rama_core::error::BoxError;
+
+#[cfg(feature = "tls")]
+use crate::profile::selection::variants::derived::DatabaseEvidence;
+
 use crate::profile::{
     format::{
         archive::{ProfileArchiveLimits, load_profile_archive},
         canonical::ProfileDataError,
     },
+    model::ua::UserAgentProfile,
     selection::variants::shapes::RequestShapeCache,
 };
-use ahash::HashMap;
-use index::ProfileVersionIndex;
-pub use index::{ProfileCandidate, ProfileCandidateFilter, ProfileCapabilities, ProfileVersion};
-use rama_core::error::BoxError;
-use std::{ptr, sync::Arc};
-
-use crate::profile::model::ua::UserAgentProfile;
 
 #[derive(Debug, Default)]
 /// In-memory catalogue of captured user-agent profiles.
@@ -23,6 +27,8 @@ use crate::profile::model::ua::UserAgentProfile;
 pub struct UserAgentDatabase {
     profiles: Vec<UserAgentProfile>,
     request_shapes: Vec<Option<Arc<RequestShapeCache>>>,
+    #[cfg(feature = "tls")]
+    pub(crate) derived_evidence: Arc<DatabaseEvidence>,
     version_index: ProfileVersionIndex,
     map_ua_string: HashMap<Box<str>, Vec<usize>>,
 }
@@ -127,6 +133,10 @@ impl UserAgentDatabase {
     /// Insert a new [`UserAgentProfile`] into the database,
     /// also indexing it by its User-Agent header value.
     pub fn insert(&mut self, profile: UserAgentProfile) {
+        #[cfg(feature = "tls")]
+        if let Some(analysis) = &profile.captured {
+            Arc::make_mut(&mut self.derived_evidence).insert(Arc::clone(analysis));
+        }
         let index = self.profiles.len();
         self.version_index.insert(&profile.key, index);
         if let Some(ua_header) = profile.ua_str() {

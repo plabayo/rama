@@ -2,15 +2,17 @@
 
 use std::time::SystemTime;
 
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
+use rcgen::{PublicKeyData as _, SanType};
+use time::{OffsetDateTime, SignedDuration};
+
 use super::{
-    CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
+    CanonicalIdentity, CertificateAuthorityData, CertificateKeyKind, CertificateSubject,
     CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, LeafCertUsage,
-    SelfSignedCaConfig, validate_certificate_lifetime, validate_leaf_request,
+    SelfSignedCaConfig, unique_canonical_identities, validate_certificate_lifetime,
+    validate_leaf_request,
 };
 use crate::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
-use rcgen::PublicKeyData as _;
-use time::{OffsetDateTime, SignedDuration};
 
 pub(super) fn validate_certificate_authority_key(
     certificate: &CertificateDer<'_>,
@@ -147,19 +149,17 @@ fn leaf_params(
     let mut params = rcgen::CertificateParams::new(Vec::new())
         .context("certificate leaf: create certificate parameters")?;
     params.distinguished_name = rcgen::DistinguishedName::new();
-    for identity in &request.identities {
+    for identity in unique_canonical_identities(&request.identities) {
         let san = match identity {
-            CertificateIdentity::Dns(domain) => rcgen::SanType::DnsName(
+            CanonicalIdentity::Dns(domain) => SanType::DnsName(
                 domain
                     .as_str()
                     .try_into()
                     .context("certificate leaf: encode DNS SAN")?,
             ),
-            CertificateIdentity::Ip(ip) => rcgen::SanType::IpAddress(*ip),
+            CanonicalIdentity::Ip(ip) => SanType::IpAddress(ip),
         };
-        if !params.subject_alt_names.contains(&san) {
-            params.subject_alt_names.push(san);
-        }
+        params.subject_alt_names.push(san);
     }
     apply_subject(&mut params, &request.config.subject);
     params.is_ca = rcgen::IsCa::ExplicitNoCa;

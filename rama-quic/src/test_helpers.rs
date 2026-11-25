@@ -12,6 +12,10 @@ use rama_tls::{
     server::{LeafCertRequest, ServerAuthData, TlsServerConfig},
 };
 
+#[cfg(feature = "boring")]
+#[path = "../tests/support/ech_keys/mod.rs"]
+pub(crate) mod ech_keys;
+
 pub(crate) fn identity() -> ServerAuthData {
     ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap()
 }

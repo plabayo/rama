@@ -752,7 +752,6 @@ mod tests {
     }
 
     async fn unknown_cid_path_retirement(retire: bool) {
-        use rama_udp::DatagramSenderExt as _;
         let identity = crate::test_helpers::identity();
         let ingress = QuicMitmIngress::new(
             WeakScope::detached(),

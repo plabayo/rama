@@ -60,10 +60,9 @@ pub trait Session: Send + Sync + 'static {
     /// emits `HandshakeDataReady`.
     fn handshake_summary(&self) -> Option<NegotiatedTlsParameters>;
 
-    /// ECH acceptance after authenticated handshake completion; unknown by default.
-    fn ech_accepted(&self) -> Option<bool> {
-        None
-    }
+    /// ECH acceptance after authenticated handshake completion; `None` when unknown.
+    /// A server without ECH keys reports `None`.
+    fn ech_accepted(&self) -> Option<bool>;
 
     /// Effective server ClientHello after successful handshake completion.
     /// With accepted ECH this is the decrypted inner, not the wire observation.

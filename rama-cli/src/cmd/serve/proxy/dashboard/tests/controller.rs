@@ -1,16 +1,18 @@
 use super::*;
-use crate::cmd::serve::proxy::{control::Config as ControlConfig, mitm_policy::ScopeMode};
+use crate::cmd::serve::proxy::{
+    control::{Config as ControlConfig, ControlConnection, Message},
+    mitm_policy::ScopeMode,
+};
 
 #[tokio::test]
 async fn pending_traffic_uses_request_rows_without_creating_captures() {
-    use crate::cmd::serve::proxy::control::{Config, ControlConnection, Message};
     let state = test_state();
     state.ensure_session("known");
     let control = state.capture.control();
     control
         .configure(
             0,
-            Config {
+            ControlConfig {
                 enabled: true,
                 ..Default::default()
             },

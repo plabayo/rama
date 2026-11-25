@@ -1,10 +1,13 @@
 //! End-to-end loopback comparison. Run explicitly in release mode; never a CI timing gate.
 //! Same native UDP transports, demux, TLS and relay in every case. Only optional migration routing, policy watching and
 //! the number of port changes differ. Setup/handshake is excluded and cases rotate per round.
-use super::*;
+use std::time::Instant;
+
 use rama_net::{address::SocketAddress, stream::Socket as _};
 use rama_udp::{DatagramDemux, DemuxConfig, UdpPacketSocket, proxy::DatagramToProxyBridge};
-use std::time::Instant;
+use rama_utils::octets::{kib, mib};
+
+use super::*;
 
 #[derive(Clone, Copy)]
 struct Scenario {
@@ -129,7 +132,7 @@ async fn sample(scenario: Scenario, payload_bytes: usize) -> Sample {
             queue: rama_utils::macros::nonzero!(256),
             idle_timeout: Duration::from_secs(30),
             receive_bytes: rama_utils::macros::nonzero!(65536),
-            queued_bytes: NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
+            queued_bytes: NonZeroUsize::new(mib(16)).unwrap(),
         },
     );
     let demux_scope = weak_scope.clone();
@@ -141,7 +144,7 @@ async fn sample(scenario: Scenario, payload_bytes: usize) -> Sample {
                 let connection = incoming.await.unwrap();
                 while let Ok((mut send, mut recv)) = connection.accept_bi().await {
                     tokio::spawn(async move {
-                        let payload = recv.read_to_end(2 * 1024 * 1024).await.unwrap();
+                        let payload = recv.read_to_end(mib(2)).await.unwrap();
                         send.write_all(&payload).await.unwrap();
                         send.finish().unwrap();
                     });
@@ -372,7 +375,7 @@ async fn compare_native_relay_migration() {
     for round in 0..=rounds {
         for offset in 0..selected.len() {
             let index = selected[(round + offset) % selected.len()];
-            let measured = timeout(Duration::from_secs(60), sample(cases[index], 1024 * 1024))
+            let measured = timeout(Duration::from_mins(1), sample(cases[index], mib(1)))
                 .await
                 .unwrap();
             if round == 0 {
@@ -403,7 +406,7 @@ async fn retired_peer_tuple_can_move_to_another_independent_connection() {
                 rebinds: 1,
                 reuse_peer: true,
             },
-            1024,
+            kib(1),
         ),
     )
     .await

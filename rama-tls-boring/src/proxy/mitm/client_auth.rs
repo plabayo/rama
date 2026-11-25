@@ -19,7 +19,7 @@ use rama_core::{
     layer::MapErr,
     service::{BoxService, service_fn},
 };
-use rama_net::address::Host;
+use rama_net::tls::ServerName;
 use rama_tls::client::ClientAuth;
 use std::{convert::Infallible, fmt};
 
@@ -97,7 +97,7 @@ impl TlsMitmCertificateAuthorities {
 pub struct TlsMitmClientAuthInput {
     pub request: Option<TlsMitmCertificateRequest>,
     pub extensions: Extensions,
-    pub server_name: Option<Host>,
+    pub server_name: Option<ServerName>,
     /// The upstream certificate, subject to the configured egress verification policy.
     pub server_certificate: X509,
 }

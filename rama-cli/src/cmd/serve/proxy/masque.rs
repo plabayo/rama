@@ -107,7 +107,7 @@ where
             .client_hello
             .ext_server_name()
             .cloned()
-            .map(Host::Name);
+            .map(Host::from);
         let should_inspect = self
             .policy
             .should_inspect_target_and_host(input.input.extensions(), sni.as_ref());

@@ -144,6 +144,27 @@ fn foreign_stale_empty_and_corrupt_sets_are_refused() {
 }
 
 #[test]
+fn baseline_sets_refuse_paired_ech_slots() {
+    assert_eq!(EMBEDDED[MAGIC.len()], ECH_FORMAT_VERSION);
+    let profiles = decode_compiled_profiles(EMBEDDED).unwrap();
+    assert!(has_paired_ech(&profiles).unwrap());
+    let mut baseline = EMBEDDED.to_vec();
+    baseline[MAGIC.len()] = FORMAT_VERSION;
+    let error = decode_compiled_profiles(&baseline).unwrap_err();
+    assert!(error.to_string().contains("paired ECH"), "{error}");
+
+    let mut unknown = EMBEDDED.to_vec();
+    unknown[MAGIC.len()] = ECH_FORMAT_VERSION + 1;
+    let error = format!("{:?}", decode_compiled_profiles(&unknown).unwrap_err());
+    for supported in [FORMAT_VERSION, ECH_FORMAT_VERSION] {
+        assert!(
+            error.contains(&format!("\"supported\": {supported}")),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn sets_without_a_content_size_are_refused() {
     let profiles = decode_compiled_profiles(EMBEDDED).unwrap();
     let mut unsized_frame = MAGIC.to_vec();

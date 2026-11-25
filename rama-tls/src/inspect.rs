@@ -9,6 +9,7 @@ use crate::{
     ProtocolVersion, SecureTransport,
     client::{ClientHello, NegotiatedTlsAlgorithms, NegotiatedTlsParameters},
     fingerprint::{Ja3, Ja4, PeetPrint},
+    server::{EchServerObservation, ServerEchAccepted, ServerHandshakeHellos},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,26 +45,33 @@ impl TlsObservation {
     /// Retain one typed observation per observed connection. Repeated HTTP streams
     /// share this value instead of copying TLS fingerprints into every exchange.
     pub fn capture(source: &Extensions, observations: &rama_inspect::Observations) {
-        if let Some(accepted) = source.get_ref::<crate::server::ServerEchAccepted>() {
-            observations.get_or_insert(|| *accepted);
-        }
-        if let Some(outer) = source.get_ref::<crate::server::EchServerObservation>() {
-            observations.get_or_insert(|| outer.clone());
-        }
         if observations.contains::<Self>() {
             return;
         }
-        let transport = source.get_ref::<SecureTransport>();
         let parameters = source.get_ref::<NegotiatedTlsParameters>();
-        if transport.is_none() && parameters.is_none() {
+        if !source.contains::<ServerHandshakeHellos>()
+            && !source.contains::<SecureTransport>()
+            && parameters.is_none()
+        {
             return;
         }
+        let hellos = observations
+            .get_or_insert(|| ServerHandshakeHellos::capture(source))
+            .hellos();
+        if let Some(accepted) = hellos.ech_accepted() {
+            observations.get_or_insert(|| ServerEchAccepted::new(accepted));
+            if accepted && let Some(outer) = hellos.wire() {
+                observations.get_or_insert(|| EchServerObservation::new(outer.clone()));
+            }
+        }
+        let client_hello = hellos.effective();
         observations.get_or_insert(|| Self {
-            client_hello: transport.and_then(SecureTransport::client_hello).cloned(),
+            client_hello: client_hello.cloned(),
             parameters: parameters.map(CapturedTlsParameters::from),
-            ja3: Ja3::compute(source).ok(),
-            ja4: Ja4::compute(source).ok(),
-            peetprint: PeetPrint::compute(source).ok(),
+            ja3: client_hello.and_then(|hello| Ja3::compute_from_client_hello(hello).ok()),
+            ja4: client_hello.and_then(|hello| Ja4::compute_from_client_hello(hello).ok()),
+            peetprint: client_hello
+                .and_then(|hello| PeetPrint::compute_from_client_hello(hello).ok()),
         });
     }
 }
@@ -81,5 +89,115 @@ impl TlsObservation {
                 .peetprint
                 .as_ref()
                 .is_some_and(|value| matches_display(value, query))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use rama_inspect::Observations;
+
+    use super::*;
+    use crate::{CipherSuite, CompressionAlgorithm, server::publish_server_client_hellos};
+
+    fn hello(suite: u16) -> ClientHello {
+        ClientHello::new(
+            ProtocolVersion::TLSv1_3,
+            vec![CipherSuite::from(suite)],
+            vec![CompressionAlgorithm::from(0)],
+            vec![],
+        )
+    }
+
+    fn suite(hello: Option<&ClientHello>) -> Option<CipherSuite> {
+        hello.map(|hello| hello.cipher_suites()[0])
+    }
+
+    #[test]
+    fn capturing_before_tls_publication_does_not_freeze_an_empty_view() {
+        let source = Extensions::new();
+        let observations = Observations::default();
+        TlsObservation::capture(&source, &observations);
+        assert!(!observations.contains::<Arc<ServerHandshakeHellos>>());
+        source.insert(SecureTransport::with_client_hello(hello(2)));
+        publish_server_client_hellos(&source, Some(true), Some(hello(1)));
+        TlsObservation::capture(&source, &observations);
+        let observed = observations.get_ref::<TlsObservation>().unwrap();
+        assert_eq!(
+            suite(observed.client_hello.as_ref()),
+            Some(CipherSuite::from(1))
+        );
+        assert_eq!(observed.ja3, Ja3::compute_from_client_hello(&hello(1)).ok());
+    }
+
+    #[test]
+    fn fingerprints_use_the_same_view_as_the_retained_hello_snapshot() {
+        let source = Extensions::new();
+        source.insert(SecureTransport::with_client_hello(hello(2)));
+        let observations = Observations::default();
+        observations.get_or_insert(|| ServerHandshakeHellos::capture(&source));
+        publish_server_client_hellos(&source, Some(true), Some(hello(1)));
+        TlsObservation::capture(&source, &observations);
+        let hellos = observations
+            .get_ref::<Arc<ServerHandshakeHellos>>()
+            .unwrap()
+            .hellos();
+        assert_eq!(hellos.ech_accepted(), None);
+        assert_eq!(
+            suite(hellos.effective()),
+            suite(
+                observations
+                    .get_ref::<TlsObservation>()
+                    .unwrap()
+                    .client_hello
+                    .as_ref()
+            )
+        );
+    }
+
+    #[test]
+    fn a_capture_during_ech_publication_records_one_consistent_state() {
+        // Publication has inserted its snapshot but none of the separate values yet.
+        let published = Extensions::new();
+        published.insert(SecureTransport::with_client_hello(hello(2)));
+        publish_server_client_hellos(&published, Some(true), Some(hello(1)));
+        let half = Extensions::new();
+        half.insert(SecureTransport::with_client_hello(hello(2)));
+        half.insert(
+            published
+                .get_ref::<ServerHandshakeHellos>()
+                .unwrap()
+                .clone(),
+        );
+
+        for source in [&half, &published] {
+            let observations = Observations::default();
+            TlsObservation::capture(source, &observations);
+            assert_eq!(
+                observations.get_ref::<ServerEchAccepted>().copied(),
+                Some(ServerEchAccepted::new(true))
+            );
+            assert_eq!(
+                suite(
+                    observations
+                        .get_ref::<EchServerObservation>()
+                        .map(|observation| &observation.outer)
+                ),
+                Some(CipherSuite::from(2))
+            );
+            let hellos = observations
+                .get_ref::<Arc<ServerHandshakeHellos>>()
+                .unwrap()
+                .hellos();
+            assert_eq!(hellos.ech_accepted(), Some(true));
+            assert_eq!(suite(hellos.wire()), Some(CipherSuite::from(2)));
+            let observed = observations.get_ref::<TlsObservation>().unwrap();
+            assert_eq!(
+                suite(observed.client_hello.as_ref()),
+                Some(CipherSuite::from(1))
+            );
+            assert_eq!(observed.ja3, Ja3::compute_from_client_hello(&hello(1)).ok());
+        }
     }
 }

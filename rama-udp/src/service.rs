@@ -101,6 +101,9 @@ impl UdpSocketConfig {
     /// this configuration's [`SocketOptions`] are applied to an already bound socket. A socket
     /// whose capabilities do not meet a required feature is refused, and the socket is dropped
     /// with the error rather than returned.
+    ///
+    /// On Windows an unconnected socket stops reporting port-unreachable replies; connecting
+    /// it later through a handle the caller kept does not turn that back on.
     pub fn wrap_core(
         &self,
         socket: rama_net::socket::core::Socket,

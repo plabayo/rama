@@ -4852,8 +4852,8 @@ dependencies = [
  "core-foundation 0.10.1",
  "hmac",
  "jni",
+ "libc",
  "ndk-context",
- "openssl-probe",
  "parking_lot 0.13.0",
  "rama-boring",
  "rama-core",
@@ -4887,7 +4887,6 @@ dependencies = [
  "arc-swap",
  "base64 0.23.1",
  "cc",
- "dial9",
  "dial9-trace-format",
  "hickory-resolver",
  "libc",
@@ -5389,7 +5388,6 @@ dependencies = [
  "socket2",
  "tokio",
  "tokio-test",
- "tokio-util",
  "windows-sys 0.61.2",
 ]
 
@@ -5675,7 +5673,6 @@ dependencies = [
  "rama-ttrpc-build",
  "rama-utils",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]

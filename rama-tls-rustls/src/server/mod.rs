@@ -13,6 +13,7 @@
 //!   Example of how to do mTls (manual Tls, where the client also needs a certificate) using rama,
 //!   as well as how one might use this concept to provide a tunnel service build with these concepts;
 
+mod observe;
 mod service;
 #[doc(inline)]
 pub use service::TlsAcceptorService;
@@ -36,3 +37,7 @@ pub use config::{
 mod tls_stream;
 #[doc(inline)]
 pub use tls_stream::{RustlsTlsStream, TlsStream};
+
+#[cfg(test)]
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+mod resumption_tests;

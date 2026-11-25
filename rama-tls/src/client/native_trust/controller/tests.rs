@@ -1,14 +1,21 @@
-use super::*;
-use crate::client::ChannelReloadTrigger;
-use rama_core::futures::Stream as _;
+use std::{
+    cell::Cell,
+    io,
+    pin::{Pin, pin},
+    sync::{atomic::AtomicUsize, mpsc::sync_channel},
+    thread,
+};
+
+use rama_core::futures::{
+    Stream as _, StreamExt as _, channel::mpsc, future::join_all, stream::poll_fn,
+};
 use rama_crypto::native_certs::bundled_root_certs;
-use std::pin::Pin;
+
+use super::*;
+use crate::client::{ChannelReloadTrigger, native_trust::warn_capture::WarnCapture};
 
 #[test]
 fn a_user_stream_is_polled_only_after_its_waker_fires() {
-    use rama_core::futures::{channel::mpsc, stream::poll_fn};
-    use std::sync::atomic::AtomicUsize;
-
     let (mut send, mut events) = mpsc::channel(1);
     let polls = AtomicUsize::new(0);
     let polls = Arc::new(polls);
@@ -51,6 +58,48 @@ fn a_user_stream_is_polled_only_after_its_waker_fires() {
 }
 
 #[test]
+fn callers_joining_a_refresh_consume_queued_events_first() {
+    let (sender, trigger) = ChannelReloadTrigger::new();
+    let consumed = Arc::new(AtomicUsize::new(0));
+    let counted = trigger.inspect({
+        let consumed = consumed.clone();
+        move |()| {
+            consumed.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let reload = NativeTrustReload::new(NativeTrustScope::PlatformExtras, Some(Box::pin(counted)));
+    let anchors = bundled_root_certs()[..1].to_vec();
+    let current = reload
+        .pin_with(None, |_| Ok((anchors.clone(), false)))
+        .unwrap();
+
+    sender.request_reload().unwrap();
+    let PinAction::Refresh(leader) = reload.prepare_pin(None) else {
+        panic!("expected native trust refresh");
+    };
+    assert_eq!(consumed.load(Ordering::Relaxed), 1);
+
+    // An event queued during the refresh is consumed by whoever pins next,
+    // whether it reuses the current snapshot or waits for the refresh.
+    sender.request_reload().unwrap();
+    let PinAction::Ready(Ok(reused)) = reload.prepare_pin(None) else {
+        panic!("a fresh snapshot is served during a refresh");
+    };
+    assert!(Arc::ptr_eq(&current, &reused));
+    assert_eq!(consumed.load(Ordering::Relaxed), 2);
+
+    sender.request_reload().unwrap();
+    let PinAction::Wait(..) = reload.prepare_pin(Some(Duration::ZERO)) else {
+        panic!("a stale snapshot joins the refresh");
+    };
+    assert_eq!(consumed.load(Ordering::Relaxed), 3);
+
+    leader.run(None, |_| Ok((anchors.clone(), false))).unwrap();
+    let after_publication = reload.pin_with(None, |_| Ok((Vec::new(), false))).unwrap();
+    assert!(after_publication.is_empty());
+}
+
+#[test]
 fn refresh_retries_without_another_request_and_preserves_equal_generations() {
     let (sender, trigger) = ChannelReloadTrigger::new();
     let reload = NativeTrustReload::new(NativeTrustScope::Full, Some(Box::pin(trigger)));
@@ -61,7 +110,7 @@ fn refresh_retries_without_another_request_and_preserves_equal_generations() {
     sender.request_reload().unwrap();
     let failed = reload
         .pin_with(None, |_| {
-            Err(std::io::Error::from(std::io::ErrorKind::InvalidData).into())
+            Err(io::Error::from(io::ErrorKind::InvalidData).into())
         })
         .unwrap();
     assert!(Arc::ptr_eq(&original, &failed));
@@ -90,14 +139,12 @@ fn set_retry_at(reload: &NativeTrustReload, retry_at: Instant) {
 
 #[test]
 fn retry_backoff_grows_to_a_cap_and_resets_after_trigger_or_success() {
-    use std::cell::Cell;
-
     let (sender, trigger) = ChannelReloadTrigger::new();
     let reload = NativeTrustReload::new(NativeTrustScope::Full, Some(Box::pin(trigger)));
     let reads = Cell::new(0);
     let fail = |_| {
         reads.set(reads.get() + 1);
-        Err(std::io::Error::from(std::io::ErrorKind::InvalidData).into())
+        Err(io::Error::from(io::ErrorKind::InvalidData).into())
     };
     let assert_failed_read = |delay| {
         let started = Instant::now();
@@ -153,9 +200,6 @@ fn retry_backoff_grows_to_a_cap_and_resets_after_trigger_or_success() {
 
 #[test]
 fn async_refresh_waiters_share_one_blocking_worker_after_leader_cancellation() {
-    use rama_core::futures::future::join_all;
-    use std::pin::pin;
-
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .max_blocking_threads(2)
@@ -215,9 +259,9 @@ fn concurrent_handshakes_keep_a_fresh_pinned_snapshot_until_publication() {
         .unwrap();
 
     sender.request_reload().unwrap();
-    std::thread::scope(|scope| {
-        let (entered, waiting) = std::sync::mpsc::sync_channel(0);
-        let (resume, paused) = std::sync::mpsc::sync_channel(0);
+    thread::scope(|scope| {
+        let (entered, waiting) = sync_channel(0);
+        let (resume, paused) = sync_channel(0);
         let reload = &reload;
         let refreshing = scope.spawn(move || {
             reload
@@ -247,4 +291,60 @@ fn concurrent_handshakes_keep_a_fresh_pinned_snapshot_until_publication() {
         };
         assert!(Arc::ptr_eq(&updated, &next));
     });
+}
+
+#[test]
+fn an_ended_trigger_warns_once_and_is_not_polled_again() {
+    let polls = Arc::new(AtomicUsize::new(0));
+    let stream = poll_fn({
+        let polls = polls.clone();
+        move |_| {
+            polls.fetch_add(1, Ordering::Relaxed);
+            Poll::<Option<()>>::Ready(None)
+        }
+    });
+    let reload = NativeTrustReload::new(NativeTrustScope::Full, Some(Box::pin(stream)));
+    let anchors = bundled_root_certs();
+    let capture = WarnCapture::default();
+    capture.record(|| {
+        let first = reload
+            .pin_with(None, |_| Ok((anchors[..1].to_vec(), false)))
+            .unwrap();
+        for _ in 0..8 {
+            // A stray wake must not reach the finished stream.
+            reload.0.wake.0.store(true, Ordering::Release);
+            let PinAction::Ready(Ok(next)) = reload.prepare_pin(None) else {
+                panic!("an ended trigger must keep the current snapshot");
+            };
+            assert!(Arc::ptr_eq(&first, &next));
+        }
+    });
+    assert_eq!(polls.load(Ordering::Relaxed), 1);
+    assert_eq!(capture.warnings(), 1);
+}
+
+#[test]
+fn ready_pins_never_load_and_leave_events_for_the_next_pin() {
+    let (sender, trigger) = ChannelReloadTrigger::new();
+    let reload = NativeTrustReload::new(NativeTrustScope::Full, Some(Box::pin(trigger)));
+    assert!(reload.pin_ready(None).is_none());
+
+    let anchors = bundled_root_certs();
+    let original = reload
+        .pin_with(None, |_| Ok((anchors[..1].to_vec(), false)))
+        .unwrap();
+    assert!(Arc::ptr_eq(&original, &reload.pin_ready(None).unwrap()));
+    assert!(reload.pin_ready(Some(Duration::ZERO)).is_none());
+
+    sender.request_reload().unwrap();
+    for _ in 0..2 {
+        assert!(reload.pin_ready(None).is_none());
+    }
+    let PinAction::Refresh(job) = reload.prepare_pin(None) else {
+        panic!("a consumed event refreshes on the next pin");
+    };
+    let updated = job
+        .run(None, |_| Ok((anchors[1..2].to_vec(), false)))
+        .unwrap();
+    assert!(Arc::ptr_eq(&updated, &reload.pin_ready(None).unwrap()));
 }

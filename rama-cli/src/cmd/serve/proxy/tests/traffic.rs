@@ -1,7 +1,19 @@
 use rama::{
     futures::stream,
-    http::{HeaderMap, body::Frame, header},
-    net::{Protocol, stream::SocketAddresses},
+    graceful::WeakScope,
+    http::{
+        HeaderMap, Version,
+        body::Frame,
+        client::http_connect,
+        core::h2,
+        header,
+        inspect::control::{Config, ControlConnection, Decision, ResponseSpec},
+        proto::h2::{PseudoHeader, PseudoHeaderOrder},
+        proxy::mitm::HttpMitmRelay,
+    },
+    io::BridgeIo,
+    layer::ArcLayer,
+    net::{Protocol, stream::SocketAddresses, test_utils::client::MockSocket},
 };
 
 use super::*;
@@ -375,21 +387,83 @@ async fn https_connect_is_mitm_relayed_end_to_end() {
     origin_task.abort();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mitm_relays_the_client_pseudo_header_order_from_inside_the_tunnel() {
+    let origin_listener =
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
+            .await
+            .unwrap();
+    let origin_address = origin_listener.local_addr().unwrap();
+    let origin_tls = TlsServerConfig::new()
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
+        .unwrap()
+        .with_alpn_http_auto();
+    let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
+    let origin_http =
+        HttpServer::auto(WeakScope::detached()).service(service_fn(move |request: Request| {
+            let _sent = seen_tx.send((
+                request.version(),
+                request.extensions().get_ref::<PseudoHeaderOrder>().cloned(),
+            ));
+            async move { Ok::<_, Infallible>(Response::new(Body::from("ok"))) }
+        }));
+    let origin_task = tokio::spawn(origin_listener.serve(TlsAcceptorService::new(
+        origin_tls,
+        origin_http,
+        false,
+    )));
+
+    let proxy_address = loopback_bind_address();
+    let ui_address = loopback_bind_address();
+    let proxy_arg = proxy_address.to_string();
+    let mitm_arg = format!("--mitm={ui_address}");
+    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), mitm_arg.as_str()]);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = Scope::new().with_signal(async move {
+        _ = shutdown_rx.await;
+    });
+    let (proxy_address, _inspector_address) = start_proxy(&shutdown, cli.proxy).await;
+
+    let tls_config = TlsClientConfig::new()
+        .with_server_verify(ServerVerifyMode::Disable)
+        .with_alpn_http_2();
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_default_proxy_support()
+        .with_tls_support_using_boringssl(tls_config)
+        .with_default_http_connector()
+        .without_connection_pool()
+        .build_client();
+    // The MITM serves this request on a connection forked from the tunnel it arrived in.
+    let order = PseudoHeaderOrder::from_iter([
+        PseudoHeader::Path,
+        PseudoHeader::Authority,
+        PseudoHeader::Scheme,
+        PseudoHeader::Method,
+    ]);
+    let request = Request::builder()
+        .uri(format!("https://{origin_address}/ping"))
+        .version(Version::HTTP_2)
+        .extension(ProxyRoute::Proxy(
+            format!("http://{proxy_address}").parse().unwrap(),
+        ))
+        .extension(order.clone())
+        .body(Body::empty())
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(10), client.serve(request))
+        .await
+        .expect("MITM request timed out")
+        .expect("MITM request failed");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(seen.recv().await, Some((Version::HTTP_2, Some(order))));
+
+    shutdown_proxy(shutdown_tx, shutdown).await;
+    origin_task.abort();
+}
+
 #[tokio::test]
 async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
-    use rama::{
-        graceful::WeakScope,
-        http::{
-            Version,
-            client::http_connect,
-            core::h2,
-            inspect::control::{Config, ControlConnection, Decision, ResponseSpec},
-            proxy::mitm::HttpMitmRelay,
-        },
-        io::BridgeIo,
-        layer::ArcLayer,
-        net::test_utils::client::MockSocket,
-    };
     let store = capture::test_store(
         8,
         8,

@@ -1,13 +1,14 @@
 use std::borrow::Cow;
-use std::future::{Future, pending};
+use std::future::Future;
 
 use rama_core::futures::async_stream::try_stream_fn;
 use rama_core::futures::future::FusedFuture as _;
-use rama_core::futures::{FutureExt as _, Stream, StreamExt as _};
+use rama_core::futures::{FutureExt as _, Stream, StreamExt as _, maybe};
 use rama_core::stream::wrappers::ReceiverStream;
 use tokio::pin;
 use tokio::sync::mpsc::{Sender, channel};
 use tokio::sync::oneshot;
+use tokio::time::{Instant, sleep_until};
 
 use crate::io::{StreamReceiver, StreamSender};
 use crate::types::encoding::BufExt;
@@ -377,11 +378,8 @@ async fn handle_server_stream<Output: prost::Message + Default>(
     Ok(())
 }
 
-async fn handle_timeout(deadline: Option<tokio::time::Instant>) -> Result<()> {
-    match deadline {
-        Some(deadline) => tokio::time::sleep_until(deadline).await,
-        None => pending::<()>().await,
-    }
+async fn handle_timeout(deadline: Option<Instant>) -> Result<()> {
+    maybe(deadline.map(sleep_until)).await;
     Err(Status::timeout())
 }
 

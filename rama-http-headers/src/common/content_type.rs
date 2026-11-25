@@ -114,6 +114,7 @@ impl ContentType {
         Self(ContentTypeValue::Parsed(mime))
     }
 
+    /// Construct this value from its static representation.
     const fn from_static(value: &'static StaticContentType) -> Self {
         Self(ContentTypeValue::Static(value))
     }
@@ -149,9 +150,42 @@ impl ContentType {
 
     #[inline]
     #[must_use]
+    /// Newline-delimited JSON.
     pub const fn ndjson() -> Self {
         static NDJSON: StaticContentType = StaticContentType::new("application/x-ndjson");
         Self::from_static(&NDJSON)
+    }
+
+    /// Newline-delimited JSON as `application/ndjson`, without the `x-` prefix.
+    #[inline]
+    #[must_use]
+    pub const fn ndjson_unprefixed() -> Self {
+        static NDJSON: StaticContentType = StaticContentType::new("application/ndjson");
+        Self::from_static(&NDJSON)
+    }
+
+    /// JSON Lines as `application/jsonl`.
+    #[inline]
+    #[must_use]
+    pub const fn jsonl() -> Self {
+        static JSONL: StaticContentType = StaticContentType::new("application/jsonl");
+        Self::from_static(&JSONL)
+    }
+
+    /// JSON Lines as `application/x-jsonlines`.
+    #[inline]
+    #[must_use]
+    pub const fn x_jsonlines() -> Self {
+        static JSONLINES: StaticContentType = StaticContentType::new("application/x-jsonlines");
+        Self::from_static(&JSONLINES)
+    }
+
+    /// JSON Lines as `application/jsonlines`.
+    #[inline]
+    #[must_use]
+    pub const fn jsonlines() -> Self {
+        static JSONLINES: StaticContentType = StaticContentType::new("application/jsonlines");
+        Self::from_static(&JSONLINES)
     }
 
     /// A constructor to easily create a `Content-Type: text/plain` header.
@@ -504,8 +538,10 @@ impl FromStr for ContentType {
 #[cfg(test)]
 mod tests {
     use super::{ContentType, HeaderValue, mime};
-    use crate::HeaderDecode;
-    use crate::common::{test_decode, test_encode};
+    use crate::{
+        HeaderDecode,
+        common::{test_decode, test_encode},
+    };
 
     #[test]
     fn several_lines_decode_as_fetch_extracts_them() {
@@ -635,6 +671,10 @@ mod tests {
             (ContentType::pem(), "application/x-pem-file"),
             (ContentType::json_ld(), "application/ld+json"),
             (ContentType::ndjson(), "application/x-ndjson"),
+            (ContentType::ndjson_unprefixed(), "application/ndjson"),
+            (ContentType::jsonl(), "application/jsonl"),
+            (ContentType::x_jsonlines(), "application/x-jsonlines"),
+            (ContentType::jsonlines(), "application/jsonlines"),
             (ContentType::rss(), "application/rss+xml"),
             (ContentType::atom(), "application/atom+xml"),
             (ContentType::jose_json(), "application/jose+json"),

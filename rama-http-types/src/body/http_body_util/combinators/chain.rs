@@ -7,6 +7,7 @@ use rama_core::error::BoxError;
 
 use crate::HeaderMap;
 use crate::body::http_body::{Body, Frame, SizeHint};
+use crate::header::trailer::merge_trailers;
 
 pin_project! {
     /// A [`Body`] that yields every frame of `first`, then every frame of `second`.
@@ -98,7 +99,7 @@ where
                         Some(Ok(frame)) => match frame.into_trailers() {
                             Ok(second_trailers) => match trailers.take() {
                                 Some(mut first_trailers) => {
-                                    first_trailers.extend(second_trailers);
+                                    merge_trailers(&mut first_trailers, second_trailers);
                                     Some(Ok(Frame::trailers(first_trailers)))
                                 }
                                 None => Some(Ok(Frame::trailers(second_trailers))),
@@ -141,12 +142,14 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
     use std::future::ready;
     use std::io;
     use std::task::Waker;
 
     use super::*;
     use crate::body::http_body_util::{BodyExt, Empty, ErrorBody, Full};
+    use crate::header::trailer::merge_fixture;
     use crate::{HeaderName, HeaderValue};
     use bytes::Bytes;
 
@@ -226,6 +229,21 @@ mod tests {
         );
         let out = body.collect().await.unwrap().to_bytes();
         assert_eq!(&out[..], b"hello world");
+    }
+
+    #[tokio::test]
+    async fn trailers_of_both_bodies_merge_line_by_line() {
+        let (first, later) = merge_fixture::sections();
+        let trailers = |section| {
+            Empty::<Bytes>::new().with_trailers(ready(Some(Ok::<_, Infallible>(section))))
+        };
+        let collected = trailers(first)
+            .chain(trailers(later))
+            .collect()
+            .await
+            .unwrap();
+        let trailers = collected.trailers().unwrap();
+        assert_eq!(merge_fixture::lines(trailers), merge_fixture::MERGED);
     }
 
     #[tokio::test]

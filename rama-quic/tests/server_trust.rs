@@ -18,6 +18,10 @@ use std::{
 use rama_core::{graceful::WeakScope, service::service_fn};
 use rama_crypto::cert::CertificateAuthorityData;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
+#[cfg(feature = "boring")]
+use rama_quic::tls::BoringTlsProvider;
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use rama_quic::tls::RustlsTlsProvider;
 use rama_quic::{
     ClientConfig, Connection, Endpoint, ServerConfig,
     tls::{QuicClientConfigProvider, QuicServerConfigProvider, TlsOptions},
@@ -31,6 +35,8 @@ use rama_tls::{
         CertificateIdentity, LeafCertRequest, SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
     },
 };
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use rama_tls_rustls::dep::rustls;
 use tokio::time::timeout;
 
 const DEADLINE: Duration = Duration::from_secs(10);
@@ -184,16 +190,12 @@ async fn assert_trust_matrix(
 #[cfg(feature = "boring")]
 #[tokio::test]
 async fn boring_enforces_platform_trust_and_chain_policies() {
-    use rama_quic::tls::BoringTlsProvider;
     assert_trust_matrix(&BoringTlsProvider::new(), &BoringTlsProvider::new()).await;
 }
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 #[tokio::test]
 async fn rustls_enforces_platform_trust_and_chain_policies() {
-    use rama_quic::tls::RustlsTlsProvider;
-    use rama_tls_rustls::dep::rustls;
-
     #[cfg(feature = "aws-lc")]
     let crypto = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     #[cfg(not(feature = "aws-lc"))]

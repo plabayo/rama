@@ -108,6 +108,7 @@ fn selection(key: u8) -> ConnectionSelection {
         variant: capture.id,
         draw: DrawKey([key; 32]),
         analysis_revision: 2,
+        ech_ready: false,
         effective: PreparedConnectionProfile {
             h3_settings_evidence,
             scope: ValueId([2; 32]),

@@ -22,7 +22,10 @@ use rama_http::{
     proto::ext::{HttpDatagrams, Protocol},
 };
 use rama_net::address::{Host, ip::ipnet::IpNet};
-use rama_utils::{macros::generate_set_and_with, time::deadline_after};
+use rama_utils::{
+    macros::{generate_set_and_with, nonzero},
+    time::deadline_after,
+};
 use std::{convert::Infallible, fmt, sync::Arc, time::Duration};
 
 /// Input to the admission service, before DNS resolution and HTTP acceptance.
@@ -267,10 +270,7 @@ pub(super) async fn resolve_scope<R: DnsAddressResolver>(
         IpTarget::Hostname(name) => {
             // Bound raw answers before Happy Eyeballs deduplicates them: even a
             // resolver repeatedly yielding the same answer must finish polling.
-            let resolver = BoundedDnsResolver::bounded(
-                resolver.clone(),
-                const { std::num::NonZeroUsize::new(256).unwrap() },
-            );
+            let resolver = BoundedDnsResolver::bounded(resolver.clone(), nonzero!(256));
             let mut addresses = std::pin::pin!(
                 resolver
                     .happy_eyeballs_resolver(Host::Name(name))

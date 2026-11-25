@@ -3455,6 +3455,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parse_head_size_limit_allows_a_head_of_exactly_the_limit() {
+        for (configured, limit) in [(None, DEFAULT_MAX_HEADER_LIST_SIZE), (Some(512), 512)] {
+            for (size, accepted) in [(limit - 1, true), (limit, true), (limit + 1, false)] {
+                for first_line in ["GET / HTTP/1.1\r\n", "HTTP/1.1 200 OK\r\n"] {
+                    // The first line, `x: `, the value and CRLF, then the empty line.
+                    let value = "v".repeat(size - first_line.len() - 7);
+                    let mut bytes =
+                        BytesMut::from(format!("{first_line}x: {value}\r\n\r\n").as_str());
+                    assert_eq!(bytes.len(), size);
+                    let ctx = ParseContext {
+                        req_method: &mut Some(Method::GET),
+                        h1_parser_config: Default::default(),
+                        h1_max_headers: None,
+                        h1_max_header_size: configured,
+                        h09_responses: false,
+                        on_informational: &mut None,
+                        informational_left: None,
+                        prepared_extensions: &mut Some(Extensions::default()),
+                    };
+                    let parsed = if first_line.starts_with("GET") {
+                        Server::parse(&mut bytes, ctx).map(|head| head.is_some())
+                    } else {
+                        Client::parse(&mut bytes, ctx).map(|head| head.is_some())
+                    };
+                    let case = format!("{configured:?}: {first_line:?} {size} bytes");
+                    match parsed {
+                        Ok(true) => assert!(accepted, "{case}"),
+                        Err(Parse::TooLarge) => assert!(!accepted, "{case}"),
+                        other => panic!("{case}: {other:?}"),
+                    }
+                }
+            }
+        }
+    }
+
     /// An HTTP/1 CONNECT names `host:port` and is never an Extended CONNECT, whose HTTP/1.1
     /// form is an `Upgrade` request: neither falls back to some other target on the wire.
     #[test]

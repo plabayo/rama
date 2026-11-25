@@ -17,6 +17,10 @@ mod json;
 #[doc(inline)]
 pub use json::*;
 
+mod json_content_type;
+#[doc(inline)]
+pub use json_content_type::JsonContentTypePolicy;
+
 mod json_array_items;
 #[doc(inline)]
 pub use json_array_items::*;

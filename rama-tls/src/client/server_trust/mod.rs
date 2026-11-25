@@ -14,6 +14,14 @@ mod native;
 #[cfg(feature = "native-certs")]
 pub use native::{server_trust_anchors, server_trust_anchors_async};
 
+#[cfg(feature = "native-certs")]
+mod snapshot;
+#[cfg(feature = "native-certs")]
+pub use snapshot::{
+    ServerTrustKey, ServerTrustRoots, ServerTrustSnapshot, ServerVerificationScope,
+    SharedServerTrustRoots, shared_platform_verifier, shared_platform_verifier_async,
+};
+
 /// Settings for the native root store used by [`ServerTrustSource::Native`].
 ///
 /// The default uses a static snapshot. With the `native-certs` feature,
@@ -189,6 +197,21 @@ impl ServerTrustSource {
     #[must_use]
     pub const fn platform_verifier() -> Self {
         Self::Platform(PlatformTrustPolicy::new())
+    }
+
+    /// Whether a reload policy can change this source's trust between handshakes.
+    ///
+    /// Only native and platform sources with a reload trigger or age limit reload.
+    #[must_use]
+    pub fn is_reloadable(&self) -> bool {
+        #[cfg(feature = "native-certs")]
+        {
+            native::is_reloadable(self)
+        }
+        #[cfg(not(feature = "native-certs"))]
+        {
+            false
+        }
     }
 }
 

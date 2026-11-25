@@ -9,6 +9,7 @@ mod connector;
 pub use connector::{ConnectorKindAuto, ConnectorKindSecure, TlsConnector, TlsConnectorLayer};
 
 mod config;
+use config::NativeConfigKey;
 #[doc(inline)]
 pub use config::{
     ModifyRustlsClientConfig, RustlsClientConfigExt, RustlsServerCertVerifier,
@@ -21,9 +22,11 @@ pub(super) use connector_data::TlsConnectorData;
 #[doc(inline)]
 pub use connector_data::{client_root_certs, self_signed_client_auth};
 
+mod resumption;
+
 mod verification;
 #[doc(inline)]
-pub use verification::RustlsServerTrustCache;
+pub use verification::{RustlsServerTrustCache, RustlsServerVerification};
 
 mod tls_stream;
 #[doc(inline)]
@@ -37,7 +40,6 @@ use crate::dep::tokio_rustls::client::TlsStream as RustlsTlsStream;
 
 pub use config::RustlsTlsClientConfigProvider;
 
-pub(crate) type RustlsServerVerification = rama_core::combinators::Either<
-    std::sync::Arc<crate::dep::rustls::RootCertStore>,
-    std::sync::Arc<rama_crypto::platform_verifier::PlatformVerifier>,
->;
+#[cfg(test)]
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+mod cache_tests;

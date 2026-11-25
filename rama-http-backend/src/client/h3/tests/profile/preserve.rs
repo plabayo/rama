@@ -48,7 +48,7 @@ async fn preserved_tls_keeps_captured_parameters_without_the_recorded_initial_la
         let profile = established
             .input
             .extensions()
-            .get_ref::<QuicProfile>()
+            .get_arc::<QuicProfile>()
             .unwrap();
         assert!(!matches!(
             profile.packetization().layout(),
@@ -109,7 +109,10 @@ async fn preserved_http_leaves_captured_h3_startup_unapplied() {
             }
             let established = prepared(&fixture, input).await;
             let extensions = established.input.extensions();
-            assert_eq!(extensions.contains::<ClientSettingsProfile>(), !keep);
+            assert_eq!(
+                extensions.get_arc::<ClientSettingsProfile>().is_some(),
+                !keep
+            );
             let prepared = extensions
                 .get_ref::<PreparedConnectionComponents>()
                 .unwrap();

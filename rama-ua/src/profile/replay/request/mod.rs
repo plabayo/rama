@@ -124,7 +124,7 @@ pub enum ProfilePreservationDifference {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub enum LoweredProfileItem {
-    /// SNI presence follows the destination identity.
+    /// SNI presence follows the effective policy and destination identity.
     TlsServerNamePresence,
     /// The caller's explicit ALPN offer was retained.
     CallerTlsAlpn,
@@ -172,22 +172,16 @@ pub enum LoweredProfileItem {
     TlsLegacyExtensionPair,
     /// The engine's transport-parameter length differs from the capture.
     QuicTransportParametersLength,
-    /// The caller's QUIC transport profile was retained.
-    CallerQuicProfile,
-    /// The caller's HTTP/3 SETTINGS profile was retained.
-    CallerHttp3Settings,
+    /// Wire parameters use the effective tuple instead of a distinct captured ECH outer.
+    QuicEchOuterParameters,
+    /// A parameter absent from the captured outer was added to the clear QUIC offer.
+    QuicAddedTransportParameter { parameter: u64 },
     /// The caller's QPACK Base preference was retained.
     CallerQpackBase,
     /// The caller's QPACK field preferences were retained.
     CallerQpackFieldPreferences,
     /// The captured HTTP/3 stream order has no allocated-ID startup equivalent.
     Http3StartupOrder,
-    /// The caller's HTTP/3 critical stream startup was retained.
-    CallerHttp3Startup,
-    /// The caller's initial QPACK encoder preferences were retained.
-    CallerQpackEncoding,
-    /// The caller's HTTP/3 control frame preferences were retained.
-    CallerHttp3Controls,
     /// Captured initial QPACK insertions were dropped; the section uses native encoding.
     Http3InitialInsertions,
     /// The connection was recorded without HTTP/2 SETTINGS; native ones are sent.

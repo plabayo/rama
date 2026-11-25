@@ -95,7 +95,7 @@ async fn main() {
                 private_key: client_priv_key,
             }))
             .with_server_verify(ServerVerifyMode::Disable)
-            .with_server_name(SERVER_AUTHORITY.ip_addr.into());
+            .with_server_name(SERVER_AUTHORITY.ip_addr);
 
         let (server_cert_chain, server_priv_key) = self_signed_client_auth().unwrap();
         let tls_server_data = TlsServerConfig::new()
@@ -151,9 +151,7 @@ async fn main() {
             TraceErrLayer::new(),
             IoToProxyBridgeIoLayer::new(SERVER_AUTHORITY).with_connector(
                 TlsConnectorLayer::secure()
-                    .with_base_config(
-                        tls_client_data.with_server_name(SERVER_AUTHORITY.ip_addr.into()),
-                    )
+                    .with_base_config(tls_client_data.with_server_name(SERVER_AUTHORITY.ip_addr))
                     .into_layer(TcpConnector::new()),
             ),
         )

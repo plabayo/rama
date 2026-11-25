@@ -41,4 +41,4 @@
 
 mod listener;
 #[doc(inline)]
-pub use listener::{TcpListener, TcpListenerBuilder};
+pub use listener::{TcpListener, TcpListenerBuilder, TcpListenerStream};

@@ -33,7 +33,6 @@ pub use self::value::MetadataValue;
 use rama_http_types::HeaderValue;
 
 pub(crate) use self::map::GRPC_TIMEOUT_HEADER;
-pub(crate) use self::map::try_extend_replacing;
 
 /// HTTP Header `content-type` value for gRPC calls.
 pub const GRPC_CONTENT_TYPE: HeaderValue = HeaderValue::from_static("application/grpc");

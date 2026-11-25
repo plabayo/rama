@@ -1942,12 +1942,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "openssl-probe"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
-
-[[package]]
 name = "ordered-float"
 version = "5.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2435,8 +2429,9 @@ dependencies = [
  "core-foundation",
  "hmac",
  "jni",
+ "libc",
  "ndk-context",
- "openssl-probe",
+ "parking_lot 0.13.0",
  "rama-boring",
  "rama-core",
  "rama-net",
@@ -2465,7 +2460,6 @@ dependencies = [
  "arc-swap",
  "base64",
  "cc",
- "dial9",
  "dial9-trace-format",
  "libc",
  "moka",
@@ -2800,7 +2794,6 @@ dependencies = [
  "serde_html_form",
  "socket2",
  "tokio",
- "tokio-util",
  "windows-sys 0.61.2",
 ]
 

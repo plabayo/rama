@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::common::Identifier;
+use super::common::{CanonicalIdentifier, Identifier};
 
 pub const REPLAY_NONCE_HEADER: &str = "replay-nonce";
 pub const LOCATION_HEADER: &str = "location";
@@ -202,6 +202,18 @@ pub enum ChallengeType {
     Unknown(String),
 }
 
+impl ChallengeType {
+    /// Whether this challenge can validate `identifier`.
+    ///
+    /// `dns-01` never validates an `ip` identifier ([RFC 8738 section 7]).
+    ///
+    /// [RFC 8738 section 7]: https://datatracker.ietf.org/doc/html/rfc8738#section-7
+    #[must_use]
+    pub fn validates(&self, identifier: &Identifier) -> bool {
+        !(*self == Self::Dns01 && matches!(identifier.canonical_view(), CanonicalIdentifier::Ip(_)))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 /// Current status of a [`Challenge`]
@@ -354,8 +366,11 @@ impl std::error::Error for Problem {}
 
 #[cfg(test)]
 mod tests {
+    use std::{assert_matches, net::IpAddr};
+
+    use rama_net::address::Domain;
+
     use super::*;
-    use std::assert_matches;
 
     #[test]
     // https://datatracker.ietf.org/doc/html/rfc8555#section-7.4
@@ -455,6 +470,65 @@ mod tests {
                 String::from("No authorization provided for name example.org")
             ),
             _ => assert_matches!(problem, Problem::Unauthorized { .. }),
+        }
+    }
+
+    #[test]
+    fn orders_and_authorizations_carry_ip_identifiers() {
+        const ORDER: &str = r#"{
+            "status": "pending",
+            "identifiers": [
+                { "type": "dns", "value": "www.example.org" },
+                { "type": "ip", "value": "192.0.2.1" },
+                { "type": "ip", "value": "2001:db8::1" }
+            ],
+            "authorizations": [
+                "https://example.com/acme/authz/1",
+                "https://example.com/acme/authz/2",
+                "https://example.com/acme/authz/3"
+            ],
+            "finalize": "https://example.com/acme/order/1/finalize"
+        }"#;
+        let order = serde_json::from_str::<Order>(ORDER).unwrap();
+        assert_eq!(
+            order.identifiers,
+            [
+                Identifier::dns("www.example.org"),
+                Identifier::ip(IpAddr::from([192, 0, 2, 1])),
+                Identifier::ip("2001:db8::1".parse().unwrap()),
+            ]
+        );
+
+        const AUTHORIZATION: &str = r#"{
+          "status": "pending",
+          "identifier": { "type": "ip", "value": "2001:db8::1" },
+          "challenges": [
+            {
+              "type": "tls-alpn-01",
+              "url": "https://example.com/acme/chall/1",
+              "status": "pending",
+              "token": "IlirfxKKXAsHtmzK29Pj8A"
+            }
+          ]
+        }"#;
+        let authorization = serde_json::from_str::<Authorization>(AUTHORIZATION).unwrap();
+        assert_eq!(
+            authorization.identifier,
+            Identifier::ip("2001:db8::1".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn dns_challenges_never_validate_ip_identifiers() {
+        let ip = Identifier::ip(IpAddr::from([192, 0, 2, 1]));
+        let spelled = Identifier::dns("192.0.2.1");
+        let dns = Identifier::dns(Domain::example());
+        assert!(!ChallengeType::Dns01.validates(&ip));
+        assert!(!ChallengeType::Dns01.validates(&spelled));
+        assert!(ChallengeType::Dns01.validates(&dns));
+        for challenge in [ChallengeType::Http01, ChallengeType::TlsAlpn01] {
+            assert!(challenge.validates(&ip));
+            assert!(challenge.validates(&dns));
         }
     }
 

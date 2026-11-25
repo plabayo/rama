@@ -4,38 +4,28 @@
 //! only a writer that has seen the complete upload can publish a replay source.
 //! Each attempt clones a cursor pointing at the start of that source.
 //!
-//! Choose a store when configuring the managed policy. Store instances can
-//! carry their own limits and resources, such as a disk budget shared across
-//! all requests served by the same client.
-//!
-//! ```
-//! use rama_http::layer::retry::{ManagedPolicy, storage::{MemoryReplay, FsReplayStore}};
-//! use rama_utils::octets::kib_u64;
-//! use std::{path::Path, time::Duration};
-//!
-//! let memory = MemoryReplay::new(kib_u64(128)).with_timeout(Duration::from_secs(5));
-//! let policy = ManagedPolicy::default().with_replay_store(memory);
-//!
-//! # async fn configure_disk(parent: &Path) -> std::io::Result<()> {
-//! let disk = FsReplayStore::in_dir(parent).await?;
-//! let policy = ManagedPolicy::default().with_replay_store(disk);
-//! # Ok(())
-//! # }
-//! ```
+//! Choose a store when configuring the managed policy, for example a
+//! [`MemoryReplay`] with its own limits or an [`FsReplayStore`] that spills
+//! larger uploads to disk. Store instances can carry their own limits and
+//! resources, such as a disk budget shared across all requests served by the
+//! same client.
 
-use super::body::MemoryCursor;
-use crate::{HeaderMap, StreamingBody};
-use rama_core::{
-    bytes::Bytes,
-    error::{BoxError, BoxErrorExt as _},
-    futures::future::BoxFuture,
-};
 use std::{
     collections::TryReserveError,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
+
+use rama_core::{
+    bytes::Bytes,
+    error::{BoxError, BoxErrorExt as _},
+    futures::future::BoxFuture,
+};
+use rama_utils::{macros::generate_set_and_with, octets::kib};
+
+use super::body::MemoryCursor;
+use crate::{HeaderMap, StreamingBody, body::SizeHint};
 
 mod fs;
 pub use fs::FsReplayStore;
@@ -45,6 +35,9 @@ pub const DEFAULT_MAX_BYTES: u64 = rama_utils::octets::kib_u64(64);
 
 /// Default time allowed to capture an upload, including any post-attempt drain.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Default time a retry waits for a still-live first reader to release the upload.
+pub const DEFAULT_HANDOFF_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Creates independent writers for uploads selected by a retry policy.
 ///
@@ -60,16 +53,21 @@ pub trait ReplayStore: Send + Sync + 'static {
     /// Maximum duration of capture, measured from the start of the first attempt.
     fn timeout(&self) -> Duration;
 
+    /// Longest wait, within [`Self::timeout`], for a first reader still alive
+    /// after its attempt returned to finish or drop before a retry.
+    fn handoff_timeout(&self) -> Duration;
+
     /// Allow an already buffered, trailerless body to be replayed directly from
     /// its shared bytes, bypassing the writer. The layer still enforces its
-    /// capture limits. Leave this disabled if the store needs to observe or
+    /// capture limits. Return `false` if the store needs to observe or
     /// account for these uploads.
-    fn reuse_buffered_bytes(&self) -> bool {
-        false
-    }
+    fn reuse_buffered_bytes(&self) -> bool;
 
     /// Begin a new, empty capture.
-    fn start(&self) -> Box<dyn ReplayWriter>;
+    ///
+    /// `size_hint` describes the upload; its upper bound, when known, is capped
+    /// at the capture limit, so a store can bound how far its buffer grows.
+    fn start(&self, size_hint: &SizeHint) -> Box<dyn ReplayWriter>;
 }
 
 impl<S: ReplayStore + ?Sized> ReplayStore for Arc<S> {
@@ -81,12 +79,16 @@ impl<S: ReplayStore + ?Sized> ReplayStore for Arc<S> {
         (**self).timeout()
     }
 
+    fn handoff_timeout(&self) -> Duration {
+        (**self).handoff_timeout()
+    }
+
     fn reuse_buffered_bytes(&self) -> bool {
         (**self).reuse_buffered_bytes()
     }
 
-    fn start(&self) -> Box<dyn ReplayWriter> {
-        (**self).start()
+    fn start(&self, size_hint: &SizeHint) -> Box<dyn ReplayWriter> {
+        (**self).start(size_hint)
     }
 }
 
@@ -137,15 +139,20 @@ impl std::fmt::Debug for dyn ReplaySource {
 pub struct MemoryReplay {
     max_bytes: u64,
     timeout: Duration,
+    handoff_timeout: Duration,
 }
 
 impl MemoryReplay {
+    /// The default store: up to 64 KiB of data per upload within 30 seconds.
+    pub const DEFAULT: Self = Self::new(DEFAULT_MAX_BYTES);
+
     /// Configure the inclusive per-request data limit.
     #[must_use]
     pub const fn new(max_bytes: u64) -> Self {
         Self {
             max_bytes,
             timeout: DEFAULT_TIMEOUT,
+            handoff_timeout: DEFAULT_HANDOFF_TIMEOUT,
         }
     }
 
@@ -156,11 +163,19 @@ impl MemoryReplay {
             self
         }
     }
+
+    generate_set_and_with! {
+        /// Configure how long a retry waits for a still-live first reader.
+        pub const fn handoff_timeout(mut self, timeout: Duration) -> Self {
+            self.handoff_timeout = timeout;
+            self
+        }
+    }
 }
 
 impl Default for MemoryReplay {
     fn default() -> Self {
-        Self::new(DEFAULT_MAX_BYTES)
+        Self::DEFAULT
     }
 }
 
@@ -173,13 +188,18 @@ impl ReplayStore for MemoryReplay {
         self.timeout
     }
 
+    fn handoff_timeout(&self) -> Duration {
+        self.handoff_timeout
+    }
+
     fn reuse_buffered_bytes(&self) -> bool {
         true
     }
 
-    fn start(&self) -> Box<dyn ReplayWriter> {
+    fn start(&self, size_hint: &SizeHint) -> Box<dyn ReplayWriter> {
+        let limit = usize::try_from(self.max_bytes).unwrap_or(usize::MAX);
         Box::new(MemoryWriter {
-            capture: MemoryCapture::default(),
+            capture: MemoryCapture::new(expected_len(size_hint).min(limit), limit),
             max_bytes: self.max_bytes,
         })
     }
@@ -208,22 +228,71 @@ impl ReplayWriter for MemoryWriter {
     }
 }
 
-/// Retain a single frame directly. Coalesce fragmented uploads into one buffer
-/// so arbitrarily small frames do not require a descriptor each.
+/// Expected upload length: the exact or upper bound when known, else the lower bound.
+fn expected_len(size_hint: &SizeHint) -> usize {
+    usize::try_from(size_hint.upper().unwrap_or(size_hint.lower())).unwrap_or(usize::MAX)
+}
+
+/// Transport bodies slice frames out of read buffers of at least 8 KiB, so a
+/// smaller frame retained as-is pins at least twice its size.
+const OWN_FRAMES_UP_TO: usize = kib(4);
+
+/// Bytes retained for replay.
+///
+/// A lone large frame is kept as-is. Small or fragmented uploads are copied
+/// into one store-owned buffer that grows with the received bytes.
 #[derive(Debug, Default)]
-enum MemoryCapture {
+struct MemoryCapture {
+    data: Captured,
+    // Growth stops here while the upload stays within it, so a matching upload has no slack.
+    expected: usize,
+    // Growth never reserves beyond this, unless one frame needs more.
+    limit: usize,
+}
+
+/// Make room for `additional` bytes, doubling with what arrived rather than
+/// reserving a length the peer only announced.
+fn grow_for(
+    bytes: &mut Vec<u8>,
+    additional: usize,
+    expected: usize,
+    limit: usize,
+) -> Result<(), TryReserveError> {
+    let len = bytes.len().saturating_add(additional);
+    if len <= bytes.capacity() {
+        return Ok(());
+    }
+    let ceiling = if len <= expected {
+        expected
+    } else {
+        limit.max(len)
+    };
+    let target = len.max(bytes.capacity().saturating_mul(2)).min(ceiling);
+    bytes.try_reserve_exact(target - bytes.len())
+}
+
+#[derive(Debug, Default)]
+enum Captured {
     #[default]
     Empty,
     Single(Bytes),
-    Multiple(Vec<u8>),
+    Owned(Vec<u8>),
 }
 
 impl MemoryCapture {
+    fn new(expected: usize, limit: usize) -> Self {
+        Self {
+            data: Captured::Empty,
+            expected,
+            limit,
+        }
+    }
+
     fn len(&self) -> usize {
-        match self {
-            Self::Empty => 0,
-            Self::Single(data) => data.len(),
-            Self::Multiple(data) => data.len(),
+        match &self.data {
+            Captured::Empty => 0,
+            Captured::Single(data) => data.len(),
+            Captured::Owned(data) => data.len(),
         }
     }
 
@@ -231,17 +300,31 @@ impl MemoryCapture {
         if data.is_empty() {
             return Ok(());
         }
-        match self {
-            Self::Empty => *self = Self::Single(data.clone()),
-            Self::Single(first) => {
+        let (expected, limit) = (self.expected, self.limit);
+        match &mut self.data {
+            Captured::Empty if data.len() >= expected && data.len() > OWN_FRAMES_UP_TO => {
+                self.data = Captured::Single(data.clone());
+            }
+            Captured::Empty => {
                 let mut bytes = Vec::new();
-                bytes.try_reserve_exact(first.len().saturating_add(data.len()))?;
+                grow_for(&mut bytes, data.len(), expected, limit)?;
+                bytes.extend_from_slice(data);
+                self.data = Captured::Owned(bytes);
+            }
+            Captured::Single(first) => {
+                let mut bytes = Vec::new();
+                grow_for(
+                    &mut bytes,
+                    first.len().saturating_add(data.len()),
+                    expected,
+                    limit,
+                )?;
                 bytes.extend_from_slice(first);
                 bytes.extend_from_slice(data);
-                *self = Self::Multiple(bytes);
+                self.data = Captured::Owned(bytes);
             }
-            Self::Multiple(bytes) => {
-                bytes.try_reserve(data.len())?;
+            Captured::Owned(bytes) => {
+                grow_for(bytes, data.len(), expected, limit)?;
                 bytes.extend_from_slice(data);
             }
         }
@@ -249,15 +332,26 @@ impl MemoryCapture {
     }
 
     fn into_bytes(self) -> Bytes {
-        match self {
-            Self::Empty => Bytes::new(),
-            Self::Single(data) => data,
-            Self::Multiple(data) => Bytes::from(data),
+        match self.data {
+            Captured::Empty => Bytes::new(),
+            Captured::Single(data) => data,
+            Captured::Owned(data) => Bytes::from(data),
         }
     }
 
+    fn into_replay_bytes(mut self) -> Bytes {
+        if let Captured::Owned(bytes) = &mut self.data
+            && bytes.capacity() - bytes.len() > bytes.len() / 4
+        {
+            // The replay lives as long as the request. Slack within a quarter
+            // stays: allocator size classes are about that far apart anyway.
+            bytes.shrink_to_fit();
+        }
+        self.into_bytes()
+    }
+
     fn seal(self, trailers: Option<HeaderMap>) -> Arc<dyn ReplaySource> {
-        Arc::new(MemoryCursor::new(self.into_bytes(), trailers))
+        Arc::new(MemoryCursor::new(self.into_replay_bytes(), trailers))
     }
 }
 
@@ -268,12 +362,140 @@ async fn append(writer: &mut dyn ReplayWriter, data: Bytes) -> Result<(), BoxErr
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use rama_utils::{
+        fs::TempDir,
+        octets::{kib, kib_u64, mib_u64},
+    };
+
     use super::*;
-    use crate::body::util::BodyExt as _;
+    use crate::{
+        Request, Response,
+        body::util::BodyExt as _,
+        layer::retry::{ManagedPolicy, Policy},
+        request::Parts,
+    };
+
+    /// A transport read buffer that records when its allocation is released.
+    struct ReadBuffer {
+        bytes: Vec<u8>,
+        released: Arc<AtomicBool>,
+    }
+
+    impl AsRef<[u8]> for ReadBuffer {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+
+    impl Drop for ReadBuffer {
+        fn drop(&mut self) {
+            self.released.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn frame_of_read_buffer(len: usize) -> (Bytes, Arc<AtomicBool>) {
+        let released = Arc::new(AtomicBool::new(false));
+        let buffer = Bytes::from_owner(ReadBuffer {
+            bytes: vec![7; kib(64)],
+            released: released.clone(),
+        });
+        (buffer.slice(..len), released)
+    }
+
+    fn parts() -> Parts {
+        Request::new(()).into_parts().0
+    }
+
+    #[tokio::test]
+    async fn small_frames_do_not_pin_their_read_buffer() {
+        for (len, pinned) in [(100, false), (OWN_FRAMES_UP_TO, false), (kib(16), true)] {
+            let (frame, released) = frame_of_read_buffer(len);
+            let mut writer = MemoryReplay::DEFAULT.start(&SizeHint::with_exact(len as u64));
+            append(&mut *writer, frame).await.unwrap();
+            let source = writer.finish(None).await.unwrap();
+            assert_eq!(released.load(Ordering::SeqCst), !pinned, "{len}");
+            let replay = source.clone_cursor().collect().await.unwrap().to_bytes();
+            assert_eq!(replay, vec![7; len]);
+            drop((replay, source));
+            assert!(released.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn fragmented_capture_grows_to_its_length_without_slack() {
+        let frame = Bytes::from(vec![1; kib(1)]);
+        // Known length: growth stops at it.
+        let mut sized = MemoryCapture::new(kib(40), kib(64));
+        // Unknown length: growth never reserves beyond the limit.
+        let mut capped = MemoryCapture::new(0, kib(40));
+        for _ in 0..40 {
+            sized.push(&frame).unwrap();
+            capped.push(&frame).unwrap();
+        }
+        for capture in [sized, capped] {
+            let Captured::Owned(bytes) = &capture.data else {
+                panic!("fragmented uploads are owned");
+            };
+            assert_eq!(bytes.capacity(), kib(40));
+            let sealed = capture.into_replay_bytes();
+            assert_eq!(sealed.len(), kib(40));
+            assert_eq!(sealed.try_into_mut().unwrap().capacity(), kib(40));
+        }
+
+        // Growth toward the limit: large slack is released, small slack is kept.
+        for (frames, retained) in [(40, kib(40)), (56, kib(64)), (64, kib(64))] {
+            let mut grown = MemoryCapture::new(0, kib(64));
+            for _ in 0..frames {
+                grown.push(&frame).unwrap();
+            }
+            let sealed = grown.into_replay_bytes();
+            assert_eq!(sealed.len(), kib(frames));
+            assert_eq!(
+                sealed.try_into_mut().unwrap().capacity(),
+                retained,
+                "{frames}"
+            );
+        }
+    }
+
+    #[test]
+    fn announced_length_is_not_reserved_before_it_arrives() {
+        let mut slow = MemoryCapture::new(kib(64), kib(64));
+        slow.push(&Bytes::from(vec![1; 100])).unwrap();
+        let Captured::Owned(bytes) = &slow.data else {
+            panic!("a small frame is owned");
+        };
+        assert_eq!(bytes.capacity(), 100);
+        slow.push(&Bytes::from(vec![1; 100])).unwrap();
+        let Captured::Owned(bytes) = &slow.data else {
+            panic!("a small frame is owned");
+        };
+        assert_eq!(bytes.capacity(), 200);
+    }
+
+    #[tokio::test]
+    async fn configured_stores_back_the_managed_policy() {
+        let memory = MemoryReplay::new(kib_u64(128)).with_timeout(Duration::from_secs(5));
+        let policy = ManagedPolicy::default().with_replay_store(memory);
+        let store = Policy::<Response, BoxError>::replay_store(&policy, &parts());
+        assert_eq!(store.max_bytes(), kib_u64(128));
+        assert_eq!(store.timeout(), Duration::from_secs(5));
+        assert!(store.reuse_buffered_bytes());
+
+        let parent = TempDir::new().await.unwrap();
+        let disk = FsReplayStore::in_dir(parent.path()).await.unwrap();
+        let policy = ManagedPolicy::default().with_replay_store(disk);
+        let store = Policy::<Response, BoxError>::replay_store(&policy, &parts());
+        assert_eq!(store.max_bytes(), mib_u64(8));
+        assert_eq!(store.timeout(), DEFAULT_TIMEOUT);
+        assert!(!store.reuse_buffered_bytes());
+    }
 
     #[tokio::test]
     async fn memory_store_readers_have_independent_data_and_trailers() {
-        let mut writer = MemoryReplay::new(5).start();
+        let mut writer = MemoryReplay::new(5).start(&SizeHint::default());
         append(&mut *writer, Bytes::from_static(b"he"))
             .await
             .unwrap();
@@ -310,7 +532,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_store_rejects_bytes_beyond_its_own_limit() {
-        let mut writer = MemoryReplay::new(1).start();
+        let mut writer = MemoryReplay::new(1).start(&SizeHint::default());
         append(&mut *writer, Bytes::from_static(b"a"))
             .await
             .unwrap();

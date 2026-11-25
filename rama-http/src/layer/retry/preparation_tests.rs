@@ -1,4 +1,29 @@
-use super::*;
+use std::{
+    cell::Cell,
+    convert::Infallible,
+    future::{pending, ready},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    task::{Context, Poll},
+    time::Duration,
+};
+
+use parking_lot::Mutex;
+use rama_core::{
+    bytes::Bytes,
+    error::BoxErrorExt as _,
+    futures::{FutureExt as _, StreamExt as _, poll, stream},
+    service::service_fn,
+};
+use storage::MemoryReplay;
+use tokio::{
+    sync::oneshot,
+    time::{Instant, advance, sleep},
+};
+
+use super::{storage::ReplayStore as _, *};
 use crate::{
     Body, HeaderMap, Response, StatusCode,
     body::{
@@ -6,22 +31,6 @@ use crate::{
         util::{Full, StreamBody},
     },
     request::Parts,
-};
-use rama_core::{
-    bytes::Bytes,
-    error::BoxErrorExt as _,
-    futures::{FutureExt as _, StreamExt as _, stream},
-    service::service_fn,
-};
-use std::{
-    cell::Cell,
-    convert::Infallible,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
-    task::{Context, Poll},
-    time::Duration,
 };
 
 fn trailers() -> HeaderMap {
@@ -631,9 +640,16 @@ async fn terminal_response_can_keep_streaming_the_original_request_body() {
     assert_eq!(echoed.to_bytes(), "hello");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retryable_response_echoes_undelivered_frames_with_backoff_or_size_limits() {
-    async fn assert_echo(policy: impl Policy<Response, BoxError>, consume_prefix: bool) {
+    // The echoed reader lives inside the outcome, so a retry waits for it until
+    // the handoff timeout and then returns that outcome unchanged.
+    async fn assert_echo(
+        policy: impl Policy<Response, BoxError>,
+        consume_prefix: bool,
+        expected_wait: Duration,
+    ) {
+        let started = Instant::now();
         let calls = Arc::new(AtomicUsize::new(0));
         let attempts = calls.clone();
         let retry = Retry::new(
@@ -664,6 +680,7 @@ async fn retryable_response_echoes_undelivered_frames_with_backoff_or_size_limit
             Ok(Frame::trailers(trailers())),
         ]));
         let response = retry.serve(Request::new(source)).await.unwrap();
+        assert_eq!(started.elapsed(), expected_wait);
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let mut echoed = response.into_body().collect().await.unwrap();
         assert_eq!(echoed.take_trailers(), Some(trailers()));
@@ -675,8 +692,294 @@ async fn retryable_response_echoes_undelivered_frames_with_backoff_or_size_limit
     }
 
     let policy = |cap| ManagedPolicy::default().with_replay_store(storage::MemoryReplay::new(cap));
-    assert_echo(policy(20).with_backoff(()), false).await;
-    assert_echo(policy(3), true).await;
+    assert_echo(
+        policy(20).with_backoff(()),
+        false,
+        storage::DEFAULT_HANDOFF_TIMEOUT,
+    )
+    .await;
+    // The unread frames would exceed this limit, which only reading them reveals.
+    assert_echo(policy(3), true, storage::DEFAULT_HANDOFF_TIMEOUT).await;
+}
+
+/// Request body reader kept by a task outside the attempt, like a connection
+/// task that is still writing the upload when the response arrives.
+struct HeldReader {
+    release: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    released: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+}
+
+impl HeldReader {
+    fn new() -> Self {
+        let (release, released) = oneshot::channel();
+        Self {
+            release: Arc::new(Mutex::new(Some(release))),
+            released: Arc::new(Mutex::new(Some(released))),
+        }
+    }
+
+    fn release(&self) {
+        if let Some(release) = self.release.lock().take() {
+            _ = release.send(());
+        }
+    }
+}
+
+fn held_reader_source() -> Body {
+    Body::from_frame_stream(stream::iter([
+        Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"hello"))),
+        Ok(Frame::data(Bytes::from_static(b"world"))),
+        Ok(Frame::trailers(trailers())),
+    ]))
+}
+
+#[tokio::test(start_paused = true)]
+async fn policy_retry_waits_for_a_reader_held_after_the_attempt_returned() {
+    for read_to_end in [false, true] {
+        let holder = HeldReader::new();
+        let consulted = Arc::new(AtomicUsize::new(0));
+        let policy = ManagedPolicy::new({
+            let release = holder.release.clone();
+            let consulted = consulted.clone();
+            move |req: Request<RetryBody>, result: Result<Response, BoxError>| {
+                consulted.fetch_add(1, Ordering::Relaxed);
+                let retry = matches!(&result, Ok(res) if res.status().is_server_error());
+                if retry && let Some(release) = release.lock().take() {
+                    // The reader is released only once the policy decided to retry.
+                    _ = release.send(());
+                }
+                ready((req, result, retry))
+            }
+        });
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let retry = Retry::new(
+            policy,
+            service_fn({
+                let attempts = attempts.clone();
+                let released = holder.released.clone();
+                move |req: Request<RetryBody>| {
+                    let attempt = attempts.fetch_add(1, Ordering::Relaxed);
+                    let released = released.lock().take();
+                    async move {
+                        let mut body = req.into_body();
+                        if attempt == 0 {
+                            assert_eq!(
+                                body.frame().await.unwrap().unwrap().into_data().unwrap(),
+                                "hello"
+                            );
+                            let released = released.unwrap();
+                            tokio::spawn(async move {
+                                _ = released.await;
+                                if read_to_end {
+                                    while body.frame().await.is_some() {}
+                                    // Keep the finished reader alive.
+                                    pending::<()>().await;
+                                }
+                                drop(body);
+                            });
+                            return Ok::<_, BoxError>(
+                                Response::builder().status(503).body(Body::empty()).unwrap(),
+                            );
+                        }
+                        let mut replay = body.collect().await.unwrap();
+                        assert_eq!(replay.take_trailers(), Some(trailers()));
+                        assert_eq!(replay.to_bytes(), "helloworld");
+                        Ok(Response::new(Body::empty()))
+                    }
+                }
+            }),
+        );
+        let response = retry
+            .serve(Request::new(held_reader_source()))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "read_to_end: {read_to_end}"
+        );
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+        assert_eq!(consulted.load(Ordering::Relaxed), 2);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn reader_release_counts_only_before_the_handoff_deadline() {
+    // The coordinator is polled again only at two seconds, after the one-second handoff.
+    for (release_after, expected) in [
+        (Duration::from_millis(500), StatusCode::OK),
+        (Duration::from_millis(1500), StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        let held = Arc::new(Mutex::new(None));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let retry = Retry::new(
+            ManagedPolicy::default().with_replay_store(
+                MemoryReplay::new(64)
+                    .with_timeout(Duration::from_secs(30))
+                    .with_handoff_timeout(Duration::from_secs(1)),
+            ),
+            service_fn({
+                let held = held.clone();
+                let attempts = attempts.clone();
+                move |req: Request<RetryBody>| {
+                    let attempt = attempts.fetch_add(1, Ordering::Relaxed);
+                    let held = held.clone();
+                    async move {
+                        if attempt == 0 {
+                            *held.lock() = Some(req.into_body());
+                            return Ok::<_, BoxError>(
+                                Response::builder().status(503).body(Body::empty()).unwrap(),
+                            );
+                        }
+                        let mut replay = req.into_body().collect().await.unwrap();
+                        assert_eq!(replay.take_trailers(), Some(trailers()));
+                        assert_eq!(replay.to_bytes(), "helloworld");
+                        Ok(Response::new(Body::empty()))
+                    }
+                }
+            }),
+        );
+        let mut serve = Box::pin(retry.serve(Request::new(held_reader_source())));
+        assert!(poll!(serve.as_mut()).is_pending());
+        advance(release_after).await;
+        drop(held.lock().take().expect("first attempt keeps its reader"));
+        advance(Duration::from_secs(2).saturating_sub(release_after)).await;
+        let response = serve.await.unwrap();
+        assert_eq!(response.status(), expected, "{release_after:?}");
+        let expected_attempts = if expected == StatusCode::OK { 2 } else { 1 };
+        assert_eq!(attempts.load(Ordering::Relaxed), expected_attempts);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn policy_still_classifies_when_the_replay_is_unavailable() {
+    // An oversized capture and an expired capture both leave no replay.
+    for expired in [false, true] {
+        let store = if expired {
+            MemoryReplay::new(64).with_timeout(Duration::from_secs(1))
+        } else {
+            MemoryReplay::new(3)
+        };
+        let consulted = Arc::new(AtomicUsize::new(0));
+        let policy = ManagedPolicy::new({
+            let consulted = consulted.clone();
+            move |req: Request<RetryBody>, _: Result<Response, BoxError>| {
+                consulted.fetch_add(1, Ordering::Relaxed);
+                let transformed = Response::builder().status(502).body(Body::empty()).unwrap();
+                ready((req, Ok(transformed), true))
+            }
+        })
+        .with_replay_store(store);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let retry = Retry::new(
+            policy,
+            service_fn({
+                let attempts = attempts.clone();
+                move |req: Request<RetryBody>| {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    async move {
+                        if expired {
+                            sleep(Duration::from_secs(2)).await;
+                        } else {
+                            req.into_body().collect().await.unwrap();
+                        }
+                        Ok::<_, BoxError>(
+                            Response::builder().status(503).body(Body::empty()).unwrap(),
+                        )
+                    }
+                }
+            }),
+        );
+        let response = retry
+            .serve(Request::new(held_reader_source()))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_GATEWAY,
+            "expired: {expired}"
+        );
+        assert_eq!(consulted.load(Ordering::Relaxed), 1);
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+}
+
+/// A retry keeps waiting for a held reader for `expected`, then returns the
+/// first outcome while the reader still streams the rest of the upload.
+async fn assert_held_reader_wait_ends_after(store: storage::MemoryReplay, expected: Duration) {
+    let holder = HeldReader::new();
+    let consulted = Arc::new(AtomicUsize::new(0));
+    let policy = ManagedPolicy::new({
+        let consulted = consulted.clone();
+        move |req: Request<RetryBody>, result: Result<Response, BoxError>| {
+            consulted.fetch_add(1, Ordering::Relaxed);
+            ready((req, result, true))
+        }
+    })
+    .with_replay_store(store);
+    let (forwarded_tx, forwarded) = oneshot::channel();
+    let forwarded_tx = Mutex::new(Some(forwarded_tx));
+    let attempts = AtomicUsize::new(0);
+    let released = holder.released.clone();
+    let retry = Retry::new(
+        policy,
+        service_fn(move |req: Request<RetryBody>| {
+            assert_eq!(attempts.fetch_add(1, Ordering::Relaxed), 0);
+            let released = released.lock().take().unwrap();
+            let forwarded_tx = forwarded_tx.lock().take().unwrap();
+            async move {
+                let mut body = req.into_body();
+                assert_eq!(
+                    body.frame().await.unwrap().unwrap().into_data().unwrap(),
+                    "hello"
+                );
+                tokio::spawn(async move {
+                    _ = released.await;
+                    // The reader keeps streaming after the retry was given up.
+                    let mut rest = body.collect().await.unwrap();
+                    _ = forwarded_tx.send((rest.take_trailers(), rest.to_bytes()));
+                });
+                Ok::<_, BoxError>(
+                    Response::builder()
+                        .status(503)
+                        .body(Body::from("original"))
+                        .unwrap(),
+                )
+            }
+        }),
+    );
+    let started = Instant::now();
+    let response = retry
+        .serve(Request::new(held_reader_source()))
+        .await
+        .unwrap();
+    assert_eq!(started.elapsed(), expected);
+    assert_eq!(consulted.load(Ordering::Relaxed), 1);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "original"
+    );
+    holder.release();
+    let (rest_trailers, rest) = forwarded.await.unwrap();
+    assert_eq!(rest, "world");
+    assert_eq!(rest_trailers, Some(trailers()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn retry_wait_for_a_held_reader_ends_at_the_handoff_timeout() {
+    let store = MemoryReplay::new(64)
+        .with_timeout(Duration::from_secs(10))
+        .with_handoff_timeout(Duration::from_secs(2));
+    assert_held_reader_wait_ends_after(store, Duration::from_secs(2)).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn retry_wait_for_a_held_reader_ends_at_an_earlier_capture_deadline() {
+    let store = MemoryReplay::new(64)
+        .with_timeout(Duration::from_secs(1))
+        .with_handoff_timeout(Duration::from_secs(5));
+    assert_held_reader_wait_ends_after(store, Duration::from_secs(1)).await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -728,9 +1031,17 @@ impl storage::ReplayStore for YieldingStore {
         Duration::from_secs(5)
     }
 
-    fn start(&self) -> Box<dyn storage::ReplayWriter> {
+    fn handoff_timeout(&self) -> Duration {
+        storage::DEFAULT_HANDOFF_TIMEOUT
+    }
+
+    fn reuse_buffered_bytes(&self) -> bool {
+        false
+    }
+
+    fn start(&self, size_hint: &SizeHint) -> Box<dyn storage::ReplayWriter> {
         Box::new(YieldingWriter {
-            inner: storage::MemoryReplay::new(5).start(),
+            inner: MemoryReplay::new(5).start(size_hint),
             yield_before_append: true,
         })
     }
@@ -764,13 +1075,20 @@ impl storage::ReplayWriter for YieldingWriter {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn in_flight_write_survives_returning_the_body_or_handing_it_to_a_retry() {
-    for (first_status, return_reader, expected_attempts) in [
-        (StatusCode::OK, true, 1),
-        (StatusCode::SERVICE_UNAVAILABLE, true, 1),
-        (StatusCode::SERVICE_UNAVAILABLE, false, 2),
+    // A retryable outcome that carries the live reader waits out the handoff timeout.
+    for (first_status, return_reader, expected_attempts, expected_wait) in [
+        (StatusCode::OK, true, 1, Duration::ZERO),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            true,
+            1,
+            YieldingStore.handoff_timeout(),
+        ),
+        (StatusCode::SERVICE_UNAVAILABLE, false, 2, Duration::ZERO),
     ] {
+        let started = Instant::now();
         let attempts = Arc::new(AtomicUsize::new(0));
         let calls = attempts.clone();
         let retry = Retry::new(
@@ -801,6 +1119,7 @@ async fn in_flight_write_survives_returning_the_body_or_handing_it_to_a_retry() 
             .serve(Request::new(Body::from("hello")))
             .await
             .unwrap();
+        assert_eq!(started.elapsed(), expected_wait);
         assert_eq!(
             response.status(),
             if expected_attempts == 1 {

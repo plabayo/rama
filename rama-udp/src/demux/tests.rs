@@ -10,25 +10,23 @@ use rama_core::{
     graceful::{Cause, Scope},
     service::service_fn,
 };
-use tokio::{
-    sync::{mpsc::UnboundedReceiver, oneshot},
-    time::timeout,
-};
-
-use super::*;
 use rama_net::{address::HostWithPort, client::ConnectorTarget, stream::Socket};
 use rama_utils::octets::kib;
-
-use crate::{
-    DatagramSenderExt as _, UdpPacketSender, UdpPacketSocket,
-    proxy::{DatagramForwardService, DatagramToProxyBridge, EcnPolicy},
-    test_utils::{MemoryDatagramSender, MemoryDatagramSocket},
+use tokio::{
+    sync::{mpsc::UnboundedReceiver, oneshot},
+    time::{advance, timeout},
 };
-
 #[cfg(target_os = "linux")]
 use {
     crate::{UdpSocketConfig, UdpSocketFactory},
     rama_net::socket::SocketOptions,
+};
+
+use super::*;
+use crate::{
+    DatagramSenderExt as _, UdpPacketSender, UdpPacketSocket,
+    proxy::{DatagramForwardService, DatagramToProxyBridge, EcnPolicy},
+    test_utils::{MemoryDatagramSender, MemoryDatagramSocket},
 };
 
 const LIMIT: Duration = Duration::from_secs(20);
@@ -489,6 +487,42 @@ async fn an_association_receiving_within_its_idle_timeout_stays_open() {
             assert_eq!(next(&mut association).await, b"more");
         }
         sockets.try_recv().unwrap_err();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_association_closes_one_idle_timeout_after_its_last_datagram() {
+    timeout(LIMIT, async {
+        let (client, listener) = listener();
+        let mut sender = client.create_sender();
+        let target = SocketAddress::local_ipv4(443);
+        sender
+            .send(SendDatagram::new(target, b"first"))
+            .await
+            .unwrap();
+        let idle = Duration::from_secs(5);
+        let config = DemuxConfig {
+            idle_timeout: idle,
+            ..config()
+        };
+        let mut sockets = serve(listener, config);
+        let mut association = sockets.recv().await.unwrap();
+        assert_eq!(next(&mut association).await, b"first");
+        advance(Duration::from_secs(3)).await;
+        sender
+            .send(SendDatagram::new(target, b"more"))
+            .await
+            .unwrap();
+        assert_eq!(next(&mut association).await, b"more");
+        let last = Instant::now();
+        let mut buffer = [0; 64];
+        assert!(matches!(
+            association.recv(&mut buffer).await,
+            Err(DatagramError::Closed)
+        ));
+        assert_eq!(last.elapsed(), idle);
     })
     .await
     .unwrap();

@@ -1,6 +1,8 @@
+use super::loss_delay;
 use crate::proto::{
-    Duration, Instant,
+    Duration, Instant, TIMER_GRANULARITY,
     connection::{
+        mtud::MtuDiscovery,
         pacing::Pacer,
         paths::{PathData, RttEstimator},
         recovery::persistent_congestion_period,
@@ -254,9 +256,6 @@ fn persistent_congestion_period_saturates() {
 
 #[test]
 fn loss_delay_respects_granularity_and_saturates_extreme_factors() {
-    use super::loss_delay;
-    use crate::proto::TIMER_GRANULARITY;
-
     assert_eq!(
         loss_delay(Duration::from_millis(8), 1.125),
         Duration::from_millis(9)
@@ -415,7 +414,6 @@ impl super::Connection {
     }
 
     pub(crate) fn assert_mtu_progress_with_a_full_window(&mut self, now: Instant) {
-        use super::super::{mtud::MtuDiscovery, pacing::Pacer, paths::RttEstimator};
         assert!(self.handshake_confirmed());
         assert!(self.streams.can_send_stream_data());
         self.path.mtud = MtuDiscovery::new(1200, 1200, Some(1452), Default::default());
@@ -640,6 +638,17 @@ impl super::Connection {
         }
     }
 
+    /// The PTO period of `space` without backoff.
+    pub(crate) fn pto_for_test(&self, space: SpaceId) -> Duration {
+        self.pto(space)
+    }
+
+    /// How long after the latest ack-eliciting packet in `space` the armed PTO expires.
+    pub(crate) fn pto_interval_for_test(&self, space: SpaceId) -> Option<Duration> {
+        let sent = self.spaces[space].time_of_last_ack_eliciting_packet?;
+        Some(self.loss_detection_timer()?.saturating_duration_since(sent))
+    }
+
     pub(crate) fn acknowledge_handshake_for_pto_test(&mut self, now: crate::proto::Instant) {
         let Some((&largest, _)) = self.spaces[SpaceId::Handshake]
             .sent_packets
@@ -746,7 +755,6 @@ impl crate::proto::congestion::Controller for LossRecorder {
 
 impl super::Connection {
     pub(crate) fn assert_mixed_path_loss_is_scoped(&mut self, now: crate::proto::Instant) {
-        use crate::proto::connection::spaces::SentPacket;
         self.replace_recovery_path_for_test(now);
         let recorder = LossRecorder::default();
         self.path.congestion = Box::new(recorder.clone());
@@ -837,8 +845,6 @@ impl super::Connection {
         &mut self,
         now: crate::proto::Instant,
     ) {
-        use crate::proto::connection::{paths::RttEstimator, spaces::SentPacket};
-
         self.skip_no_packet_number();
         self.path.rtt = RttEstimator::new(Duration::from_millis(50));
         self.path

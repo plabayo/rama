@@ -26,17 +26,15 @@ use capture::{
     ObserveConnectionLayer,
 };
 use clap::{Args, ValueEnum};
-use control::{Control, ControlConnection};
 use dashboard::DashboardState;
 use dashboard_auth::DashboardAuthService;
 use har::HarController;
-use inspection::{InspectionGate, InspectionState};
-use mitm_policy::MitmPolicy;
 use portal::PortalService;
 use rama::{
     Layer, Service,
     cli::connection_scope,
     combinators::Either,
+    crypto::pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     error::{BoxError, BoxErrorExt as _, ErrorContext, error_chain},
     extensions::ExtensionsRef,
     graceful::WeakScope,
@@ -45,7 +43,12 @@ use rama::{
         client::{DefaultProxyConnector, EasyHttpWebClient, ProxyConnector, masque_quic_transport},
         conn::FallbackHttpVersion,
         header::trailer::ForbiddenTrailers,
-        inspect::{control, mitm_policy},
+        inspect::{
+            control,
+            control::{Control, ControlConnection},
+            mitm_policy,
+            mitm_policy::MitmPolicy,
+        },
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
@@ -88,7 +91,7 @@ use rama::{
         http::layer::{AdaptationLayer, ServiceEndpoint, UnsupportedMethodPolicy},
         proto::{MethodKind as IcapMethodKind, Preview},
     },
-    inspect as inspection,
+    inspect::{InspectionGate, InspectionState},
     io::{peek::PeekPolicy, timeout::TimeoutIo},
     layer::{
         AddInputExtensionLayer, ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer,
@@ -99,7 +102,7 @@ use rama::{
     net::{
         Protocol,
         address::{
-            Authority, AuthorityRef, Domain, ProxyAddress, ProxyPathTemplate, SocketAddress,
+            Authority, AuthorityRef, Domain, Host, ProxyAddress, ProxyPathTemplate, SocketAddress,
         },
         client::{
             ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
@@ -117,10 +120,12 @@ use rama::{
         uri::Uri,
         user::Basic,
     },
-    proxy::masque::connect_udp::{ConnectUdpRelay, ConnectUdpRequestMatcher, OUTER_INITIAL_MTU},
-    proxy::socks5::{
-        Socks5Acceptor,
-        server::{Connector as Socks5Connector, Socks5PeekRouter},
+    proxy::{
+        masque::connect_udp::{ConnectUdpRelay, ConnectUdpRequestMatcher, OUTER_INITIAL_MTU},
+        socks5::{
+            Socks5Acceptor,
+            server::{Connector as Socks5Connector, Socks5PeekRouter},
+        },
     },
     quic::{
         Endpoint,
@@ -756,11 +761,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: InputWithClientHello<IO>) -> Result<(), BoxError> {
-        let sni = input
-            .client_hello
-            .ext_server_name()
-            .cloned()
-            .map(rama::net::address::Host::Name);
+        // Inspection policy and observation match hosts of any kind.
+        let sni = input.client_hello.ext_server_name().map(Host::from);
         let should_inspect = self
             .policy
             .should_inspect_target_and_host(input.input.extensions(), sni.as_ref());
@@ -1389,8 +1391,6 @@ fn mitm_portal_tls_config(
     ca_certificate: &rama::tls::boring::core::x509::X509,
     ca_private_key: &rama::tls::boring::core::pkey::PKey<rama::tls::boring::core::pkey::Private>,
 ) -> Result<TlsServerConfig, BoxError> {
-    use rama::crypto::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
-
     let (certificate, private_key) = rama::crypto::cert::boring::issue_leaf_certificate(
         &LeafCertRequest::new(MITM_PORTAL_DOMAIN),
         ca_certificate,

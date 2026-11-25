@@ -2216,7 +2216,8 @@ impl proto::Peer for Peer {
             // origin-form: parse the path/query, then graft the typed authority and scheme.
             Some(path) => {
                 let mut uri = match uri::Uri::parse(path) {
-                    Ok(uri) => uri,
+                    // A fragment is never on the wire, as on HTTP/1 and HTTP/3.
+                    Ok(uri) => uri.without_fragment(),
                     Err(why) => {
                         malformed!("malformed headers: malformed path ({:?}): {}", path, why)
                     }
@@ -2405,6 +2406,20 @@ mod path_form_tests {
             decode(pseudo).is_err(),
             "absolute-form :path must be rejected"
         );
+    }
+
+    #[test]
+    fn h2_drops_a_fragment_of_the_path() {
+        let pseudo = Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(bs("https")),
+            authority: Some(bs("real.example")),
+            path: Some(bs("/a#x")),
+            ..Default::default()
+        };
+        let req = decode(pseudo).expect("a fragment in :path is dropped");
+        assert_eq!(req.uri().fragment(), None);
+        assert_eq!(req.uri().to_string(), "https://real.example/a");
     }
 
     #[test]

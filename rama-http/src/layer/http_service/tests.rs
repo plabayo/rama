@@ -9,16 +9,18 @@ use rama_core::{
     extensions::{Extension, Extensions},
     futures::stream,
 };
-#[cfg(feature = "tls")]
-use rama_net::client::{
-    ProxyRoute, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheLayer,
-    ProxyRouteFailureCacheScope, ProxyRoutes, ProxyRoutesConnector,
-};
 use rama_net::{ConnectorTargetInputExt as _, address::HostWithPort, tls::ApplicationProtocol};
 #[cfg(feature = "tls")]
-use rama_tls::client::{
-    ServerVerifyMode, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
+use rama_net::{
+    client::{
+        ProxyRoute, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig,
+        ProxyRouteFailureCacheLayer, ProxyRouteFailureCacheScope, ProxyRoutes,
+        ProxyRoutesConnector,
+    },
+    tls::ServerName,
 };
+#[cfg(feature = "tls")]
+use rama_tls::client::{ServerVerifyMode, TlsServerCertPins, TlsServerTrust, TlsServerVerify};
 use std::{
     collections::VecDeque,
     sync::atomic::{AtomicUsize, Ordering},
@@ -169,7 +171,7 @@ impl Service<ConnectRequest> for FakeConnector {
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
         let policy_scope = self.policy_scope;
         #[cfg(feature = "tls")]
-        let policy_scope = if input.extensions().contains::<TlsServerName>()
+        let policy_scope = if input.extensions().contains::<ServerName>()
             || input.extensions().contains::<TlsServerVerify>()
             || input.extensions().contains::<TlsServerTrust>()
             || input.extensions().contains::<TlsServerCertPins>()
@@ -179,8 +181,9 @@ impl Service<ConnectRequest> for FakeConnector {
             policy_scope
         };
         if let Some(attempt) = input.extensions().get_ref::<HttpServiceAttempt>() {
+            let authority_name = ServerName::try_from(&input.authority.host).ok();
             #[cfg(not(feature = "tls"))]
-            let identity = Some(&input.authority.host);
+            let identity = authority_name.as_ref();
             #[cfg(feature = "tls")]
             let identity = if input
                 .extensions()
@@ -189,12 +192,10 @@ impl Service<ConnectRequest> for FakeConnector {
             {
                 None
             } else {
-                Some(
-                    input
-                        .extensions()
-                        .get_ref::<TlsServerName>()
-                        .map_or(&input.authority.host, |name| &name.0),
-                )
+                input
+                    .extensions()
+                    .get_ref::<ServerName>()
+                    .or(authority_name.as_ref())
             };
             attempt.check_policy(policy_scope, identity)?;
         }
@@ -280,7 +281,7 @@ impl Service<ConnectRequest> for FakeConnector {
             let identity = if matches!(outcome, Outcome::WrongIdentity) {
                 "wrong.example".parse().unwrap()
             } else {
-                input.authority.host.clone()
+                ServerName::try_from(&input.authority.host).unwrap()
             };
             extensions.insert(rama_tls::client::TlsServerAuthentication(Some(identity)));
             extensions.insert(rama_tls::client::NegotiatedTlsParameters {
@@ -1335,7 +1336,7 @@ async fn readvertisement_during_a_failed_dial_does_not_reset_backoff() {
                     attempt
                         .check_policy(
                             ConnectionPolicyScope::Connector,
-                            Some(&request.authority.host),
+                            Some(&ServerName::try_from(&request.authority.host).unwrap()),
                         )
                         .unwrap();
                 }
@@ -1560,7 +1561,7 @@ async fn request_tls_policy_skips_alternatives_without_poisoning_shared_cache() 
         if override_name {
             request
                 .extensions()
-                .insert(TlsServerName("other.example".parse().unwrap()));
+                .insert("other.example".parse::<ServerName>().unwrap());
         } else {
             request
                 .extensions()

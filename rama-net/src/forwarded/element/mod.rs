@@ -1,16 +1,17 @@
-use core::fmt;
-use core::net::{IpAddr, Ipv4Addr};
-use core::net::{Ipv6Addr, SocketAddr};
-
-use crate::std::collections::BTreeMap;
-use crate::std::string::String;
-use crate::std::vec::Vec;
-
-use super::{ForwardedProtocol, ForwardedVersion, NodeId};
-use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
+use core::{
+    cmp::Ordering,
+    fmt,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+};
 
 use rama_core::error::BoxError;
 use rama_utils::byte_set::is_http_token;
+
+use super::{ForwardedProtocol, ForwardedVersion, NodeId};
+use crate::{
+    address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress},
+    std::{boxed::Box, collections::BTreeMap, string::String, vec::Vec},
+};
 
 mod parser;
 #[doc(inline)]
@@ -32,12 +33,38 @@ pub struct ForwardedElement {
     // <https://www.iana.org/assignments/http-parameters/http-parameters.xhtml#forwarded>
     // BTreeMap (not a hash map): tiny-or-absent in practice, and it keeps
     // this type free of hasher deps in no_std builds.
-    extensions: Option<BTreeMap<String, ExtensionValue>>,
+    extensions: Option<BTreeMap<ExtensionName, ExtensionValue>>,
+}
+
+#[derive(Debug, Clone)]
+struct ExtensionName(Box<str>);
+
+impl PartialEq for ExtensionName {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(&other.0)
+    }
+}
+
+impl Eq for ExtensionName {}
+
+impl PartialOrd for ExtensionName {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ExtensionName {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0
+            .bytes()
+            .map(|b| b.to_ascii_lowercase())
+            .cmp(other.0.bytes().map(|b| b.to_ascii_lowercase()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExtensionValue {
-    value: String,
+    value: Box<str>,
     quoted: bool,
 }
 
@@ -379,7 +406,7 @@ impl fmt::Display for ForwardedElement {
         }
 
         for (key, ext) in self.extensions.iter().flatten() {
-            write!(f, "{separator}{key}=")?;
+            write!(f, "{separator}{}=", key.0)?;
             if ext.quoted || !is_http_token(ext.value.as_bytes()) {
                 f.write_str("\"")?;
                 for c in ext.value.chars() {
@@ -451,6 +478,144 @@ impl core::str::FromStr for ForwardedAuthority {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forwarded::Forwarded;
+
+    fn split_unquoted(input: &str, sep: char) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let (mut start, mut quoted, mut escaped) = (0, false, false);
+        for (i, c) in input.char_indices() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' if quoted => escaped = true,
+                '"' => quoted = !quoted,
+                c if c == sep && !quoted => {
+                    parts.push(&input[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(&input[start..]);
+        parts
+    }
+
+    fn unquoted(value: &str) -> Box<str> {
+        let Some(inner) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+            assert!(is_http_token(value.as_bytes()), "value {value:?}");
+            return value.into();
+        };
+        let mut decoded = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            decoded.push(if c == '\\' { chars.next().unwrap() } else { c });
+        }
+        decoded.into_boxed_str()
+    }
+
+    fn strict_elements(input: &str) -> Vec<Vec<(Box<str>, Box<str>)>> {
+        split_unquoted(input, ',')
+            .into_iter()
+            .map(|element| {
+                let mut pairs: Vec<(Box<str>, Box<str>)> = split_unquoted(element, ';')
+                    .into_iter()
+                    .filter(|pair| !pair.trim().is_empty())
+                    .map(|pair| {
+                        let (name, value) = pair.split_once('=').expect("pair has a value");
+                        let name = name.trim();
+                        assert!(is_http_token(name.as_bytes()), "name {name:?} in {input}");
+                        (name.to_ascii_lowercase().into(), unquoted(value.trim()))
+                    })
+                    .collect();
+                pairs.sort();
+                pairs
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_bare_pair_name_cannot_smuggle_an_element() {
+        for input in ["for=_a;b,c=d", "for=_a;b,for=_c", "for=_a;b ,for=_c"] {
+            Forwarded::try_from(input).unwrap_err();
+        }
+        ForwardedElement::try_from("for=_a;b").unwrap_err();
+    }
+
+    #[test]
+    fn pair_names_must_be_tokens() {
+        for delimiter in [
+            " ", "\t", ",", ";", "(", ")", "<", ">", "@", "/", "?", "{", "}", "[", "]", ":", "\"",
+            "\\",
+        ] {
+            let input = format!("for=_a;e{delimiter}x=1");
+            Forwarded::try_from(input.as_str()).expect_err(&input);
+            ForwardedElement::try_from(input.as_str()).expect_err(&input);
+        }
+        ForwardedElement::try_from("for=_a;e!#$%&'*+-.^_`|~x=1").unwrap();
+    }
+
+    #[test]
+    fn empty_pairs_are_skipped_and_a_comma_after_one_ends_the_element() {
+        let forwarded = Forwarded::try_from("for=_a;;proto=http;, for=_c").unwrap();
+        let elements: Vec<_> = forwarded.iter().collect();
+        assert_eq!(elements.len(), 2);
+        assert!(elements[0].forwarded_proto().is_some());
+        assert!(elements[1].forwarded_for().is_some());
+    }
+
+    #[test]
+    fn emitted_elements_read_the_same_to_a_strict_parser() {
+        for input in [
+            "for=_a;ext=x, for=_b;other=y",
+            r#"for=_a;ext="a,b;c=d", for=_b"#,
+            r#"for=_a;ext="x\"y", for=_b"#,
+            "for=_a;Ext=x;;proto=http",
+            r#"for="[::1]:80";by=unknown;host="[::1]";proto=https;e-x.t=v"#,
+            "for=192.0.2.43, for=198.51.100.17",
+        ] {
+            let forwarded = Forwarded::try_from(input).expect(input);
+            let shown = forwarded.to_string();
+            let strict = strict_elements(&shown);
+            assert_eq!(strict.len(), forwarded.iter().count(), "{input} -> {shown}");
+            assert_eq!(strict, strict_elements(input), "{input} -> {shown}");
+        }
+        for input in ["for=_a;b,c=d", "for=_a;b c=d", "for=_a;b,for=_c"] {
+            Forwarded::try_from(input).expect_err(input);
+        }
+    }
+
+    #[test]
+    fn a_parameter_occurs_once_per_element_whatever_its_case() {
+        for input in [
+            "for=_a;x=1;X=2",
+            ";for=_a;x=1;X=2",
+            "for=_a;x=1;x=2",
+            "for=_a;For=_b",
+        ] {
+            Forwarded::try_from(input).expect_err(input);
+        }
+        let element = ForwardedElement::try_from("for=_a;Ext=1").unwrap();
+        assert_eq!(element.to_string(), "for=_a;Ext=1");
+    }
+
+    #[test]
+    fn an_unquoted_value_is_a_token() {
+        for input in [
+            "for=_a;ext=a b",
+            "for=_a;ext=",
+            "for=_a;ext=(x)",
+            "for=",
+            "for=_a;ext=a@b",
+        ] {
+            Forwarded::try_from(input).expect_err(input);
+        }
+        for input in [
+            "for=_a ;ext=x ",
+            "for=_a;ext=x\t, for=_b",
+            "for=_a;ext=\"a b\"",
+        ] {
+            Forwarded::try_from(input).expect(input);
+        }
+    }
 
     #[test]
     fn display_round_trips_through_the_parser() {
@@ -522,9 +687,9 @@ mod tests {
                     proto_version: None,
                     extensions: Some(
                         [(
-                            "foo".to_owned(),
+                            ExtensionName("foo".into()),
                             ExtensionValue {
-                                value: "bar".to_owned(),
+                                value: "bar".into(),
                                 quoted: false,
                             },
                         )]
@@ -553,6 +718,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn merged_extension_names_remain_case_insensitively_unique() {
+        let mut element = ForwardedElement::try_from("for=_a;Ext=1").unwrap();
+        element.merge(ForwardedElement::try_from("for=_b;ext=2").unwrap());
+        let reparsed = ForwardedElement::try_from(element.to_string().as_str()).unwrap();
+        assert_eq!(reparsed, element);
+        assert_eq!(reparsed.extensions.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            reparsed
+                .extensions
+                .as_ref()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .value
+                .as_ref(),
+            "2"
+        );
+    }
+
     /// Regression: RFC 7230 §3.2.6 `quoted-string` allows `quoted-pair`
     /// (`\` followed by one byte). The first parser version found the
     /// closing `"` with a naive `position` scan, mis-parsing legal
@@ -566,15 +752,19 @@ mod tests {
             .extensions
             .as_ref()
             .expect("extensions parsed")
-            .get("ext")
+            .get(&ExtensionName("ext".into()))
             .expect("ext present");
-        assert_eq!(ext.value, r#"x"y"#);
+        assert_eq!(ext.value.as_ref(), r#"x"y"#);
         assert!(ext.quoted);
 
         // Escaped backslash.
         let el = ForwardedElement::try_from(r#"for=_a;ext="x\\y""#).unwrap();
-        let ext = el.extensions.unwrap().remove("ext").unwrap();
-        assert_eq!(ext.value, r#"x\y"#);
+        let ext = el
+            .extensions
+            .unwrap()
+            .remove(&ExtensionName("ext".into()))
+            .unwrap();
+        assert_eq!(ext.value.as_ref(), r#"x\y"#);
 
         // A trailing `\` with no escapable byte must error, not silently
         // succeed (would otherwise be a `quoted-string missing trailer`).
@@ -589,8 +779,12 @@ mod tests {
     fn regression_forwarded_obs_text_in_qdtext() {
         // UTF-8 encoding of `é` (0xC3 0xA9) inside a quoted ext value.
         let el = ForwardedElement::try_from("for=_a;ext=\"café\"").unwrap();
-        let ext = el.extensions.unwrap().remove("ext").unwrap();
-        assert_eq!(ext.value, "café");
+        let ext = el
+            .extensions
+            .unwrap()
+            .remove(&ExtensionName("ext".into()))
+            .unwrap();
+        assert_eq!(ext.value.as_ref(), "café");
         // Token-form values stay strict (no obs-text outside quotes).
         ForwardedElement::try_from("for=_a;ext=café").unwrap_err();
     }

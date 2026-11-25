@@ -818,9 +818,9 @@ impl Service<Request> for EchoService {
                     .compression_algorithms().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                 },
                 "extensions": hello.extensions().iter().map(|extension| match extension {
-                    ClientHelloExtension::ServerName(domain) => json!({
+                    ClientHelloExtension::ServerName(server_name) => json!({
                         "id": extension.id().to_string(),
-                        "data": domain,
+                        "data": server_name.as_ref().map(ToString::to_string),
                     }),
                     ClientHelloExtension::SignatureAlgorithms(v) => json!({
                         "id": extension.id().to_string(),
@@ -1003,10 +1003,50 @@ impl Service<Request> for EchoService {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    use std::net::IpAddr;
+
     use super::*;
     use crate::http::{Body, StatusCode};
     #[cfg(feature = "quic")]
     use crate::quic::proto::Version as QuicVersion;
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    use crate::{
+        net::tls::ServerName,
+        tls::{
+            CipherSuite, CompressionAlgorithm, ProtocolVersion, SecureTransport,
+            client::ClientHello,
+        },
+    };
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    #[tokio::test]
+    async fn an_ip_literal_server_name_is_echoed_as_its_address() {
+        let request = Request::builder()
+            .uri("https://10.20.30.40/")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions()
+            .insert(SecureTransport::with_client_hello(ClientHello::new(
+                ProtocolVersion::TLSv1_2,
+                vec![CipherSuite::from(0x1301)],
+                vec![CompressionAlgorithm::from(0)],
+                vec![ClientHelloExtension::ServerName(Some(ServerName::from(
+                    IpAddr::from([10, 20, 30, 40]),
+                )))],
+            )));
+        let response = EchoService {
+            profiles: None,
+            geo_db: None,
+        }
+        .serve(request)
+        .await
+        .unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["tls"]["extensions"][0]["data"], json!("10.20.30.40"));
+    }
 
     #[tokio::test]
     async fn binary_request_body_is_echoed_with_lossless_platform_curl_scripts() {

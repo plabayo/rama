@@ -26,6 +26,7 @@ use rama_boring::{
 };
 use rama_core::{ServiceInput, extensions::ExtensionsRef, io::BridgeIo};
 use rama_crypto::cert::generate_server_auth;
+use rama_net::address::{Domain, Host};
 use rama_tls::{
     KeyLogIntent,
     client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
@@ -145,7 +146,7 @@ fn relay() -> Relay {
 fn connector(version: SslVersion) -> TlsConnectorData {
     let mut data = TlsConnectorData::try_from(
         &TlsClientConfig::new()
-            .with_server_name(Host::from_static("localhost"))
+            .with_server_name(Domain::from_static("localhost"))
             .with_server_verify(ServerVerifyMode::Auto)
             .try_with_server_trust_anchors([rama_crypto::pki_types::CertificateDer::from(
                 material().ca.cert.to_der().unwrap(),
@@ -622,7 +623,7 @@ async fn upstream_verification_and_pins_run_before_policy_selection() {
                     }
                 }));
             let mut config = TlsClientConfig::new()
-                .with_server_name(Host::from_static("localhost"))
+                .with_server_name(Domain::from_static("localhost"))
                 .with_server_verify(ServerVerifyMode::Auto)
                 .with_server_verify_cert_store(Arc::new(store(if pin_mismatch {
                     &material().ca.cert
@@ -831,7 +832,10 @@ async fn stage_one_errors_never_configure_ingress_or_run_the_resolver() {
                 let expected = material().ca.cert.subject_name().to_der().unwrap();
                 assert_eq!(names, [expected.as_slice()]);
                 assert_eq!(request.certificate_authorities.len(), 1);
-                assert_eq!(input.server_name, Some(Host::from_static("localhost")));
+                assert_eq!(
+                    input.server_name,
+                    Some(ServerName::from(Domain::from_static("localhost")))
+                );
                 assert_eq!(
                     input.server_certificate.to_der().unwrap(),
                     material().server.cert.to_der().unwrap()
@@ -940,7 +944,7 @@ async fn delayed_egress_private_key_operations_complete_or_fail_without_hanging(
 
 #[tokio::test]
 async fn store_backed_egress_connections_are_rejected() {
-    let config = TlsClientConfig::new().with_server_name(Host::from_static("localhost"));
+    let config = TlsClientConfig::new().with_server_name(Domain::from_static("localhost"));
     let context = TlsConnectorContextBuilder::try_from(&config)
         .unwrap()
         .with_session_store(Arc::new(TlsClientSessionCache::default()))
@@ -972,7 +976,7 @@ async fn explicit_egress_sessions_are_rejected_and_ingress_issues_no_auth_sessio
     for version in VERSIONS {
         let saved = Arc::new(parking_lot::Mutex::new(None));
         let session = saved.clone();
-        let config = TlsClientConfig::new().with_server_name(Host::from_static("localhost"));
+        let config = TlsClientConfig::new().with_server_name(Domain::from_static("localhost"));
         let mut builder = TlsConnectorContextBuilder::try_from(&config).unwrap();
         builder.config.set_cert_store(store(&material().ca.cert));
         builder.config.set_min_proto_version(Some(version)).unwrap();
@@ -1232,7 +1236,7 @@ async fn peeked_client_hello_service_preserves_policy_context_and_negotiated_alp
         };
         let guest = async {
             let config = TlsClientConfig::new()
-                .with_server_name(Host::from_static("localhost"))
+                .with_server_name(Domain::from_static("localhost"))
                 .with_alpn_http_1();
             let mut data = TlsConnectorData::try_from(&config).unwrap();
             data.config
@@ -1312,7 +1316,7 @@ async fn egress_hello_offers_session_ticket(policy: Option<TlsMitmClientAuthPoli
     // Browser-like version range: TLS 1.2 tickets are advertised.
     let data = TlsConnectorData::try_from(
         &TlsClientConfig::new()
-            .with_server_name(Host::from_static("localhost"))
+            .with_server_name(Domain::from_static("localhost"))
             .with_server_verify(ServerVerifyMode::Disable)
             .with_keylog(KeyLogIntent::Disabled),
     )
@@ -1350,7 +1354,7 @@ async fn client_distrust_under_policy_is_never_a_bypass_hint() {
     let untrusting = || {
         let mut data = TlsConnectorData::try_from(
             &TlsClientConfig::new()
-                .with_server_name(Host::from_static("localhost"))
+                .with_server_name(Domain::from_static("localhost"))
                 .with_server_verify(ServerVerifyMode::Auto)
                 .try_with_server_trust_anchors([rama_crypto::pki_types::CertificateDer::from(
                     material().other_ca.cert.to_der().unwrap(),
@@ -1407,7 +1411,10 @@ async fn direct_connector_path_preserves_authentication_policy_and_upstream_trus
                 let policy = TlsMitmClientAuthPolicy::new(service_fn(
                     move |input: TlsMitmClientAuthInput| {
                         count.fetch_add(1, SeqCst);
-                        assert_eq!(input.server_name, Some(Host::from_static("localhost")));
+                        assert_eq!(
+                            input.server_name,
+                            Some(ServerName::from(Domain::from_static("localhost")))
+                        );
                         let credential = input
                             .request
                             .is_some()

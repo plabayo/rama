@@ -56,6 +56,7 @@ pub(crate) use std::time::{Duration, Instant};
 
 #[cfg(feature = "dial9")]
 pub(crate) use endpoint::RoutingStats;
+pub(crate) use udp::Socket;
 
 pub use crate::driver::{
     connection::{

@@ -1,34 +1,49 @@
-use crate::RamaTlsRustlsCrateMarker;
-use crate::client::config::RustlsTlsConnectorConfig;
-use crate::dep::rustls::RootCertStore;
-use crate::dep::rustls::{
-    ALL_VERSIONS, ClientConfig,
-    client::{Resumption, WebPkiServerVerifier, danger::ServerCertVerifier},
-};
-use crate::key_log::RamaKeyLog;
-use crate::verify::{NoServerCertVerifier, PinnedServerCertVerifier};
-use crate::verify_chain::{ChainSource, ChainVerifier};
-use rama_core::conversion::{RamaTryFrom, RamaTryInto};
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
-use rama_core::error::ErrorContext as _;
-use rama_core::error::{BoxError, BoxErrorExt as _};
-use rama_core::extensions::Extensions;
-use rama_core::telemetry::tracing;
-use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
-use rama_net::address::Host;
-use rama_tls::client::{ClientAuth, ClientHandshake, ServerVerifyMode, TlsServerTrust};
-use rama_tls::keylog::open_intent_sink;
 use std::sync::Arc;
 
+use rama_core::{
+    combinators::Either,
+    conversion::{RamaTryFrom, RamaTryInto},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    extensions::Extensions,
+    telemetry::tracing,
+};
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 use rama_crypto::pki_types::PrivatePkcs8KeyDer;
+use rama_crypto::{
+    pki_types::{CertificateDer, PrivateKeyDer},
+    platform_verifier::PlatformVerifier,
+};
+use rama_net::tls::ServerName;
+use rama_tls::{
+    client::{
+        ClientAuth, ClientHandshake, EchRequirement, ServerTrustKey, ServerVerificationScope,
+        ServerVerifyMode, TlsClientSni, TlsServerTrust,
+    },
+    keylog::open_intent_sink,
+};
+use rustls::crypto::CryptoProvider;
+
+use crate::{
+    RamaTlsRustlsCrateMarker,
+    client::{
+        RustlsServerTrustCache, RustlsServerVerification, config::RustlsTlsConnectorConfig,
+        resumption::PlatformSessions,
+    },
+    dep::rustls::{
+        ALL_VERSIONS, ClientConfig, RootCertStore,
+        client::{Resumption, WebPkiServerVerifier, danger::ServerCertVerifier},
+    },
+    key_log::RamaKeyLog,
+    verify::{NoServerCertVerifier, PinnedServerCertVerifier},
+    verify_chain::{ChainSource, ChainVerifier},
+};
 
 #[derive(Debug, Clone)]
 /// The resolved native rustls config consumed by [`super::TlsConnector`].
 pub(crate) struct TlsConnectorData {
     pub client_config: Arc<ClientConfig>,
     pub verification_enabled: bool,
-    pub server_name: Option<Host>,
+    pub server_name: Option<ServerName>,
     pub store_server_certificate_chain: bool,
 }
 
@@ -41,27 +56,51 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for TlsConnectorData {
 }
 
 impl TlsConnectorData {
+    /// Connector data for one connection. A configuration whose policy can be
+    /// keyed is shared through `cache`, together with its session tickets.
     pub(super) fn from_extensions(
         extensions: &Extensions,
-        verification: Option<&super::RustlsServerVerification>,
+        verification: Option<&RustlsServerVerification>,
+        cache: &RustlsServerTrustCache,
     ) -> Result<Self, BoxError> {
-        Self::from_config(
-            &RustlsTlsConnectorConfig::from_extensions(extensions),
-            verification,
-        )
+        let value = RustlsTlsConnectorConfig::from_extensions(extensions);
+        crate::ensure_default_crypto_provider();
+        // A cached configuration must not let a later policy skip a rejection.
+        reject_unsupported(&value)?;
+        let build = || build_client_config(&value, None, verification, ConfigOwner::Connector);
+        let client_config = match value.native_config_key(verification) {
+            Some(key) => cache.client_config(key, build)?,
+            None => Arc::new(build()?),
+        };
+        Ok(Self::with_client_config(&value, client_config))
     }
 
+    /// Build connector data from the supplied TLS configuration.
     fn from_config(
         value: &RustlsTlsConnectorConfig<'_>,
-        prepared: Option<&super::RustlsServerVerification>,
+        prepared: Option<&RustlsServerVerification>,
     ) -> Result<Self, BoxError> {
         crate::ensure_default_crypto_provider();
-        Ok(Self {
+        let client_config = Arc::new(build_client_config(
+            value,
+            None,
+            prepared,
+            ConfigOwner::Caller,
+        )?);
+        Ok(Self::with_client_config(value, client_config))
+    }
+
+    /// Construct connector data around the supplied native configuration.
+    fn with_client_config(
+        value: &RustlsTlsConnectorConfig<'_>,
+        client_config: Arc<ClientConfig>,
+    ) -> Self {
+        Self {
             verification_enabled: value.authenticates_server(),
-            server_name: value.server_name.map(|name| name.0.clone()),
+            server_name: value.server_name.cloned(),
             store_server_certificate_chain: value.store_chain.is_some_and(|flag| flag.0),
-            client_config: Arc::new(build_client_config(value, None, prepared)?),
-        })
+            client_config,
+        }
     }
 }
 
@@ -83,6 +122,7 @@ impl RamaTryFrom<&rama_tls::client::TlsClientConfig, RamaTlsRustlsCrateMarker> f
             &RustlsTlsConnectorConfig::from_extensions(extensions),
             None,
             None,
+            ConfigOwner::Caller,
         )
     }
 }
@@ -92,20 +132,46 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
 
     fn try_from(value: RustlsTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
         crate::ensure_default_crypto_provider();
-        build_client_config(&value, None, None)
+        build_client_config(&value, None, None, ConfigOwner::Caller)
     }
+}
+
+/// Reject settings this backend cannot honour, whatever configuration is cached.
+pub(super) fn reject_unsupported(value: &RustlsTlsConnectorConfig<'_>) -> Result<(), BoxError> {
+    if value.sni_policy == Some(&TlsClientSni::IncludeIp) {
+        return Err(BoxError::from_static_str(
+            "IP literal SNI requires the BoringSSL backend",
+        ));
+    }
+    if value.ech_requirement == Some(&EchRequirement::Required) {
+        return Err(BoxError::from_static_str(
+            "required ECH is not supported by the rustls connector",
+        ));
+    }
+    if value.client_handshake == Some(&ClientHandshake::Resumed) {
+        return Err(BoxError::from_static_str(
+            "required session offers are not supported by the TCP TLS backend",
+        ));
+    }
+    Ok(())
+}
+
+/// Who keeps a native configuration and so decides when its sessions stop applying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ConfigOwner {
+    /// The connector, which keys each configuration by its trust generation.
+    Connector,
+    /// A caller, which can retain the configuration across trust events.
+    Caller,
 }
 
 pub(super) fn build_client_config(
     value: &RustlsTlsConnectorConfig<'_>,
     provider: Option<Arc<rustls::crypto::CryptoProvider>>,
-    prepared: Option<&super::RustlsServerVerification>,
+    prepared: Option<&RustlsServerVerification>,
+    owner: ConfigOwner,
 ) -> Result<ClientConfig, BoxError> {
-    if value.ech_requirement == Some(&rama_tls::client::EchRequirement::Required) {
-        return Err(BoxError::from_static_str(
-            "required ECH is not supported by the rustls connector",
-        ));
-    }
+    reject_unsupported(value)?;
     let server_verify_mode = value.verify.map(|verify| verify.0).unwrap_or_default();
 
     if server_verify_mode == ServerVerifyMode::Disable {
@@ -145,10 +211,33 @@ pub(super) fn build_client_config(
             }
         }
     };
+    let resumption = match &trust {
+        ResolvedTrust::Roots(_) => SessionPolicy::Keep,
+        ResolvedTrust::Platform(platform, _)
+            if !ServerVerificationScope::allows_resumption::<()>(
+                value.server_trust,
+                &Either::B(platform.clone()),
+            ) =>
+        {
+            SessionPolicy::Disabled
+        }
+        ResolvedTrust::Platform(..) if owner == ConfigOwner::Connector => SessionPolicy::Keep,
+        // Sessions of a retained configuration end with the generation its verifier was read from.
+        ResolvedTrust::Platform(platform, key) => {
+            let trust = value
+                .server_trust
+                .context("platform resumption requires a reload policy")?;
+            SessionPolicy::Platform(Arc::new(PlatformSessions::new(
+                trust,
+                key.clone(),
+                platform.clone(),
+            )))
+        }
+    };
     let root_certs = match &trust {
         ResolvedTrust::Roots(roots) => roots.clone(),
         // The platform decides; no roots are consulted.
-        ResolvedTrust::Platform(_) => Arc::new(RootCertStore::empty()),
+        ResolvedTrust::Platform(..) => Arc::new(RootCertStore::empty()),
     };
 
     // Map common protocol versions to rustls, rustls only models TLS 1.2/1.3,
@@ -189,15 +278,13 @@ pub(super) fn build_client_config(
         ServerVerifyMode::Disable => match (value.server_cert_pins, chain_policy) {
             (None, None) => Some(Arc::new(NoServerCertVerifier::default())),
             (Some(pins), None) => {
-                let roots = match prepared {
-                    Some(rama_core::combinators::Either::A(roots)) => roots.clone(),
+                let roots = match prepared.map(RustlsServerVerification::verifier) {
+                    Some(Either::A(roots)) => roots.clone(),
                     _ => client_root_certs(),
                 };
-                let signature_verifier =
-                    WebPkiServerVerifier::builder_with_provider(roots, provider).build()?;
                 Some(Arc::new(PinnedServerCertVerifier::pin_only(
                     pins.clone(),
-                    signature_verifier,
+                    roots_verifier(roots, provider)?,
                 )))
             }
             (pins, Some(policy)) => {
@@ -223,7 +310,7 @@ pub(super) fn build_client_config(
                         )),
                         None => verifier.0.clone(),
                     }),
-                    (None, ResolvedTrust::Platform(platform)) => Some(Arc::new(
+                    (None, ResolvedTrust::Platform(platform, _)) => Some(Arc::new(
                         ChainVerifier::new(ChainSource::Platform(platform), chain_policy, provider),
                     )),
                     (None, ResolvedTrust::Roots(roots)) => match chain_policy {
@@ -232,9 +319,9 @@ pub(super) fn build_client_config(
                             Some(policy),
                             provider,
                         ))),
-                        None if value.server_cert_pins.is_some() => Some(
-                            WebPkiServerVerifier::builder_with_provider(roots, provider).build()?,
-                        ),
+                        None if value.server_cert_pins.is_some() => {
+                            Some(roots_verifier(roots, provider)?)
+                        }
                         None => None,
                     },
                 };
@@ -268,33 +355,63 @@ pub(super) fn build_client_config(
         client_config = modify.apply(client_config)?;
     }
 
+    if let Some(sni_policy) = value.sni_policy {
+        client_config.enable_sni = *sni_policy != TlsClientSni::Disabled;
+    }
+
     // Apply the explicit offer after custom configuration so a hook cannot
     // silently turn a full-handshake request into a resumed offer.
-    match value.client_handshake.copied().unwrap_or_default() {
-        ClientHandshake::Auto => {}
-        ClientHandshake::Full => client_config.resumption = Resumption::disabled(),
-        ClientHandshake::Resumed => {
-            return Err(BoxError::from_static_str(
-                "required session offers are not supported by the TCP TLS backend",
-            ));
+    match resumption {
+        SessionPolicy::Keep => {}
+        SessionPolicy::Disabled => client_config.resumption = Resumption::disabled(),
+        SessionPolicy::Platform(sessions) => {
+            client_config.resumption = Resumption::store(sessions);
         }
     }
+    match value.client_handshake.copied().unwrap_or_default() {
+        ClientHandshake::Full => client_config.resumption = Resumption::disabled(),
+        // A required offer is rejected before any configuration is built.
+        ClientHandshake::Auto | ClientHandshake::Resumed => {}
+    }
     Ok(client_config)
+}
+
+/// Verify chains against `roots`. An empty store, as a reloaded snapshot can be,
+/// rejects every certificate at handshake time like any other unknown issuer.
+fn roots_verifier(
+    roots: Arc<RootCertStore>,
+    provider: Arc<CryptoProvider>,
+) -> Result<Arc<dyn ServerCertVerifier>, BoxError> {
+    if roots.is_empty() {
+        return Ok(Arc::new(ChainVerifier::new(
+            ChainSource::Roots(roots),
+            None,
+            provider,
+        )));
+    }
+    Ok(WebPkiServerVerifier::builder_with_provider(roots, provider).build()?)
 }
 
 /// How a trust policy verifies server chains with rustls.
 enum ResolvedTrust {
     Roots(Arc<RootCertStore>),
-    Platform(Arc<rama_crypto::platform_verifier::PlatformVerifier>),
+    Platform(Arc<PlatformVerifier>, ServerTrustKey),
 }
 
 impl ResolvedTrust {
-    fn from_verification(verification: super::RustlsServerVerification) -> Self {
-        match verification {
-            rama_core::combinators::Either::A(store) => Self::Roots(store),
-            rama_core::combinators::Either::B(verifier) => Self::Platform(verifier),
+    fn from_verification(verification: RustlsServerVerification) -> Self {
+        match verification.verifier {
+            Either::A(store) => Self::Roots(store),
+            Either::B(verifier) => Self::Platform(verifier, verification.trust_key),
         }
     }
+}
+
+/// What the built configuration does with the sessions it establishes.
+enum SessionPolicy {
+    Keep,
+    Disabled,
+    Platform(Arc<PlatformSessions>),
 }
 
 fn resolve_trust(trust: &TlsServerTrust) -> Result<ResolvedTrust, BoxError> {
@@ -330,7 +447,7 @@ pub fn client_root_certs() -> Arc<RootCertStore> {
     super::verification::native()
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
 fn webpki_root_certs() -> Arc<RootCertStore> {
     super::verification::webpki()
 }
@@ -372,23 +489,60 @@ pub fn self_signed_client_auth()
 // build() needs an installed CryptoProvider so feature gate these tests
 #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
 mod tests {
-    use super::*;
-    use rama_core::{error::BoxErrorExt, extensions::Extensions};
-    use rama_net::tls::TlsAlpn;
+    use rama_core::{
+        combinators::Either,
+        error::{BoxErrorExt, CauseExt as _},
+        extensions::Extensions,
+    };
+    use rama_crypto::{
+        cert::{GeneratedServerAuthConfig, generate_server_auth},
+        pki_types::UnixTime,
+    };
+    use rama_net::{address::Domain, tls::TlsAlpn};
     use rama_tls::client::{
-        TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
-        TlsServerVerify, TlsStoreServerCertChain,
+        ClientAuthData, ServerTrustSnapshot, TlsClientAuth, TlsClientConfig, TlsServerCertPinSet,
+        TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify,
+        TlsStoreServerCertChain,
+    };
+
+    use super::*;
+    use crate::{
+        client::{RustlsClientConfigExt as _, RustlsServerTrustCache},
+        dep::rustls::{
+            CertificateError, Error as RustlsError, crypto::CryptoProvider, pki_types::ServerName,
+        },
     };
 
     #[test]
     fn required_ech_is_rejected_by_low_level_config_builder() {
-        let config =
-            TlsClientConfig::new().with_ech_requirement(rama_tls::client::EchRequirement::Required);
+        let config = TlsClientConfig::new().with_ech_requirement(EchRequirement::Required);
         let error = TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(
             config.as_extensions(),
         ))
         .unwrap_err();
         assert!(error.to_string().contains("required ECH"));
+    }
+
+    #[test]
+    fn ip_literal_sni_is_rejected_before_native_cache_lookup() {
+        let baseline = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+        let valid = ClientConfig::try_from(RustlsTlsConnectorConfig::from_extensions(
+            baseline.as_extensions(),
+        ))
+        .unwrap();
+        let unsupported = baseline.with_sni_policy(TlsClientSni::IncludeIp);
+        let view = RustlsTlsConnectorConfig::from_extensions(unsupported.as_extensions());
+        let cache = RustlsServerTrustCache::default();
+        cache
+            .client_config(view.native_config_key(None).unwrap(), || Ok(valid))
+            .unwrap();
+        let error = TlsConnectorData::from_extensions(unsupported.as_extensions(), None, &cache)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("IP literal SNI requires the BoringSSL backend")
+        );
     }
 
     #[test]
@@ -424,8 +578,6 @@ mod tests {
 
     #[test]
     fn build_applies_client_auth_from_der() {
-        use rama_tls::client::ClientAuthData;
-
         crate::ensure_default_crypto_provider();
 
         let (cert_chain, private_key) = self_signed_client_auth().unwrap();
@@ -443,9 +595,6 @@ mod tests {
 
     #[test]
     fn modify_rustls_config_runs_last_and_overrides_common_pieces() {
-        use crate::client::RustlsClientConfigExt;
-        use rama_tls::client::TlsClientConfig;
-
         crate::ensure_default_crypto_provider();
 
         let cfg = TlsClientConfig::new()
@@ -469,9 +618,6 @@ mod tests {
 
     #[test]
     fn modify_rustls_config_error_propagates() {
-        use crate::client::RustlsClientConfigExt;
-        use rama_tls::client::TlsClientConfig;
-
         crate::ensure_default_crypto_provider();
 
         let cfg = TlsClientConfig::new()
@@ -500,8 +646,6 @@ mod tests {
 
     #[test]
     fn custom_server_trust_anchors_build_default_verifier() {
-        use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
-
         crate::ensure_default_crypto_provider();
         let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
         let config = TlsClientConfig::new()
@@ -517,7 +661,7 @@ mod tests {
     fn rustls_root_certs(trust: &TlsServerTrust) -> Result<Arc<RootCertStore>, BoxError> {
         match resolve_trust(trust)? {
             ResolvedTrust::Roots(roots) => Ok(roots),
-            ResolvedTrust::Platform(_) => {
+            ResolvedTrust::Platform(..) => {
                 Err(BoxError::from_static_str("expected a rustls root store"))
             }
         }
@@ -536,8 +680,6 @@ mod tests {
 
     #[test]
     fn additional_trust_anchors_extend_native_and_webpki_roots() {
-        use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
-
         crate::ensure_default_crypto_provider();
         let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
         let anchor = chain[1].clone();
@@ -588,8 +730,6 @@ mod tests {
 
     #[test]
     fn custom_verifier_takes_precedence_over_trust_anchors() {
-        use crate::client::RustlsClientConfigExt as _;
-
         crate::ensure_default_crypto_provider();
         // the unparsable anchor proves the anchors are ignored
         let config = TlsClientConfig::new()
@@ -616,5 +756,56 @@ mod tests {
             config.as_extensions(),
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn empty_root_store_with_pins_rejects_at_handshake() {
+        crate::ensure_default_crypto_provider();
+        let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
+        // A pin set scoped to another name makes the verifier pin-aware without applying.
+        let config = TlsClientConfig::new().with_server_cert_pins(TlsServerCertPins::new(
+            TlsServerCertPinSet::new(chain[0].clone())
+                .with_server_name(Domain::from_static("other.test")),
+        ));
+        let empty = RustlsServerVerification {
+            verifier: Either::A(Arc::new(RootCertStore::empty())),
+            trust_key: ServerTrustSnapshot::read(&TlsServerTrust::webpki_roots())
+                .unwrap()
+                .key(),
+        };
+        TlsConnectorData::from_extensions(
+            config.as_extensions(),
+            Some(&empty),
+            &RustlsServerTrustCache::default(),
+        )
+        .unwrap();
+
+        let provider = CryptoProvider::get_default().unwrap().clone();
+        let verifier = roots_verifier(Arc::new(RootCertStore::empty()), provider).unwrap();
+        let error = verifier
+            .verify_server_cert(
+                &chain[0],
+                &chain[1..],
+                &ServerName::try_from("localhost").unwrap(),
+                &[],
+                UnixTime::now(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            RustlsError::InvalidCertificate(CertificateError::UnknownIssuer)
+        );
+    }
+
+    #[test]
+    fn cached_verification_errors_keep_their_source() {
+        crate::ensure_default_crypto_provider();
+        let invalid =
+            TlsServerTrustAnchors::try_new([CertificateDer::from(vec![1, 2, 3])]).unwrap();
+        let config = TlsClientConfig::new().with_server_trust(TlsServerTrust::custom(invalid));
+        let error = RustlsServerTrustCache::default()
+            .server_verification(config.as_extensions())
+            .unwrap_err();
+        assert!(error.find_cause::<RustlsError>().is_some());
     }
 }

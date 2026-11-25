@@ -7,6 +7,7 @@ pub(crate) mod compression;
 mod decode;
 mod encode;
 use crate::Status;
+use rama_core::extensions::Extension;
 use rama_utils::octets::{kib, mib};
 use std::io;
 
@@ -102,6 +103,10 @@ pub const HEADER_SIZE: usize =
 // The default maximum uncompressed size in bytes for a message. Defaults to 4MB.
 pub(crate) const DEFAULT_MAX_RECV_MESSAGE_SIZE: usize = mib(4);
 const DEFAULT_MAX_SEND_MESSAGE_SIZE: usize = usize::MAX;
+
+/// Decoding limit a client set, carried on its requests for transports that buffer response frames.
+#[derive(Debug, Clone, Copy, Extension)]
+pub(crate) struct MaxDecodingMessageSize(pub(crate) usize);
 
 /// Trait that knows how to encode and decode gRPC messages.
 ///

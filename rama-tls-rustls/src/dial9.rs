@@ -6,9 +6,8 @@ use dial9::Dial9Handle;
 use dial9::core::clock_monotonic_ns;
 use dial9_trace_format::{EventEncoder, TraceEvent, TraceField, types::FieldType};
 use rama_net::{
-    address::Host,
     dial9::{io_error_kind_code, io_error_raw_os_code},
-    tls::ApplicationProtocol,
+    tls::{ApplicationProtocol, ServerName},
 };
 use rama_tls::ProtocolVersion;
 use std::io::{self, Write};
@@ -37,7 +36,7 @@ pub struct TlsHandshakeStarted {
     pub flow_id: u64,
     pub operation_id: u64,
     /// Server certificate identity the client is negotiating against.
-    pub server_name: Host,
+    pub server_name: ServerName,
 }
 
 /// TLS handshake completed successfully.
@@ -47,7 +46,7 @@ pub struct TlsHandshakeCompleted {
     pub timestamp_ns: u64,
     pub flow_id: u64,
     pub operation_id: u64,
-    pub server_name: Host,
+    pub server_name: ServerName,
     pub protocol_version: ProtocolVersion,
     /// ALPN protocol the server selected, if any.
     pub alpn_selected: MaybeAlpnSelected,
@@ -62,7 +61,7 @@ pub struct TlsHandshakeFailed {
     pub timestamp_ns: u64,
     pub flow_id: u64,
     pub operation_id: u64,
-    pub server_name: Host,
+    pub server_name: ServerName,
     /// Encoded `std::io::ErrorKind` per
     /// [`rama_net::dial9::io_error_kind_code`].
     pub error_kind: u32,
@@ -71,7 +70,7 @@ pub struct TlsHandshakeFailed {
 }
 
 #[inline]
-pub(crate) fn record_handshake_started(server_name: Option<&Host>) {
+pub(crate) fn record_handshake_started(server_name: Option<&ServerName>) {
     let handle = Dial9Handle::current();
     if handle.is_enabled()
         && let Some(server_name) = server_name
@@ -87,7 +86,7 @@ pub(crate) fn record_handshake_started(server_name: Option<&Host>) {
 
 #[inline]
 pub(crate) fn record_handshake_completed(
-    server_name: Option<&Host>,
+    server_name: Option<&ServerName>,
     protocol_version: ProtocolVersion,
     alpn_selected: Option<&[u8]>,
     peer_cert_chain_depth: usize,
@@ -109,7 +108,7 @@ pub(crate) fn record_handshake_completed(
 }
 
 #[inline]
-pub(crate) fn record_handshake_failed(server_name: Option<&Host>, error: &std::io::Error) {
+pub(crate) fn record_handshake_failed(server_name: Option<&ServerName>, error: &std::io::Error) {
     let handle = Dial9Handle::current();
     if handle.is_enabled()
         && let Some(server_name) = server_name

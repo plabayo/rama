@@ -6,6 +6,7 @@ use crate::std::collections::VecDeque;
 use core::str;
 
 use memchr::memchr;
+use rama_utils::octets::RETAINED_BUFFER_LEN;
 use serde::Deserialize;
 use serde::de::Error as _;
 use serde_json::error::Result as JsonResult;
@@ -14,9 +15,6 @@ use super::config::{EmptyLineHandling, ParseConfig};
 use crate::std::vec::Vec;
 
 const NEW_LINE: u8 = b'\n';
-
-/// A line buffer that grew past this for one large line is released once empty.
-const RETAINED_BUFFER_LEN: usize = rama_utils::octets::kib(256);
 
 /// The low-level engine parsing NDJSON-data given as byte slices into objects of the type parameter
 /// `T`. Data is supplied in chunks and parsed objects can subsequently be read from a queue.

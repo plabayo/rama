@@ -98,18 +98,6 @@ pub trait FromPartsStateRefPair<State>: Sized + Send + Sync + 'static {
 ///
 /// `HeaderMap`, [`Parts`], [`Extensions`](rama_core::extensions::Extensions), and
 /// [`Uri`](rama_net::uri::Uri) implement this trait.
-///
-/// # Example
-///
-/// ```
-/// use rama_http::{HeaderMap, StatusCode};
-/// use rama_http::service::web::{WebService, extract::Text};
-///
-/// let _service = WebService::default().with_post(
-///     "/",
-///     async |_headers: HeaderMap, Text(_payload): Text| StatusCode::OK,
-/// );
-/// ```
 #[diagnostic::on_unimplemented(
     note = "Owned request-parts extractors must be the final argument, or immediately precede a body extractor that implements `FromRequestBody`."
 )]

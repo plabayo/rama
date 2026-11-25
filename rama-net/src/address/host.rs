@@ -19,7 +19,7 @@ use crate::{
         IntoCanonicalIpAddr as _,
     },
     std::{
-        borrow::ToOwned,
+        borrow::{Cow, ToOwned},
         string::{String, ToString},
         vec::Vec,
     },
@@ -97,6 +97,19 @@ pub enum Host {
 }
 
 impl Host {
+    /// Parse a network name without URI percent-decoding or URI-only host forms.
+    pub fn parse_name(name: &str) -> Result<Self, BoxError> {
+        if let Ok(domain) = Domain::try_from(name) {
+            return Ok(Self::Name(domain).canonicalize());
+        }
+        let literal = name
+            .strip_prefix('[')
+            .and_then(|name| name.strip_suffix(']'))
+            .unwrap_or(name);
+        let ip = literal.parse::<IpAddr>().context("invalid network name")?;
+        Ok(Self::Address(ip).canonicalize())
+    }
+
     /// Returns `true` if this is the [`Host::Name`] variant.
     /// View as a [`Domain`], bridging the `Uninterpreted` variant.
     /// `Cow::Borrowed` for `Name`; `Cow::Owned` for an `Uninterpreted`
@@ -166,23 +179,63 @@ impl Host {
         self.view().is_empty()
     }
 
+    /// Borrow the typed identity, promoting names that spell IP literals.
+    /// DNS case and trailing dots already compare as one named identity.
+    #[must_use]
+    pub fn canonical_identity(&self) -> Cow<'_, Self> {
+        match self {
+            Self::Address(_) => Cow::Borrowed(self),
+            Self::Name(domain) => match domain.as_ip() {
+                Some(address) => Cow::Owned(Self::Address(address)),
+                None => Cow::Borrowed(self),
+            },
+            Self::Uninterpreted(host) => {
+                if let Ok(address) = IpAddr::try_from(host.view()) {
+                    return Cow::Owned(Self::Address(address));
+                }
+                if let Ok(domain) = Domain::try_from(host.view()) {
+                    return Cow::Owned(Self::Name(domain).canonicalize());
+                }
+                // Only case or percent-encoding normalisation needs an owned copy.
+                if !host
+                    .as_bytes()
+                    .iter()
+                    .any(|byte| *byte == b'%' || byte.is_ascii_uppercase())
+                {
+                    return Cow::Borrowed(self);
+                }
+                let canonical = self.clone().canonicalize();
+                if matches!(&canonical, Self::Uninterpreted(value) if value.as_bytes() == host.as_bytes() && value.is_bracketed() == host.is_bracketed())
+                {
+                    Cow::Borrowed(self)
+                } else {
+                    Cow::Owned(canonical)
+                }
+            }
+        }
+    }
+
     /// Return the RFC 3986 canonical presentation of this host.
     ///
-    /// Domain names are ASCII-lowercased. Preserved URI host bytes are first
+    /// Domain names spelling strict IP literals become addresses; other names are
+    /// ASCII-lowercased. Preserved URI host bytes are first
     /// promoted to a typed IP address or domain when possible; otherwise they
     /// are ASCII-lowercased and their percent-encoding is normalized. IP
     /// addresses are already canonical typed values.
     #[must_use]
     pub fn canonicalize(self) -> Self {
         match self {
-            Self::Name(domain) => Self::Name(domain.canonicalize()),
+            Self::Name(domain) => match domain.as_ip() {
+                Some(address) => Self::Address(address),
+                None => Self::Name(domain.canonicalize()),
+            },
             Self::Address(address) => Self::Address(address),
             Self::Uninterpreted(host) => {
                 if let Ok(address) = IpAddr::try_from(host.view()) {
                     return Self::Address(address);
                 }
                 if let Ok(domain) = Domain::try_from(host.view()) {
-                    return Self::Name(domain.canonicalize());
+                    return Self::Name(domain).canonicalize();
                 }
 
                 let bytes = host.as_bytes();
@@ -982,8 +1035,59 @@ impl_serde_str!(display Host);
 
 #[cfg(test)]
 mod tests {
+    use std::{assert_matches, ptr};
+
     use super::*;
-    use std::assert_matches;
+
+    #[test]
+    fn canonical_uninterpreted_hosts_are_borrowed() {
+        for text in ["tag,with,commas", "[v1.foo]"] {
+            let host: Host = text.parse().unwrap();
+            assert!(matches!(host, Host::Uninterpreted(_)), "{text}");
+            assert!(
+                matches!(host.canonical_identity(), Cow::Borrowed(borrowed) if ptr::eq(borrowed, &raw const host)),
+                "{text}"
+            );
+        }
+        let mixed: Host = "Tag,With".parse().unwrap();
+        assert!(matches!(mixed.canonical_identity(), Cow::Owned(_)));
+        assert_eq!(
+            mixed.canonical_identity().as_ref(),
+            &mixed.clone().canonicalize()
+        );
+    }
+
+    #[test]
+    fn network_names_accept_domains_and_ip_literals_without_uri_decoding() {
+        for name in [
+            "example.test",
+            "192.0.2.1",
+            "2001:db8::1",
+            "[2001:db8::1]",
+            "192.0.2.1.",
+        ] {
+            let host = Host::parse_name(name).unwrap();
+            assert_eq!(Host::parse_name(&host.to_string()).unwrap(), host);
+        }
+        for name in [
+            "%3a%3a1",
+            "%65xample.test",
+            "%31%39%32.0.2.1",
+            "[v1.foo]",
+            "fe80::1%eth0",
+            "[fe80::1%25eth0]",
+            "tag,with,commas",
+            "",
+            "example.test:443",
+        ] {
+            assert!(Host::parse_name(name).is_err(), "{name}");
+        }
+        let uri_host: Host = "%3a%3a1".parse().unwrap();
+        assert_eq!(
+            uri_host.try_as_ip().unwrap(),
+            "::1".parse::<IpAddr>().unwrap()
+        );
+    }
 
     #[test]
     fn empty_check_never_formats_the_host() {
@@ -1002,6 +1106,21 @@ mod tests {
             true,
         ));
         assert!(!bracketed.is_empty());
+    }
+
+    #[test]
+    fn canonical_identity_promotes_numeric_domains_without_changing_dns_scope() {
+        let address = Host::Address(IpAddr::from([192, 0, 2, 1]));
+        let numeric = Host::Name(Domain::from_static("192.0.2.1"));
+        assert_eq!(numeric.canonical_identity().as_ref(), &address);
+        assert_eq!(numeric.canonicalize(), address);
+        assert!(matches!(address.canonical_identity(), Cow::Borrowed(_)));
+        let dotted = Host::Name(Domain::from_static("192.0.2.1."));
+        assert_ne!(dotted.canonicalize(), address);
+        assert_eq!(
+            Host::from_static("EXAMPLE.com.").canonicalize(),
+            Host::EXAMPLE_NAME.canonicalize()
+        );
     }
 
     #[test]

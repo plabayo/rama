@@ -12,7 +12,11 @@ use crate::proto::{
     },
     crypto::{self},
 };
-use rama_quic_proto::{ConnectionId, crypto::PacketKey, packet::SpaceId};
+use rama_quic_proto::{
+    ConnectionId,
+    crypto::PacketKey,
+    packet::{FixedLengthConnectionIdParser, PartialDecode, SpaceId},
+};
 
 impl Connection {
     pub(crate) fn server_candidate_pending(&self) -> bool {
@@ -61,7 +65,6 @@ impl Connection {
         Vec<rama_quic_proto::frame::Frame>,
         Option<rama_core::bytes::BytesMut>,
     ) {
-        use rama_quic_proto::packet::{FixedLengthConnectionIdParser, PartialDecode};
         let (partial, rest) = PartialDecode::new(
             bytes,
             &FixedLengthConnectionIdParser::new(self.rem_cids.active().len()),

@@ -13,19 +13,19 @@
 //!
 //! See [`crate::Service`] for the service abstraction this plugs into.
 
-use core::{
-    pin::Pin,
-    sync::atomic::{AtomicU64, Ordering},
-};
 use std::time::Duration;
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use rama_error::{BoxError, ErrorExt};
-use rama_utils::{macros::generate_set_and_with, time::deadline_after};
+use rama_utils::macros::generate_set_and_with;
 
-use crate::Service;
-use crate::graceful::WeakScope;
-use crate::telemetry::tracing;
+use crate::{
+    Service,
+    futures::maybe,
+    graceful::WeakScope,
+    rt::{IdleGuard, IdleProgress},
+    telemetry::tracing,
+};
 
 /// Reason why a rama bridge — byte-oriented (see `IoForwardService` in
 /// `rama-net`) or frame-oriented (see [`StreamForwardService`]) — terminated.
@@ -241,18 +241,15 @@ where
     let (a_sink, a_stream) = a.split();
     let (b_sink, b_stream) = b.split();
 
-    // Progress counter: bumped on every successful forward. The idle arm
-    // re-checks this against `last_progress` before declaring a timeout,
-    // to absorb the race where idle fires in the same select tick that a
-    // forward also became ready.
-    let progress = AtomicU64::new(0);
-    let mut last_progress: u64 = 0;
+    // Counted on every successful forward, read only when the idle timer fires.
+    let progress = idle_timeout.map(|_| IdleProgress::new());
+    let mut idle = idle_timeout.map(IdleGuard::new);
 
     // Each direction is one long-lived future so a backpressured sink on one
     // side never stops the other side, the idle timer, or shutdown from being
     // polled: no `select!` arm below awaits anything of its own.
-    let a_to_b = pump(a_stream, b_sink, &progress, "b");
-    let b_to_a = pump(b_stream, a_sink, &progress, "a");
+    let a_to_b = pump(a_stream, b_sink, progress.as_ref(), "b");
+    let b_to_a = pump(b_stream, a_sink, progress.as_ref(), "a");
     let mut a_to_b = std::pin::pin!(a_to_b);
     let mut b_to_a = std::pin::pin!(b_to_a);
 
@@ -266,44 +263,22 @@ where
     // arm to have run.
     let mut first_eof = BridgeCloseReason::PeerEofLeft;
 
-    let mut idle: Option<Pin<Box<tokio::time::Sleep>>> =
-        idle_timeout.map(|d| Box::pin(tokio::time::sleep(d)));
-
     let result = loop {
         if a_done && b_done {
             break Ok(first_eof);
         }
 
-        let cancelled = async {
-            match scope.as_ref() {
-                Some(scope) => scope.aborted().await,
-                None => core::future::pending::<()>().await,
-            }
-        };
-
-        let idle_tick = async {
-            match idle.as_mut() {
-                Some(s) => s.as_mut().await,
-                None => core::future::pending::<()>().await,
-            }
-        };
+        let cancelled = maybe(scope.as_ref().map(WeakScope::aborted));
+        let idle_stalled = maybe(
+            idle.as_mut()
+                .zip(progress.as_ref())
+                .map(|(idle, progress)| idle.stalled(progress)),
+        );
 
         tokio::select! {
             biased;
             () = cancelled => break Ok(BridgeCloseReason::Shutdown),
-            () = idle_tick => {
-                // Re-check the progress counter: a forward may have
-                // completed since the timer was armed.
-                let progress = progress.load(Ordering::Relaxed);
-                if progress != last_progress {
-                    last_progress = progress;
-                    if let (Some(d), Some(s)) = (idle_timeout, idle.as_mut()) {
-                        s.as_mut().reset(deadline_after(tokio::time::Instant::now(), d));
-                    }
-                    continue;
-                }
-                break Ok(BridgeCloseReason::IdleTimeout);
-            }
+            () = idle_stalled => break Ok(BridgeCloseReason::IdleTimeout),
 
             end = &mut a_to_b, if !a_done => match end {
                 PumpEnd::Eof => {
@@ -358,12 +333,12 @@ enum PumpEnd {
     WriteError(BoxError),
 }
 
-/// Pump items from `stream` into `sink` until EOF or an error, bumping
+/// Pump items from `stream` into `sink` until EOF or an error, recording
 /// `progress` per forwarded item and half-closing `sink` on EOF.
 async fn pump<S, K, T, ES, EK>(
     mut stream: S,
     mut sink: K,
-    progress: &AtomicU64,
+    progress: Option<&IdleProgress>,
     sink_name: &'static str,
 ) -> PumpEnd
 where
@@ -378,7 +353,9 @@ where
                 if let Err(err) = sink.send(item).await {
                     return PumpEnd::WriteError(err.into_box_error());
                 }
-                progress.fetch_add(1, Ordering::Relaxed);
+                if let Some(progress) = progress {
+                    progress.record();
+                }
             }
             Some(Err(err)) => return PumpEnd::ReadError(err.into_box_error()),
             None => {
@@ -397,11 +374,13 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::{assert_matches, pin::Pin};
+
+    use futures::channel::mpsc;
+    use tokio::time::{Instant, sleep};
+
     use super::*;
     use crate::graceful::{Cause, Scope};
-    use futures::channel::mpsc;
-    use std::assert_matches;
-    use std::time::Instant;
 
     #[test]
     fn max_lifetime_has_distinct_telemetry_identity() {
@@ -659,6 +638,30 @@ mod tests {
             BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight,
             "expected EOF reason, got {reason}",
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_timeout_follows_the_last_forward() {
+        let (mut a_user, a_proxy) = duplex_pair::<u32>();
+        let (mut b_user, b_proxy) = duplex_pair::<u32>();
+
+        let timeout = Duration::from_millis(100);
+        let svc = StreamForwardService::new().with_idle_timeout(timeout);
+        let task = tokio::spawn(async move {
+            svc.serve(StreamBridge::new(a_proxy, b_proxy))
+                .await
+                .unwrap()
+        });
+
+        sleep(Duration::from_millis(80)).await;
+        a_user.send(1).await.unwrap();
+        assert_eq!(b_user.next().await.unwrap().unwrap(), 1);
+        let last = Instant::now();
+
+        assert_eq!(task.await.unwrap(), BridgeCloseReason::IdleTimeout);
+        let idle = last.elapsed();
+        assert!(idle >= timeout, "idled out early: {idle:?}");
+        assert!(idle <= 2 * timeout, "idled out late: {idle:?}");
     }
 
     #[tokio::test(start_paused = true)]

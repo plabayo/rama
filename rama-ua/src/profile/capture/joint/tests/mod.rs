@@ -2,6 +2,8 @@ use crate::profile::capture::completeness::ProfileCaptureCompleteness;
 use rama_utils::octets::kib_u64;
 
 use super::*;
+#[cfg(feature = "tls")]
+use crate::profile::capture::tls::{TlsCapturedExtension, TlsCapturedExtensionValue as Value};
 use crate::profile::{
     capture::headers::{HeaderCapturePolicy, HeaderValueSource},
     evidence::{
@@ -14,7 +16,6 @@ use rama_http::{HeaderMap, HeaderValue, Version};
 #[cfg(feature = "tls")]
 #[test]
 fn ech_pair_roundtrips_and_rejects_mismatched_companions() {
-    use crate::profile::capture::tls::{TlsCapturedExtension, TlsCapturedExtensionValue as Value};
     let tls = |transport, value| {
         TlsCapture {
             completeness: ProfileCaptureCompleteness::Complete,
@@ -91,7 +92,6 @@ fn ech_pair_roundtrips_and_rejects_mismatched_companions() {
 #[cfg(feature = "tls")]
 #[test]
 fn map_wire_tls_maps_the_outer_of_a_pair_and_every_unpaired_hello() {
-    use crate::profile::capture::tls::{TlsCapturedExtension, TlsCapturedExtensionValue as Value};
     let limits = TlsCaptureLimits::default();
     let tls = |value| {
         TlsCapture {

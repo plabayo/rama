@@ -1582,6 +1582,59 @@ mod tests {
         assert!(drain_completed_batch(&state).is_empty());
     }
 
+    #[test]
+    fn observed_intermediate_sequences_end_with_the_query() {
+        // A negative answer carries the queried type and ends the query, also after a CNAME chain.
+        const CNAME: u16 = 5;
+        let (a, ok, none, more) = (
+            ffi::K_DNS_SERVICE_TYPE_A,
+            ffi::K_DNS_SERVICE_ERR_NO_ERROR,
+            ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD,
+            ffi::K_DNS_SERVICE_FLAGS_MORE_COMING,
+        );
+        let target = [3, b'w', b'w', b'w', 0];
+        let address = [192, 0, 2, 1];
+
+        // One CNAME, then the address in the same batch.
+        let mut state = a_query();
+        callback(&mut state, more, ok, CNAME, &target);
+        callback(&mut state, 0, ok, a, &address);
+        assert!(state.done.load(Ordering::SeqCst));
+        assert_matches!(
+            drain_completed_batch(&state).as_slice(),
+            [Ok(addr)] if *addr == Ipv4Addr::from(address),
+        );
+
+        // A CNAME closing its own batch, then a negative answer for its target.
+        let mut state = a_query();
+        callback(&mut state, 0, ok, CNAME, &target);
+        assert!(!state.done.load(Ordering::SeqCst));
+        callback(&mut state, 0, none, a, &[]);
+        assert!(state.done.load(Ordering::SeqCst));
+        assert!(drain_completed_batch(&state).is_empty());
+
+        // A CNAME chain closing its batch, its addresses in the next one.
+        let mut state = a_query();
+        callback(&mut state, more, ok, CNAME, &target);
+        callback(&mut state, more, ok, CNAME, &target);
+        callback(&mut state, 0, ok, CNAME, &target);
+        assert!(!state.done.load(Ordering::SeqCst));
+        callback(&mut state, more, ok, a, &address);
+        assert!(!state.done.load(Ordering::SeqCst));
+        callback(&mut state, 0, ok, a, &address);
+        assert!(state.done.load(Ordering::SeqCst));
+        assert_matches!(
+            drain_completed_batch(&state).as_slice(),
+            [Ok(first), Ok(second)] if *first == Ipv4Addr::from(address) && *second == Ipv4Addr::from(address),
+        );
+
+        // No such name or no such record: one negative answer.
+        let mut state = a_query();
+        callback(&mut state, 0, none, a, &[]);
+        assert!(state.done.load(Ordering::SeqCst));
+        assert!(drain_completed_batch(&state).is_empty());
+    }
+
     #[tokio::test]
     async fn answered_lookups_free_their_burst_place() {
         let resolver = AppleDnsResolver::new()

@@ -101,13 +101,32 @@ fn ip_family_does_not_fragment_a_wire_equivalent_selection() {
             .id
     );
 
-    let incompatible = ConnectionContext {
+    let fresh = ConnectionContext {
         resumption: ResumptionContext::Fresh,
         ip_family: Some(ConnectionIpFamily::V6),
         ..ConnectionContext::default()
     };
-    assert!(matches!(
-        selected.connection(&incompatible, ProfileSeed([46; 32]), DrawKey([48; 32]),),
-        Err(SelectionError::IncompatibleConnectionContext)
-    ));
+    let fresh = selected
+        .connection(&fresh, ProfileSeed([46; 32]), DrawKey([48; 32]))
+        .unwrap();
+    assert_eq!(fresh.variant, connection.variant);
+    assert_eq!(
+        fresh.effective.capture.bytes,
+        connection.effective.capture.bytes
+    );
+}
+
+#[test]
+fn readiness_weighting_keeps_positive_candidates_and_bounds_the_draw_total() {
+    let mut weights = [u64::MAX / 2, u64::MAX / 2, 1, 0];
+    prefer_exact_weights(&mut weights, &[true, false, false, true]);
+    assert!(weights[0] > weights[1]);
+    assert!(weights[..3].iter().all(|weight| *weight > 0));
+    assert_eq!(weights[3], 0);
+    assert!(
+        weights
+            .iter()
+            .try_fold(0_u64, |sum, weight| sum.checked_add(*weight))
+            .is_some()
+    );
 }

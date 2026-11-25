@@ -10,7 +10,9 @@
 
 mod endpoint;
 #[doc(inline)]
-pub use endpoint::{ClientEndpoint, QuicEndpointConnector, SharedQuicEndpoint};
+pub use endpoint::{
+    ClientEndpoint, QuicEndpointConnector, ReadyClientEndpoint, SharedQuicEndpoint,
+};
 
 #[cfg(test)]
 mod tests;
@@ -23,20 +25,20 @@ use std::{
     num::NonZeroUsize,
     pin::Pin,
     ptr,
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 use parking_lot::Mutex;
 use rama_core::{
     Fork as _, Service,
     error::{ArcError, BoxError, BoxErrorExt as _, CauseExt as _, ErrorList, error_chain},
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
     futures::{StreamExt as _, stream},
     telemetry::tracing,
 };
 use rama_net::{
     ConnectorTargetInputExt,
-    address::{Host, HostWithPort, ProxyAddress},
+    address::{HostWithPort, ProxyAddress},
     client::{
         ConnectRequest, ConnectionAttempt, ConnectionError,
         ConnectionErrorDomain::{self, Application, Local, Transport},
@@ -48,19 +50,24 @@ use rama_net::{
         EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, race_connect,
     },
     mode::ConnectIpMode,
-    tls::{AlpnPolicy, ApplicationProtocol, EarlyDataPermit, ForbidEarlyData, TlsAlpn},
+    tls::{AlpnPolicy, ApplicationProtocol, EarlyDataPermit, ForbidEarlyData, ServerName, TlsAlpn},
 };
-use rama_quic_proto::{TransportErrorCode, profile::QuicProfile};
+use rama_quic_proto::{
+    TransportErrorCode,
+    profile::{QuicProfile, TransportLimits},
+};
 use rama_tls::client::{
-    EchRequirement, EchRetryConfig, TlsClientConfig, TlsConnectionReuse, TlsEchAccepted,
-    TlsServerAuthentication, TlsServerName, resolve_target_ech,
+    EchDiscoveryComplete, EchRequirement, EchRetryConfig, TargetEchResolution, TlsClientConfig,
+    TlsConnectionReuse, TlsEchAccepted, TlsPoolId, TlsProfilePreparation, TlsServerAuthentication,
+    resolve_target_ech, target_ech_required,
 };
 use rama_utils::macros::generate_set_and_with;
+use tokio::sync;
 
 use crate::{
     ClientConfig, ConnectError as QuicConnectError, Connection,
     ConnectionError as QuicConnectionError, NegotiatedTlsParameters, TransportConfig,
-    tls::{ClientConfigCache, QuicClientConfigProvider, TlsOptions},
+    tls::{ClientConfigCache, QuicClientConfigProvider, TargetEchResolutionError, TlsOptions},
 };
 
 // Allow the alternate address family to progress while one QUIC handshake is waiting,
@@ -233,15 +240,74 @@ impl<E> QuicConnector<E> {
             .filter(|offer| !offer.0.is_empty())
     }
 
-    async fn prepare(&self, input: &ConnectRequest) -> Result<Prepared, ConnectionError> {
-        let profile = input.extensions().get_arc::<QuicProfile>();
+    fn check_attempt_policy(&self, input: &ConnectRequest) -> Result<(), ConnectionError> {
         let tls = self.tls_config_for(input);
+        let extensions = tls.as_extensions();
+        let (requirement, _) = EchRequirement::effective(extensions)
+            .map_err(|error| ConnectionError::local(error, InvalidInput))?;
         let target = input.connector_target().ok_or_else(|| {
             ConnectionError::local(
                 BoxError::from_static_str("QUIC connector target is missing"),
                 InvalidInput,
             )
         })?;
+        if requirement == EchRequirement::Required {
+            if !self.tls_provider().supports_ech()
+                || !self.tls_provider().authenticates_server(extensions)
+            {
+                return Err(ConnectionError::local(
+                    BoxError::from_static_str(
+                        "required ECH needs an authenticated capable backend",
+                    ),
+                    InvalidInput,
+                ));
+            }
+            EchDiscoveryComplete::check_required(extensions, &target)
+                .map_err(|error| ConnectionError::local(error, InvalidInput))?;
+        }
+        target_ech_required(extensions, &target, self.tls_provider().supports_ech())
+            .map_err(|error| ConnectionError::local(error, Unavailable))?;
+        if let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() {
+            let scope = TlsConnectionReuse::new(self.tls_provider().clone(), input.extensions())
+                .policy_scope();
+            // An origin that is not a server name cannot be authenticated.
+            let fallback = (!extensions.contains::<ServerName>())
+                .then(|| ServerName::try_from(&input.authority.host).ok())
+                .flatten();
+            let identity = self
+                .tls_provider()
+                .authenticates_origin(extensions, &input.authority.host)
+                .then(|| extensions.get_ref::<ServerName>().or(fallback.as_ref()))
+                .flatten();
+            attempt.check_policy(scope, identity)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
+    async fn prepare(&self, input: &ConnectRequest) -> Result<Prepared, ConnectionError> {
+        let target = input.connector_target().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("QUIC connector target is missing"),
+                InvalidInput,
+            )
+        })?;
+        self.prepare_for_target(input, &target, false).await
+    }
+
+    async fn prepare_for_target(
+        &self,
+        input: &ConnectRequest,
+        target: &HostWithPort,
+        early: bool,
+    ) -> Result<Prepared, ConnectionError> {
+        let tls = self.tls_config_for(input);
         // Conditional DNS reliance makes this endpoint locally unavailable;
         // another candidate/backend may still be usable. Caller policy errors
         // retain the existing invalid-input classification.
@@ -251,14 +317,38 @@ impl<E> QuicConnector<E> {
             } else {
                 Unavailable
             };
-        let ech_required = resolve_target_ech(
-            tls.as_extensions(),
-            &target,
-            self.tls_provider().supports_ech(),
-        )
-        .map_err(|error| ConnectionError::local(error, ech_error_kind))?
-        .required;
-        tls.as_extensions().insert(ConnectorTarget(target));
+        tls.as_extensions().insert(ConnectorTarget(target.clone()));
+        let peer = match tls.as_extensions().get_ref::<ServerName>() {
+            Some(name) => name.clone(),
+            None => ServerName::try_from(&input.authority.host).map_err(|_error| {
+                ConnectionError::local(
+                    BoxError::from_static_str("invalid TLS origin host"),
+                    InvalidInput,
+                )
+            })?,
+        };
+        let initial_authenticated = self
+            .tls_provider()
+            .authenticates_server(tls.as_extensions());
+        let profile_prepared = tls.as_extensions().contains::<TlsProfilePreparation>();
+        let early_data = self.tls_configs.allows_early_data(&tls)
+            && input.extensions().contains::<EarlyDataPermit>()
+            && !input.extensions().contains::<ForbidEarlyData>();
+        let (mut config, resolution, tls) = self
+            .tls_configs
+            .client_config_for_peer_with_ech_async(tls, input.extensions(), &peer, early)
+            .await
+            .map_err(|error| {
+                let kind = if error.find_cause::<TargetEchResolutionError>().is_some() {
+                    ech_error_kind
+                } else {
+                    InvalidInput
+                };
+                ConnectionError::local(error, kind)
+            })?;
+        if let Some(name) = tls.as_extensions().get_arc::<ServerName>() {
+            input.extensions().insert_arc(name);
+        }
         let alpn_policy = tls
             .as_extensions()
             .get_ref::<AlpnPolicy>()
@@ -270,12 +360,17 @@ impl<E> QuicConnector<E> {
             .is_some_and(|offer| !offer.0.is_empty());
         let server_identity = tls
             .as_extensions()
-            .get_ref::<TlsServerName>()
-            .map_or_else(|| input.authority.host.clone(), |name| name.0.clone());
-        let authenticated_identity = self
-            .tls_provider()
-            .authenticates_server(tls.as_extensions())
-            .then(|| server_identity.clone());
+            .get_ref::<ServerName>()
+            .cloned()
+            .unwrap_or(peer);
+        // Authentication facts follow the final preparation the native config was built from.
+        let authenticated = if profile_prepared {
+            self.tls_provider()
+                .authenticates_server(tls.as_extensions())
+        } else {
+            initial_authenticated
+        };
+        let authenticated_identity = authenticated.then(|| server_identity.clone());
         let reuse = TlsConnectionReuse::new(self.tls_provider().clone(), input.extensions());
         let policy_scope = reuse.policy_scope();
         let policy_scope = if let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>()
@@ -290,41 +385,37 @@ impl<E> QuicConnector<E> {
         } else {
             policy_scope
         };
-        let early_data = self.tls_configs.allows_early_data(&tls)
-            && input.extensions().contains::<EarlyDataPermit>()
-            && !input.extensions().contains::<ForbidEarlyData>();
-        let mut config = self
-            .tls_configs
-            .client_config_for_peer_async(tls, input.extensions(), &server_identity)
-            .await
+        let ech_required = resolution
+            .as_ref()
+            .is_some_and(|resolution| resolution.required);
+        let early_data = early_data
+            && !ech_required
+            && resolution
+                .as_ref()
+                .is_none_or(|resolution| resolution.config.is_none());
+        let profile = input
+            .extensions()
+            .get_arc::<QuicProfile>()
+            .map(|profile| with_application_stream_credit(profile, self.served_alpn()))
+            .transpose()
             .map_err(|error| ConnectionError::local(error, InvalidInput))?;
-        if let Some(profile) = &profile {
+        if let Some(profile) = profile {
             config
-                .apply_quic_profile(profile)
+                .apply_quic_profile(&profile)
                 .map_err(|error| ConnectionError::local(error, InvalidInput))?;
         } else {
             config.set_transport_config(self.transport.clone());
         }
-        let server_name = if let Ok(ip) = server_identity.try_as_ip() {
-            ip.to_string()
-        } else {
-            server_identity
-                .try_as_domain()
-                .map_err(|_error| {
-                    ConnectionError::local(
-                        BoxError::from_static_str("invalid TLS origin host"),
-                        InvalidInput,
-                    )
-                })?
-                .to_string()
-        };
+        let server_name = server_identity.to_string();
         Ok(Prepared {
+            settings_id: self.tls_provider().pool_id(tls.as_extensions()),
+            resolution,
             ech_required,
             early_data,
             alpn_policy,
             alpn_offered,
             config,
-            server_name,
+            server_name: server_name.into(),
             authenticated_identity,
             policy_scope,
             reuse,
@@ -333,10 +424,10 @@ impl<E> QuicConnector<E> {
 
     async fn dial(
         &self,
-        endpoint: ClientEndpoint,
+        endpoint: ReadyClientEndpoint,
         address: SocketAddr,
         prepared: &Prepared,
-    ) -> Result<(ClientEndpoint, Connection), BoxError> {
+    ) -> Result<(ReadyClientEndpoint, Connection), BoxError> {
         let remote = endpoint.peer().unwrap_or(address);
         let connecting = endpoint.endpoint().connect_with(
             prepared.config.clone(),
@@ -401,6 +492,23 @@ impl<E> QuicConnector<E> {
     }
 }
 
+// Application stream requirements apply to the final profile after ECH preparation.
+fn with_application_stream_credit(
+    profile: Arc<QuicProfile>,
+    served: Option<&TlsAlpn>,
+) -> Result<Arc<QuicProfile>, BoxError> {
+    if profile.limits().initial_max_streams_uni >= 3
+        || !served.is_some_and(|served| serves(served, &ApplicationProtocol::HTTP_3))
+    {
+        return Ok(profile);
+    }
+    let limits = TransportLimits {
+        initial_max_streams_uni: 3,
+        ..profile.limits().clone()
+    };
+    Ok(Arc::new((*profile).clone().try_with_limits(limits)?))
+}
+
 /// Refuse a connection whose negotiated protocol the connector does not serve, or that
 /// negotiated none of an offer without out-of-band agreement (RFC 9001 section 8.1), closing it.
 fn check_negotiated_alpn(
@@ -435,17 +543,114 @@ fn serves(served: &TlsAlpn, protocol: &ApplicationProtocol) -> bool {
         .any(|served| served.as_bytes() == protocol.as_bytes())
 }
 
-/// Values derived once from the effective TLS configuration for one connection.
+/// Values derived from one effective TLS/ECH preparation.
 struct Prepared {
+    settings_id: Option<TlsPoolId>,
+    resolution: Option<TargetEchResolution>,
     ech_required: bool,
     early_data: bool,
     alpn_policy: AlpnPolicy,
     alpn_offered: bool,
     config: ClientConfig,
-    server_name: String,
-    authenticated_identity: Option<Host>,
+    server_name: Box<str>,
+    authenticated_identity: Option<ServerName>,
     policy_scope: ConnectionPolicyScope,
     reuse: TlsConnectionReuse<Arc<dyn QuicClientConfigProvider>>,
+}
+
+struct Connected {
+    input: ConnectRequest,
+    conn: Connection,
+    prepared: Arc<Prepared>,
+}
+
+#[derive(Debug, Extension)]
+#[extension(scope(connection))]
+pub(super) struct HandshakePreparation(Weak<PreparationState>);
+
+struct PreparationState {
+    connector: QuicConnector<()>,
+    target: HostWithPort,
+    prepared: sync::Mutex<Arc<Prepared>>,
+}
+
+impl fmt::Debug for PreparationState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreparationState").finish_non_exhaustive()
+    }
+}
+
+impl HandshakePreparation {
+    pub(super) async fn before_endpoint(input: &ConnectRequest) -> Result<(), ConnectionError> {
+        if let Some(state) = input
+            .extensions()
+            .get_ref::<Self>()
+            .and_then(|value| value.0.upgrade())
+        {
+            state.prepare(input).await?;
+        }
+        Ok(())
+    }
+}
+
+impl PreparationState {
+    fn install<E>(
+        connector: &QuicConnector<E>,
+        input: &ConnectRequest,
+        target: HostWithPort,
+        prepared: Arc<Prepared>,
+    ) -> Arc<Self> {
+        let state = Arc::new(Self {
+            connector: QuicConnector {
+                endpoints: (),
+                tls: connector.tls.clone(),
+                tls_configs: connector.tls_configs.clone(),
+                early_data: connector.early_data,
+                transport: connector.transport.clone(),
+            },
+            target,
+            prepared: sync::Mutex::new(prepared),
+        });
+        input
+            .extensions()
+            .insert(HandshakePreparation(Arc::downgrade(&state)));
+        state
+    }
+
+    async fn prepare(&self, input: &ConnectRequest) -> Result<(), ConnectionError> {
+        let mut prepared = self.prepared.lock().await;
+        let tls = self.connector.tls_config_for(input);
+        let resolution = resolve_target_ech(
+            tls.as_extensions(),
+            &self.target,
+            self.connector.tls_provider().supports_ech(),
+        )
+        .map_err(|error| {
+            let kind = if tls.as_extensions().get_ref::<EchRequirement>()
+                == Some(&EchRequirement::Required)
+            {
+                InvalidInput
+            } else {
+                Unavailable
+            };
+            ConnectionError::local(error, kind)
+        })?;
+        if prepared.resolution.as_ref() != Some(&resolution)
+            || prepared.settings_id != self.connector.tls_provider().pool_id(tls.as_extensions())
+        {
+            *prepared = Arc::new(
+                self.connector
+                    .prepare_for_target(input, &self.target, false)
+                    .await?,
+            );
+        }
+        Ok(())
+    }
+
+    async fn finish(&self, input: &ConnectRequest) -> Result<Arc<Prepared>, ConnectionError> {
+        self.prepare(input).await?;
+        Ok(self.prepared.lock().await.clone())
+    }
 }
 
 impl<E> QuicConnector<E>
@@ -456,13 +661,21 @@ where
     async fn connect_through(
         &self,
         input: &ConnectRequest,
-        prepared: &Prepared,
         proxy: &ProxyAddress,
-    ) -> Result<(Connection, EstablishedProxyRoute), ConnectionError> {
-        let attempt =
-            ConnectRequest::new_with_extensions(input.authority.clone(), input.extensions().fork());
-        let EstablishedClientConnection { conn: endpoint, .. } =
-            self.endpoints.connect(attempt).await?;
+        prepared: Arc<Prepared>,
+    ) -> Result<(Connected, EstablishedProxyRoute), ConnectionError> {
+        let attempt = input.fork();
+        let target = input.connector_target().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("QUIC connector target is missing"),
+                InvalidInput,
+            )
+        })?;
+        let preparation = PreparationState::install(self, &attempt, target.clone(), prepared);
+        let EstablishedClientConnection {
+            conn: endpoint,
+            input: connected,
+        } = self.endpoints.connect(attempt).await?;
         let route = endpoint
             .extensions()
             .get_ref::<EstablishedProxyRoute>()
@@ -481,21 +694,32 @@ where
             .extensions()
             .get_arc::<ConnectionAttempt>()
             .unwrap_or_default();
-        let (_endpoint, connection) =
-            self.dial(endpoint, peer, prepared).await.map_err(|error| {
+        connected.extensions().insert(ConnectorTarget(target));
+        let prepared = preparation.finish(&connected).await?;
+        let (_endpoint, connection) = self
+            .dial(endpoint.ready(&connected).await?, peer, &prepared)
+            .await
+            .map_err(|error| {
                 failures
                     .finish(failures.record(error, &attempt))
                     .context("QUIC connection establishment through a proxy")
             })?;
-        Ok((connection, route))
+        Ok((
+            Connected {
+                input: connected,
+                conn: connection,
+                prepared,
+            },
+            route,
+        ))
     }
 
     /// Race the target's addresses, each attempt on its own endpoint.
     async fn connect_direct(
         &self,
         input: &ConnectRequest,
-        prepared: &Prepared,
-    ) -> Result<Connection, ConnectionError> {
+        prepared: &Arc<Prepared>,
+    ) -> Result<Connected, ConnectionError> {
         let target = input.connector_target().ok_or_else(|| {
             ConnectionError::local(
                 BoxError::from_static_str("QUIC connector target is missing"),
@@ -509,21 +733,38 @@ where
         let attempt = &attempt;
         let failures = ConnectFailures::default();
         let failures = &failures;
+        let target = &target;
         let dial = |address: SocketAddr| async move {
             let result: Result<_, BoxError> = async {
-                let request = ConnectRequest::new_with_extensions(
-                    input.authority.clone(),
-                    input.extensions().fork(),
-                );
+                let request = input.fork();
                 request
                     .extensions()
                     .insert(ConnectorTarget(HostWithPort::from(address)));
+                let preparation =
+                    PreparationState::install(self, &request, target.clone(), prepared.clone());
                 // Erased: a deep endpoint connector stack would otherwise overflow the
                 // compiler's auto-trait recursion for every stack built on top of this one.
                 let connect: Pin<Box<dyn Future<Output = _> + Send + '_>> =
                     Box::pin(self.endpoints.connect(request));
-                let EstablishedClientConnection { conn: endpoint, .. } = connect.await?;
-                self.dial(endpoint, address, prepared).await
+                let EstablishedClientConnection {
+                    conn: endpoint,
+                    input: connected,
+                } = connect.await?;
+                // Endpoint routing must not replace the physical TLS service target.
+                connected
+                    .extensions()
+                    .insert(ConnectorTarget(target.clone()));
+                let prepared = preparation.finish(&connected).await?;
+                let endpoint = endpoint.ready(&connected).await?;
+                let (endpoint, connection) = self.dial(endpoint, address, &prepared).await?;
+                Ok((
+                    endpoint,
+                    Connected {
+                        input: connected,
+                        conn: connection,
+                        prepared,
+                    },
+                ))
             }
             .await;
             result.map_err(|error| failures.record(error, attempt))
@@ -553,7 +794,7 @@ where
             let candidates = input
                 .extensions()
                 .get_ref::<ConnectorTargetStream>()
-                .filter(|c| c.matches_target(&target))
+                .filter(|c| c.matches_target(target))
                 .ok_or_else(|| {
                     ConnectionError::local(
                         BoxError::from_static_str(
@@ -575,7 +816,7 @@ where
             race_connect(addresses, MAX_IN_FLIGHT_CONNECT_ATTEMPTS, dial).await
         };
         raced
-            .map(|(_address, (_endpoint, connection))| connection)
+            .map(|(_address, (_endpoint, connected))| connected)
             .map_err(|error| {
                 failures
                     .finish(error)
@@ -588,17 +829,34 @@ impl<E> QuicConnector<E>
 where
     E: ConnectorService<ConnectRequest, Connection = ClientEndpoint>,
 {
-    async fn establish(&self, input: &ConnectRequest) -> Result<Connection, ConnectionError> {
+    async fn establish(
+        &self,
+        input: &ConnectRequest,
+    ) -> Result<EstablishedClientConnection<Connection, ConnectRequest>, ConnectionError> {
+        self.check_attempt_policy(input)?;
+        let target = input.connector_target().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("QUIC connector target is missing"),
+                InvalidInput,
+            )
+        })?;
+        let prepared = Arc::new(self.prepare_for_target(input, &target, true).await?);
         let route = input.extensions().get_ref::<ProxyRoute>().cloned();
         let proxy = route.as_ref().and_then(ProxyRoute::proxy_address).cloned();
-        let prepared = self.prepare(input).await?;
         // Keep QUIC address-race and handshake state out of enclosing pool and
         // service-selection futures.
-        let (connection, established) = match (&route, proxy) {
+        let (
+            Connected {
+                input,
+                conn: connection,
+                prepared,
+            },
+            established,
+        ) = match (&route, proxy) {
             (_, Some(proxy)) => {
-                let (connection, route) =
-                    Box::pin(self.connect_through(input, &prepared, &proxy)).await?;
-                (connection, Some(route))
+                let (connected, route) =
+                    Box::pin(self.connect_through(input, &proxy, prepared.clone())).await?;
+                (connected, Some(route))
             }
             (Some(_), None) => (
                 Box::pin(self.connect_direct(input, &prepared)).await?,
@@ -611,14 +869,20 @@ where
         let extensions = connection.extensions();
         extensions.insert(prepared.alpn_policy);
         if connection.is_handshake_confirmed() {
-            extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
+            extensions.insert(TlsServerAuthentication(
+                prepared.authenticated_identity.clone(),
+            ));
         }
-        prepared.reuse.publish(extensions, Some(&self.tls));
+        TlsProfilePreparation::publish(input.extensions(), extensions);
+        prepared.reuse.clone().publish(extensions, Some(&self.tls));
         extensions.insert(prepared.policy_scope);
         if let Some(established) = established {
             extensions.insert(established);
         }
-        Ok(connection)
+        Ok(EstablishedClientConnection {
+            input,
+            conn: connection,
+        })
     }
 }
 
@@ -631,7 +895,7 @@ where
 
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
         match self.establish(&input).await {
-            Ok(conn) => Ok(EstablishedClientConnection { input, conn }),
+            Ok(established) => Ok(established),
             Err(error) => {
                 if let Some(retry) = error.find_cause::<EchRetryConfig>()
                     && let Some(target) = input.connector_target()
@@ -640,8 +904,7 @@ where
                     // ECH preparation disables early data, so nothing is replayed.
                     let retry_input = input.fork();
                     retry.apply(retry_input.extensions(), target);
-                    let conn = self.establish(&retry_input).await?;
-                    return Ok(EstablishedClientConnection { input, conn });
+                    return self.establish(&retry_input).await;
                 }
                 Err(error)
             }

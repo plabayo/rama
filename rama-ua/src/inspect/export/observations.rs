@@ -1,18 +1,20 @@
 use std::time::{Duration, SystemTime};
 
+use rama_core::telemetry::tracing;
 use rama_http::{Version, inspect::capture::HttpExchangeSummary};
+#[cfg(feature = "tls")]
+use rama_tls::{
+    inspect::TlsObservation,
+    server::{ServerClientHellos, ServerHandshakeHellos},
+};
 use sha2::{Digest as _, Sha256};
 
-use rama_core::telemetry::tracing;
-#[cfg(feature = "tls")]
-use rama_tls::server::{EchServerObservation, ServerClientHellos, ServerEchAccepted};
-
-use super::super::protocol::{
-    ConnectionFacts, H3ProfileConnection, H3ProfileRequest, connection_slots,
-};
 #[cfg(feature = "tls")]
 use super::super::tls::tls_connection_slots;
-use super::*;
+use super::{
+    super::protocol::{ConnectionFacts, H3ProfileConnection, H3ProfileRequest, connection_slots},
+    *,
+};
 #[cfg(feature = "tls")]
 use crate::profile::capture::tls::{TlsCaptureLimits, TlsCaptureTransport};
 use crate::profile::{
@@ -249,13 +251,18 @@ impl ProfileExport {
                 #[cfg(feature = "tls")]
                 {
                     let connection = &metadata.connection;
-                    let hellos = ServerClientHellos::new(
-                        connection
-                            .get_ref::<TlsObservation>()
-                            .and_then(|tls| tls.client_hello.as_ref()),
-                        connection.get_ref::<ServerEchAccepted>().copied(),
-                        connection.get_ref::<EchServerObservation>(),
-                    );
+                    let hellos = connection
+                        .get_ref::<Arc<ServerHandshakeHellos>>()
+                        .map(|published| published.hellos())
+                        .unwrap_or_else(|| {
+                            ServerClientHellos::new(
+                                connection
+                                    .get_ref::<TlsObservation>()
+                                    .and_then(|tls| tls.client_hello.as_ref()),
+                                None,
+                                None,
+                            )
+                        });
                     let bounds = TlsCaptureLimits {
                         bytes: policy.bytes,
                         ..TlsCaptureLimits::default()

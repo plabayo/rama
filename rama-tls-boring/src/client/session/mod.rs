@@ -1,6 +1,5 @@
 //! Client session resumption scoped to server identity and effective TLS policy.
 
-use rama_utils::macros::generate_set_and_with;
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt,
@@ -27,8 +26,9 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::Extension,
 };
-use rama_net::address::Host;
+use rama_net::tls::ServerName;
 use rama_tls::client::{TlsPoolComponent, TlsPoolId};
+use rama_utils::macros::generate_set_and_with;
 
 use super::{
     BoringServerVerification, BoringTlsConnectorConfig, TlsConnectorContext,
@@ -111,7 +111,10 @@ pub(super) fn identify_context(
     Ok(())
 }
 
-pub(super) fn context_key(context: &SslContextRef, server: &Host) -> Option<TlsClientSessionKey> {
+pub(super) fn context_key(
+    context: &SslContextRef,
+    server: &ServerName,
+) -> Option<TlsClientSessionKey> {
     Some(TlsClientSessionKey {
         scope: context_scope(context)?,
         server: server.clone(),
@@ -122,7 +125,7 @@ pub(super) fn context_key(context: &SslContextRef, server: &Host) -> Option<TlsC
 /// Bind a connection before its handshake, using both server identity and policy.
 pub(super) fn bind_session_key(
     ssl: &mut SslRef,
-    server: &Host,
+    server: &ServerName,
     ech: bool,
 ) -> Result<Option<TlsClientSessionKey>, BoxError> {
     let Some(mut key) = context_key(ssl.ssl_context(), server) else {
@@ -137,7 +140,7 @@ pub(super) fn bind_session_key(
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TlsClientSessionKey {
     scope: SessionScope,
-    server: Host,
+    server: ServerName,
     ech: bool,
 }
 
@@ -155,7 +158,7 @@ impl TlsClientSessionKey {
 
     /// The server identity the session was established with.
     #[must_use]
-    pub fn server(&self) -> &Host {
+    pub fn server(&self) -> &ServerName {
         &self.server
     }
 }

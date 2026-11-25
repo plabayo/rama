@@ -180,6 +180,7 @@ impl CaptureCompleteness {
 /// and raw ClientHello bytes, and replaces connection-specific parameter values
 /// with their lengths. Explicit field access remains available to capture consumers.
 #[derive(Clone, Serialize, Extension)]
+#[extension(scope(connection))]
 pub struct QuicObservation {
     #[serde(skip)]
     pub connection_id: Vec<u8>,

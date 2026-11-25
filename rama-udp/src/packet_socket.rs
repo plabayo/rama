@@ -1,14 +1,21 @@
 //! Tokio-backed implementation of the protocol-neutral datagram traits.
 
 use std::{
+    future::Future,
     io::{self, IoSliceMut},
+    mem,
     net::{IpAddr, SocketAddr, SocketAddrV6},
     num::NonZeroUsize,
+    pin::Pin,
     sync::Arc,
     task::{Context, Poll, ready},
+    time::Duration,
 };
 
-use tokio::io::Interest;
+use tokio::{
+    io::Interest,
+    time::{Instant, Sleep, sleep_until},
+};
 use tokio_util::sync::ReusableBoxFuture;
 
 use rama_core::{
@@ -22,7 +29,7 @@ use rama_net::{
 
 use crate::{
     DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
-    ReceiveTimestamp, SendDatagram, UdpSocket, meta::MAX_UDP_PAYLOAD_IPV4,
+    IcmpErrorReceiver, ReceiveTimestamp, SendDatagram, UdpSocket, meta::MAX_UDP_PAYLOAD_IPV4,
     meta::MAX_UDP_PAYLOAD_IPV6, sys,
 };
 
@@ -70,6 +77,7 @@ impl UdpPacketSocket {
     /// Wrap an existing Tokio UDP socket and enable best-effort packet metadata.
     ///
     /// The caller retains responsibility for the bound socket's address-family coverage.
+    /// ICMP reports are set up as by [`UdpSocketConfig::wrap_core`](crate::UdpSocketConfig::wrap_core).
     pub fn from_socket(socket: UdpSocket) -> Result<Self, DatagramError> {
         Self::from_registered(socket, false)
     }
@@ -83,6 +91,14 @@ impl UdpPacketSocket {
 
     pub(crate) fn cache_bound_address(&mut self) -> Result<(), DatagramError> {
         self.primary.cache_bound_address()
+    }
+
+    /// Start receiving the ICMP error reports about datagrams this socket sends.
+    ///
+    /// See [`IcmpErrorReceiver`] for what turning them on changes. Only Linux and Android
+    /// queue them; elsewhere this fails with an [`io::ErrorKind::Unsupported`] error.
+    pub fn icmp_error_receiver(&self) -> Result<IcmpErrorReceiver, DatagramError> {
+        IcmpErrorReceiver::new(self.primary.io.clone())
     }
 
     #[cfg(all(
@@ -310,6 +326,7 @@ impl DatagramSocket for PacketSocket {
             io: self.io.clone(),
             socket_is_ipv6: self.socket_is_ipv6,
             writable: None,
+            closed_retry: ClosedRetry::Unused,
         }
     }
 
@@ -368,6 +385,11 @@ impl DatagramSocket for PacketSocket {
                     return Poll::Ready(Ok(received));
                 }
                 Err(error) if is_would_block(&error) => {}
+                // A burst of absorbed ICMP errors: try again after other tasks ran.
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
                 Err(error) => return Poll::Ready(Err(error.into())),
             }
         }
@@ -394,15 +416,74 @@ impl Socket for PacketSocket {
 
 // Construct every replacement through the same function so its layout always matches
 // the future already stored in the reusable allocation.
-async fn wait_writable(io: Arc<sys::PairedSocket>) -> io::Result<()> {
-    io.writable().await
+async fn wait_writable(io: Arc<sys::PairedSocket>) -> io::Result<WriteReadiness> {
+    io.ready(Interest::WRITABLE)
+        .await
+        .map(|ready| match ready.is_write_closed() {
+            true => WriteReadiness::Closed,
+            false => WriteReadiness::Open,
+        })
+}
+
+/// What a completed wait for send readiness reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteReadiness {
+    /// The socket accepts a send.
+    Open,
+    /// Tokio holds the socket write-closed, so every later wait completes at once.
+    Closed,
 }
 
 /// Send handle for a [`UdpPacketSocket`].
 struct PacketSender {
     io: Arc<sys::PairedSocket>,
     socket_is_ipv6: bool,
-    writable: Option<ReusableBoxFuture<'static, io::Result<()>>>,
+    writable: Option<ReusableBoxFuture<'static, io::Result<WriteReadiness>>>,
+    closed_retry: ClosedRetry,
+}
+
+/// Paces send attempts on a write-closed socket whose buffer is full: Tokio no longer reports
+/// when such a socket drains, so the next attempt waits for a timer instead.
+///
+/// The timer is allocated the first time this state is reached and reused after that.
+#[derive(Debug, Default)]
+enum ClosedRetry {
+    /// The state was never reached.
+    #[default]
+    Unused,
+    /// The timer elapsed: attempts go ahead.
+    Idle(Pin<Box<Sleep>>),
+    /// The next attempt waits for the timer.
+    Armed(Pin<Box<Sleep>>),
+}
+
+impl ClosedRetry {
+    /// A send buffer drains as fast as the link transmits: a 208 KiB Linux default empties in
+    /// under 2 ms at 1 Gbit/s, and 1 ms is the resolution of Tokio's timer.
+    const DELAY: Duration = Duration::from_millis(1);
+
+    fn arm(&mut self) {
+        let deadline = Instant::now() + Self::DELAY;
+        *self = match mem::take(self) {
+            Self::Unused => Self::Armed(Box::pin(sleep_until(deadline))),
+            Self::Idle(mut sleep) | Self::Armed(mut sleep) => {
+                sleep.as_mut().reset(deadline);
+                Self::Armed(sleep)
+            }
+        };
+    }
+
+    /// Ready once no armed timer holds the next attempt back.
+    fn poll_elapsed(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        let Self::Armed(sleep) = self else {
+            return Poll::Ready(());
+        };
+        ready!(sleep.as_mut().poll(cx));
+        if let Self::Armed(sleep) = mem::take(self) {
+            *self = Self::Idle(sleep);
+        }
+        Poll::Ready(())
+    }
 }
 
 /// Another handle with its own readiness registration, as [`DatagramSocket::create_sender`]
@@ -413,6 +494,7 @@ impl Clone for PacketSender {
             io: self.io.clone(),
             socket_is_ipv6: self.socket_is_ipv6,
             writable: None,
+            closed_retry: ClosedRetry::Unused,
         }
     }
 }
@@ -422,6 +504,39 @@ impl std::fmt::Debug for PacketSender {
         formatter
             .debug_struct("PacketSender")
             .finish_non_exhaustive()
+    }
+}
+
+impl PacketSender {
+    /// Wait for send readiness and `send` once the socket takes it.
+    fn poll_transmit(
+        &mut self,
+        cx: &mut Context<'_>,
+        mut send: impl FnMut(&sys::PairedSocket) -> io::Result<()>,
+    ) -> Poll<io::Result<()>> {
+        loop {
+            ready!(self.closed_retry.poll_elapsed(cx));
+            let writable = self
+                .writable
+                .get_or_insert_with(|| ReusableBoxFuture::new(wait_writable(self.io.clone())));
+            let readiness = ready!(writable.poll(cx));
+            // Keep pending registrations intact and reuse the allocation only after completion.
+            // Reset errors too: no completed future may be polled a second time.
+            writable.set(wait_writable(self.io.clone()));
+            let readiness = readiness?;
+
+            // `try_io` must observe `WouldBlock` from the syscall so Tokio can
+            // clear its cached WRITABLE readiness before we wait again.
+            match self.io.try_io(Interest::WRITABLE, || send(&self.io)) {
+                Ok(()) => return Poll::Ready(Ok(())),
+                // Tokio keeps an ICMP-errored UDP socket write-closed: wait on a timer instead.
+                Err(error) if is_would_block(&error) && readiness == WriteReadiness::Closed => {
+                    self.closed_retry.arm();
+                }
+                Err(error) if is_would_block(&error) => {}
+                Err(error) => return Poll::Ready(Err(error)),
+            }
+        }
     }
 }
 
@@ -445,35 +560,16 @@ impl DatagramSender for PacketSender {
             src_interface: datagram.source_interface(),
         };
 
-        loop {
-            let writable = self
-                .writable
-                .get_or_insert_with(|| ReusableBoxFuture::new(wait_writable(self.io.clone())));
-            let readiness = ready!(writable.poll(cx));
-            // Keep pending registrations intact and reuse the allocation only after completion.
-            // Reset errors too: no completed future may be polled a second time.
-            writable.set(wait_writable(self.io.clone()));
-            if let Err(error) = readiness {
-                return Poll::Ready(Err(error.into()));
+        match ready!(self.poll_transmit(cx, |io| io.try_send(&transmit))) {
+            Ok(()) => Poll::Ready(Ok(())),
+            Err(error)
+                if datagram.segment_size().is_some()
+                    && self.io.state().max_gso_segments() == 1
+                    && is_segmentation_rejection(&error) =>
+            {
+                Poll::Ready(Err(DatagramError::SegmentationRejected(error)))
             }
-
-            // `try_io` must observe `WouldBlock` from the syscall so Tokio can
-            // clear its cached WRITABLE readiness before we wait again.
-            let result = self
-                .io
-                .try_io(Interest::WRITABLE, || self.io.try_send(&transmit));
-            match result {
-                Ok(()) => return Poll::Ready(Ok(())),
-                Err(error) if is_would_block(&error) => {}
-                Err(error)
-                    if datagram.segment_size().is_some()
-                        && self.io.state().max_gso_segments() == 1
-                        && is_segmentation_rejection(&error) =>
-                {
-                    return Poll::Ready(Err(DatagramError::SegmentationRejected(error)));
-                }
-                Err(error) => return Poll::Ready(Err(error.into())),
-            }
+            Err(error) => Poll::Ready(Err(error.into())),
         }
     }
 
@@ -576,7 +672,7 @@ mod tests {
     use rama_net::socket::SocketOptions;
     #[cfg(target_vendor = "apple")]
     use rama_net::socket::core::SockRef;
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
     use std::os::fd::AsRawFd as _;
 
     async fn bind_pair(ipv6: bool) -> (UdpPacketSocket, UdpPacketSocket) {
@@ -784,6 +880,102 @@ mod tests {
 
         // A synthetic error carries no native code and is never a rejection.
         assert!(!is_segmentation_rejection(&io::Error::other("x")));
+    }
+
+    /// The retry timer is allocated only once the state is reached, holds attempts back for
+    /// its delay, and is reused when armed again.
+    #[tokio::test(start_paused = true)]
+    async fn the_closed_retry_waits_its_delay_and_reuses_its_timer() {
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut retry = ClosedRetry::default();
+        assert!(retry.poll_elapsed(&mut cx).is_ready());
+        assert_matches!(
+            retry,
+            ClosedRetry::Unused,
+            "nothing is allocated before it is armed"
+        );
+
+        retry.arm();
+        let ClosedRetry::Armed(sleep) = &retry else {
+            panic!("armed: {retry:?}");
+        };
+        let timer = std::ptr::from_ref::<Sleep>(sleep);
+        assert!(retry.poll_elapsed(&mut cx).is_pending());
+        tokio::time::advance(Duration::from_micros(999)).await;
+        assert!(retry.poll_elapsed(&mut cx).is_pending());
+        tokio::time::advance(Duration::from_micros(1)).await;
+        assert!(retry.poll_elapsed(&mut cx).is_ready());
+        assert!(
+            retry.poll_elapsed(&mut cx).is_ready(),
+            "an elapsed timer stays out of the way"
+        );
+
+        retry.arm();
+        let ClosedRetry::Armed(sleep) = &retry else {
+            panic!("armed again: {retry:?}");
+        };
+        assert_eq!(
+            std::ptr::from_ref::<Sleep>(sleep),
+            timer,
+            "the timer is reused"
+        );
+        assert!(retry.poll_elapsed(&mut cx).is_pending());
+    }
+
+    /// A socket Tokio holds write-closed after an ICMP error, with a full send buffer, tries
+    /// again once per retry delay instead of on every poll. The full buffer is simulated: no
+    /// unprivileged loopback setup keeps a UDP send buffer full.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test(start_paused = true)]
+    async fn a_write_closed_socket_with_a_full_buffer_retries_on_a_timer() {
+        let closed: SocketAddr = std::net::UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let socket = crate::UdpSocketConfig::default().connect(closed).unwrap();
+        let mut sender = socket.create_sender();
+        sender
+            .send(SendDatagram::new(closed, b"void"))
+            .await
+            .unwrap();
+        let mut poll = libc::pollfd {
+            fd: socket.socket_ref().as_raw_fd(),
+            events: 0,
+            revents: 0,
+        };
+        // SAFETY: `poll(2)` reads and writes the one live `pollfd` it is given.
+        let ready = unsafe { libc::poll(&raw mut poll, 1, 5_000) };
+        assert_eq!(ready, 1, "the ICMP error");
+        let mut observed = false;
+        for _ in 0..10_000 {
+            let ready = socket.primary.io.ready(Interest::WRITABLE).await.unwrap();
+            if ready.is_write_closed() {
+                observed = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(observed, "Tokio reports the errored socket write-closed");
+
+        let attempts = std::cell::Cell::new(0);
+        let full = |_: &sys::PairedSocket| {
+            attempts.set(attempts.get() + 1);
+            Err(io::ErrorKind::WouldBlock.into())
+        };
+        let mut cx = Context::from_waker(Waker::noop());
+        let primary = &mut sender.primary;
+        assert!(primary.poll_transmit(&mut cx, full).is_pending());
+        assert_eq!(attempts.get(), 1);
+        assert!(primary.poll_transmit(&mut cx, full).is_pending());
+        assert_eq!(attempts.get(), 1, "no attempt before the delay");
+        tokio::time::advance(ClosedRetry::DELAY).await;
+        assert!(primary.poll_transmit(&mut cx, full).is_pending());
+        assert_eq!(attempts.get(), 2);
+        tokio::time::advance(ClosedRetry::DELAY).await;
+        assert_matches!(
+            primary.poll_transmit(&mut cx, |_| Ok(())),
+            Poll::Ready(Ok(()))
+        );
     }
 
     #[tokio::test]

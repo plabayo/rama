@@ -12,6 +12,7 @@ use rama_net::{
 };
 use rama_utils::macros::define_inner_service_accessors;
 
+use super::{preserve, profile::OptionalEmulation};
 use crate::profile::{
     replay::{
         connection::{
@@ -23,10 +24,8 @@ use crate::profile::{
         },
         request::{LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport},
     },
-    selection::variants::{EmulationContext, ProfileConnectionReuse},
+    selection::variants::{ConnectionSelection, EmulationContext, ProfileConnectionReuse},
 };
-
-use super::{preserve, profile::OptionalEmulation};
 
 /// Connector that prepares and checks the connection variant of the profile
 /// selected by [`ProfileEmulateLayer`](super::ProfileEmulateLayer).
@@ -192,14 +191,22 @@ where
                     ConnectionError::application(error, ConnectionErrorKind::Protocol)
                 })?;
             // Every request using this connection inherits its wire differences.
-            if let Some(report) = req.extensions().get_ref::<ProfilePreservationReport>() {
+            if !conn.extensions().contains::<ConnectionSelection>()
+                && let Some(report) = req.extensions().get_ref::<ProfilePreservationReport>()
+            {
                 let report = match conn.extensions().get_ref::<ProfilePreservationReport>() {
                     Some(inner) => report.clone().followed_by(inner.clone()),
                     None => report.clone(),
                 };
                 conn.extensions().insert(report);
             }
-            conn.extensions().insert(admission.into_selection());
+            let selection = conn
+                .extensions()
+                .get_ref::<ConnectionSelection>()
+                .or_else(|| req.extensions().get_ref::<ConnectionSelection>())
+                .cloned()
+                .unwrap_or_else(|| admission.into_selection());
+            conn.extensions().insert(selection);
             ProfileConnectionReuse::new(context, version, req.extensions())
                 .publish(conn.extensions());
         }

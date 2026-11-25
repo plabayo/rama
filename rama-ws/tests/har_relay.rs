@@ -3,6 +3,15 @@
     reason = "integration tests use expectation messages to identify failed stages"
 )]
 
+use std::{
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+
 use parking_lot::Mutex;
 use rama_core::{
     Layer, Service, ServiceInput, bytes::Bytes, error::BoxError, extensions::ExtensionsRef,
@@ -26,19 +35,17 @@ use rama_http::{
 };
 use rama_ws::{
     AsyncWebSocket, Message,
-    handshake::matcher::HttpWebSocketRelayServiceRequestMatcher,
-    handshake::mitm::{
-        WebSocketRelayDirection, WebSocketRelayInput, WebSocketRelayIoService,
-        WebSocketRelayMessage, WebSocketRelayOutput, WebSocketRelayService,
+    handshake::{
+        matcher::HttpWebSocketRelayServiceRequestMatcher,
+        mitm::{
+            WebSocketRelayDirection, WebSocketRelayInput, WebSocketRelayIoService,
+            WebSocketRelayMessage, WebSocketRelayOutput, WebSocketRelayService,
+        },
     },
     layer::har::HARWebSocketLayer,
     protocol::Role,
 };
-use std::convert::Infallible;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use tokio::time::timeout;
 
 #[derive(Default)]
 struct CaptureState {
@@ -642,10 +649,10 @@ fn version_label(version: Version) -> &'static str {
 }
 
 async fn stop_recording(recorder: &FileRecorder) {
-    // Finalization writes the HAR to disk, which can be slow on a loaded CI runner.
-    tokio::time::timeout(std::time::Duration::from_secs(30), recorder.stop_record())
+    // Finalisation takes about 2 ms; the bound only turns a hang into a failure.
+    timeout(Duration::from_secs(5), recorder.stop_record())
         .await
-        .expect("finalize HAR recording");
+        .expect("HAR recording did not finalise within 5 s");
 }
 
 async fn read_log(path: &std::path::Path) -> LogFile {

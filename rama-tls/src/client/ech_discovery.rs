@@ -156,7 +156,7 @@ impl<R: DnsServiceBindingResolver> TargetEchConfigLayer<R> {
         &self,
         input: &InputWithClientHello<I>,
     ) -> Result<(), BoxError> {
-        let Some(server_name) = input.client_hello.ext_server_name() else {
+        let Some(server_name) = input.client_hello.ext_server_domain() else {
             return Ok(());
         };
         let extensions = input.input.extensions();

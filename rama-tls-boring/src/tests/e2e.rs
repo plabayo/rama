@@ -17,6 +17,7 @@ use rama_net::{
     address::{Domain, Host, HostWithPort},
     client::ConnectorTarget,
     stream::service::EchoService,
+    tls::ServerName,
 };
 use rama_tls::{
     SecureTransport, SupportedGroup,
@@ -80,7 +81,7 @@ async fn observed_sni(
         .extensions()
         .get_ref::<SecureTransport>()
         .and_then(SecureTransport::client_hello)
-        .and_then(|hello| hello.ext_server_name())
+        .and_then(|hello| hello.ext_server_domain())
         .cloned())
 }
 
@@ -101,7 +102,7 @@ async fn connect_to_server(
 
     let client_config = TlsConnectorData::try_from(
         &TlsClientConfig::new()
-            .with_server_name(server_name)
+            .with_server_name(ServerName::try_from(server_name).unwrap())
             .try_with_server_trust_anchors([trust_anchor])
             .unwrap(),
     )
@@ -180,7 +181,7 @@ where
 
     let client_config = TlsConnectorData::try_from(
         &TlsClientConfig::new()
-            .with_server_name(server_name)
+            .with_server_name(ServerName::try_from(server_name).unwrap())
             .with_server_cert_pins(pins)
             .with_server_verify(server_verify_mode)
             .try_with_server_trust_anchors([trust_anchor])
@@ -216,7 +217,7 @@ where
     .into_layer(EchoService::new());
     let client_config = TlsConnectorData::try_from(
         &TlsClientConfig::new()
-            .with_server_name(Host::from_static("localhost"))
+            .with_server_name(Domain::from_static("localhost"))
             .with_server_trust(trust),
     )
     .expect("client config");
@@ -345,7 +346,7 @@ async fn provided_ca_issues_ip_leaf_from_target_without_sni() {
 
     let client_config = TlsConnectorData::try_from(
         &TlsClientConfig::new()
-            .with_server_name(Host::LOCALHOST_IPV4)
+            .with_server_name(ServerName::try_from(Host::LOCALHOST_IPV4).unwrap())
             .try_with_server_trust_anchors([trust_anchor])
             .unwrap(),
     )
@@ -373,7 +374,7 @@ async fn connect_to_issuer_without_sni(issuer: ServerCertIssuerData) -> (bool, b
     let client_config = TlsConnectorData::try_from(
         &TlsClientConfig::new()
             // Boring verifies an IP identity without putting it in SNI.
-            .with_server_name(Host::LOCALHOST_IPV4)
+            .with_server_name(ServerName::try_from(Host::LOCALHOST_IPV4).unwrap())
             .with_server_verify(ServerVerifyMode::Disable),
     )
     .expect("client config");
@@ -428,7 +429,7 @@ async fn dynamic_issuer_cache_uses_normalized_identity_across_connections() {
     for server_name in ["first.rama.test", "second.rama.test"] {
         let client_config = TlsConnectorData::try_from(
             &TlsClientConfig::new()
-                .with_server_name(Host::from_static(server_name))
+                .with_server_name(Domain::from_static(server_name))
                 .with_server_verify(ServerVerifyMode::Disable),
         )
         .expect("client config");
@@ -458,7 +459,7 @@ async fn issued_leafs_across_connections(kind: ServerCertIssuerKind) -> Vec<Vec<
     for _ in 0..2 {
         let client_config = TlsConnectorData::try_from(
             &TlsClientConfig::new()
-                .with_server_name(Host::from_static("localhost"))
+                .with_server_name(Domain::from_static("localhost"))
                 .with_server_verify(ServerVerifyMode::Disable),
         )
         .expect("client config");
@@ -570,7 +571,7 @@ async fn mismatched_ip_scoped_pin_is_rejected_without_child_verification() {
         connect_to_pinned_server_with_pins(ServerVerifyMode::Disable, server_name, move |_| {
             TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1, 2, 3]))
-                    .with_server_name(pin_scope),
+                    .with_server_name(ServerName::try_from(pin_scope).unwrap()),
             )
         })
         .await;
@@ -586,7 +587,7 @@ async fn unrelated_scoped_pin_set_delegates_to_default_verification() {
             Host::from_static("localhost"),
             |_| TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1, 2, 3]))
-                    .with_server_name(Host::from_static("other.example"))
+                    .with_server_name(Domain::from_static("other.example"))
             ),
         )
         .await
@@ -601,11 +602,11 @@ async fn matching_any_applicable_pin_set_connects() {
             Host::from_static("localhost"),
             |cert_chain| TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1, 2, 3]))
-                    .with_server_name(Host::from_static("localhost"))
+                    .with_server_name(Domain::from_static("localhost"))
             )
             .with_pin_set(
                 TlsServerCertPinSet::new(cert_chain[0].clone())
-                    .with_server_name(Host::from_static("localhost"))
+                    .with_server_name(Domain::from_static("localhost"))
             ),
         )
         .await
@@ -620,7 +621,7 @@ async fn matching_scoped_pin_set_rejects_a_mismatch() {
             Host::from_static("localhost"),
             |_| TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1, 2, 3]))
-                    .with_server_name(Host::from_static("localhost"))
+                    .with_server_name(Domain::from_static("localhost"))
             ),
         )
         .await
@@ -635,7 +636,7 @@ async fn unrelated_scoped_pin_set_is_not_a_check_when_verification_is_disabled()
             Host::from_static("localhost"),
             |_| TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1, 2, 3]))
-                    .with_server_name(Host::from_static("other.example"))
+                    .with_server_name(Domain::from_static("other.example"))
             ),
         )
         .await
@@ -753,9 +754,10 @@ where
 {
     let (cert_chain, private_key) =
         generate_server_auth(generated_auth).expect("generated server auth");
-    let client_config =
-        TlsConnectorData::try_from(&make_config(&cert_chain).with_server_name(server_name))
-            .expect("client config");
+    let client_config = TlsConnectorData::try_from(
+        &make_config(&cert_chain).with_server_name(ServerName::try_from(server_name).unwrap()),
+    )
+    .expect("client config");
     let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
         cert_chain,
         private_key,
@@ -1008,7 +1010,7 @@ where
     }
     let (cert_chain, private_key) =
         generate_server_auth(GeneratedServerAuthConfig::default()).expect("generated server auth");
-    let config = make_config(&cert_chain).with_server_name(Host::from_static("localhost"));
+    let config = make_config(&cert_chain).with_server_name(Domain::from_static("localhost"));
     let rec = Rec::default();
     let config = if config
         .as_extensions()

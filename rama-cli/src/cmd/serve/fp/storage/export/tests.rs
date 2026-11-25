@@ -1,7 +1,17 @@
 use super::*;
+use CanonicalDomain::{Headers, Joint, LegacyField, Tls};
 use rama::ua::profile::{
-    evidence::ProfileEvidence, format::compiled::try_load_compiled_profiles,
-    model::identity::ProfileKey,
+    analysis::profile::ProfileAnalysisLimits,
+    capture::{
+        CAPTURE_REVISION,
+        completeness::ProfileCaptureCompleteness,
+        joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
+        observation::ProfileCapture,
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+    },
+    evidence::{ProfileEvidence, collector::ProfileEvidenceCollector, transaction::CaptureRunId},
+    format::compiled::try_load_compiled_profiles,
+    model::identity::{ConnectionContext, ProfileKey},
 };
 
 #[test]
@@ -216,18 +226,6 @@ fn compact_recompiles_a_compiled_set_without_excluded_user_agents() {
 
 #[test]
 fn export_orders_selected_scopes_canonically() {
-    use rama::ua::profile::{
-        analysis::profile::ProfileAnalysisLimits,
-        capture::{
-            CAPTURE_REVISION,
-            completeness::ProfileCaptureCompleteness,
-            joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
-            observation::ProfileCapture,
-            order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
-        },
-        evidence::{collector::ProfileEvidenceCollector, transaction::CaptureRunId},
-        model::identity::ConnectionContext,
-    };
     let profile = ProfileKey::new("export-order");
     let mut collector = ProfileEvidenceCollector::new(
         &profile,
@@ -309,7 +307,6 @@ fn export_orders_selected_scopes_canonically() {
 
 #[test]
 fn only_profiles_without_captured_flows_count_as_legacy_only() {
-    use CanonicalDomain::{Headers, Joint, LegacyField, Tls};
     assert!(legacy_only([LegacyField, LegacyField]));
     assert!(legacy_only([LegacyField, Tls]));
     assert!(!legacy_only([LegacyField, Joint]));

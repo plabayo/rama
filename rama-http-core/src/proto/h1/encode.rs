@@ -197,9 +197,9 @@ impl Encoder {
         trace!("encoding trailers");
         match &self.kind {
             Kind::Chunked(policy) => {
-                // Sized exactly, so the buffer converts to `Bytes` without another allocation.
+                // Sized exactly (a spelling is as long as its name), so `Bytes` takes it as is.
                 let len: usize = trailers
-                    .iter()
+                    .ordered_iter()
                     .filter(|(name, _)| policy.sends(name))
                     .map(|(name, value)| name.as_str().len() + value.len() + 4)
                     .sum();
@@ -209,7 +209,7 @@ impl Encoder {
                 }
 
                 let mut buf = Vec::with_capacity(len);
-                for (name, value) in trailers {
+                for (name, value) in trailers.ordered_iter() {
                     if policy.sends(name) {
                         write_header_field(name, value, title_case_headers, &mut buf);
                     } else {
@@ -545,6 +545,14 @@ mod tests {
         encoder: &Encoder,
         trailers: impl IntoIterator<Item = (&'a str, &'a str)>,
     ) -> Option<Vec<u8>> {
+        encode_with_title_case(encoder, trailers, false)
+    }
+
+    fn encode_with_title_case<'a>(
+        encoder: &Encoder,
+        trailers: impl IntoIterator<Item = (&'a str, &'a str)>,
+        title_case_headers: bool,
+    ) -> Option<Vec<u8>> {
         let mut headers = HeaderMap::new();
         for (name, value) in trailers {
             headers.append(
@@ -553,8 +561,56 @@ mod tests {
             );
         }
         let mut dst = Vec::new();
-        dst.put(encoder.encode_trailers::<&[u8]>(&headers, false)?);
+        dst.put(encoder.encode_trailers::<&[u8]>(&headers, title_case_headers)?);
         Some(dst)
+    }
+
+    /// Mixed casing, an order no encoder sorts into, and a repeated name split by another one.
+    const WIRE_TRAILERS: [(&str, &str); 4] = [
+        ("X-Zeta", "1"),
+        ("eTaG", "\"e\""),
+        ("x-zeta", "2"),
+        ("Accept-Ranges", "bytes"),
+    ];
+
+    #[test]
+    fn chunked_trailers_keep_wire_order_and_casing() {
+        assert_eq!(
+            encode(&Encoder::chunked(), WIRE_TRAILERS).as_deref(),
+            Some(
+                &b"0\r\nX-Zeta: 1\r\neTaG: \"e\"\r\nx-zeta: 2\r\nAccept-Ranges: bytes\r\n\r\n"[..]
+            )
+        );
+    }
+
+    /// As for headers, title casing uppercases the first letter of each word of the original spelling.
+    #[test]
+    fn chunked_trailers_title_case_their_original_spelling_in_wire_order() {
+        assert_eq!(
+            encode_with_title_case(&Encoder::chunked(), WIRE_TRAILERS, true).as_deref(),
+            Some(
+                &b"0\r\nX-Zeta: 1\r\nETaG: \"e\"\r\nX-Zeta: 2\r\nAccept-Ranges: bytes\r\n\r\n"[..]
+            )
+        );
+    }
+
+    #[test]
+    fn chunked_trailers_not_sent_leave_the_order_of_the_rest() {
+        let trailers = [
+            ("X-B", "1"),
+            ("Set-Cookie", "a=b"),
+            ("x-a", "2"),
+            ("x-B", "3"),
+        ];
+        for title_case_headers in [false, true] {
+            let sent = encode_with_title_case(&Encoder::chunked(), trailers, title_case_headers);
+            let expected: &[u8] = if title_case_headers {
+                b"0\r\nX-B: 1\r\nX-A: 2\r\nX-B: 3\r\n\r\n"
+            } else {
+                b"0\r\nX-B: 1\r\nx-a: 2\r\nx-B: 3\r\n\r\n"
+            };
+            assert_eq!(sent.as_deref(), Some(expected), "{title_case_headers}");
+        }
     }
 
     /// Declaring trailers in `Trailer` is only a SHOULD (RFC 9110 §6.6.2): undeclared ones
@@ -571,7 +627,7 @@ mod tests {
         );
         assert_eq!(
             encoded.as_deref(),
-            Some(&b"0\r\nchunky-trailer: header data\r\nchunky-trailer: second\r\nchunky-trailer-2: more\r\n\r\n"[..])
+            Some(&b"0\r\nchunky-trailer: header data\r\nchunky-trailer-2: more\r\nchunky-trailer: second\r\n\r\n"[..])
         );
     }
 

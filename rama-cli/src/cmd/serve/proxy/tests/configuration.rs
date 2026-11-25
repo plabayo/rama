@@ -1,4 +1,7 @@
-use rama::{http::Method, net::Protocol};
+use rama::{
+    http::Method,
+    net::{Protocol, address::Domain},
+};
 
 use super::*;
 
@@ -373,7 +376,7 @@ async fn mitm_policy_composes_connect_target_and_tls_sni() {
                 Vec::new(),
                 Vec::new(),
                 vec![ClientHelloExtension::ServerName(Some(
-                    rama::net::address::Domain::try_from(domain).unwrap(),
+                    Domain::try_from(domain).unwrap().into(),
                 ))],
             ),
         }

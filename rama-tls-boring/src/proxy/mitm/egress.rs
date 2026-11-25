@@ -1,7 +1,10 @@
 use rama_boring::{ssl::UnknownValues, x509::store::X509Store};
-use rama_core::{error::BoxError, telemetry::tracing};
+use rama_core::{
+    error::{BoxError, ErrorContext as _},
+    telemetry::tracing,
+};
 use rama_crypto::pki_types::CertificateDer;
-use rama_net::address::{Domain, Host, HostWithPort};
+use rama_net::{address::HostWithPort, tls::ServerName};
 use rama_tls::{
     KeyLogIntent,
     client::{
@@ -59,8 +62,10 @@ impl TlsMitmEgressServerAuth {
         /// A DNS identity is also sent as SNI. Without an explicit identity,
         /// the relay uses ingress SNI. When verification or pinning is
         /// configured and ingress SNI is absent, it falls back to the
-        /// connector-target host.
-        pub fn server_name(mut self, server_name: Host) -> Self {
+        /// connector-target host. A target that is not a server name fails
+        /// only where verification or a name-scoped pin needs one; otherwise
+        /// no SNI is sent.
+        pub fn server_name(mut self, server_name: impl Into<ServerName>) -> Self {
             self.config.set_server_name(server_name);
             self
         }
@@ -198,15 +203,28 @@ impl TlsMitmEgressServerAuth {
     /// pinning is configured; an explicit policy server name is written later
     /// and therefore does not need this fallback.
     pub(super) fn requires_connector_target_identity(&self) -> bool {
-        self.config
-            .as_extensions()
-            .get_ref::<TlsServerVerify>()
-            .is_some_and(|verify| verify.0 == ServerVerifyMode::Auto)
+        let extensions = self.config.as_extensions();
+        !extensions.contains::<ServerName>()
+            && (self.verifies_server() || extensions.get_ref::<TlsServerCertPins>().is_some())
+    }
+
+    /// Return whether the upstream handshake cannot be authenticated without a
+    /// server name: the certificate is verified against a name, or no
+    /// configured pin set applies to a connection without one.
+    pub(super) fn requires_server_name(&self) -> bool {
+        self.verifies_server()
             || self
                 .config
                 .as_extensions()
                 .get_ref::<TlsServerCertPins>()
-                .is_some()
+                .is_some_and(|pins| !pins.applies_to(None))
+    }
+
+    fn verifies_server(&self) -> bool {
+        self.config
+            .as_extensions()
+            .get_ref::<TlsServerVerify>()
+            .is_some_and(|verify| verify.0 == ServerVerifyMode::Auto)
     }
 }
 
@@ -218,7 +236,7 @@ impl TlsMitmEgressServerAuth {
 /// between the two entry points.
 pub(super) fn tls_client_config(
     client_hello: Option<&ClientHello>,
-    server_name: Option<Host>,
+    server_name: Option<ServerName>,
     keylog: KeyLogIntent,
     server_auth: Option<&TlsMitmEgressServerAuth>,
 ) -> TlsClientConfig {
@@ -252,17 +270,34 @@ pub(super) fn tls_client_config(
 /// Resolve the relay's effective upstream identity without changing transparent
 /// no-SNI behavior merely because a disabled policy object was attached.
 pub(super) fn server_name(
-    ingress_sni: Option<&Domain>,
+    ingress_sni: Option<&ServerName>,
     connector_target: Option<&HostWithPort>,
     server_auth: Option<&TlsMitmEgressServerAuth>,
-) -> Option<Host> {
-    ingress_sni.cloned().map(Into::into).or_else(|| {
-        if server_auth.is_some_and(TlsMitmEgressServerAuth::requires_connector_target_identity) {
-            connector_target.map(|target| target.host.clone())
-        } else {
-            None
+) -> Result<Option<ServerName>, BoxError> {
+    if let Some(sni) = ingress_sni {
+        return Ok(Some(sni.clone()));
+    }
+    let Some(server_auth) =
+        server_auth.filter(|server_auth| server_auth.requires_connector_target_identity())
+    else {
+        return Ok(None);
+    };
+    let Some(target) = connector_target else {
+        return Ok(None);
+    };
+    match ServerName::try_from(&target.host) {
+        Ok(server_name) => Ok(Some(server_name)),
+        Err(error) if server_auth.requires_server_name() => {
+            Err(error).context("connector target host is not a TLS server name")
         }
-    })
+        Err(_) => {
+            tracing::debug!(
+                server.address = %target.host,
+                "connector target is not a TLS server name: no SNI is sent upstream"
+            );
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -270,10 +305,11 @@ mod tests {
     use std::io::{self, Read, Write};
 
     use rama_boring::ssl::HandshakeError;
+    use rama_net::address::{Domain, Host};
     use rama_tls::{
         CipherSuite, CompressionAlgorithm, ExtensionId, ProtocolVersion, SignatureScheme,
         SupportedGroup,
-        client::{ClientHelloExtension, parse_client_hello_handshake},
+        client::{ClientHelloExtension, TlsServerCertPinSet, parse_client_hello_handshake},
     };
 
     use super::*;
@@ -422,6 +458,59 @@ mod tests {
             BoringTlsConnectorConfig::from_extensions(default.as_extensions())
                 .unknown_values
                 .is_none()
+        );
+    }
+
+    fn target_that_is_not_a_server_name() -> HostWithPort {
+        HostWithPort::new("[v1.foo]".parse::<Host>().unwrap(), 443)
+    }
+
+    fn pin() -> CertificateDer<'static> {
+        CertificateDer::from(vec![1, 2, 3])
+    }
+
+    #[test]
+    fn global_pins_proceed_without_sni_when_the_target_is_not_a_server_name() {
+        let target = target_that_is_not_a_server_name();
+        let policy =
+            TlsMitmEgressServerAuth::new().with_server_cert_pins(TlsServerCertPins::new(pin()));
+        let name = server_name(None, Some(&target), Some(&policy)).unwrap();
+        assert_eq!(name, None);
+
+        let config = tls_client_config(None, name, KeyLogIntent::Disabled, Some(&policy));
+        assert_eq!(emitted(&config).ext_server_name(), None);
+    }
+
+    #[test]
+    fn name_scoped_pins_require_a_server_name_from_the_target() {
+        let target = target_that_is_not_a_server_name();
+        let policy = TlsMitmEgressServerAuth::new().with_server_cert_pins(TlsServerCertPins::new(
+            TlsServerCertPinSet::new(pin()).with_server_name(Domain::from_static("target.example")),
+        ));
+        server_name(None, Some(&target), Some(&policy)).unwrap_err();
+    }
+
+    #[test]
+    fn verification_requires_a_server_name_from_the_target() {
+        let target = target_that_is_not_a_server_name();
+        let policy = TlsMitmEgressServerAuth::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .with_server_cert_pins(TlsServerCertPins::new(pin()));
+        server_name(None, Some(&target), Some(&policy)).unwrap_err();
+    }
+
+    #[test]
+    fn a_configured_server_name_does_not_need_the_target() {
+        let target = target_that_is_not_a_server_name();
+        let policy = TlsMitmEgressServerAuth::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .with_server_name(Domain::from_static("policy.example"));
+        let name = server_name(None, Some(&target), Some(&policy)).unwrap();
+
+        let config = tls_client_config(None, name, KeyLogIntent::Disabled, Some(&policy));
+        assert_eq!(
+            emitted(&config).ext_server_name(),
+            Some(&ServerName::from(Domain::from_static("policy.example")))
         );
     }
 }

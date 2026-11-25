@@ -11,47 +11,76 @@ use crate::profile::{
         profile::AnalyzedProfileScope,
     },
     capture::{
-        joint::{JointCapture, JointCaptureLimits},
+        joint::JointCapture,
         tls::{TlsCaptureLimits, TlsCapturedExtension},
     },
-    format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError},
+    format::canonical::{CanonicalDomain, ProfileDataError},
     selection::ProfileDraw,
 };
 
-fn shuffle(
+fn pinned_index(
+    extension: &TlsCapturedExtension,
+    occurrences: &mut BTreeMap<u16, u16>,
+    reserved: &mut u16,
+    pinned: &[PinnedOrderElement],
+) -> Option<usize> {
+    let occurrence = occurrences.entry(extension.id).or_default();
+    let literal = AnalyzedOrderElement::Literal {
+        id: u64::from(extension.id),
+        occurrence: *occurrence,
+    };
+    *occurrence += 1;
+    let grease = is_grease_u16(extension.id).then(|| {
+        let element = AnalyzedOrderElement::Reserved {
+            occurrence: *reserved,
+        };
+        *reserved += 1;
+        element
+    });
+    pinned
+        .iter()
+        .find(|pin| pin.element == literal || Some(pin.element) == grease)
+        .map(|pin| pin.index)
+}
+
+pub(super) fn matches_pinned(
     extensions: &[TlsCapturedExtension],
     pinned: &[PinnedOrderElement],
-    draw: &mut ProfileDraw,
+) -> bool {
+    let mut occurrences = BTreeMap::new();
+    let mut reserved = 0;
+    extensions.iter().enumerate().all(|(index, extension)| {
+        pinned_index(extension, &mut occurrences, &mut reserved, pinned)
+            .is_none_or(|pin| pin == index)
+    })
+}
+
+pub(super) fn place_pinned(
+    extensions: Box<[TlsCapturedExtension]>,
+    pinned: &[PinnedOrderElement],
+) -> Box<[TlsCapturedExtension]> {
+    arrange(extensions.into_vec(), pinned, |_| {})
+}
+
+fn arrange(
+    extensions: Vec<TlsCapturedExtension>,
+    pinned: &[PinnedOrderElement],
+    draw: impl FnOnce(&mut Vec<TlsCapturedExtension>),
 ) -> Box<[TlsCapturedExtension]> {
     let mut placed = vec![None; extensions.len()];
     let mut floating = Vec::new();
     let mut reserved = 0;
-    let mut occurrences = BTreeMap::<u16, u16>::new();
+    let mut occurrences = BTreeMap::new();
     for extension in extensions {
-        // The classifier keeps constant GREASE slots as literals and varying ones as reserved.
-        let occurrence = occurrences.entry(extension.id).or_default();
-        let literal = AnalyzedOrderElement::Literal {
-            id: u64::from(extension.id),
-            occurrence: *occurrence,
-        };
-        *occurrence += 1;
-        let grease = is_grease_u16(extension.id).then(|| {
-            reserved += 1;
-            AnalyzedOrderElement::Reserved {
-                occurrence: reserved - 1,
-            }
-        });
-        let slot = pinned
-            .iter()
-            .find(|pin| pin.element == literal || Some(pin.element) == grease)
-            .and_then(|pin| placed.get_mut(pin.index))
+        let slot = pinned_index(&extension, &mut occurrences, &mut reserved, pinned)
+            .and_then(|index| placed.get_mut(index))
             .filter(|slot| slot.is_none());
         match slot {
-            Some(slot) => *slot = Some(extension.clone()),
-            None => floating.push(extension.clone()),
+            Some(slot) => *slot = Some(extension),
+            None => floating.push(extension),
         }
     }
-    draw.shuffle(&mut floating);
+    draw(&mut floating);
     let mut floating = floating.into_iter();
     placed
         .into_iter()
@@ -59,12 +88,23 @@ fn shuffle(
         .collect()
 }
 
-/// The selected capture with a drawn TLS extension order, when its scope shuffles.
+pub(super) fn shuffle(
+    extensions: &[TlsCapturedExtension],
+    pinned: &[PinnedOrderElement],
+    draw: &mut ProfileDraw,
+) -> Box<[TlsCapturedExtension]> {
+    arrange(extensions.to_vec(), pinned, |floating| {
+        draw.shuffle(floating)
+    })
+}
+
+/// Draw the wire TLS extension order of `joint` as `scope`'s order evidence allows.
+/// Returns whether the capture was redrawn.
 pub(super) fn draw_extension_order(
     scope: &AnalyzedProfileScope,
-    capture: CanonicalValue,
+    joint: &mut JointCapture,
     draw: &mut ProfileDraw,
-) -> Result<CanonicalValue, ProfileDataError> {
+) -> Result<bool, ProfileDataError> {
     let Some(DerivedOrderRule::Shuffled { pinned, .. }) = scope
         .observations
         .orders
@@ -72,18 +112,15 @@ pub(super) fn draw_extension_order(
         .find(|order| order.path == CaptureOrderPath::TlsExtensions)
         .and_then(|order| order.evidence.derived.as_ref())
     else {
-        return Ok(capture);
+        return Ok(false);
     };
     if scope.observations.domain != CanonicalDomain::Joint {
-        return Ok(capture);
+        return Ok(false);
     }
-    let limits = JointCaptureLimits::default();
-    let tls_limits = TlsCaptureLimits::default();
-    let mut joint = JointCapture::from_canonical(&capture, limits)?;
-    joint.map_wire_tls(tls_limits, |tls| {
+    joint.map_wire_tls(TlsCaptureLimits::default(), |tls| {
         tls.extensions = shuffle(&tls.extensions, pinned, draw);
     })?;
-    joint.canonical(limits)
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -92,10 +129,10 @@ mod tests {
     #[cfg(feature = "embed-profiles")]
     use std::slice;
 
-    use rama_tls::{grease_u16, is_grease_u16};
+    use rama_tls::{ExtensionId, ProtocolVersion, grease_u16, is_grease_u16};
     use rama_utils::octets::kib;
 
-    use super::*;
+    use super::{super::shapes::RequestShapeCache, *};
     #[cfg(feature = "embed-profiles")]
     use crate::profile::format::compiled::{decode_compiled_profiles, encode_compiled_profiles};
     use crate::profile::{
@@ -106,7 +143,7 @@ mod tests {
         capture::{
             CAPTURE_REVISION,
             completeness::ProfileCaptureCompleteness,
-            joint::{CaptureLevel, CapturedSlot, CapturedSlotKind},
+            joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCaptureLimits},
             observation::ProfileCapture,
             tls::{TlsCapture, TlsCaptureTransport, TlsCapturedExtensionValue},
         },
@@ -115,7 +152,10 @@ mod tests {
             ingestion::ObservationId,
             window::{ProfileWindowLimits, RetainedBucketWindow},
         },
-        format::canonical::ValueId,
+        format::{
+            archive::{ProfileArchiveEntry, ProfileArchiveLimits, load_profile_archive_snapshot},
+            canonical::ValueId,
+        },
         model::identity::{ConnectionContext, ProfileKey},
         selection::{DrawDomain, DrawKey, ProfileDrawContext, ProfileSeed},
     };
@@ -248,9 +288,6 @@ mod tests {
         )
         .unwrap();
         // Keep old and new connection evidence together through the public archive path.
-        use crate::profile::format::archive::{
-            ProfileArchiveEntry, ProfileArchiveLimits, load_profile_archive_snapshot,
-        };
         let bytes = serde_json::to_vec(&serde_json::json!({
             "format_version": 1, "generated_day": 100, "horizon": 14,
             "profiles": [ProfileArchiveEntry { evidence, sampler_seed: [3; 32] }],
@@ -270,10 +307,6 @@ mod tests {
 
     #[test]
     fn sparse_ech_pair_reuses_baseline_shuffle_and_keeps_inner_correlated() {
-        use super::super::shapes::RequestShapeCache;
-        use TlsCapturedExtensionValue as Value;
-        use rama_tls::{ExtensionId, ProtocolVersion};
-
         let ids = [
             ExtensionId::SERVER_NAME,
             ExtensionId::ENCRYPTED_CLIENT_HELLO,
@@ -290,23 +323,27 @@ mod tests {
             for (extension, id) in tls.extensions[1..6].iter_mut().zip(order) {
                 extension.id = *id;
                 extension.value = match ExtensionId::from(extension.id) {
-                    ExtensionId::SERVER_NAME => Value::ServerName { present: true },
-                    ExtensionId::ENCRYPTED_CLIENT_HELLO => Value::EchOuter {
+                    ExtensionId::SERVER_NAME => {
+                        TlsCapturedExtensionValue::ServerName { present: true }
+                    }
+                    ExtensionId::ENCRYPTED_CLIENT_HELLO => TlsCapturedExtensionValue::EchOuter {
                         kdf: 1,
                         aead: 1,
                         enc: 32,
                         payload: 144,
                     },
-                    ExtensionId::SUPPORTED_VERSIONS => Value::U16List(
+                    ExtensionId::SUPPORTED_VERSIONS => TlsCapturedExtensionValue::U16List(
                         vec![
                             u16::from(ProtocolVersion::TLSv1_3),
                             u16::from(ProtocolVersion::TLSv1_2),
                         ]
                         .into(),
                     ),
-                    ExtensionId::SUPPORTED_GROUPS => Value::U16List(vec![29, 23].into()),
+                    ExtensionId::SUPPORTED_GROUPS => {
+                        TlsCapturedExtensionValue::U16List(vec![29, 23].into())
+                    }
                     ExtensionId::SIGNATURE_ALGORITHMS => {
-                        Value::U16List(vec![0x0403, 0x0804].into())
+                        TlsCapturedExtensionValue::U16List(vec![0x0403, 0x0804].into())
                     }
                     _ => extension.value.clone(),
                 };
@@ -370,9 +407,9 @@ mod tests {
                     slot: 0,
                 },
             );
-            let drawn = draw_extension_order(baseline, capture.clone(), &mut draw).unwrap();
-            let joint =
-                JointCapture::from_canonical(&drawn, JointCaptureLimits::default()).unwrap();
+            let mut joint =
+                JointCapture::from_canonical(&capture, JointCaptureLimits::default()).unwrap();
+            assert!(draw_extension_order(baseline, &mut joint, &mut draw).unwrap());
             let inner =
                 TlsCapture::from_canonical(&joint.slots[0].value, TlsCaptureLimits::default())
                     .unwrap();
@@ -411,8 +448,9 @@ mod tests {
                 slot: 0,
             },
         );
-        let drawn = draw_extension_order(scope, capture, &mut draw).unwrap();
-        let joint = JointCapture::from_canonical(&drawn, JointCaptureLimits::default()).unwrap();
+        let mut joint =
+            JointCapture::from_canonical(&capture, JointCaptureLimits::default()).unwrap();
+        draw_extension_order(scope, &mut joint, &mut draw).unwrap();
         let tls =
             TlsCapture::from_canonical(&joint.slots[0].value, TlsCaptureLimits::default()).unwrap();
         tls.extensions

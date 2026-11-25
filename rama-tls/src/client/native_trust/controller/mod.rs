@@ -1,10 +1,3 @@
-use arc_swap::ArcSwap;
-use parking_lot::Mutex;
-use rama_core::{error::BoxError, futures::stream::BoxStream, telemetry::tracing::warn};
-use rama_crypto::{
-    native_certs::{load_validated_extra_certs, load_validated_native_certs},
-    pki_types::CertificateDer,
-};
 use std::{
     convert::Infallible,
     error::Error,
@@ -16,6 +9,14 @@ use std::{
     },
     task::{Context, Poll, Wake, Waker},
     time::{Duration, Instant},
+};
+
+use arc_swap::ArcSwap;
+use parking_lot::Mutex;
+use rama_core::{error::BoxError, futures::stream::BoxStream, telemetry::tracing::warn};
+use rama_crypto::{
+    native_certs::{load_validated_extra_certs, load_validated_native_certs},
+    pki_types::CertificateDer,
 };
 
 type TrustAnchors = Arc<[CertificateDer<'static>]>;
@@ -181,6 +182,9 @@ impl RefreshJob {
         max_age: Option<Duration>,
     ) -> Result<TrustAnchors, BoxError> {
         let mut state = self.reload.0.reload.lock();
+        if state.pending {
+            self.reload.0.wake.0.store(true, Ordering::Release);
+        }
         let result = match loaded {
             Ok((snapshot, used_bundled_fallback)) => {
                 self.reload.0.published.store(Arc::new(PublishedTrust {
@@ -230,6 +234,7 @@ impl Drop for RefreshJob {
 }
 
 impl NativeTrustReload {
+    /// Create a reload controller for this trust scope and trigger.
     pub(in crate::client) fn new(
         scope: NativeTrustScope,
         trigger: Option<BoxStream<'static, ()>>,
@@ -251,10 +256,17 @@ impl NativeTrustReload {
         }))
     }
 
+    /// Whether this controller has a reload trigger.
     pub(in crate::client) fn has_trigger(&self) -> bool {
         self.0.has_trigger
     }
 
+    /// Whether a trigger can still report events: false once its stream has ended.
+    pub(in crate::client) fn has_live_trigger(&self) -> bool {
+        self.0.reload.lock().trigger.is_some()
+    }
+
+    /// Pin the current trust generation.
     pub(in crate::client) fn pin(
         &self,
         max_age: Option<Duration>,
@@ -262,6 +274,26 @@ impl NativeTrustReload {
         self.pin_with(max_age, self.loader())
     }
 
+    /// Pin the current trust generation if that needs no trust-store read.
+    ///
+    /// `None` when a trigger event, the age limit or a failed refresh requires
+    /// a read; consumed events stay pending for the next [`Self::pin`].
+    pub(in crate::client) fn pin_ready(&self, max_age: Option<Duration>) -> Option<TrustAnchors> {
+        if self.0.wake.0.load(Ordering::Acquire) {
+            let mut state = self.0.reload.lock();
+            if self.0.wake.0.swap(false, Ordering::AcqRel) {
+                state.poll_trigger(&self.0.wake);
+            }
+            if state.pending {
+                // A pin skips the lock, and so a pending refresh, unless woken.
+                self.0.wake.0.store(true, Ordering::Release);
+                return None;
+            }
+        }
+        self.0.published.load().ready(max_age)?.ok()
+    }
+
+    /// Pin trust state using the supplied loader.
     fn pin_with(
         &self,
         max_age: Option<Duration>,
@@ -281,6 +313,7 @@ impl NativeTrustReload {
         }
     }
 
+    /// Pin trust state after asynchronous loading.
     pub(in crate::client) async fn pin_async(
         &self,
         max_age: Option<Duration>,
@@ -288,6 +321,7 @@ impl NativeTrustReload {
         self.pin_async_with(max_age, self.loader()).await
     }
 
+    /// Pin trust state using the supplied asynchronous loader.
     async fn pin_async_with(
         &self,
         max_age: Option<Duration>,
@@ -309,6 +343,7 @@ impl NativeTrustReload {
         }
     }
 
+    /// Construct a loader for this trust policy.
     fn loader(&self) -> fn(bool) -> LoadNativeTrust {
         match self.0.scope {
             NativeTrustScope::Full => load_validated_native_certs,
@@ -318,6 +353,7 @@ impl NativeTrustReload {
         }
     }
 
+    /// Prepare the next trust generation for pinning.
     fn prepare_pin(&self, max_age: Option<Duration>) -> PinAction {
         // A fresh snapshot or a retry in backoff can be handled without locking.
         if !self.0.wake.0.load(Ordering::Acquire)
@@ -327,6 +363,11 @@ impl NativeTrustReload {
         }
 
         let mut state = self.0.reload.lock();
+        // Consume queued events before any return, so callers pinning during a
+        // refresh also observe them.
+        if self.0.wake.0.swap(false, Ordering::AcqRel) {
+            state.poll_trigger(&self.0.wake);
+        }
         let published = self.0.published.load();
         let current = &published.current;
         if let Some(flight) = &state.flight {
@@ -338,10 +379,6 @@ impl NativeTrustReload {
                 }
                 _ => PinAction::Wait(flight.clone(), current.clone()),
             };
-        }
-
-        if self.0.wake.0.swap(false, Ordering::AcqRel) {
-            state.poll_trigger(&self.0.wake);
         }
         if !state.pending
             && let Some(result) = published.ready(max_age)
@@ -390,7 +427,10 @@ impl ReloadState {
                     self.retry_delay = INITIAL_RETRY_DELAY;
                 }
                 Poll::Pending => return,
+                // Snapshots stay in use and `max_age` still applies, but no
+                // further event can request a refresh.
                 Poll::Ready(None) => {
+                    warn!("native TLS trust reload trigger ended; trust reloads only on max age");
                     self.trigger = None;
                     return;
                 }

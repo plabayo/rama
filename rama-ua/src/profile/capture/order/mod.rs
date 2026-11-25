@@ -196,10 +196,21 @@ impl OrderedProtocolCapture {
         input: impl IntoIterator<Item = (u64, B)>,
         limits: OrderCaptureLimits,
     ) -> Result<Self, ProfileDataError> {
+        Self::try_capture(completeness, namespace, input.into_iter().map(Ok), limits)
+    }
+
+    /// Capture fields from a fallible iterator.
+    pub(crate) fn try_capture<B: AsRef<[u8]>>(
+        completeness: ProfileCaptureCompleteness,
+        namespace: OrderNamespace,
+        input: impl IntoIterator<Item = Result<(u64, B), ProfileDataError>>,
+        limits: OrderCaptureLimits,
+    ) -> Result<Self, ProfileDataError> {
         completeness.require_complete("protocol order observation")?;
         let mut fields = Vec::new();
         let mut remaining = limits.bytes;
-        for (id, bytes) in input {
+        for parameter in input {
+            let (id, bytes) = parameter?;
             if fields.len() >= limits.elements {
                 return Err(ProfileDataError::LimitExceeded("ordered elements"));
             }
@@ -228,6 +239,7 @@ impl OrderedProtocolCapture {
 
     // Nested formats share semantic validation without allocating an unrelated
     // canonical envelope or charging its overhead to their own encoding budget.
+    /// Validate the captured fields against the supplied limits.
     pub(in crate::profile) fn validate_fields(
         &self,
         limits: OrderCaptureLimits,
@@ -243,6 +255,7 @@ impl OrderedProtocolCapture {
         Ok(())
     }
 
+    /// Encode this capture in canonical form.
     pub fn canonical(
         &self,
         limits: OrderCaptureLimits,
@@ -259,6 +272,7 @@ impl OrderedProtocolCapture {
         Ok(writer.finish())
     }
 
+    /// Decode this capture from canonical form.
     pub fn from_canonical(
         value: &CanonicalValue,
         limits: OrderCaptureLimits,

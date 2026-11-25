@@ -1,6 +1,6 @@
 //! Bounded reuse of native QUIC TLS configurations and their session state.
 
-use std::{borrow::Cow, collections::VecDeque, fmt, num::NonZeroUsize, sync::Arc};
+use std::{borrow::Cow, collections::VecDeque, error, fmt, num::NonZeroUsize, sync::Arc};
 
 use parking_lot::Mutex;
 #[cfg(any(
@@ -12,9 +12,13 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::Extensions,
 };
-use rama_net::{address::Host, client::pool::ReuseKey, tls::AlpnPolicy};
+use rama_net::{
+    client::{ConnectorTarget, pool::ReuseKey},
+    tls::{AlpnPolicy, ServerName, TargetEchConfig},
+};
 use rama_tls::client::{
-    EchRequirement, TlsClientConfig, TlsEncryptedClientHello, TlsPoolId, TlsServerName,
+    EchRequirement, TargetEchResolution, TlsClientConfig, TlsPoolId, resolve_target_ech,
+    resolve_target_ech_for_preparation,
 };
 
 use super::{
@@ -82,16 +86,26 @@ impl fmt::Debug for ClientConfigCache {
 }
 
 impl ClientConfigCache {
+    /// Check whether endpoint ECH requires a peer-bound configuration.
     fn needs_endpoint_ech(&self, config: &TlsClientConfig) -> bool {
         let ext = config.as_extensions();
-        ext.get_ref::<EchRequirement>() == Some(&EchRequirement::Required)
-            || (self.provider.supports_ech()
-                && ext
-                    .get_ref::<TlsEncryptedClientHello>()
-                    .is_none_or(|intent| intent.0)
-                && ext.contains::<rama_net::tls::TargetEchConfig>())
+        if let Some(target) = ext.get_ref::<ConnectorTarget>() {
+            return resolve_target_ech_for_preparation(
+                ext,
+                &target.0,
+                self.provider.supports_ech(),
+            )
+            .map_or(true, |resolution| {
+                resolution.required || resolution.config.is_some()
+            });
+        }
+        EchRequirement::effective(ext).map_or(true, |(requirement, intent)| {
+            requirement == EchRequirement::Required
+                || (self.provider.supports_ech() && intent && ext.contains::<TargetEchConfig>())
+        })
     }
 
+    /// Resolve the native options for this TLS configuration.
     fn effective_options(&self, config: &TlsClientConfig) -> TlsOptions {
         let options = if self.needs_endpoint_ech(config) {
             self.options.with_early_data(false)
@@ -110,6 +124,7 @@ impl ClientConfigCache {
         }
     }
 
+    /// Check whether the effective configuration permits early data.
     pub(crate) fn allows_early_data(&self, config: &TlsClientConfig) -> bool {
         self.effective_options(config).early_data
     }
@@ -119,6 +134,7 @@ impl ClientConfigCache {
         Self::new_with_capacity(provider, options, None)
     }
 
+    /// Create a cache with the selected trust cache capacity.
     fn new_with_capacity(
         provider: Arc<dyn QuicClientConfigProvider>,
         options: TlsOptions,
@@ -155,6 +171,7 @@ impl ClientConfigCache {
         }
     }
 
+    /// Create a fresh cache with the same provider and replacement TLS options.
     pub(crate) fn with_options(&self, options: TlsOptions) -> Self {
         Self::new_with_capacity(
             self.provider.clone(),
@@ -178,7 +195,7 @@ impl ClientConfigCache {
     pub fn prepare_client_config(
         &self,
         config: &TlsClientConfig,
-        peer: Host,
+        peer: ServerName,
         handshake: ClientHandshake,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         let overrides = Extensions::new();
@@ -216,27 +233,55 @@ impl ClientConfigCache {
         &self,
         config: &TlsClientConfig,
         overrides: &Extensions,
-        peer: &Host,
+        peer: &ServerName,
     ) -> Result<ClientConfig, TlsConfigError> {
         let request = self.request(config, overrides, Some(peer));
         request.require(self.provider.acquire_client_config(request)?)
     }
 
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
+    /// Resolve a peer-bound configuration after asynchronous trust preparation.
     pub(crate) async fn client_config_for_peer_async(
         &self,
         config: TlsClientConfig,
         overrides: &Extensions,
-        peer: &Host,
+        peer: &ServerName,
     ) -> Result<ClientConfig, TlsConfigError> {
-        let request = self.request(&config, overrides, Some(peer));
-        request.require(self.provider.acquire_client_config_async(request).await?)
+        self.client_config_for_peer_with_ech_async(config, overrides, peer, false)
+            .await
+            .map(|(config, _, _)| config)
     }
 
+    /// Resolve native configuration for the early or final endpoint ECH phase.
+    pub(crate) async fn client_config_for_peer_with_ech_async(
+        &self,
+        config: TlsClientConfig,
+        overrides: &Extensions,
+        peer: &ServerName,
+        early: bool,
+    ) -> Result<(ClientConfig, Option<TargetEchResolution>, TlsClientConfig), TlsConfigError> {
+        let config = config.clone();
+        let resolution = Mutex::new(None);
+        let mut request = self.request(&config, overrides, Some(peer));
+        request.resolution = Some(&resolution);
+        request.early = early;
+        request.resolve_target_ech(self.provider.supports_ech())?;
+        let native = request.require(self.provider.acquire_client_config_async(request).await?)?;
+        Ok((native, resolution.into_inner(), config))
+    }
+
+    /// Bind one lookup to this cache and its request overrides.
     fn request<'a>(
         &'a self,
         config: &'a TlsClientConfig,
         overrides: &'a Extensions,
-        peer: Option<&'a Host>,
+        peer: Option<&'a ServerName>,
     ) -> ClientConfigRequest<'a> {
         ClientConfigRequest {
             cache: self,
@@ -244,7 +289,24 @@ impl ClientConfigCache {
             overrides,
             peer,
             handshake: None,
+            resolution: None,
+            early: false,
         }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TargetEchResolutionError(BoxError);
+
+impl fmt::Display for TargetEchResolutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl error::Error for TargetEchResolutionError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        Some(self.0.as_ref())
     }
 }
 
@@ -256,8 +318,10 @@ pub struct ClientConfigRequest<'a> {
     cache: &'a ClientConfigCache,
     config: &'a TlsClientConfig,
     overrides: &'a Extensions,
-    peer: Option<&'a Host>,
+    peer: Option<&'a ServerName>,
     handshake: Option<ClientHandshake>,
+    resolution: Option<&'a Mutex<Option<TargetEchResolution>>>,
+    early: bool,
 }
 
 impl<'a> ClientConfigRequest<'a> {
@@ -299,6 +363,41 @@ impl<'a> ClientConfigRequest<'a> {
             .0
     }
 
+    /// Resolve endpoint facts after trust preparation, sharing this phase with the connector.
+    /// Early required ECH can lack a configuration; the connector must finalize it before handshaking.
+    pub fn resolve_target_ech(
+        &self,
+        supported: bool,
+    ) -> Result<Option<TargetEchResolution>, TlsConfigError> {
+        if let Some(resolution) = self.resolution.and_then(|slot| slot.lock().clone()) {
+            return Ok(Some(resolution));
+        }
+        let Some(target) = self.config.as_extensions().get_ref::<ConnectorTarget>() else {
+            return Ok(None);
+        };
+        let resolve = if self.early {
+            resolve_target_ech_for_preparation
+        } else {
+            resolve_target_ech
+        };
+        let resolution =
+            resolve(self.config.as_extensions(), &target.0, supported).map_err(|error| {
+                TlsConfigError::InvalidConfiguration(Box::new(TargetEchResolutionError(error)))
+            })?;
+        if let Some(slot) = self.resolution {
+            *slot.lock() = Some(resolution.clone());
+        }
+        Ok(Some(resolution))
+    }
+
+    #[cfg(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    ))]
+    pub(super) fn overrides(&self) -> &Extensions {
+        self.overrides
+    }
+
     /// The effective TLS policy requested by the connection.
     pub fn config(&self) -> &'a TlsClientConfig {
         self.config
@@ -319,7 +418,7 @@ impl<'a> ClientConfigRequest<'a> {
         prepare: impl FnOnce(
             &TlsClientConfig,
             TlsOptions,
-            Host,
+            ServerName,
             ClientHandshake,
         ) -> Result<Option<ClientConfig>, TlsConfigError>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
@@ -329,8 +428,19 @@ impl<'a> ClientConfigRequest<'a> {
             overrides,
             peer,
             handshake: explicit,
+            resolution: _,
+            early: _,
         } = self;
-        let options = cache.effective_options(config);
+        let resolution = self.resolve_target_ech(cache.provider.supports_ech())?;
+        let ech = resolution.as_ref().map_or_else(
+            || cache.needs_endpoint_ech(config),
+            |resolution| resolution.required || resolution.config.is_some(),
+        );
+        let options = if ech {
+            cache.effective_options(config).with_early_data(false)
+        } else {
+            cache.effective_options(config)
+        };
         let handshake = explicit.unwrap_or_else(|| {
             config
                 .as_extensions()
@@ -338,15 +448,11 @@ impl<'a> ClientConfigRequest<'a> {
                 .copied()
                 .unwrap_or_default()
         });
-        let ech = cache.needs_endpoint_ech(config);
         if explicit.is_some() || ech || handshake != ClientHandshake::Auto {
-            let peer = peer
-                .or_else(|| {
-                    config
-                        .as_extensions()
-                        .get_ref::<TlsServerName>()
-                        .map(|name| &name.0)
-                })
+            let peer = config
+                .as_extensions()
+                .get_ref::<ServerName>()
+                .or(peer)
                 .ok_or_else(|| {
                     TlsConfigError::InvalidConfiguration(BoxError::from_static_str(if ech {
                         "endpoint ECH requires a peer identity"
@@ -455,23 +561,30 @@ impl Configs {
 
 #[cfg(test)]
 mod tests {
+    use rama_tls::client::TlsEncryptedClientHello;
     use std::{
+        future,
         sync::{
             Barrier, Weak,
             atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         thread,
     };
+    use tokio::sync::Notify;
 
-    use rama_core::extensions::Extension;
+    use rama_core::{extensions::Extension, futures::future::BoxFuture};
     use rama_crypto::pki_types::CertificateDer;
-    use rama_net::{address::Host, client::pool::ReuseKey, tls::TlsAlpn};
+    use rama_net::{
+        address::Domain,
+        client::pool::ReuseKey,
+        tls::{ServerName, TlsAlpn},
+    };
     use rama_quic_proto::{Version, transport_parameters::TransportParameters};
     use rama_tls::{
-        KeyLogIntent, TlsKeyLog,
-        client::{TlsClientConfigProvider, TlsServerName},
-        keylog::NoopKeyLogSink,
+        KeyLogIntent, TlsKeyLog, client::TlsClientConfigProvider, keylog::NoopKeyLogSink,
     };
+    #[cfg(feature = "boring")]
+    use rama_tls_boring::client::BoringExtensionOrder;
     #[cfg(any(
         feature = "boring",
         all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
@@ -479,9 +592,14 @@ mod tests {
     use {rama_core::futures::stream, rama_tls::client::NativeTrustPolicy, std::task::Poll};
 
     use super::*;
+    #[cfg(feature = "boring")]
+    use crate::tls::BoringTlsProvider;
     use crate::{
         ConnectError, TransportConfig,
-        tls::provider::{ClientConfig as CryptoClientConfig, Session},
+        tls::{
+            acquire_cached_client_config,
+            provider::{ClientConfig as CryptoClientConfig, Session},
+        },
     };
 
     struct TestCrypto;
@@ -530,7 +648,7 @@ mod tests {
                 return Some(TlsPoolId::non_reusable());
             }
             TlsPoolId::builder()
-                .maybe_with_server_name(extensions.get_ref::<TlsServerName>())
+                .maybe_with_server_name(extensions.get_ref::<ServerName>())
                 .maybe_with_alpn(extensions.get_ref::<TlsAlpn>())
                 .maybe_with_alpn_policy(extensions.get_ref::<AlpnPolicy>())
                 .maybe_with_keylog(extensions.get_ref::<TlsKeyLog>())
@@ -555,7 +673,7 @@ mod tests {
             &self,
             policy: &TlsClientConfig,
             options: TlsOptions,
-            _: Host,
+            _: ServerName,
             _: ClientHandshake,
         ) -> Result<Option<ClientConfig>, TlsConfigError> {
             if policy
@@ -568,13 +686,36 @@ mod tests {
             }
         }
 
-        fn peer_matches_name(&self, _: &Extensions, _: &CertificateDer<'_>, _: &Host) -> bool {
+        fn peer_matches_name(
+            &self,
+            _: &Extensions,
+            _: &CertificateDer<'_>,
+            _: &ServerName,
+        ) -> bool {
             false
         }
 
         fn session_defaults(&self) -> Option<Extensions> {
             self.defaults_calls.fetch_add(1, Ordering::Relaxed);
             None
+        }
+
+        fn acquire_client_config(
+            &self,
+            request: ClientConfigRequest<'_>,
+        ) -> Result<Option<ClientConfig>, TlsConfigError> {
+            acquire_cached_client_config(self, request)
+        }
+
+        fn acquire_client_config_async<'a>(
+            &'a self,
+            request: ClientConfigRequest<'a>,
+        ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
+            Box::pin(future::ready(self.acquire_client_config(request)))
+        }
+
+        fn allows_early_data(&self, _extensions: &Extensions) -> bool {
+            true
         }
 
         fn client_config(
@@ -603,7 +744,7 @@ mod tests {
 
     fn named(index: usize) -> TlsClientConfig {
         TlsClientConfig::new()
-            .with_server_name(Host::try_from(format!("host-{index}.example")).unwrap())
+            .with_server_name(Domain::try_from(format!("host-{index}.example")).unwrap())
     }
 
     #[cfg(any(
@@ -624,7 +765,7 @@ mod tests {
         });
         let config =
             named(0).with_server_trust(NativeTrustPolicy::new().with_reload_trigger(trigger));
-        let peer = Host::from_static("host-0.example");
+        let peer = ServerName::from(Domain::from_static("host-0.example"));
         let overrides = Extensions::new();
         let first = cache
             .client_config_for_peer(&config, &overrides, &peer)
@@ -636,6 +777,99 @@ mod tests {
         assert!(Arc::ptr_eq(&first.crypto, &second.crypto));
         assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
         assert_eq!(polls.load(Ordering::Relaxed), 0);
+    }
+
+    #[derive(Debug, Default)]
+    struct DeferredProvider {
+        built: Notify,
+        release: Notify,
+    }
+
+    impl TlsClientConfigProvider for DeferredProvider {
+        fn pool_id(&self, _: &Extensions) -> Option<TlsPoolId> {
+            None
+        }
+
+        fn pool_classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
+        }
+
+        fn authenticates_server(&self, _: &Extensions) -> bool {
+            false
+        }
+    }
+
+    impl QuicClientConfigProvider for DeferredProvider {
+        fn supports_ech(&self) -> bool {
+            true
+        }
+
+        fn client_config(
+            &self,
+            _: &TlsClientConfig,
+            _: TlsOptions,
+        ) -> Result<ClientConfig, TlsConfigError> {
+            Ok(ClientConfig::new(Arc::new(TestCrypto)))
+        }
+
+        fn acquire_client_config(
+            &self,
+            request: ClientConfigRequest<'_>,
+        ) -> Result<Option<ClientConfig>, TlsConfigError> {
+            request.get_or_build(
+                None,
+                |config, options| self.client_config(config, options),
+                |_, _, _, _| Ok(None),
+            )
+        }
+
+        fn acquire_client_config_async<'a>(
+            &'a self,
+            request: ClientConfigRequest<'a>,
+        ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
+            Box::pin(async move {
+                let config = self.acquire_client_config(request)?;
+                self.built.notify_one();
+                self.release.notified().await;
+                Ok(config)
+            })
+        }
+
+        fn allows_early_data(&self, _: &Extensions) -> bool {
+            true
+        }
+
+        fn peer_matches_name(
+            &self,
+            _: &Extensions,
+            _: &CertificateDer<'_>,
+            _: &ServerName,
+        ) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn native_config_keeps_the_resolution_consumed_before_the_provider_yields() {
+        let provider = Arc::new(DeferredProvider::default());
+        let cache = ClientConfigCache::new(provider.clone(), TlsOptions::default());
+        let discovery = Extensions::new();
+        let target = "origin.example:443".parse().unwrap();
+        discovery.insert(ConnectorTarget(target));
+        let config = TlsClientConfig::new().with_overrides(&discovery);
+        let peer = ServerName::from(Domain::from_static("origin.example"));
+        let (result, ()) = tokio::join!(
+            cache.client_config_for_peer_with_ech_async(config, &discovery, &peer, false),
+            async {
+                provider.built.notified().await;
+                discovery.insert(TargetEchConfig::new(
+                    "origin.example:443".parse().unwrap(),
+                    b"config".as_slice(),
+                ));
+                provider.release.notify_one();
+            },
+        );
+        assert!(result.unwrap().1.unwrap().config.is_none());
     }
 
     #[cfg(any(
@@ -706,6 +940,18 @@ mod tests {
                     },
                 )
             }
+
+            fn acquire_client_config_async<'a>(
+                &'a self,
+                request: ClientConfigRequest<'a>,
+            ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
+                Box::pin(future::ready(self.acquire_client_config(request)))
+            }
+
+            fn allows_early_data(&self, _extensions: &Extensions) -> bool {
+                true
+            }
+
             fn client_config(
                 &self,
                 _: &TlsClientConfig,
@@ -714,7 +960,13 @@ mod tests {
                 self.builds.fetch_add(1, Ordering::Relaxed);
                 Ok(ClientConfig::new(Arc::new(TestCrypto)))
             }
-            fn peer_matches_name(&self, _: &Extensions, _: &CertificateDer<'_>, _: &Host) -> bool {
+
+            fn peer_matches_name(
+                &self,
+                _: &Extensions,
+                _: &CertificateDer<'_>,
+                _: &ServerName,
+            ) -> bool {
                 false
             }
         }
@@ -843,7 +1095,7 @@ mod tests {
         let original = cache.client_config(&config, &overrides).unwrap();
         config
             .as_extensions()
-            .insert(TlsServerName(Host::from_static("changed.example")));
+            .insert(ServerName::from(Domain::from_static("changed.example")));
         let changed = cache.client_config(&config, &overrides).unwrap();
         assert!(!Arc::ptr_eq(&original.crypto, &changed.crypto));
 
@@ -908,12 +1160,11 @@ mod tests {
     fn opportunistic_endpoint_ech_is_uncached_and_disables_early_data() {
         let provider = Arc::new(TestProvider::default());
         let cache = ClientConfigCache::new(provider, TlsOptions::default().with_early_data(true));
-        let tls = TlsClientConfig::new().with_server_name(Host::from_static("origin.example"));
-        tls.as_extensions()
-            .insert(rama_net::tls::TargetEchConfig::new(
-                "origin.example:443".parse().unwrap(),
-                vec![0, 1, 2],
-            ));
+        let tls = TlsClientConfig::new().with_server_name(Domain::from_static("origin.example"));
+        tls.as_extensions().insert(TargetEchConfig::new(
+            "origin.example:443".parse().unwrap(),
+            vec![0, 1, 2],
+        ));
         assert!(!cache.allows_early_data(&tls));
         let first = cache.client_config(&tls, tls.as_extensions()).unwrap();
         let second = cache.client_config(&tls, tls.as_extensions()).unwrap();
@@ -998,7 +1249,7 @@ mod tests {
             .client_config_for_peer(
                 &config,
                 config.as_extensions(),
-                &Host::from_static("localhost"),
+                &ServerName::from(Domain::tld_localhost()),
             )
             .unwrap();
         assert!(Arc::ptr_eq(&first.crypto, &second.crypto));
@@ -1009,7 +1260,7 @@ mod tests {
     fn native_handshake_policy_cannot_fall_back_to_an_ordinary_client() {
         let provider = Arc::new(TestProvider::default());
         let cache = ClientConfigCache::new(provider.clone(), TlsOptions::default());
-        let peer = Host::try_from("localhost").unwrap();
+        let peer = ServerName::from(Domain::tld_localhost());
         for handshake in [ClientHandshake::Full, ClientHandshake::Resumed] {
             let config = named(0);
             config.as_extensions().insert(handshake);
@@ -1034,9 +1285,6 @@ mod tests {
     #[cfg(feature = "boring")]
     #[test]
     fn early_options_are_explicit_and_pinned_client_hello_shapes_win() {
-        use crate::tls::BoringTlsProvider;
-        use rama_tls_boring::client::BoringExtensionOrder;
-
         let tls = TlsClientConfig::new();
         let ordinary =
             ClientConfigCache::new(Arc::new(BoringTlsProvider::new()), TlsOptions::default());

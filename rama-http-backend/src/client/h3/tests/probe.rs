@@ -8,6 +8,7 @@ use std::sync::{
 use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _},
+    extensions::ExtensionsRef as _,
 };
 use rama_http_core::h3::connection::Config;
 use rama_net::client::{
@@ -64,5 +65,8 @@ pub(in crate::client::h3) async fn prepare<E>(
     if !reached.0.load(Ordering::SeqCst) {
         return Err(error);
     }
-    connector.h3_config(input, input.extensions.get_ref::<QuicProfile>())
+    connector.h3_config(
+        input,
+        input.extensions().get_arc::<QuicProfile>().as_deref(),
+    )
 }

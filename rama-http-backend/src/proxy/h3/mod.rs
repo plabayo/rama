@@ -9,10 +9,7 @@ use rama_core::{
     futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered},
     graceful::WeakScope,
     io::BridgeIo,
-    layer::{
-        ArcLayer, ConsumeErrLayer,
-        consume_err::{StaticOutput, Trace},
-    },
+    layer::ArcLayer,
     matcher::Matcher,
     service::service_fn,
     telemetry::tracing,
@@ -45,17 +42,17 @@ use rama_quic_proto::{Side, VarInt};
 use rama_utils::{guard::DropGuard, time::deadline_after};
 use tokio::time::Instant;
 
-use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse};
+use super::mitm::{
+    DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse, ErrorResponse, RelayErrorContext,
+    RelayErrorReason,
+};
 use crate::{
     client::{ResponseLimits, SendAttempts},
     h3::{clean_close, completed, drain, drained_within},
 };
 
 /// Default middleware used by [`Http3MitmRelay`].
-pub type DefaultMiddleware = (
-    ConsumeErrLayer<Trace, StaticOutput<DefaultErrorResponse>>,
-    ArcLayer,
-);
+pub type DefaultMiddleware = ArcLayer;
 
 mod egress;
 pub use egress::Http3EgressService;
@@ -95,6 +92,7 @@ const RELAY_MAX_FIELD_LINES: usize = 2048;
 #[derive(Debug, Clone)]
 pub struct Http3MitmRelay<M = DefaultMiddleware, P = bool, D = HttpDatagramRelay> {
     middleware: M,
+    error_response: ErrorResponse,
     datagram_relay: D,
     authority: Option<BoundAuthority<P>>,
     scope: WeakScope,
@@ -119,10 +117,8 @@ impl Http3MitmRelay {
         let mut egress = Config::default();
         egress.decoder.max_field_lines = RELAY_MAX_FIELD_LINES;
         Self {
-            middleware: (
-                ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
-                ArcLayer::new(),
-            ),
+            middleware: ArcLayer::new(),
+            error_response: ErrorResponse::default(),
             datagram_relay: HttpDatagramRelay::default(),
             authority: None,
             scope,
@@ -152,6 +148,7 @@ impl<M, P, D> Http3MitmRelay<M, P, D> {
     pub fn with_datagram_relay<N>(self, datagram_relay: N) -> Http3MitmRelay<M, P, N> {
         Http3MitmRelay {
             middleware: self.middleware,
+            error_response: self.error_response,
             datagram_relay,
             authority: self.authority,
             scope: self.scope,
@@ -168,6 +165,7 @@ impl<M, P, D> Http3MitmRelay<M, P, D> {
     pub fn with_bound_authority<Q>(self, authority: BoundAuthority<Q>) -> Http3MitmRelay<M, Q, D> {
         Http3MitmRelay {
             middleware: self.middleware,
+            error_response: self.error_response,
             datagram_relay: self.datagram_relay,
             authority: Some(authority),
             scope: self.scope,
@@ -178,10 +176,24 @@ impl<M, P, D> Http3MitmRelay<M, P, D> {
         }
     }
 
+    /// Customize the status, headers and body of a relay error using the ingress request and
+    /// failure reason, as [`HttpMitmRelay::with_error_response`](super::mitm::HttpMitmRelay::with_error_response)
+    /// does. The default response is a dated 502 Bad Gateway. A request the origin provably
+    /// never processed is still reset with `H3_REQUEST_REJECTED`, so clients may retry it.
+    #[must_use]
+    pub fn with_error_response(
+        mut self,
+        f: impl Fn(RelayErrorContext<'_>) -> Response + Send + Sync + 'static,
+    ) -> Self {
+        self.error_response.set_handler(f);
+        self
+    }
+
     /// Set the HTTP middleware between the ingress server and the egress client.
     pub fn with_http_middleware<N>(self, middleware: N) -> Http3MitmRelay<N, P, D> {
         Http3MitmRelay {
             middleware,
+            error_response: self.error_response,
             datagram_relay: self.datagram_relay,
             authority: self.authority,
             scope: self.scope,
@@ -465,10 +477,12 @@ where
             .layer(Http3EgressService::new(sender, egress_extensions));
         let authority = self.authority.clone();
         let trailers = self.forbidden_trailers.clone();
+        let error_response = self.error_response.clone();
         let service = RamaHttpService::new(service_fn(move |request: Request| {
             let client = client.clone();
             let authority = authority.clone();
             let trailers = trailers.clone();
+            let error_response = error_response.clone();
             async move {
                 let request = match authority.validate(request).await {
                     Ok(request) => request,
@@ -478,6 +492,9 @@ where
                 let attempts = request
                     .extensions()
                     .insert_arc(Arc::new(SendAttempts::default()));
+                let method = request.method().clone();
+                let uri = request.uri().clone();
+                let version = request.version();
                 let result = client.serve(request).await;
                 let response = if attempts.none_processed() {
                     let response: Response = DefaultErrorResponse::new().into();
@@ -489,7 +506,12 @@ where
                         Err(error) => {
                             let error: BoxError = error.into();
                             tracing::debug!(%error, "HTTP/3 relay egress request failed");
-                            DefaultErrorResponse::new().into()
+                            error_response.response(RelayErrorContext {
+                                version,
+                                method: &method,
+                                uri: &uri,
+                                reason: RelayErrorReason::RequestFailed,
+                            })
                         }
                     }
                 };

@@ -18,6 +18,8 @@ use rama_core::{
 };
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_quic_proto::{StreamId, Version, packet};
+#[cfg(not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))))]
+use rama_tls_boring::client::BoringClientConfigExt;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_tls_rustls::dep::rustls::{self, KeyLogFile, client::WebPkiServerVerifier};
 
@@ -1307,7 +1309,6 @@ fn client_crypto_inner(
     certs: Option<Vec<CertificateDer<'static>>>,
     alpn: Option<Vec<Vec<u8>>>,
 ) -> QuicClientConfig {
-    use rama_tls_boring::client::BoringClientConfigExt;
     let tls = rama_tls::client::TlsClientConfig::new()
         .with_supported_groups(vec![rama_tls::SupportedGroup::X25519])
         .with_alpn(

@@ -22,13 +22,16 @@ use rama::{
     ServiceInput,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef},
-    futures::future::{self, Either, FutureExt},
+    futures::{
+        TryStreamExt,
+        future::{self, Either, FutureExt},
+    },
     graceful::WeakScope,
     http::{
         Method, Request, Response, StatusCode, Version,
         body::util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody},
         core::{
-            body::{Body, Incoming as IncomingBody},
+            body::{Body, Frame, Incoming as IncomingBody},
             h2::{self, RecvStream, SendStream, client::SendRequest},
             server::conn::{HeaderReadTimeout, IdleTimeout, http1, http2},
             service::RamaHttpService,
@@ -45,7 +48,7 @@ use tokio::{
     pin,
 };
 
-use super::support;
+use super::{support, support::trailers::StreamBodyWithTrailers};
 
 #[test]
 fn get_should_ignore_body() {
@@ -1734,6 +1737,69 @@ async fn upgrades() {
     assert_eq!(parts.read_buf, "eagerly optimistic");
 
     // wait so that we don't write until other side saw 101 response
+    rx.await.unwrap();
+
+    let mut io = parts.io;
+    io.write_all(b"foo=bar").await.unwrap();
+    let mut vec = vec![];
+    io.read_to_end(&mut vec).await.unwrap();
+    assert_eq!(vec, b"bar=foo");
+}
+
+#[tokio::test]
+async fn upgrade_without_keep_alive_does_not_announce_close() {
+    let (listener, addr) = setup_tcp_listener();
+    let (tx, rx) = oneshot::channel();
+
+    thread::spawn(move || {
+        let mut tcp = connect(&addr);
+        tcp.write_all(
+            b"\
+            GET / HTTP/1.1\r\n\
+            Upgrade: foobar\r\n\
+            Connection: upgrade\r\n\
+            \r\n\
+        ",
+        )
+        .expect("write 1");
+        let mut head = Vec::new();
+        let mut byte = [0; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            tcp.read_exact(&mut byte).expect("read head");
+            head.push(byte[0]);
+        }
+        let head = s(&head).to_ascii_lowercase();
+        assert!(
+            head.starts_with("http/1.1 101 switching protocols\r\n"),
+            "{head}"
+        );
+        // The connection is handed to the upgrade, not closed.
+        assert!(!head.contains("connection: close"), "{head}");
+        _ = tx.send(());
+
+        let mut upgraded = [0; 7];
+        tcp.read_exact(&mut upgraded).expect("read 2");
+        assert_eq!(&upgraded, b"foo=bar");
+        tcp.write_all(b"bar=foo").expect("write 2");
+    });
+
+    let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
+    let conn = http1::Builder::new()
+        .with_keep_alive(false)
+        .serve_connection(
+            socket,
+            RamaHttpService::new(service_fn(|_| {
+                let res = Response::builder()
+                    .status(101)
+                    .header("upgrade", "foobar")
+                    .body(Empty::<Bytes>::new())
+                    .unwrap();
+                future::ready(Ok::<_, Infallible>(res))
+            })),
+        );
+
+    let parts = conn.without_shutdown().await.unwrap();
     rx.await.unwrap();
 
     let mut io = parts.io;
@@ -3710,19 +3776,30 @@ fn http1_trailer_send_fields() {
 #[test]
 fn http1_trailer_send_fields_titlecase() {
     let body = rama::futures::stream::once(async move { Ok("hello".into()) });
-    let mut headers = HeaderMap::new();
-    headers.insert("chunky-trailer", "header data".parse().unwrap());
-    // Invalid trailer field that should not be sent
-    headers.insert("Host", "www.example.com".parse().unwrap());
-    // Not declared in `Trailer`, still sent: declaring is only a SHOULD (RFC 9110 §6.6.2)
-    headers.insert("foo", "bar".parse().unwrap());
+    // Mixed casing, an order no encoder sorts into, and a repeated name split by others.
+    let mut trailers = HeaderMap::new();
+    for (name, value) in [
+        ("chunky-trailer", "header data"),
+        ("X-zeta", "1"),
+        // Invalid trailer field that should not be sent
+        ("Host", "www.example.com"),
+        // Not declared in `Trailer`, still sent: declaring is only a SHOULD (RFC 9110 §6.6.2)
+        ("foo", "bar"),
+        ("x-ZETA", "2"),
+    ] {
+        trailers.append(
+            HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            value.parse().unwrap(),
+        );
+    }
 
-    let server = serve();
+    let server = serve_opts().title_case_headers(true).serve();
     server
         .reply()
         .header("transfer-encoding", "chunked")
-        .header("trailer", "Chunky-Trailer")
-        .body_stream_with_trailers(body, headers);
+        .header("Trailer", "chunky-Trailer, x-zeta")
+        .header("x-mIxEd-case", "1")
+        .body_stream_with_trailers(body, trailers);
     let mut req = connect(server.addr());
     req.write_all(
         b"\
@@ -3735,20 +3812,25 @@ fn http1_trailer_send_fields_titlecase() {
     )
     .expect("writing");
 
-    let chunky_trailer_chunk = b"\r\nchunky-trailer: header data\r\nfoo: bar\r\n\r\n";
-    let res = read_until(&mut req, |buf| buf.ends_with(chunky_trailer_chunk)).expect("reading");
-    let sres = s(&res);
+    let res = read_until(&mut req, |buf| {
+        s(buf)
+            .split_once("\r\n0\r\n")
+            .is_some_and(|(_, trailers)| trailers.ends_with("\r\n\r\n"))
+    })
+    .expect("reading");
+    let (head, body) = s(&res).split_once("\r\n\r\n").expect("end of head");
 
-    let expected_head =
-        "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\ntrailer: Chunky-Trailer\r\n";
-    assert_eq!(&sres[..expected_head.len()], expected_head);
-
-    let head_end = "\r\n\r\n";
-    let pos = sres.find(head_end).expect("find end of head");
-    let body = &sres[pos + head_end.len()..];
-
-    let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\nfoo: bar\r\n\r\n";
-    assert_eq!(body, expected_body);
+    // Each line keeps its spelling, with the first letter of every word uppercased.
+    assert_eq!(
+        head,
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: chunky-Trailer, x-zeta\r\n\
+         X-MIxEd-Case: 1"
+    );
+    assert_eq!(
+        body,
+        "5\r\nhello\r\n0\r\nChunky-Trailer: header data\r\nX-Zeta: 1\r\nFoo: bar\r\n\
+         X-ZETA: 2\r\n\r\n"
+    );
 }
 
 #[test]
@@ -4039,7 +4121,6 @@ impl ReplyBuilder<'_> {
     where
         S: rama::futures::Stream<Item = Result<Bytes, BoxError>> + Send + Sync + 'static,
     {
-        use rama::{futures::TryStreamExt, http::core::body::Frame};
         let body = BodyExt::boxed(StreamBody::new(stream.map_ok(Frame::data)));
         self.tx.lock().send(Reply::Body(body)).unwrap();
     }
@@ -4048,8 +4129,6 @@ impl ReplyBuilder<'_> {
     where
         S: rama::futures::Stream<Item = Result<Bytes, BoxError>> + Send + Sync + 'static,
     {
-        use rama::{futures::TryStreamExt, http::core::body::Frame};
-        use support::trailers::StreamBodyWithTrailers;
         let mut stream_body = StreamBodyWithTrailers::new(stream.map_ok(Frame::data));
         stream_body.set_trailers(trailers);
         let body = BodyExt::boxed(stream_body);
@@ -4213,6 +4292,7 @@ struct ServeOptions {
     http2: bool,
     keep_alive: bool,
     pipeline: bool,
+    title_case_headers: bool,
 }
 
 impl Default for ServeOptions {
@@ -4221,6 +4301,7 @@ impl Default for ServeOptions {
             http2: false,
             keep_alive: true,
             pipeline: false,
+            title_case_headers: false,
         }
     }
 }
@@ -4238,6 +4319,11 @@ impl ServeOptions {
 
     fn pipeline(mut self, enabled: bool) -> Self {
         self.pipeline = enabled;
+        self
+    }
+
+    fn title_case_headers(mut self, enabled: bool) -> Self {
+        self.title_case_headers = enabled;
         self
     }
 
@@ -4294,6 +4380,7 @@ impl ServeOptions {
                                         http1::Builder::new()
                                             .with_keep_alive(_options.keep_alive)
                                             .with_pipeline_flush(_options.pipeline)
+                                            .with_title_case_headers(_options.title_case_headers)
                                             .serve_connection(stream, service).await.unwrap();
                                     }
                                 });

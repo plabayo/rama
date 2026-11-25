@@ -76,6 +76,18 @@ class EncoderWitness:
 
     fragments: dict = field(default_factory=dict)
     decoded: bytearray = field(default_factory=bytearray)
+    chunk_start: int = 0
+
+    def place(self, payload):
+        """Unique native start of a chunk; tshark repeats a desegmented partial instruction."""
+        native, end = self.prefix()[1], len(self.decoded)
+        starts = [
+            start
+            for start in range(self.chunk_start, end + 1)
+            if start + len(payload) > end
+            and native[start : start + len(payload)] == payload
+        ]
+        return starts[0] if len(starts) == 1 else None
 
     def add(self, offset, payload):
         for index, byte in enumerate(payload, offset):
@@ -254,8 +266,8 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
                         continue
                     encoder_streams[connection] = stream_key
                     witness = witnesses[stream_key]
-                    witness.decoded.extend(payload)
-                    if not witness.prefix()[1].startswith(witness.decoded):
+                    start = witness.place(payload)
+                    if start is None:
                         native = witness.prefix()[1]
                         raise ValueError(
                             "QPACK encoder bytes precede their native witness: "
@@ -264,12 +276,16 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
                             f"native_bytes={len(native)} decoded_bytes={len(witness.decoded)} "
                             f"event_bytes={len(payload)} "
                             f"event_native_offset={native.find(payload)} "
-                            f"previous_prefix_matches={native.startswith(witness.decoded[:-len(payload)])} "
+                            f"previous_prefix_matches={native.startswith(witness.decoded)} "
                             f"native_fragment_bytes={len(witness.fragments)} "
                             f"native_last_offset={max(witness.fragments, default=-1)} "
                             f"packet_stream_ids={sorted({item.get('show') for item in nodes(packet, 'quic.stream.stream_id')})} "
                             f"packet_stream_offsets={sorted({item.get('show') for item in nodes(packet, 'quic.stream.offset')})}"
                         )
+                    # Repeated tail bytes were already fed; ls-qpack buffers partial instructions.
+                    payload = payload[len(witness.decoded) - start :]
+                    witness.chunk_start = start
+                    witness.decoded.extend(payload)
                     for stream in current.feed_encoder(payload):
                         key = pending.pop((connection, stream), None)
                         if key is None:

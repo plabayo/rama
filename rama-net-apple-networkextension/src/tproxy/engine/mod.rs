@@ -27,16 +27,13 @@ fn next_provider_generation() -> u64 {
 use rama_core::{
     bytes::Bytes,
     extensions::ExtensionsRef,
-    futures::FutureExt,
+    futures::{FutureExt, maybe},
     graceful::{Cause, Scope, WeakScope, attach_scope},
     io::BridgeIo,
-    rt::OwnedRuntimeHandle,
+    rt::{IdleGuard, OwnedRuntimeHandle},
     service::Service,
 };
-use rama_net::{
-    client::ConnectorTarget,
-    proxy::{BridgeCloseReason, IdleGuard},
-};
+use rama_net::{client::ConnectorTarget, proxy::BridgeCloseReason};
 use rama_utils::octets::kib;
 
 use atomic_waker::AtomicWaker;
@@ -1625,50 +1622,35 @@ where
                 result
             });
             let mut idle = tcp_idle_timeout.map(IdleGuard::new);
-            let mut last_progress = counters_for_close.total();
-            loop {
-                tokio::select! {
-                    biased;
-                    () = idle_scope.cancelled() => {
-                        signals_for_close.record_terminal_error(BridgeCloseReason::Shutdown);
-                        break BridgeCloseReason::Shutdown;
-                    }
-                    _ = async {
-                        match idle.as_mut() {
-                            Some(g) => g.tick().await,
-                            None => std::future::pending::<()>().await,
-                        }
-                    } => {
-                        let cur = counters_for_close.total();
-                        if cur != last_progress {
-                            last_progress = cur;
-                            if let Some(g) = idle.as_mut() {
-                                g.reset();
-                            }
-                            continue;
-                        }
-                        signals_for_close.record_terminal_error(BridgeCloseReason::IdleTimeout);
-                        break BridgeCloseReason::IdleTimeout;
-                    }
-                    result = serve.as_mut() => {
-                        break match result {
-                            Ok(service_result) => {
-                                // Infallible: a failure reaches the flow through its `AbortIo`.
-                                let Ok(()) = service_result;
-                                BridgeCloseReason::PeerEofLeft
-                            }
-                            Err(panic) => {
-                                tracing::error!(
-                                    target: "rama_apple_ne::tproxy",
-                                    flow_id = meta_for_close.flow_id,
-                                    panic_message = %panic_payload_message(panic.as_ref()),
-                                    "transparent proxy tcp service panicked; closing flow",
-                                );
-                                BridgeCloseReason::ServicePanic
-                            }
-                        };
-                    }
+            // Bytes moved since the idle window opened: no progress until then.
+            let start = counters_for_close.total();
+            let moved = || counters_for_close.total().wrapping_sub(start);
+            tokio::select! {
+                biased;
+                () = idle_scope.cancelled() => {
+                    signals_for_close.record_terminal_error(BridgeCloseReason::Shutdown);
+                    BridgeCloseReason::Shutdown
                 }
+                () = maybe(idle.as_mut().map(|idle| idle.stalled_by(moved))) => {
+                    signals_for_close.record_terminal_error(BridgeCloseReason::IdleTimeout);
+                    BridgeCloseReason::IdleTimeout
+                }
+                result = serve.as_mut() => match result {
+                    Ok(service_result) => {
+                        // Infallible: a failure reaches the flow through its `AbortIo`.
+                        let Ok(()) = service_result;
+                        BridgeCloseReason::PeerEofLeft
+                    }
+                    Err(panic) => {
+                        tracing::error!(
+                            target: "rama_apple_ne::tproxy",
+                            flow_id = meta_for_close.flow_id,
+                            panic_message = %panic_payload_message(panic.as_ref()),
+                            "transparent proxy tcp service panicked; closing flow",
+                        );
+                        BridgeCloseReason::ServicePanic
+                    }
+                },
             }
         })
         .catch_unwind()
@@ -1834,34 +1816,14 @@ pub struct TransparentProxyUdpSession {
     idle_notify: Option<Arc<tokio::sync::Notify>>,
 }
 
-/// Wait until a UDP flow has seen no activity for `timeout` while reusing one
-/// Tokio timer allocation. Activity wins a deadline tie, matching the previous
-/// `timeout(notify.notified())` polling order.
+/// Wait until a UDP flow has seen no activity for `timeout`; activity wins a deadline tie.
 async fn wait_for_udp_idle(timeout: Duration, notify: &tokio::sync::Notify) {
-    let Some(deadline_at) = tokio::time::Instant::now().checked_add(timeout) else {
-        // The requested deadline lies outside `Instant`'s platform range. It
-        // cannot be observed during this process lifetime, so remain pending
-        // instead of panicking while preserving the outer task's shutdown and
-        // max-lifetime select arms.
-        std::future::pending::<()>().await;
-        return;
-    };
-    let deadline = tokio::time::sleep_until(deadline_at);
-    let mut deadline = std::pin::pin!(deadline);
+    let mut idle = IdleGuard::new(timeout);
     loop {
         tokio::select! {
             biased;
-            _ = notify.notified() => {
-                let Some(deadline_at) = tokio::time::Instant::now().checked_add(timeout) else {
-                    // Activity moved an otherwise representable deadline past
-                    // the platform limit. Treat it as unreachable; the outer
-                    // flow select can still cancel and run its close epilogue.
-                    std::future::pending::<()>().await;
-                    return;
-                };
-                deadline.as_mut().reset(deadline_at);
-            }
-            _ = &mut deadline => return,
+            () = notify.notified() => idle.reset(),
+            () = idle.tick() => return,
         }
     }
 }

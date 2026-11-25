@@ -331,7 +331,9 @@ fn ten_thousand_connection_and_destination_lengths_share_one_tls_structure() {
         psk.extend_from_slice(&[b'p'; 32]);
         let observed = hello(vec![
             ClientHelloExtension::ServerName(Some(
-                Domain::try_from(format!("{}.example", "x".repeat(size))).unwrap(),
+                Domain::try_from(format!("{}.example", "x".repeat(size)))
+                    .unwrap()
+                    .into(),
             )),
             opaque(21, vec![0; sequence as usize % 512]),
             opaque(35, vec![b't'; identity_length]),

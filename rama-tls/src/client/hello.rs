@@ -1,15 +1,18 @@
-use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
-use crate::enums::{
-    AuthenticatedEncryptionWithAssociatedData, CertificateCompressionAlgorithm,
-    KeyDerivationFunction,
+use rama_net::{
+    address::Domain,
+    tls::{ApplicationProtocol, ServerName},
 };
+use serde::{Deserialize, Serialize};
+
 use crate::{
     CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme, SupportedGroup,
-    enums::CompressionAlgorithm,
+    enums::{
+        AuthenticatedEncryptionWithAssociatedData, CertificateCompressionAlgorithm,
+        CompressionAlgorithm, KeyDerivationFunction,
+    },
 };
-use rama_net::{address::Domain, tls::ApplicationProtocol};
 
 // These codepoints predate the current IANA assignments. Captures still need
 // to recognize them so old browser profiles never replay connection secrets.
@@ -108,6 +111,7 @@ pub struct ClientHello {
 
 impl ClientHello {
     #[must_use]
+    /// Construct a ClientHello from its version, algorithms and extensions.
     pub fn new(
         protocol_version: ProtocolVersion,
         cipher_suites: Vec<CipherSuite>,
@@ -150,13 +154,19 @@ impl ClientHello {
     ///
     /// See [`ClientHelloExtension::ServerName`] for more information about the server name.
     #[must_use]
-    pub fn ext_server_name(&self) -> Option<&Domain> {
+    pub fn ext_server_name(&self) -> Option<&ServerName> {
         for ext in &self.extensions {
-            if let ClientHelloExtension::ServerName(domain) = ext {
-                return domain.as_ref();
+            if let ClientHelloExtension::ServerName(server_name) = ext {
+                return server_name.as_ref();
             }
         }
         None
+    }
+
+    /// Return the DNS server name, or `None` for an IP literal or absent SNI.
+    #[must_use]
+    pub fn ext_server_domain(&self) -> Option<&Domain> {
+        self.ext_server_name().and_then(ServerName::as_domain)
     }
 
     /// Return the elliptic curves supported by this client
@@ -306,11 +316,13 @@ pub enum ClientHelloExtension {
     /// In order to provide any of the server names, clients MAY include an
     /// extension of type "server_name" in the (extended) client hello.
     ///
+    /// IP literals from non-conforming clients are retained as addresses.
+    ///
     /// # Reference
     ///
     /// - <https://www.iana.org/go/rfc6066>
     /// - <https://www.iana.org/go/rfc9261>
-    ServerName(Option<Domain>),
+    ServerName(Option<ServerName>),
     /// indicates which elliptic curves the client supports
     ///
     /// This extension is required... despite being an extension.

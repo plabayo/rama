@@ -306,7 +306,7 @@ async fn assert_eof(io: &mut BufReader<DuplexStream>) {
     );
 }
 
-/// The trailer section of a chunked body on the wire, lowercased, without its final empty line.
+/// The trailer section of a chunked body on the wire, without its final empty line.
 async fn read_chunked_trailers(io: &mut BufReader<DuplexStream>) -> String {
     timeout(WATCHDOG, async {
         loop {
@@ -324,7 +324,7 @@ async fn read_chunked_trailers(io: &mut BufReader<DuplexStream>) -> String {
             let mut line = String::new();
             io.read_line(&mut line).await.unwrap();
             if line == "\r\n" {
-                return trailers.to_ascii_lowercase();
+                return trailers;
             }
             trailers.push_str(&line);
         }
@@ -362,12 +362,15 @@ async fn relayed_trailers_keep_forbidden_fields_but_never_framing() {
         .await;
         let trailers = read_chunked_trailers(&mut relay.client).await;
         assert_eq!(
-            trailers.contains("set-cookie: a=b\r\n"),
+            trailers.contains("Set-Cookie: a=b\r\n"),
             set_cookie,
             "{trailers:?}"
         );
-        assert!(trailers.contains("x-checksum: abc\r\n"), "{trailers:?}");
-        assert!(!trailers.contains("content-length"), "{trailers:?}");
+        assert!(trailers.contains("X-Checksum: abc\r\n"), "{trailers:?}");
+        assert!(
+            !trailers.to_ascii_lowercase().contains("content-length"),
+            "{trailers:?}"
+        );
         relay.finish(false).await;
     }
 }
@@ -1135,4 +1138,53 @@ async fn egress_connect_failure_sends_a_complete_response_before_closing() {
         assert_eof(&mut client).await;
         task.await.unwrap().unwrap();
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn relay_keeps_header_name_casing_and_order_in_both_directions() {
+    let mut relay = Relay::new();
+    // Mixed casing, an order no encoder sorts into, and a repeated name split by another one.
+    let request = "GET / HTTP/1.1\r\nhOsT: example.test\r\nX-CuStOm: 1\r\naccept: */*\r\n\
+        X-CuStOm: 2\r\nZ-Last: z\r\nA-First: a\r\n\r\n";
+    write(relay.client.get_mut(), request.as_bytes()).await;
+    assert_eq!(read_head(&mut relay.upstream).await, request);
+
+    let response = "x-ReSpOnSe: 1\r\nContent-Length: 0\r\nSet-Cookie: a=1\r\nB-Header: b\r\n\
+        Set-Cookie: b=2\r\n";
+    assert_eq!(
+        relay.response_head("1.1", response).await,
+        format!("HTTP/1.1 200 OK\r\n{response}\r\n")
+    );
+    relay.finish(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn relay_keeps_trailer_name_casing_and_order_in_both_directions() {
+    // Mixed casing, an order no encoder sorts into, and a repeated name split by another one.
+    let trailers = "X-CuStOm: 1\r\nz-last: z\r\nx-custom: 2\r\nA-First: a\r\n";
+    let mut relay = Relay::new();
+    write(
+        relay.client.get_mut(),
+        format!(
+            "POST / HTTP/1.1\r\nHost: example.test\r\nTE: trailers\r\nConnection: TE\r\n\
+             Transfer-Encoding: chunked\r\n\r\n4\r\nbody\r\n0\r\n{trailers}\r\n"
+        )
+        .as_bytes(),
+    )
+    .await;
+    let forwarded = read_head(&mut relay.upstream).await;
+    assert!(forwarded.starts_with("POST / HTTP/1.1\r\n"), "{forwarded}");
+    assert_eq!(read_chunked_trailers(&mut relay.upstream).await, trailers);
+
+    let head = relay
+        .response_head("1.1", "Transfer-Encoding: chunked\r\n")
+        .await;
+    assert_framing(&head, "1.1", true, None);
+    write(
+        relay.upstream.get_mut(),
+        format!("4\r\nbody\r\n0\r\n{trailers}\r\n").as_bytes(),
+    )
+    .await;
+    assert_eq!(read_chunked_trailers(&mut relay.client).await, trailers);
+    relay.finish(false).await;
 }

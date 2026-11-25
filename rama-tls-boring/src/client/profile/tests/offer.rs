@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
-use super::*;
 use rama_boring::ssl::Padding;
-
-use crate::client::BoringExtensionPresence;
-use rama_net::tls::{ApplicationProtocol, TlsAlpn};
+use rama_net::{
+    address::Domain,
+    tls::{ApplicationProtocol, ServerName, TlsAlpn},
+};
 use rama_tls::{
     CipherSuite, ExtensionId, ProtocolVersion, SupportedGroup,
     client::{
@@ -13,6 +13,9 @@ use rama_tls::{
     is_grease_u16,
 };
 use rama_ua::profile::capture::tls::TlsCapturedExtension;
+
+use super::*;
+use crate::client::BoringExtensionPresence;
 
 #[test]
 fn compiled_settings_reproduce_retained_tls_fields_with_fresh_crypto() {
@@ -155,7 +158,8 @@ fn explicit_caller_alpn_is_never_replaced_by_the_captured_offer() {
     let captured = capture();
     let offer = compile_tcp(&captured, None).unwrap().0.alpn().unwrap();
     let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
-    let request = input();
+    let request = ConnectRequest::new("prepared.test:443".parse().unwrap())
+        .with_application_protocol(Protocol::HTTPS);
     request.extensions().insert(offer.clone());
     let (_, report) = prepare(&compiler, &request, &captured).unwrap();
     assert!(report.is_exact());
@@ -169,7 +173,8 @@ fn explicit_caller_alpn_is_never_replaced_by_the_captured_offer() {
             .collect(),
     ] {
         let caller = TlsAlpn(protocols.into());
-        let request = input();
+        let request = ConnectRequest::new("prepared.test:443".parse().unwrap())
+            .with_application_protocol(Protocol::HTTPS);
         request.extensions().insert(caller.clone());
         let (compiled, report) = prepare(&compiler, &request, &captured).unwrap();
         assert!(lowered(&report).contains(&LoweredProfileItem::CallerTlsAlpn));
@@ -267,6 +272,84 @@ fn required_http_version_absent_from_the_captured_offer_is_added_and_reported() 
         .insert(TargetHttpVersion(Version::HTTP_11));
     let (_, report) = prepare(&compiler, &request, &capture()).unwrap();
     assert_eq!(lowered(&report), [LoweredProfileItem::TlsAlpnTargetVersion]);
+}
+
+#[cfg(feature = "http")]
+#[test]
+fn explicit_http_target_constrains_every_alpn_outcome() {
+    let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
+    for target in [Version::HTTP_11, Version::HTTP_2] {
+        let request = input();
+        request.extensions().insert(TargetHttpVersion(target));
+        let mut captured = capture();
+        for extension in &mut captured.extensions {
+            if extension.id == u16::from(ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION) {
+                extension.value = TlsCapturedExtensionValue::Protocols(
+                    vec![
+                        Box::from(b"h2".as_slice()),
+                        Box::from(b"http/1.1".as_slice()),
+                    ]
+                    .into(),
+                );
+            }
+        }
+        let (compiled, report) = prepare(&compiler, &request, &captured).unwrap();
+        InstalledConnectionProfile::<ConnectRequest>::apply(compiled, request.extensions());
+        let wanted = if target == Version::HTTP_11 {
+            ApplicationProtocol::HTTP_11
+        } else {
+            ApplicationProtocol::HTTP_2
+        };
+        let offer = request.extensions().get_ref::<TlsAlpn>().unwrap();
+        assert!(!offer.0.is_empty());
+        assert!(offer.0.iter().all(|protocol| *protocol == wanted));
+        assert!(lowered(&report).contains(&LoweredProfileItem::TlsAlpnTargetVersion));
+    }
+}
+
+#[test]
+fn unsupported_outer_hpke_metadata_is_lowered_to_a_supported_grease_shape() {
+    let mut captured = capture();
+    for extension in &mut captured.extensions {
+        if let TlsCapturedExtensionValue::EchOuter { kdf, .. } = &mut extension.value {
+            *kdf = 2;
+        }
+    }
+    let (config, report) = compile_tcp(&captured, None).unwrap();
+    let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
+    assert!(
+        hello
+            .extensions()
+            .iter()
+            .any(|extension| extension.id() == ExtensionId::ENCRYPTED_CLIENT_HELLO)
+    );
+    assert!(
+        lowered(&report).contains(&LoweredProfileItem::TlsExtension {
+            extension: ExtensionId::ENCRYPTED_CLIENT_HELLO.into()
+        })
+    );
+    let actual = TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello,
+        TlsCaptureLimits::default(),
+    )
+    .unwrap();
+    let actual = actual.with_grease_placeholders().unwrap();
+    let captured = captured.with_grease_placeholders().unwrap();
+    assert_eq!(actual.ciphers, captured.ciphers);
+    assert_eq!(
+        actual
+            .extensions
+            .iter()
+            .map(|extension| extension.id)
+            .collect::<Vec<_>>(),
+        captured
+            .extensions
+            .iter()
+            .map(|extension| extension.id)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[cfg(feature = "http")]
@@ -496,7 +579,7 @@ fn prepared_hello(compiled: CompiledConnection) -> ClientHello {
     bindings.check(&request).unwrap();
     let config = BoringTlsConnectorConfig::from_extensions(request.extensions());
     let mut data = TlsConnectorData::try_from(config).unwrap();
-    data.server_name = Some(Host::from_static("prepared.test"));
+    data.server_name = Some(ServerName::from(Domain::from_static("prepared.test")));
     hello_from_data(data)
 }
 
@@ -969,4 +1052,121 @@ fn caller_ech_policy_survives_profile_compilation() {
             }
         }
     }
+}
+
+#[cfg(feature = "http")]
+#[test]
+fn earlier_http1_targets_keep_the_captured_tls_offer_without_alpn() {
+    let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
+    let mut captured = capture();
+    captured.ciphers.reverse();
+    for version in [Version::HTTP_09, Version::HTTP_10] {
+        let request = input();
+        request.extensions().insert(TargetHttpVersion(version));
+        let (compiled, report) = prepare(&compiler, &request, &captured).unwrap();
+        assert!(compiled.supports(CapturedSlotKind::TcpTls));
+        <CompiledConnection as InstalledConnectionProfile<ConnectRequest>>::apply(
+            compiled,
+            request.extensions(),
+        );
+        let config = TlsClientConfig::new().with_overrides(request.extensions());
+        let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
+        let actual = TlsCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            TlsCaptureTransport::Tcp,
+            &hello,
+            TlsCaptureLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            actual.clone().with_grease_placeholders().unwrap().ciphers,
+            captured.clone().with_grease_placeholders().unwrap().ciphers
+        );
+        assert!(!actual.extensions.iter().any(|extension| extension.id
+            == u16::from(ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION)));
+        assert!(lowered(&report).contains(&LoweredProfileItem::TlsAlpnTargetVersion));
+    }
+}
+
+#[cfg(feature = "http")]
+#[test]
+fn a_tcp_capture_cannot_express_an_explicit_http3_target() {
+    let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
+    let request = input();
+    request
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_3));
+    prepare(&compiler, &request, &capture()).unwrap_err();
+}
+
+#[cfg(feature = "http")]
+#[test]
+fn narrowed_http_alpn_never_advertises_settings_for_another_protocol() {
+    let mut captured = capture();
+    for extension in &mut captured.extensions {
+        if extension.id == u16::from(ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION) {
+            extension.value = TlsCapturedExtensionValue::Protocols(
+                vec![
+                    Box::from(b"h2".as_slice()),
+                    Box::from(b"http/1.1".as_slice()),
+                ]
+                .into(),
+            );
+        }
+    }
+    let mut extensions = captured.extensions.into_vec();
+    extensions.retain(|extension| {
+        !matches!(
+            ExtensionId::from(extension.id),
+            ExtensionId::APPLICATION_SETTINGS | ExtensionId::OLD_APPLICATION_SETTINGS
+        )
+    });
+    extensions.push(TlsCapturedExtension {
+        id: ExtensionId::APPLICATION_SETTINGS.into(),
+        value: TlsCapturedExtensionValue::Protocols(vec![Box::from(b"h2".as_slice())].into()),
+    });
+    captured.extensions = extensions.into();
+    let request = input();
+    request
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_11));
+    let (compiled, _) = prepare(
+        &ConnectionProfileCompiler::new(TlsClientConfig::new()),
+        &request,
+        &captured,
+    )
+    .unwrap();
+    <CompiledConnection as InstalledConnectionProfile<ConnectRequest>>::apply(
+        compiled,
+        request.extensions(),
+    );
+    let settings = TlsClientConfig::new().with_overrides(request.extensions());
+    let hello = hello_from_data(TlsConnectorData::try_from(&settings).unwrap());
+    assert!(hello.ext_alpn().unwrap() == [ApplicationProtocol::HTTP_11]);
+    assert!(!hello.extensions().iter().any(|extension| matches!(
+        extension.id(),
+        ExtensionId::APPLICATION_SETTINGS | ExtensionId::OLD_APPLICATION_SETTINGS
+    )));
+}
+
+#[test]
+fn a_replacement_offer_clears_lowered_certificate_compression() {
+    let original = capture();
+    let (settings, _) = compile_tcp(&original, None).unwrap();
+    let mut replacement = original;
+    for extension in &mut replacement.extensions {
+        if extension.id == u16::from(ExtensionId::COMPRESS_CERTIFICATE) {
+            extension.value = TlsCapturedExtensionValue::U16List(Box::new([0xffff]));
+        }
+    }
+    let (settings_b, report) = compile_tcp(&replacement, None).unwrap();
+    assert!(!report.is_exact());
+    settings_b.write_to(settings.as_extensions());
+    let hello = hello_from_data(TlsConnectorData::try_from(&settings).unwrap());
+    assert!(
+        !hello
+            .extensions()
+            .iter()
+            .any(|extension| extension.id() == ExtensionId::COMPRESS_CERTIFICATE)
+    );
 }

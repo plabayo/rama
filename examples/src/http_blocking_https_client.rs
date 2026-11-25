@@ -17,7 +17,7 @@
     reason = "printing the response is the purpose of this client example"
 )]
 
-use rama::{error::BoxError, http::client::EasyHttpWebClient, tls::client::TlsServerName};
+use rama::{error::BoxError, http::client::EasyHttpWebClient, net::tls::ServerName};
 
 fn main() -> Result<(), BoxError> {
     let mut args = std::env::args().skip(1);
@@ -29,7 +29,7 @@ fn main() -> Result<(), BoxError> {
 
     let mut request = client.get(url);
     if let Some(server_name) = server_name {
-        request = request.extension(TlsServerName(server_name.parse()?));
+        request = request.extension(server_name.parse::<ServerName>()?);
     }
     let response = request.send()?;
     println!("Status: {}", response.status());

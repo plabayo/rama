@@ -8,7 +8,7 @@ use itertools::Itertools as _;
 use rama::{
     crypto::digest::sha256_slices,
     error::BoxError,
-    extensions::{Extensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     graceful::{Cause, scope_context},
     http::{
         BodyExtractExt, Response, StatusCode, Version,
@@ -30,7 +30,7 @@ use rama::{
         address::{Host, ip::geo::IpGeoInfo},
     },
     telemetry::tracing,
-    tls::server::ServerEchAccepted,
+    tls::server::ServerClientHellos,
     ua::profile::model::{http::Http2Settings, js::JsProfileWebApis, ua::UserAgentSourceInfo},
 };
 use serde::{Deserialize, Serialize};
@@ -42,7 +42,7 @@ use super::{
     data::{
         DataSource, Initiator, RequestInfo, ResourceType, TlsDisplayInfo,
         TlsDisplayInfoExtensionData, UserAgentInfo, get_akamai_h2_info, get_http_info_and_capture,
-        get_ja4h_info, get_request_info, get_tls_display_info, get_user_agent_info,
+        get_ja4h_info, get_request_info, get_user_agent_info, tls_display_views,
     },
     sites::SiteGrant,
 };
@@ -224,25 +224,22 @@ pub(super) struct ReportQuery {
 }
 
 /// The ECH acceptance table, followed by the inner ClientHello's when ECH was accepted.
-async fn ech_tables(extensions: &Extensions) -> Result<Vec<Table>, ErrorResponse> {
+fn ech_tables(hellos: &ServerClientHellos<'_>, inner: Option<TlsDisplayInfo>) -> Vec<Table> {
     let mut tables = Vec::new();
-    if let Some(accepted) = extensions.get_ref::<ServerEchAccepted>() {
+    if let Some(accepted) = hellos.ech_accepted() {
         tables.push(Table {
             title: "Encrypted ClientHello".to_owned(),
-            rows: vec![("Accepted".to_owned(), accepted.0.to_string())],
+            rows: vec![("Accepted".to_owned(), accepted.to_string())],
         });
     }
-    if let Some(inner) = super::data::get_tls_inner_display_info(extensions)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?
-    {
+    if let Some(inner) = inner {
         let inner_tables: Vec<Table> = inner.into();
         tables.extend(inner_tables.into_iter().map(|mut table| {
             table.title = format!("ECH Inner — {}", table.title);
             table
         }));
     }
-    Ok(tables)
+    tables
 }
 
 pub(super) async fn get_report(
@@ -256,14 +253,11 @@ pub(super) async fn get_report(
         state.storage = None;
     }
     let connection_only = query.connection_only == Some(1);
-    let ech_accepted =
-        parts
-            .extensions
-            .get_ref::<ServerEchAccepted>()
-            .map_or(
-                "unknown",
-                |accepted| if accepted.0 { "true" } else { "false" },
-            );
+    let ech_accepted = match ServerClientHellos::from_extensions(&parts.extensions).ech_accepted() {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unknown",
+    };
     let ja4h = get_ja4h_info(&parts);
     let site_probes = (!connection_only)
         .then(|| site_probes(&state, &parts))
@@ -338,15 +332,15 @@ pub(super) async fn get_report(
         ));
     }
 
-    let tls_info = get_tls_display_info(&parts.extensions)
-        .await
+    let hellos = ServerClientHellos::from_extensions(&parts.extensions);
+    let (tls_info, tls_inner_info) = tls_display_views(&parts.extensions, &hellos)
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     if let Some(tls_info) = tls_info {
         let mut tls_tables = tls_info.into();
         tables.append(&mut tls_tables);
     }
-    tables.extend(ech_tables(&parts.extensions).await?);
+    tables.extend(ech_tables(&hellos, tls_inner_info));
 
     if let Some(geo) = &geo {
         tables.extend(geo_tables(geo));
@@ -679,8 +673,8 @@ pub(super) async fn post_api_fetch_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    let tls_info = get_tls_display_info(&parts.extensions)
-        .await
+    let hellos = ServerClientHellos::from_extensions(&parts.extensions);
+    let (tls_info, tls_inner_info) = tls_display_views(&parts.extensions, &hellos)
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     Ok(Json(json!({
@@ -690,9 +684,8 @@ pub(super) async fn post_api_fetch_number(
             "user_agent_info": user_agent_info,
             "request_info": request_info,
             "tls_info": tls_info,
-            "tls_inner_info": super::data::get_tls_inner_display_info(&parts.extensions).await
-                .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?,
-            "ech_accepted": parts.extensions.get_ref::<ServerEchAccepted>().map(|value| value.0),
+            "tls_inner_info": tls_inner_info,
+            "ech_accepted": hellos.ech_accepted(),
             "quic": http_info.quic,
             "quic_connection": http_info.quic_connection,
             "http_info": json!({
@@ -738,8 +731,8 @@ pub(super) async fn post_api_xml_http_request_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    let tls_info = get_tls_display_info(&parts.extensions)
-        .await
+    let hellos = ServerClientHellos::from_extensions(&parts.extensions);
+    let (tls_info, tls_inner_info) = tls_display_views(&parts.extensions, &hellos)
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     Ok(Json(json!({
@@ -748,9 +741,8 @@ pub(super) async fn post_api_xml_http_request_number(
             "user_agent_info": user_agent_info,
             "request_info": request_info,
             "tls_info": tls_info,
-            "tls_inner_info": super::data::get_tls_inner_display_info(&parts.extensions).await
-                .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?,
-            "ech_accepted": parts.extensions.get_ref::<ServerEchAccepted>().map(|value| value.0),
+            "tls_inner_info": tls_inner_info,
+            "ech_accepted": hellos.ech_accepted(),
             "quic": http_info.quic,
             "quic_connection": http_info.quic_connection,
             "http_info": json!({
@@ -844,15 +836,15 @@ pub(super) async fn form(
         ));
     }
 
-    let tls_info = get_tls_display_info(&parts.extensions)
-        .await
+    let hellos = ServerClientHellos::from_extensions(&parts.extensions);
+    let (tls_info, tls_inner_info) = tls_display_views(&parts.extensions, &hellos)
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     if let Some(tls_info) = tls_info {
         let mut tls_tables = tls_info.into();
         tables.append(&mut tls_tables);
     }
-    tables.extend(ech_tables(&parts.extensions).await?);
+    tables.extend(ech_tables(&hellos, tls_inner_info));
 
     if let Some(geo) = &geo {
         tables.extend(geo_tables(geo));
@@ -1259,8 +1251,7 @@ mod tests {
         quic::{QuicConnectionInfo, proto::Version as QuicVersion},
     };
 
-    use super::super::sites::Sites;
-    use super::*;
+    use super::{super::sites::Sites, *};
 
     #[tokio::test]
     async fn consent_sets_two_distinct_short_lived_cookie_layout_probes() {

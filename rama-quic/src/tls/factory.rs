@@ -1,20 +1,10 @@
-#[cfg(all(feature = "boring", feature = "ua"))]
-use crate::profile::replay::has_captured_tls;
-use rama_crypto::pki_types::CertificateDer;
-use rama_net::address::Host;
-
-use rama_core::{extensions::Extensions, futures::future::BoxFuture};
 use std::{fmt, sync::Arc};
 
-use crate::{
-    ClientConfig, ServerConfig,
-    tls::{ClientConfigRequest, ClientHandshake, TlsConfigError, TlsOptions},
-};
-#[cfg(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-))]
-use rama_net::client::pool::ReuseKey;
+use rama_core::{extensions::Extensions, futures::future::BoxFuture};
+use rama_crypto::pki_types::CertificateDer;
+use rama_net::tls::ServerName;
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use rama_tls::client::TlsClientSni;
 use rama_tls::{
     client::{TlsClientConfig, TlsClientConfigProvider},
     server::TlsServerConfig,
@@ -23,7 +13,7 @@ use rama_tls::{
 use {
     crate::proto::crypto::boring as boring_crypto,
     rama_crypto::dep::boring::ssl::{GreaseValues, UnknownValues},
-    rama_tls::client::ClientHello,
+    rama_tls::client::{ClientHello, EchRequirement},
     rama_tls_boring::client::{
         BoringClientConfigExt as _, BoringExtensionOrder, BoringServerTrustCache,
         BoringTlsConnectorConfig,
@@ -32,13 +22,14 @@ use {
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use {
     crate::{profile::capture, proto::crypto::rustls as rustls_crypto},
+    rama_core::error::{BoxError, BoxErrorExt as _},
     rama_quic_proto::{
         Side, Version,
         capture::{CaptureError, InitialKeys, KeyProvider},
         crypto::{HeaderKey, PacketKey},
     },
     rama_tls_rustls::{
-        client::{RustlsServerTrustCache, RustlsTlsConnectorConfig},
+        client::{RustlsServerTrustCache, RustlsServerVerification, RustlsTlsConnectorConfig},
         dep::rustls::crypto::CryptoProvider,
     },
 };
@@ -49,10 +40,17 @@ use {
 use {
     rama_core::combinators::Either,
     rama_crypto::platform_verifier::PlatformVerifier,
-    rama_tls::client::{
-        NativeTrustPolicy, PlatformTrustPolicy, ServerTrustSource, TlsComponentIdentity, TlsPoolId,
-        TlsServerTrust,
-    },
+    rama_net::client::pool::ReuseKey,
+    rama_tls::client::{ServerVerificationScope, TlsPoolId, TlsProfilePreparation, TlsServerTrust},
+};
+
+#[cfg(all(feature = "boring", feature = "ua"))]
+use crate::profile::replay::has_captured_tls;
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use crate::tls::ClientSessionPolicy;
+use crate::{
+    ClientConfig, ServerConfig,
+    tls::{ClientConfigRequest, ClientHandshake, TlsConfigError, TlsOptions},
 };
 
 /// Build QUIC TLS configurations from Rama settings using a fixed provider.
@@ -89,7 +87,7 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
         &self,
         _policy: &TlsClientConfig,
         _options: TlsOptions,
-        _peer: Host,
+        _peer: ServerName,
         _handshake: ClientHandshake,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         Ok(None)
@@ -107,37 +105,24 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
     /// Acquire a configuration for one connection through this provider's cache.
     ///
     /// The connector supplies a lookup bound to this provider and its cache.
-    /// The default uses [`TlsClientConfigProvider::pool_id`] to classify effective settings and calls
-    /// [`Self::client_config`] on a cache miss or [`Self::prepare_client_config`] for peer-bound sessions.
-    /// Custom providers with mutable state can pass a supplemental key and
-    /// matching native builders to [`ClientConfigRequest::get_or_build`]. Return
-    /// `None` when the provider does not support the requested peer-bound handshake.
+    /// Stateless providers return [`acquire_cached_client_config`]. Custom providers
+    /// with mutable state can pass a supplemental key and matching native builders to
+    /// [`ClientConfigRequest::get_or_build`]. Return `None` when the provider does
+    /// not support the requested peer-bound handshake.
     fn acquire_client_config(
         &self,
         request: ClientConfigRequest<'_>,
-    ) -> Result<Option<ClientConfig>, TlsConfigError> {
-        request.get_or_build(
-            None,
-            |config, options| self.client_config(config, options),
-            |config, options, peer, handshake| {
-                self.prepare_client_config(config, options, peer, handshake)
-            },
-        )
-    }
+    ) -> Result<Option<ClientConfig>, TlsConfigError>;
 
     /// Acquire a peer's configuration asynchronously when the provider needs I/O.
-    /// The default calls [`Self::acquire_client_config`] on the current task.
+    /// Providers without I/O return [`Self::acquire_client_config`] as a ready future.
     fn acquire_client_config_async<'a>(
         &'a self,
         request: ClientConfigRequest<'a>,
-    ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
-        Box::pin(async move { self.acquire_client_config(request) })
-    }
+    ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>>;
 
     /// Whether backend-specific settings permit early data in this configuration.
-    fn allows_early_data(&self, _extensions: &Extensions) -> bool {
-        true
-    }
+    fn allows_early_data(&self, extensions: &Extensions) -> bool;
 
     /// Whether the peer `leaf` of a connection authenticated under the effective
     /// configuration in `extensions` is also valid for `name`, including any pins
@@ -147,8 +132,25 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
         &self,
         extensions: &Extensions,
         leaf: &CertificateDer<'_>,
-        name: &Host,
+        name: &ServerName,
     ) -> bool;
+}
+
+/// Acquire a configuration through `request`'s cache, classified by
+/// [`TlsClientConfigProvider::pool_id`]: [`QuicClientConfigProvider::client_config`]
+/// builds on a miss and [`QuicClientConfigProvider::prepare_client_config`] builds
+/// peer-bound sessions.
+pub fn acquire_cached_client_config<P: QuicClientConfigProvider + ?Sized>(
+    provider: &P,
+    request: ClientConfigRequest<'_>,
+) -> Result<Option<ClientConfig>, TlsConfigError> {
+    request.get_or_build(
+        None,
+        |config, options| provider.client_config(config, options),
+        |config, options, peer, handshake| {
+            provider.prepare_client_config(config, options, peer, handshake)
+        },
+    )
 }
 
 #[cfg(any(
@@ -161,21 +163,8 @@ fn reloadable_verification_identity<R: Send + Sync + 'static>(
     request: ClientConfigRequest<'_>,
     verification: Option<&Either<Arc<R>, Arc<PlatformVerifier>>>,
 ) -> Option<ReuseKey> {
-    let verification = verification?;
-    match request
-        .config()
-        .as_extensions()
-        .get_ref::<TlsServerTrust>()?
-        .source()
-    {
-        ServerTrustSource::Native(policy) if policy != &NativeTrustPolicy::new() => {}
-        ServerTrustSource::Platform(policy) if policy != &PlatformTrustPolicy::new() => {}
-        _ => return None,
-    }
-    Some(match verification {
-        Either::A(store) => ReuseKey::new(TlsComponentIdentity::shared(store)),
-        Either::B(verifier) => ReuseKey::new(TlsComponentIdentity::shared(verifier)),
-    })
+    let trust = request.config().as_extensions().get_ref::<TlsServerTrust>();
+    ServerVerificationScope::reloadable(trust, verification?).map(ReuseKey::new)
 }
 
 /// Build server configurations without requiring client-policy support.
@@ -236,11 +225,39 @@ impl RustlsTlsProvider {
     fn cached_with_verification(
         &self,
         request: ClientConfigRequest<'_>,
-        verification: Option<&rustls_crypto::ServerVerification>,
+        verification: Option<&RustlsServerVerification>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
-        let identity = reloadable_verification_identity(request, verification);
-        let build = |config: &TlsClientConfig, options| {
-            rustls_crypto::QuicClientConfig::from_rama_with_verification(
+        if request.config().as_extensions().get_ref::<TlsClientSni>()
+            == Some(&TlsClientSni::IncludeIp)
+        {
+            return Err(
+                BoxError::from_static_str("IP literal SNI requires the BoringSSL backend").into(),
+            );
+        }
+        let resolution = request.resolve_target_ech(false)?;
+        if let Some(resolution) = &resolution
+            && (!resolution.required || resolution.config.is_some())
+        {
+            TlsProfilePreparation::apply(
+                resolution,
+                request.config().as_extensions(),
+                request.overrides(),
+            )?;
+        }
+        let identity = reloadable_verification_identity(
+            request,
+            verification.map(RustlsServerVerification::verifier),
+        );
+        let build = |config: &TlsClientConfig, mut options: TlsOptions| {
+            if verification.is_some_and(|verification| {
+                !ServerVerificationScope::allows_resumption(
+                    config.as_extensions().get_ref::<TlsServerTrust>(),
+                    verification.verifier(),
+                )
+            }) {
+                options.client_sessions = ClientSessionPolicy::Fresh;
+            }
+            rustls_crypto::QuicClientConfig::from_rama_with_resolved_ech(
                 config,
                 self.crypto.clone(),
                 options,
@@ -299,21 +316,44 @@ impl QuicClientConfigProvider for RustlsTlsProvider {
         })
     }
 
+    fn allows_early_data(&self, _extensions: &Extensions) -> bool {
+        true
+    }
+
     fn client_config(
         &self,
         config: &TlsClientConfig,
-        options: TlsOptions,
+        mut options: TlsOptions,
     ) -> Result<ClientConfig, TlsConfigError> {
-        Ok(ClientConfig::new(Arc::new(
-            rustls_crypto::QuicClientConfig::from_rama(config, self.crypto.clone(), options)?,
-        )))
+        let verification =
+            RustlsServerTrustCache::default().server_verification(config.as_extensions())?;
+        if verification.as_ref().is_some_and(|verification| {
+            !ServerVerificationScope::allows_resumption(
+                config.as_extensions().get_ref::<TlsServerTrust>(),
+                verification.verifier(),
+            )
+        }) {
+            options.client_sessions = ClientSessionPolicy::Fresh;
+        }
+        let native = match verification {
+            Some(verification) => rustls_crypto::QuicClientConfig::from_rama_with_verification(
+                config,
+                self.crypto.clone(),
+                options,
+                Some(&verification),
+            )?,
+            None => {
+                rustls_crypto::QuicClientConfig::from_rama(config, self.crypto.clone(), options)?
+            }
+        };
+        Ok(ClientConfig::new(Arc::new(native)))
     }
 
     fn peer_matches_name(
         &self,
         extensions: &Extensions,
         leaf: &CertificateDer<'_>,
-        name: &Host,
+        name: &ServerName,
     ) -> bool {
         RustlsTlsConnectorConfig::from_extensions(extensions).peer_matches_name(leaf, name)
     }
@@ -378,7 +418,7 @@ impl BoringTlsProvider {
     pub fn prepare_fresh_client_config(
         &self,
         config: &TlsClientConfig,
-        peer: Host,
+        peer: ServerName,
     ) -> Result<ClientConfig, TlsConfigError> {
         Ok(ClientConfig::new(Arc::new(
             boring_crypto::QuicClientConfig::prepare_fresh(config, peer)?,
@@ -394,16 +434,41 @@ impl BoringTlsProvider {
             .with_unknown_values(UnknownValues::Drop)
             .with_grease_values(GreaseValues::Pinned)
     }
+
     fn cached_with_verification(
         request: ClientConfigRequest<'_>,
         verification: Option<&boring_crypto::ServerVerification>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        let resolution = request.resolve_target_ech(true)?;
+        if let Some(resolution) = &resolution
+            && (!resolution.required || resolution.config.is_some())
+        {
+            TlsProfilePreparation::apply(
+                resolution,
+                request.config().as_extensions(),
+                request.overrides(),
+            )?;
+        }
         let identity = reloadable_verification_identity(request, verification);
         let build = |config: &TlsClientConfig, options| {
-            boring_crypto::QuicClientConfig::from_rama_with_verification(
+            let pending;
+            let config = if resolution
+                .as_ref()
+                .is_some_and(|resolution| resolution.required && resolution.config.is_none())
+            {
+                // This provisional session is discarded before any required handshake.
+                pending = config
+                    .clone()
+                    .with_ech_requirement(EchRequirement::Optional);
+                &pending
+            } else {
+                config
+            };
+            boring_crypto::QuicClientConfig::from_rama_with_resolved_ech(
                 config,
                 options,
                 verification,
+                resolution.as_ref(),
             )
         };
         request.get_or_build(
@@ -468,7 +533,7 @@ impl QuicClientConfigProvider for BoringTlsProvider {
         &self,
         policy: &TlsClientConfig,
         options: TlsOptions,
-        peer: Host,
+        peer: ServerName,
         handshake: ClientHandshake,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         boring_crypto::QuicClientConfig::prepare_client(policy, options, peer, handshake)
@@ -501,7 +566,7 @@ impl QuicClientConfigProvider for BoringTlsProvider {
         &self,
         extensions: &Extensions,
         leaf: &CertificateDer<'_>,
-        name: &Host,
+        name: &ServerName,
     ) -> bool {
         BoringTlsConnectorConfig::from_extensions(extensions).peer_matches_name(leaf, name)
     }
@@ -572,25 +637,287 @@ pub fn default_server_tls_provider() -> Result<Arc<dyn QuicServerConfigProvider>
     any(feature = "aws-lc", feature = "ring")
 ))]
 mod tests {
+    #[cfg(any(target_vendor = "apple", windows))]
+    use std::time::SystemTime;
     use std::{
-        assert_matches,
+        assert_matches, env, fs,
+        path::PathBuf,
+        process::Command,
         sync::atomic::{AtomicUsize, Ordering},
+        task::Poll,
     };
 
-    use rama_core::error::{BoxError, BoxErrorExt as _};
-    use rama_core::futures::stream;
-    use rama_net::tls::ApplicationProtocol;
+    #[cfg(any(target_vendor = "apple", windows))]
+    use rama_core::error::ErrorContext as _;
+    use rama_core::{error::BoxError, futures::stream};
+    #[cfg(any(target_vendor = "apple", windows))]
+    use rama_crypto::cert::rcgen::generate_server_auth;
+    use rama_crypto::{native_certs::bundled_root_certs, pem::PemEncode as _};
+    use rama_net::{address::Domain, tls::ApplicationProtocol};
+    #[cfg(any(target_vendor = "apple", windows))]
+    use rama_quic_proto::transport_parameters::TransportParameters;
     use rama_tls::client::{
-        ChannelReloadTrigger, NativeTrustPolicy, PlatformTrustPolicy, TlsServerTrust,
+        ChannelReloadTrigger, NativeTrustPolicy, PlatformTrustPolicy, ServerVerifyMode,
+        TlsServerTrust,
     };
-    use rama_tls_boring::client::BoringGrease;
-    use rama_tls_boring::core::x509::store::X509StoreBuilder;
-    use rama_tls_rustls::client::ModifyRustlsClientConfig;
-    use rama_tls_rustls::{client::RustlsClientConfigExt as _, verify::NoServerCertVerifier};
-    use std::task::Poll;
+    #[cfg(any(target_vendor = "apple", windows))]
+    use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData};
+    use rama_tls_boring::{client::BoringGrease, core::x509::store::X509StoreBuilder};
+    #[cfg(any(target_vendor = "apple", windows))]
+    use rama_tls_rustls::dep::rustls::client::Resumption;
+    use rama_tls_rustls::{
+        client::{ModifyRustlsClientConfig, RustlsClientConfigExt as _},
+        verify::NoServerCertVerifier,
+    };
 
     use super::*;
+    #[cfg(any(target_vendor = "apple", windows))]
+    use crate::proto::crypto::{HandshakeEvent, ServerConfig as _, Session};
     use crate::tls::ClientConfigCache;
+
+    #[cfg(any(target_vendor = "apple", windows))]
+    fn complete_handshake(
+        client: &mut dyn Session,
+        server: &mut dyn Session,
+    ) -> Result<(), BoxError> {
+        for _ in 0..32 {
+            let mut progressed = false;
+            for outgoing in [true, false] {
+                let (sender, receiver) = if outgoing {
+                    (&mut *client, &mut *server)
+                } else {
+                    (&mut *server, &mut *client)
+                };
+                while let Some(event) = sender.poll_handshake()? {
+                    progressed = true;
+                    if let HandshakeEvent::Data(level, bytes) = event {
+                        receiver.read_handshake(level, &bytes)?;
+                    }
+                }
+            }
+            if !progressed {
+                assert!(!client.is_handshaking());
+                assert!(!server.is_handshaking());
+                return Ok(());
+            }
+        }
+        Err(BoxError::from_static_str("handshake did not settle"))
+    }
+
+    #[cfg(any(target_vendor = "apple", windows))]
+    #[test]
+    fn platform_quic_configs_require_a_live_signal_after_native_hooks() {
+        check_platform_quic_configs(false).unwrap();
+    }
+
+    #[cfg(any(target_vendor = "apple", windows))]
+    #[test]
+    fn platform_quic_native_verification_requires_a_live_signal() {
+        check_platform_quic_configs(true).unwrap();
+    }
+
+    #[cfg(any(target_vendor = "apple", windows))]
+    fn check_platform_quic_configs(verify_native: bool) -> Result<(), BoxError> {
+        let provider = RustlsTlsProvider::new(rustls_crypto::configured_provider());
+        let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())?;
+        let auth = ServerAuthData {
+            cert_chain,
+            private_key,
+            ocsp: None,
+        };
+        let anchor = auth
+            .cert_chain
+            .last()
+            .context("generated trust anchor missing")?
+            .clone();
+        if verify_native {
+            PlatformVerifier::try_with_extra_roots([anchor.clone()])?.verify_server_chain(
+                &auth.cert_chain[0],
+                &auth.cert_chain[1..],
+                &ServerName::from(Domain::tld_localhost()),
+                None,
+                SystemTime::now(),
+            )?;
+        }
+        let alpn = || [ApplicationProtocol::HTTP_3].into_iter().collect();
+        let server = Arc::new(rustls_crypto::QuicServerConfig::from_rama(
+            &TlsServerConfig::new()
+                .with_server_auth(auth)
+                .with_alpn(alpn()),
+            rustls_crypto::configured_provider(),
+            TlsOptions::default(),
+        )?);
+        for cached in [false, true] {
+            for live in [false, true] {
+                let (sender, trigger) = ChannelReloadTrigger::new();
+                let policy = if live {
+                    PlatformTrustPolicy::new().with_reload_trigger(trigger)
+                } else {
+                    PlatformTrustPolicy::new()
+                };
+                let trust =
+                    TlsServerTrust::from(policy).try_with_additional_anchors([anchor.clone()])?;
+                let config = TlsClientConfig::new()
+                    .with_server_trust(trust)
+                    .with_alpn(alpn())
+                    .with_modify_rustls_config(move |mut native| {
+                        if !verify_native {
+                            native.dangerous().set_certificate_verifier(Arc::new(
+                                NoServerCertVerifier::default(),
+                            ));
+                        }
+                        native.resumption = Resumption::in_memory_sessions(8);
+                        Ok(native)
+                    });
+                let cache =
+                    ClientConfigCache::new(Arc::new(provider.clone()), TlsOptions::default());
+                let client = if cached {
+                    cache.client_config(&config, config.as_extensions())?
+                } else {
+                    provider.client_config(&config, TlsOptions::default())?
+                };
+                for resumed in [false, live] {
+                    let params = TransportParameters::default();
+                    let mut client =
+                        client
+                            .crypto
+                            .clone()
+                            .start_session(Version::V1, "localhost", &params)?;
+                    let mut server = server.clone().start_session(Version::V1, &params)?;
+                    complete_handshake(&mut *client, &mut *server)?;
+                    assert_eq!(
+                        server
+                            .handshake_summary()
+                            .context("handshake summary missing")?
+                            .resumed,
+                        Some(resumed)
+                    );
+                }
+                drop(sender);
+                if live && cached {
+                    let ended = cache.client_config(&config, config.as_extensions())?;
+                    assert!(!Arc::ptr_eq(&client.crypto, &ended.crypto));
+                    let params = TransportParameters::default();
+                    let mut client =
+                        ended
+                            .crypto
+                            .start_session(Version::V1, "localhost", &params)?;
+                    let mut server = server.clone().start_session(Version::V1, &params)?;
+                    complete_handshake(&mut *client, &mut *server)?;
+                    assert_eq!(
+                        server
+                            .handshake_summary()
+                            .context("handshake summary missing")?
+                            .resumed,
+                        Some(false)
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(any(target_vendor = "apple", windows))]
+    #[test]
+    fn platform_quic_sessions_resume_until_a_trust_event() -> Result<(), BoxError> {
+        let provider = RustlsTlsProvider::new(rustls_crypto::configured_provider());
+        let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())?;
+        let auth = ServerAuthData {
+            cert_chain,
+            private_key,
+            ocsp: None,
+        };
+        let anchor = auth
+            .cert_chain
+            .last()
+            .context("generated trust anchor missing")?
+            .clone();
+        let alpn = || [ApplicationProtocol::HTTP_3].into_iter().collect();
+        let server = Arc::new(rustls_crypto::QuicServerConfig::from_rama(
+            &TlsServerConfig::new()
+                .with_server_auth(auth)
+                .with_alpn(alpn()),
+            rustls_crypto::configured_provider(),
+            TlsOptions::default(),
+        )?);
+        for cached in [false, true] {
+            let (sender, trigger) = ChannelReloadTrigger::new();
+            let trust =
+                TlsServerTrust::from(PlatformTrustPolicy::new().with_reload_trigger(trigger))
+                    .try_with_additional_anchors([anchor.clone()])?;
+            let config = TlsClientConfig::new()
+                .with_server_trust(trust)
+                .with_alpn(alpn());
+            let cache = ClientConfigCache::new(Arc::new(provider.clone()), TlsOptions::default());
+            let client = if cached {
+                cache.client_config(&config, config.as_extensions())?
+            } else {
+                provider.client_config(&config, TlsOptions::default())?
+            };
+            for (attempt, resumed) in [false, true, false].into_iter().enumerate() {
+                if attempt == 2 {
+                    sender.request_reload()?;
+                }
+                let params = TransportParameters::default();
+                let mut client =
+                    client
+                        .crypto
+                        .clone()
+                        .start_session(Version::V1, "localhost", &params)?;
+                let mut server = server.clone().start_session(Version::V1, &params)?;
+                complete_handshake(&mut *client, &mut *server)?;
+                assert_eq!(
+                    server
+                        .handshake_summary()
+                        .context("handshake summary missing")?
+                        .resumed,
+                    Some(resumed)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sni_policy_partitions_the_quic_config_cache() {
+        let provider = Arc::new(BoringTlsProvider::new());
+        let cache = ClientConfigCache::new(provider, TlsOptions::default());
+        let config = TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+        let baseline = cache
+            .client_config(&config, config.as_extensions())
+            .unwrap();
+        let opted = config.clone().with_sni_policy(TlsClientSni::IncludeIp);
+        let first = cache.client_config(&opted, opted.as_extensions()).unwrap();
+        let repeated = cache.client_config(&opted, opted.as_extensions()).unwrap();
+        assert!(!Arc::ptr_eq(&baseline.crypto, &first.crypto));
+        assert!(Arc::ptr_eq(&first.crypto, &repeated.crypto));
+        let disabled = config.with_sni_policy(TlsClientSni::Disabled);
+        let disabled = cache
+            .client_config(&disabled, disabled.as_extensions())
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first.crypto, &disabled.crypto));
+        assert!(!Arc::ptr_eq(&baseline.crypto, &disabled.crypto));
+    }
+
+    #[test]
+    fn cached_rustls_configs_reject_ip_literal_sni() {
+        let provider = Arc::new(RustlsTlsProvider::new(rustls_crypto::configured_provider()));
+        let cache = ClientConfigCache::new(provider, TlsOptions::default());
+        let config = TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+        cache
+            .client_config(&config, config.as_extensions())
+            .unwrap();
+        let opted = config.with_sni_policy(TlsClientSni::IncludeIp);
+        let error = cache
+            .client_config(&opted, opted.as_extensions())
+            .err()
+            .unwrap();
+        assert!(format!("{error:?}").contains("IP literal SNI requires the BoringSSL backend"));
+    }
 
     #[test]
     fn native_settings_affect_only_the_selected_provider() {
@@ -634,9 +961,6 @@ mod tests {
 
     #[test]
     fn native_reload_rotates_cached_quic_configs() {
-        use rama_crypto::{native_certs::bundled_root_certs, pem::PemEncode as _};
-        use std::{env, fs, path::PathBuf, process::Command};
-
         // Give the test its own SSL_CERT_FILE without mutating the test runner's environment.
         const CHILD: &str = "RAMA_TEST_QUIC_NATIVE_RELOAD";
         let Some(dir) = env::var_os(CHILD) else {
@@ -676,18 +1000,21 @@ mod tests {
         let request = Extensions::new();
         let (native_sender, native_trigger) = ChannelReloadTrigger::new();
         let (platform_sender, platform_trigger) = ChannelReloadTrigger::new();
-        for (trust, sender, changed_file) in [
+        for (trust, sender, changed_file, event_rotates) in [
             (
                 TlsServerTrust::from(NativeTrustPolicy::new().with_reload_trigger(native_trigger)),
                 native_sender,
                 &bundle,
+                false,
             ),
+            // An event can report a system trust change that the extra roots do not show.
             (
                 TlsServerTrust::from(
                     PlatformTrustPolicy::new().with_reload_trigger(platform_trigger),
                 ),
                 platform_sender,
                 &extras,
+                PlatformVerifier::IS_AVAILABLE,
             ),
         ] {
             fs::write(&bundle, roots[0].to_pem()).unwrap();
@@ -698,12 +1025,18 @@ mod tests {
             let initial = caches
                 .each_ref()
                 .map(|cache| cache.client_config(&config, &request).unwrap());
-            // An explicit reread of identical roots preserves the backend configuration.
+            // A reread of identical roots keeps the configuration and its tickets
+            // unless the event alone can change trust.
             sender.request_reload().unwrap();
-            for (cache, old) in caches.iter().zip(&initial) {
-                let repeated = cache.client_config(&config, &request).unwrap();
-                assert!(Arc::ptr_eq(&old.crypto, &repeated.crypto));
-            }
+            let initial: Vec<_> = caches
+                .iter()
+                .zip(initial)
+                .map(|(cache, old)| {
+                    let repeated = cache.client_config(&config, &request).unwrap();
+                    assert_eq!(!Arc::ptr_eq(&old.crypto, &repeated.crypto), event_rotates);
+                    repeated
+                })
+                .collect();
 
             fs::write(changed_file, roots[1].to_pem()).unwrap();
             sender.request_reload().unwrap();
@@ -745,7 +1078,7 @@ mod tests {
             base().with_cert_verifier(Arc::new(NoServerCertVerifier::new())),
         ];
         let request = Extensions::new();
-        let peer = Host::from_static("example.test");
+        let peer = ServerName::from(Domain::from_static("example.test"));
         for (cache, override_config) in configs.iter().zip(overrides) {
             let first = cache.client_config(&override_config, &request).unwrap();
             let next = cache

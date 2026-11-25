@@ -1,12 +1,18 @@
 use rama_core::{
-    bytes::BytesMut,
+    bytes::{Bytes, BytesMut},
     telemetry::tracing::{debug, warn},
 };
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
-    header::{CONNECTION, CONTENT_LENGTH, OccupiedEntry, TE, TRANSFER_ENCODING, ValueIter},
+    header::{
+        CONNECTION, CONTENT_LENGTH, Entry, OccupiedEntry, TE, TRANSFER_ENCODING, ValueIter,
+        hop_by_hop::te_names_trailers,
+    },
 };
-use rama_utils::{bytes::trim_ows, collections::smallvec::SmallVec};
+use rama_utils::{
+    bytes::{trim_ows, trim_ows_end, trim_ows_start},
+    collections::smallvec::SmallVec,
+};
 
 pub(super) type ConnectionHeaderNames = SmallVec<[HeaderName; 4]>;
 
@@ -53,6 +59,24 @@ impl ResponseLength {
 /// Whether a response is a 2xx to CONNECT, after which the connection is a tunnel.
 pub(crate) fn is_tunnel_response(method: Option<&Method>, status: StatusCode) -> bool {
     method == Some(&Method::CONNECT) && status.is_success()
+}
+
+/// Drop the outer SP and HTAB that HTTP/1 allows around a value but HTTP/2 and HTTP/3
+/// refuse (RFC 9113 §8.2.1, RFC 9114 §4.2), in place and sharing the value's bytes.
+pub(super) fn trim_outer_whitespace(headers: &mut HeaderMap) {
+    for value in headers.values_mut() {
+        if !value.has_outer_whitespace() {
+            continue;
+        }
+        let bytes = Bytes::from(value.clone());
+        let start = bytes.len() - trim_ows_start(&bytes).len();
+        let end = trim_ows_end(&bytes).len().max(start);
+        // A value built unchecked with bytes it cannot hold stays for the send check to refuse.
+        if let Ok(mut trimmed) = HeaderValue::from_maybe_shared(bytes.slice(start..end)) {
+            trimmed.set_sensitive(value.is_sensitive());
+            *value = trimmed;
+        }
+    }
 }
 
 pub(super) fn connection_keep_alive(value: &HeaderValue) -> bool {
@@ -112,7 +136,10 @@ pub(super) fn connection_set_close(headers: &mut HeaderMap) {
     line.extend_from_slice(CLOSE.as_bytes());
     let value = HeaderValue::from_maybe_shared(line.freeze())
         .unwrap_or_else(|_| HeaderValue::from_static(CLOSE));
-    headers.insert(CONNECTION, value);
+    // Written through the present entry, which keeps the first line's spelling and place.
+    if let Ok(Entry::Occupied(mut entry)) = headers.try_entry(CONNECTION) {
+        _ = entry.insert(value);
+    }
 }
 
 pub(super) fn connection_header_names(headers: &HeaderMap) -> ConnectionHeaderNames {
@@ -133,6 +160,37 @@ fn connection_has(value: &HeaderValue, needle: &str) -> bool {
                 return true;
             }
         }
+    }
+    false
+}
+
+/// Leave a request's `TE` as the exact `trailers` HTTP/2 and HTTP/3 allow when it names it,
+/// in its first line's place and spelling and never indexed if any line was sensitive, else
+/// remove it. Whether `TE` was removed.
+pub(super) fn retain_te_trailers(headers: &mut HeaderMap) -> bool {
+    let mut lines = headers.get_all(TE).iter();
+    let (Some(first), several) = (lines.next(), lines.next().is_some()) else {
+        return false;
+    };
+    if !several && first == "trailers" {
+        return false;
+    }
+    if !te_names_trailers(headers.get_all(TE)) {
+        headers.remove(TE);
+        return true;
+    }
+    let mut value = HeaderValue::from_static("trailers");
+    value.set_sensitive(headers.get_all(TE).iter().any(HeaderValue::is_sensitive));
+    if !several {
+        // One line is rewritten where it is, which needs no room in the map.
+        if let Some(line) = headers.get_mut(TE) {
+            *line = value;
+        }
+        return false;
+    }
+    // A present name is looked up without room, so a full map collapses too.
+    if let Ok(Entry::Occupied(mut entry)) = headers.try_entry(TE) {
+        _ = entry.insert(value);
     }
     false
 }
@@ -238,7 +296,10 @@ pub(super) fn correct_content_length(headers: &mut HeaderMap, len: u64) {
             len,
             "content-length disagrees with the body, sending the body's length"
         );
-        headers.insert(CONTENT_LENGTH, HeaderValue::from(len));
+        // Written through the present entry, which keeps the first line's spelling and place.
+        if let Ok(Entry::Occupied(mut entry)) = headers.try_entry(CONTENT_LENGTH) {
+            _ = entry.insert(HeaderValue::from(len));
+        }
     }
 }
 
@@ -320,8 +381,100 @@ pub(super) fn add_chunked(mut entry: OccupiedEntry<'_, HeaderValue>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ResponseLength::{ExplicitOnly, Forbidden, Known, NonZero};
+
+    use super::*;
+
+    fn ordered(headers: &HeaderMap) -> Vec<(Box<str>, Box<str>)> {
+        headers
+            .ordered_iter()
+            .map(|(name, value)| {
+                (
+                    name.as_original_str().into(),
+                    value.to_str().unwrap().into(),
+                )
+            })
+            .collect()
+    }
+
+    fn lines(lines: &[(&str, &str)]) -> Vec<(Box<str>, Box<str>)> {
+        lines
+            .iter()
+            .map(|(name, value)| ((*name).into(), (*value).into()))
+            .collect()
+    }
+
+    /// Distinct names until the map holds no more, as a peer at the field limit can send.
+    fn fill(headers: &mut HeaderMap) {
+        for index in 0.. {
+            let name = HeaderName::try_from(format!("x-fill-{index}")).unwrap();
+            if headers
+                .try_append(name, HeaderValue::from_static("f"))
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn retain_te_trailers_rewrites_te_in_its_first_lines_place_and_spelling() {
+        for (te, kept) in [
+            (&["gzip, trailers"][..], true),
+            (&["gzip", "trailers"][..], true),
+            (&["trailers"][..], true),
+            (&["gzip"][..], false),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.append("X-A", HeaderValue::from_static("a"));
+            for (index, value) in te.iter().enumerate() {
+                let name = if index == 0 { "Te" } else { "te" };
+                headers.append(name, HeaderValue::from_static(value));
+                headers.append(
+                    HeaderName::try_from(format!("x-after-{index}")).unwrap(),
+                    HeaderValue::from_static("b"),
+                );
+            }
+            headers.reserve_position("X-Later");
+            headers.append("x-last", HeaderValue::from_static("l"));
+            assert_eq!(retain_te_trailers(&mut headers), !kept, "{te:?}");
+            headers.insert("X-Later", HeaderValue::from_static("r"));
+            let mut expected = vec![("X-A", "a")];
+            if kept {
+                expected.push(("Te", "trailers"));
+            }
+            for index in 0..te.len() {
+                expected.push((["x-after-0", "x-after-1"][index], "b"));
+            }
+            expected.extend([("X-Later", "r"), ("x-last", "l")]);
+            assert_eq!(ordered(&headers), lines(&expected), "{te:?}");
+        }
+    }
+
+    #[test]
+    fn retain_te_trailers_keeps_sensitivity_and_needs_no_room() {
+        let mut sensitive = HeaderValue::from_static("gzip, trailers");
+        sensitive.set_sensitive(true);
+        let mut headers = HeaderMap::new();
+        headers.append("X-A", HeaderValue::from_static("a"));
+        headers.append("Te", sensitive);
+        fill(&mut headers);
+        assert!(!retain_te_trailers(&mut headers));
+        assert_eq!(
+            ordered(&headers)[..2],
+            lines(&[("X-A", "a"), ("Te", "trailers")])[..]
+        );
+        assert!(headers[TE].is_sensitive());
+
+        // Several lines on a full map still leave one `trailers`.
+        let mut headers = HeaderMap::new();
+        headers.append("Te", HeaderValue::from_static("gzip"));
+        headers.append("te", HeaderValue::from_static("trailers"));
+        fill(&mut headers);
+        assert!(!retain_te_trailers(&mut headers));
+        let te: Vec<_> = headers.get_all(TE).iter().collect();
+        assert_eq!(te, ["trailers"]);
+    }
 
     #[test]
     fn response_length_follows_method_and_status() {
@@ -453,6 +606,53 @@ mod tests {
                 .collect();
             assert_eq!(actual, expected, "{lines:?}");
         }
+    }
+
+    #[test]
+    fn connection_set_close_merges_into_the_first_lines_place_and_spelling() {
+        let mut headers = HeaderMap::new();
+        headers.append("X-A", HeaderValue::from_static("a"));
+        headers.append("CONNECTION", HeaderValue::from_static("keep-alive, x-hop"));
+        headers.append("X-Mid", HeaderValue::from_static("m"));
+        headers.reserve_position("X-Later");
+        headers.append("connection", HeaderValue::from_static("x-b"));
+        headers.append("x-last", HeaderValue::from_static("l"));
+        fill(&mut headers);
+        connection_set_close(&mut headers);
+        _ = headers.remove("x-fill-0");
+        headers.insert("X-Later", HeaderValue::from_static("r"));
+        assert_eq!(
+            ordered(&headers)[..5],
+            lines(&[
+                ("X-A", "a"),
+                ("CONNECTION", "x-hop, x-b, close"),
+                ("X-Mid", "m"),
+                ("X-Later", "r"),
+                ("x-last", "l"),
+            ])[..]
+        );
+    }
+
+    #[test]
+    fn correct_content_length_rewrites_in_the_first_lines_place_and_spelling() {
+        let mut headers = HeaderMap::new();
+        headers.append("X-A", HeaderValue::from_static("a"));
+        headers.append("Content-LENGTH", HeaderValue::from_static("5"));
+        headers.reserve_position("X-Later");
+        headers.append("x-last", HeaderValue::from_static("l"));
+        fill(&mut headers);
+        correct_content_length(&mut headers, 3);
+        _ = headers.remove("x-fill-0");
+        headers.insert("X-Later", HeaderValue::from_static("r"));
+        assert_eq!(
+            ordered(&headers)[..4],
+            lines(&[
+                ("X-A", "a"),
+                ("Content-LENGTH", "3"),
+                ("X-Later", "r"),
+                ("x-last", "l"),
+            ])[..]
+        );
     }
 
     #[test]

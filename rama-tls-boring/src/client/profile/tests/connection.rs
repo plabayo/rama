@@ -1,33 +1,53 @@
-use super::fixture::selected;
-use super::*;
-use crate::{
-    client::{TlsClientSession, TlsClientSessionKey, TlsClientSessionStore},
-    server::TlsAcceptorData,
+use std::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
 };
+
 use rama_core::{Service, ServiceInput, service::service_fn};
+use rama_net::{
+    address::Domain,
+    client::{ConnectionError, ConnectionErrorKind, EstablishedClientConnection},
+    tls::{ApplicationProtocol, ServerName, TargetEchServiceBinding},
+};
 #[cfg(feature = "http")]
 use rama_net::{
     client::pool::ConnectionReuse,
     http::{FallbackHttpVersion, HttpRequestVersion},
 };
-use rama_net::{
-    client::{ConnectionError, ConnectionErrorKind, EstablishedClientConnection},
-    tls::ApplicationProtocol,
-};
+#[cfg(feature = "http")]
+use rama_tls::ExtensionId;
 use rama_tls::{
-    client::{NegotiatedTlsParameters, ServerVerifyMode, TlsServerAuthentication},
+    client::{
+        NegotiatedTlsParameters, ServerVerifyMode, TargetEchResolution, TlsClientSni,
+        TlsEncryptedClientHello, TlsProfilePreparation, TlsServerAuthentication,
+    },
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData,
-        TlsServerConfig,
+        TlsServerConfig, peek_client_hello_from_input,
     },
 };
 use rama_ua::profile::{
+    capture::joint::CapturedSlot,
     model::identity::{ConnectionContext, ConnectionIpFamily, ResumptionContext},
+    replay::connection::{
+        compiler::ConnectionProfileCompiler as _, preparation::ConnectionPreparation,
+    },
     selection::{ProfileSeed, variants::EmulationContext},
 };
 use rama_utils::octets::kib;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _, duplex},
+    time::timeout,
+};
+
+use super::{
+    fixture::{selected, selected_connections},
+    *,
+};
+use crate::{
+    client::{TlsClientSession, TlsClientSessionKey, TlsClientSessionStore},
+    server::TlsAcceptorData,
+};
 
 #[tokio::test]
 async fn incompatible_caller_policy_is_retained_and_reported_before_dial() {
@@ -157,7 +177,12 @@ impl TlsClientSessionStore for SessionAccess {
 #[tokio::test]
 async fn a_configured_session_store_does_not_change_a_fresh_captured_offer() {
     let store = Arc::new(SessionAccess::default());
-    Box::pin(established_with_store(None, Some(store.clone()))).await;
+    Box::pin(established_with_store(
+        None,
+        Some(store.clone()),
+        ConnectionContext::default(),
+    ))
+    .await;
     assert_eq!(store.reads.load(Ordering::Relaxed), 0);
     assert!(
         store.writes.load(Ordering::Relaxed) > 0,
@@ -188,12 +213,26 @@ async fn outer_adapter_preserves_native_trust_and_negotiated_alpn() {
 pub(super) async fn established(
     context: Option<(&EmulationContext, &ConnectionSelection)>,
 ) -> rama_core::extensions::Extensions {
-    Box::pin(established_with_store(context, None)).await
+    Box::pin(established_with_store(
+        context,
+        None,
+        ConnectionContext::default(),
+    ))
+    .await
+}
+
+/// Establish a connection for `context` drawn in `connection` against a server without ECH.
+pub(super) async fn established_in(
+    context: (&EmulationContext, &ConnectionSelection),
+    connection: ConnectionContext,
+) -> Extensions {
+    Box::pin(established_with_store(Some(context), None, connection)).await
 }
 
 async fn established_with_store(
     context: Option<(&EmulationContext, &ConnectionSelection)>,
     store: Option<Arc<dyn TlsClientSessionStore>>,
+    connection: ConnectionContext,
 ) -> Extensions {
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::GeneratedCa {
         ca: Default::default(),
@@ -239,14 +278,27 @@ async fn established_with_store(
     let connector = ProfileEmulateHttpConnectModifier::new(native)
         .with_connection_compiler(ConnectionProfileCompiler::new(config));
     let request = input();
+    request.extensions().insert(connection);
     let (default_context, default_selection) = selected("prepared-profile");
-    let expected = context
+    // The wire offer: a matched ECH outer when the connection drew one, else its hello.
+    let components = context
         .map(|(_, selection)| selection)
         .unwrap_or(&default_selection)
         .prepare_components()
-        .unwrap()
-        .tls
         .unwrap();
+    let expected = components.tls_outer.or(components.tls).unwrap();
+    #[cfg(feature = "http")]
+    let expected = {
+        let mut expected = expected;
+        for extension in &mut expected.extensions {
+            if extension.id == u16::from(ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION) {
+                extension.value = TlsCapturedExtensionValue::Protocols(Box::new([Box::from(
+                    ApplicationProtocol::HTTP_2.as_bytes(),
+                )]));
+            }
+        }
+        expected
+    };
     context
         .map(|(context, _)| context)
         .unwrap_or(&default_context)
@@ -496,53 +548,73 @@ async fn reject_changed_draw_input(seed: Option<ProfileSeed>, connection: Connec
 }
 
 #[test]
-fn http10_targets_fall_back_to_native_tls_and_are_reported() {
+fn sni_presence_follows_policy_and_the_canonical_server_identity() {
     let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
-    for version in [Version::HTTP_10, Version::HTTP_09] {
-        let request = input();
-        request.extensions().insert(TargetHttpVersion(version));
-        let (compiled, report) = prepare(&compiler, &request, &capture()).unwrap();
-        assert!(!compiled.supports(CapturedSlotKind::TcpTls));
-        assert!(
-            lowered(&report).contains(&LoweredProfileItem::TlsNativeConnection),
-            "{report:?}"
-        );
+    for host in [
+        Host::Address("192.0.2.1".parse().unwrap()),
+        Host::Name(Domain::try_from("192.0.2.1").unwrap()),
+        Host::from_static("prepared.test"),
+    ] {
+        for policy in [
+            TlsClientSni::Auto,
+            TlsClientSni::IncludeIp,
+            TlsClientSni::Disabled,
+        ] {
+            let request = input();
+            request
+                .extensions()
+                .insert(ServerName::try_from(&host).unwrap());
+            request.extensions().insert(policy);
+            let (compiled, report) = prepare(&compiler, &request, &capture()).unwrap();
+            InstalledConnectionProfile::<ConnectRequest>::apply(compiled, request.extensions());
+            assert_eq!(
+                request.extensions().get_ref::<TlsClientSni>(),
+                Some(&policy)
+            );
+            let sends = policy.sends(&ServerName::try_from(&host).unwrap());
+            assert_eq!(
+                lowered(&report).contains(&LoweredProfileItem::TlsServerNamePresence),
+                !sends,
+                "{host}: {policy:?}: {report:?}"
+            );
+        }
     }
 }
 
 #[tokio::test]
-async fn final_profile_ech_intent_enforces_discovery_before_transport() {
+async fn final_profile_ech_intent_is_enforced_after_transport_discovery() {
     let calls = Arc::new(AtomicUsize::new(0));
+    let peer = Arc::new(Mutex::new(None));
     let inner = service_fn({
         let calls = calls.clone();
-        move |_: ConnectRequest| {
+        let peer = peer.clone();
+        move |input: ConnectRequest| {
             calls.fetch_add(1, Ordering::Relaxed);
-            async {
-                Err::<
-                    EstablishedClientConnection<
-                        ServiceInput<tokio::io::DuplexStream>,
-                        ConnectRequest,
-                    >,
-                    _,
-                >(ConnectionError::local(
-                    "fixture dial",
-                    ConnectionErrorKind::Unavailable,
-                ))
+            let peer = peer.clone();
+            async move {
+                let (io, remote) = duplex(64);
+                *peer.lock() = Some(tokio::spawn(async move {
+                    let mut remote = remote;
+                    let mut byte = [0];
+                    remote.read(&mut byte).await.unwrap()
+                }));
+                Ok::<_, ConnectionError>(EstablishedClientConnection {
+                    input,
+                    conn: ServiceInput::new(io),
+                })
             }
         }
     });
     let request = input();
-    request
-        .extensions()
-        .insert(rama_net::tls::TargetEchServiceBinding {
-            target: request.authority.clone(),
-            reliant: true,
-            mandatory: false,
-        });
+    request.extensions().insert(TargetEchServiceBinding {
+        target: request.authority.clone(),
+        reliant: true,
+        mandatory: false,
+    });
     assert!(
         request
             .extensions()
-            .get_ref::<rama_tls::client::TlsEncryptedClientHello>()
+            .get_ref::<TlsEncryptedClientHello>()
             .is_none()
     );
     let (context, _) = selected("ech-reliant-profile");
@@ -552,7 +624,212 @@ async fn final_profile_ech_intent_enforces_discovery_before_transport() {
         .serve(request)
         .await
         .unwrap_err();
-    assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
     assert!(format!("{error:?}").contains("required ECH"), "{error:?}");
-    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    let remote = peer.lock().take().unwrap();
+    assert_eq!(remote.await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn profile_replay_to_an_ip_preserves_explicit_and_captured_sni_policy() {
+    timeout(Duration::from_secs(10), async {
+        for ip in ["192.0.2.1".parse().unwrap(), "2001:db8::1".parse().unwrap()] {
+            for captured_ip in [false, true] {
+                for policy in [
+                    None,
+                    Some(TlsClientSni::Auto),
+                    Some(TlsClientSni::IncludeIp),
+                    Some(TlsClientSni::Disabled),
+                ] {
+                    let auth =
+                        ServerAuthData::new_generated(GeneratedServerAuthConfig::GeneratedCa {
+                            ca: Default::default(),
+                            leaf: LeafCertRequest {
+                                config: Default::default(),
+                                identities: vec![CertificateIdentity::Ip(ip)],
+                            },
+                        })
+                        .unwrap();
+                    let config = TlsClientConfig::new()
+                        .try_with_server_trust_anchors([auth.cert_chain.last().unwrap().clone()])
+                        .unwrap();
+                    let server = TlsAcceptorData::try_from(
+                        &TlsServerConfig::new()
+                            .with_single_cert(auth)
+                            .with_alpn(vec![ApplicationProtocol::HTTP_2].into()),
+                    )
+                    .unwrap()
+                    .into_static_acceptor_builder()
+                    .unwrap()
+                    .build();
+                    let (client_io, server_io) = duplex(kib(32));
+                    let io = Arc::new(Mutex::new(Some(client_io)));
+                    let inner = service_fn(move |input: ConnectRequest| {
+                        let io = io.lock().take().unwrap();
+                        async move {
+                            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                                input,
+                                conn: ServiceInput::new(io),
+                            })
+                        }
+                    });
+                    let request = input();
+                    request.extensions().insert(ServerName::from(ip));
+                    if let Some(policy) = policy {
+                        request.extensions().insert(policy);
+                    }
+                    let mut captured = capture();
+                    captured.extensions = captured
+                        .extensions
+                        .into_vec()
+                        .into_iter()
+                        .filter_map(|mut extension| {
+                            if matches!(
+                                extension.value,
+                                TlsCapturedExtensionValue::ServerName { .. }
+                            ) {
+                                if !captured_ip {
+                                    return None;
+                                }
+                                extension.value = TlsCapturedExtensionValue::IpServerName;
+                            }
+                            Some(extension)
+                        })
+                        .collect();
+                    let sends_ip = match policy {
+                        None => captured_ip,
+                        Some(TlsClientSni::IncludeIp) => true,
+                        _ => false,
+                    };
+                    let compiler = ConnectionProfileCompiler::new(config.clone());
+                    let (compiled, report) = prepare(&compiler, &request, &captured).unwrap();
+                    assert_eq!(
+                        lowered(&report).contains(&LoweredProfileItem::TlsServerNamePresence),
+                        captured_ip != sends_ip
+                    );
+                    InstalledConnectionProfile::<ConnectRequest>::apply(
+                        compiled,
+                        request.extensions(),
+                    );
+                    let connector = TlsConnector::auto(inner).with_base_config(config);
+                    let client = async { connector.serve(request).await.unwrap() };
+                    let peer = async {
+                        let (io, hello) =
+                            peek_client_hello_from_input(ServiceInput::new(server_io))
+                                .await
+                                .unwrap();
+                        let name = hello.unwrap().ext_server_name().cloned();
+                        let expected = sends_ip.then_some(ServerName::from(ip));
+                        assert_eq!(name, expected);
+                        rama_boring_tokio::accept(&server, io).await.unwrap()
+                    };
+                    let (_client, _server) = tokio::join!(client, peer);
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn paired_replay_uses_the_effective_inner_sni_policy() {
+    let outer = capture();
+    let mut inner = outer.clone();
+    for extension in &mut inner.extensions {
+        match extension.value {
+            TlsCapturedExtensionValue::ServerName { .. } => {
+                extension.value = TlsCapturedExtensionValue::IpServerName
+            }
+            TlsCapturedExtensionValue::EchOuter { .. } => {
+                extension.value = TlsCapturedExtensionValue::EchInner
+            }
+            _ => {}
+        }
+    }
+    let (_, mut selection) = selected("paired-sni-policy");
+    selection.ech_ready = true;
+    let mut components = selection.prepare_components().unwrap();
+    components.tls = Some(inner);
+    components.tls_outer = Some(outer);
+    let input = input();
+    input
+        .extensions()
+        .insert("192.0.2.1".parse::<ServerName>().unwrap());
+    let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
+    let compiled =
+        rama_ua::profile::replay::connection::compiler::ConnectionProfileCompiler::compile(
+            &compiler,
+            &input,
+            &selection,
+            &mut components,
+        )
+        .unwrap();
+    InstalledConnectionProfile::<ConnectRequest>::apply(compiled, input.extensions());
+    assert_eq!(
+        input.extensions().get_ref::<TlsClientSni>(),
+        Some(&TlsClientSni::IncludeIp)
+    );
+}
+
+#[test]
+fn unchanged_ech_and_caller_settings_reuse_the_admitted_tcp_recipe() {
+    let request = input();
+    let (context, _) = selected("unchanged-profile");
+    context.publish(request.extensions());
+    let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
+    let (_, compiled) = ConnectionPreparation::prepare(&request, |selection, components| {
+        compiler.compile(&request, selection, components)
+    })
+    .unwrap()
+    .unwrap();
+    <CompiledConnection as InstalledConnectionProfile<ConnectRequest>>::apply(
+        compiled,
+        request.extensions(),
+    );
+    let installed = request.extensions().get_arc::<TlsClientSni>().unwrap();
+    let effective = request.extensions().fork();
+    TlsProfilePreparation::apply(
+        &TargetEchResolution {
+            config: None,
+            required: false,
+        },
+        &effective,
+        request.extensions(),
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(
+        &installed,
+        &request.extensions().get_arc::<TlsClientSni>().unwrap()
+    ));
+}
+
+#[tokio::test]
+async fn final_profile_preservation_differences_are_published_once() {
+    let mut captured = capture();
+    let mut ciphers = captured.ciphers.into_vec();
+    ciphers.push(0xffff);
+    captured.ciphers = ciphers.into();
+    let (context, selection) = selected_connections(
+        "reported-profile",
+        true,
+        vec![(
+            ConnectionContext::default(),
+            vec![CapturedSlot {
+                kind: CapturedSlotKind::TcpTls,
+                value: captured.canonical(TlsCaptureLimits::default()).unwrap(),
+            }],
+        )],
+        &ConnectionContext::default(),
+    );
+    let connection = Box::pin(established(Some((&context, &selection)))).await;
+    let report = connection.get_ref::<ProfilePreservationReport>().unwrap();
+    assert!(!report.is_exact());
+    for (index, difference) in report.differences.iter().enumerate() {
+        assert!(
+            !report.differences[..index].contains(difference),
+            "{report:?}"
+        );
+    }
 }

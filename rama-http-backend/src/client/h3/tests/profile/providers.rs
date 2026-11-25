@@ -1,17 +1,23 @@
 use super::*;
 use parking_lot::Mutex;
-use rama_core::extensions::Extensions;
+use rama_core::{extensions::Extensions, futures::future::BoxFuture};
 use rama_crypto::pki_types::CertificateDer;
-use rama_net::address::Host;
+use rama_net::tls::ServerName;
 use rama_quic::{
     ClientConfig,
-    tls::{ClientHandshake, QuicClientConfigProvider, TlsConfigError},
+    tls::{
+        ClientConfigRequest, ClientHandshake, QuicClientConfigProvider, TlsConfigError,
+        acquire_cached_client_config,
+    },
 };
 use rama_tls::client::{TlsClientConfig, TlsClientConfigProvider, TlsSessionProfileScope};
 use rama_ua::profile::{
     replay::connection::compiler::CompiledConnectionProfile as _, selection::DrawKey,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    future,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 #[derive(Debug)]
 struct OrdinaryOnly {
@@ -38,9 +44,27 @@ impl QuicClientConfigProvider for OrdinaryOnly {
         &self,
         extensions: &Extensions,
         leaf: &CertificateDer<'_>,
-        name: &Host,
+        name: &ServerName,
     ) -> bool {
         self.inner.peer_matches_name(extensions, leaf, name)
+    }
+
+    fn acquire_client_config(
+        &self,
+        request: ClientConfigRequest<'_>,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        acquire_cached_client_config(self, request)
+    }
+
+    fn acquire_client_config_async<'a>(
+        &'a self,
+        request: ClientConfigRequest<'a>,
+    ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
+        Box::pin(future::ready(self.acquire_client_config(request)))
+    }
+
+    fn allows_early_data(&self, _extensions: &Extensions) -> bool {
+        true
     }
 
     fn client_config(
@@ -105,9 +129,27 @@ impl QuicClientConfigProvider for CaptureAware {
         &self,
         extensions: &Extensions,
         leaf: &CertificateDer<'_>,
-        name: &Host,
+        name: &ServerName,
     ) -> bool {
         self.ordinary.peer_matches_name(extensions, leaf, name)
+    }
+
+    fn acquire_client_config(
+        &self,
+        request: ClientConfigRequest<'_>,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        acquire_cached_client_config(self, request)
+    }
+
+    fn acquire_client_config_async<'a>(
+        &'a self,
+        request: ClientConfigRequest<'a>,
+    ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
+        Box::pin(future::ready(self.acquire_client_config(request)))
+    }
+
+    fn allows_early_data(&self, _extensions: &Extensions) -> bool {
+        true
     }
 
     fn client_config(
@@ -122,7 +164,7 @@ impl QuicClientConfigProvider for CaptureAware {
         &self,
         policy: &TlsClientConfig,
         options: TlsOptions,
-        peer: Host,
+        peer: ServerName,
         handshake: ClientHandshake,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         self.captured_calls.fetch_add(1, Ordering::SeqCst);

@@ -12,6 +12,10 @@ mod owned;
 #[doc(inline)]
 pub use owned::{OwnedRuntime, OwnedRuntimeHandle};
 
+mod idle;
+#[doc(inline)]
+pub use idle::{IdleActivity, IdleGuard, IdleProgress};
+
 pub mod blocking;
 
 pub mod future;

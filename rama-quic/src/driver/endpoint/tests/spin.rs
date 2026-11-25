@@ -5,13 +5,20 @@ use crate::driver::udp::Socket;
 use crate::{Connection, Endpoint, EndpointConfig, proxy::QuicRelay};
 use parking_lot::Mutex;
 use rama_core::{Service as _, graceful::WeakScope, io::BridgeIo};
+use rama_net::{address::SocketAddress, stream::Socket as _};
 use rama_quic_proto::{
     Version,
     packet::{FixedLengthConnectionIdParser, PartialDecode, SPIN_BIT},
     version::ClientVersionPolicy,
 };
+use rama_udp::{
+    DatagramSenderExt as _, DatagramSocket as _, DatagramSocketExt as _, SendDatagram,
+    UdpPacketSocket,
+    proxy::{DatagramForwardService, EcnPolicy, Peer},
+};
 use std::{
     net::{SocketAddr, SocketAddrV4},
+    num::NonZeroUsize,
     sync::Arc,
     time::Duration,
 };
@@ -354,14 +361,6 @@ async fn spin_real_udp_terminating_relay_keeps_hop_configuration_independent() {
 
 #[tokio::test]
 async fn spin_real_udp_forwarding_preserves_captured_quic_datagrams() {
-    use rama_net::{address::SocketAddress, stream::Socket as _};
-    use rama_udp::{
-        DatagramSenderExt as _, DatagramSocket as _, DatagramSocketExt as _, SendDatagram,
-        UdpPacketSocket,
-        proxy::{DatagramForwardService, EcnPolicy, Peer},
-    };
-    use std::num::NonZeroUsize;
-
     tokio::time::timeout(LIMIT, async {
         for version in [Version::V1, Version::V2] {
             let hop = hop(version, [true; 2], [true; 2], false).await;

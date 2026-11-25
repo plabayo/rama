@@ -15,13 +15,18 @@ use rama_http::StreamingBody;
 use rama_http_types::{
     HeaderMap,
     header::{
-        CONNECTION, TE,
-        hop_by_hop::{CONNECTION_SPECIFIC_HEADERS, retain_te_trailers},
+        TE,
+        hop_by_hop::{
+            CONNECTION_SPECIFIC_HEADERS, connection_header_names, is_removable_connection_header,
+        },
         trailer::{ForbiddenTrailers, is_sent_in_trailers},
     },
 };
 
-use crate::h2::SendStream;
+use crate::{
+    h2::SendStream,
+    headers::{retain_te_trailers, trim_outer_whitespace},
+};
 
 pub(crate) mod admission;
 pub(crate) mod ping;
@@ -37,12 +42,16 @@ pub(crate) use self::server::Server;
 pub(crate) const SPEC_WINDOW_SIZE: u32 = 65_535;
 
 #[derive(Clone, Copy)]
-enum MessageKind {
+pub(crate) enum MessageKind {
     Request,
     Response,
 }
 
-fn strip_connection_headers(headers: &mut HeaderMap, kind: MessageKind) {
+/// Fit an outgoing message's fields to HTTP/2: outer whitespace trimmed and
+/// connection-specific fields dropped (RFC 9113 §8.2).
+pub(crate) fn sanitize_outgoing_headers(headers: &mut HeaderMap, kind: MessageKind) {
+    trim_outer_whitespace(headers);
+
     // Most messages carry none of these, and comparing names is cheaper than hashed removals.
     if !headers
         .keys()
@@ -51,11 +60,9 @@ fn strip_connection_headers(headers: &mut HeaderMap, kind: MessageKind) {
         return;
     }
 
+    // Every `Connection` line nominates fields, read before the lines are removed.
+    let nominated = connection_header_names(headers);
     for header in CONNECTION_SPECIFIC_HEADERS {
-        // Consume Connection last: its nominations are needed below.
-        if *header == CONNECTION {
-            continue;
-        }
         if headers.remove(header).is_some() {
             debug!("Connection header illegal in HTTP/2: {}", header.as_str());
         }
@@ -69,33 +76,16 @@ fn strip_connection_headers(headers: &mut HeaderMap, kind: MessageKind) {
         debug!("TE headers illegal in HTTP/2 responses");
     }
 
-    if let Some(header) = headers.remove(CONNECTION) {
-        debug!(
-            "Connection header illegal in HTTP/2: {}",
-            CONNECTION.as_str()
-        );
-
-        // A `Connection` header may have a comma-separated list of names of other headers that
-        // are meant for only this specific connection.
-        //
-        // Iterate these names and remove them as headers. Connection-specific headers are
-        // forbidden in HTTP2, as that information has been moved into frame types of the h2
-        // protocol.
-        for name in header.as_bytes().split(|b| b == &b',') {
-            match std::str::from_utf8(name.trim_ascii()) {
-                // A `TE` sender nominates it (RFC 9110 §10.1.4); its `trailers` is kept above.
-                Ok(name_str) if name_str.eq_ignore_ascii_case("te") => {}
-                Ok(name_str) => {
-                    if headers.remove(name_str).is_some() {
-                        debug!(
-                            "removed header {name_str} as it was mentioned in connection header"
-                        );
-                    }
-                }
-                Err(err) => {
-                    debug!("ignore non-utf8 header '{name:x?}' in conn header value: {err}")
-                }
-            }
+    for name in nominated {
+        // A `TE` sender nominates it (RFC 9110 §10.1.4), and a request keeps `Early-Data`
+        // (RFC 8470 §5.1).
+        if name == TE
+            || matches!(kind, MessageKind::Request) && !is_removable_connection_header(&name)
+        {
+            continue;
+        }
+        if headers.remove(&name).is_some() {
+            debug!("removed header {name} as it was mentioned in connection header");
         }
     }
 }
@@ -270,7 +260,7 @@ where
                             Ok(trailers) => {
                                 // no more DATA, so give any capacity back
                                 me.body_tx.reserve_capacity(0);
-                                let trailers = filter_allowed_trailers(
+                                let trailers = sanitize_outgoing_trailers(
                                     trailers,
                                     me.allowed_trailers.as_deref(),
                                 );
@@ -308,24 +298,23 @@ fn length_mismatch<B: Buf>(body_tx: &mut SendStream<SendBuf<B>>) -> crate::Error
     crate::Error::new_body_write("body length does not match its content-length")
 }
 
-fn filter_allowed_trailers(trailers: HeaderMap, allowed: Option<&ForbiddenTrailers>) -> HeaderMap {
-    if trailers
+/// Fit an outgoing trailer section to HTTP/2: outer whitespace trimmed and fields not
+/// sent in trailers dropped.
+fn sanitize_outgoing_trailers(
+    mut trailers: HeaderMap,
+    allowed: Option<&ForbiddenTrailers>,
+) -> HeaderMap {
+    trim_outer_whitespace(&mut trailers);
+    // Removed in place, so the fields sent keep their position, casing and reservations.
+    while let Some(name) = trailers
         .keys()
-        .all(|name| is_sent_in_trailers(name, allowed))
+        .find(|name| !is_sent_in_trailers(name, allowed))
+        .cloned()
     {
-        return trailers;
+        debug!("dropping HTTP/2 trailer field not sent in trailers: {name:?}");
+        trailers.remove(&name);
     }
-
-    // Capacity is per name: one per value can pass what the map holds.
-    let mut filtered = HeaderMap::with_capacity(trailers.keys_len());
-    for (name, value) in trailers.into_ordered_iter() {
-        if is_sent_in_trailers(&name, allowed) {
-            filtered.append(name, value);
-        } else {
-            debug!("dropping HTTP/2 trailer field not sent in trailers: {name:?}");
-        }
-    }
-    filtered
+    trailers
 }
 
 trait SendStreamExt {
@@ -399,7 +388,10 @@ impl<B: Buf> Buf for SendBuf<B> {
 
 #[cfg(test)]
 mod tests {
-    use rama_http_types::{HeaderValue, header::CONTENT_LENGTH};
+    use rama_http_types::{
+        HeaderValue,
+        header::{CONNECTION, CONTENT_LENGTH},
+    };
 
     use super::*;
 
@@ -410,7 +402,7 @@ mod tests {
             trailers.append("x-a", HeaderValue::from_static("v"));
         }
         trailers.insert(CONTENT_LENGTH, HeaderValue::from_static("0"));
-        let filtered = filter_allowed_trailers(trailers, None);
+        let filtered = sanitize_outgoing_trailers(trailers, None);
         assert_eq!(filtered.len(), 30_000);
         assert_eq!(filtered.keys_len(), 1);
     }
@@ -432,7 +424,7 @@ mod tests {
                 headers.append(TE, HeaderValue::from_static(line));
             }
             headers.append("x-after", HeaderValue::from_static("1"));
-            strip_connection_headers(&mut headers, MessageKind::Request);
+            sanitize_outgoing_headers(&mut headers, MessageKind::Request);
             let te: Vec<_> = headers.get_all(TE).iter().collect();
             assert_eq!(te, kept.into_iter().collect::<Vec<_>>(), "{lines:?}");
             // A rewritten TE keeps its place in the field order.
@@ -444,8 +436,40 @@ mod tests {
             };
             assert_eq!(names, expected, "{lines:?}");
 
-            strip_connection_headers(&mut headers, MessageKind::Response);
+            sanitize_outgoing_headers(&mut headers, MessageKind::Response);
             assert!(!headers.contains_key(TE), "{lines:?}");
+        }
+    }
+
+    /// Every `Connection` line nominates fields, and a request keeps a nominated `Early-Data`.
+    #[test]
+    fn every_connection_line_nominates_and_requests_keep_early_data() {
+        for (kind, early_data_kept) in
+            [(MessageKind::Request, true), (MessageKind::Response, false)]
+        {
+            let mut headers = HeaderMap::new();
+            headers.append("X-First", HeaderValue::from_static("1"));
+            headers.append(
+                "Connection",
+                HeaderValue::from_static("keep-alive, Early-Data"),
+            );
+            headers.append("X-Private", HeaderValue::from_static("p"));
+            headers.append("Early-Data", HeaderValue::from_static("1"));
+            headers.reserve_position("X-Later");
+            headers.append("connection", HeaderValue::from_static("x-private"));
+            headers.append("x-last", HeaderValue::from_static("l"));
+            sanitize_outgoing_headers(&mut headers, kind);
+            headers.insert("X-Later", HeaderValue::from_static("r"));
+            let ordered: Vec<_> = headers
+                .ordered_iter()
+                .map(|(name, value)| (name.as_original_str(), value.to_str().unwrap()))
+                .collect();
+            let mut expected = vec![("X-First".into(), "1")];
+            if early_data_kept {
+                expected.push(("Early-Data".into(), "1"));
+            }
+            expected.extend([("X-Later".into(), "r"), ("x-last".into(), "l")]);
+            assert_eq!(ordered, expected, "{early_data_kept}");
         }
     }
 
@@ -456,10 +480,49 @@ mod tests {
         headers.append(TE, HeaderValue::from_static("trailers"));
         headers.append(CONNECTION, HeaderValue::from_static("TE, x-hop"));
         headers.append("x-hop", HeaderValue::from_static("1"));
-        strip_connection_headers(&mut headers, MessageKind::Request);
+        sanitize_outgoing_headers(&mut headers, MessageKind::Request);
         assert_eq!(headers.get(TE).unwrap(), "trailers");
         assert!(!headers.contains_key("x-hop"));
         assert!(!headers.contains_key(CONNECTION));
+    }
+
+    #[test]
+    fn outer_whitespace_is_trimmed_in_place_from_sent_fields_and_trailers() {
+        let mut secret = HeaderValue::from_static(" secret\t");
+        secret.set_sensitive(true);
+        let mut fields = HeaderMap::new();
+        fields.append("X-First", HeaderValue::from_static(" a"));
+        fields.reserve_position("X-Later");
+        fields.append("X-Mixed", HeaderValue::from_static("\t v w "));
+        fields.append("x-plain", HeaderValue::from_static("p"));
+        fields.append("X-Mixed", HeaderValue::from_static("kept"));
+        fields.insert("X-Secret", secret);
+
+        let mut headers = fields.clone();
+        // A dropped connection-specific field leaves the others where they were.
+        headers.append("Keep-Alive", HeaderValue::from_static("timeout=5"));
+        sanitize_outgoing_headers(&mut headers, MessageKind::Request);
+        let trailers = sanitize_outgoing_trailers(fields, None);
+        for mut sent in [headers, trailers] {
+            sent.insert("X-Later", HeaderValue::from_static("l"));
+            let ordered: Vec<_> = sent
+                .ordered_iter()
+                .map(|(name, value)| (name.as_original_str(), value.to_str().unwrap()))
+                .collect();
+            assert_eq!(
+                ordered,
+                [
+                    ("X-First".into(), "a"),
+                    ("X-Later".into(), "l"),
+                    ("X-Mixed".into(), "v w"),
+                    ("x-plain".into(), "p"),
+                    ("X-Mixed".into(), "kept"),
+                    ("X-Secret".into(), "secret"),
+                ]
+            );
+            assert!(sent["x-secret"].is_sensitive());
+            assert!(!sent["x-first"].is_sensitive());
+        }
     }
 
     #[test]
@@ -469,11 +532,43 @@ mod tests {
         trailers.insert("etag", HeaderValue::from_static("\"v1\""));
         trailers.insert("grpc-status", HeaderValue::from_static("0"));
 
-        let filtered = filter_allowed_trailers(trailers, None);
+        let filtered = sanitize_outgoing_trailers(trailers, None);
 
         assert!(!filtered.contains_key("content-type"));
         assert_eq!(filtered["etag"], "\"v1\"");
         assert_eq!(filtered["grpc-status"], "0");
+    }
+
+    #[test]
+    fn filtered_h2_trailers_keep_order_casing_and_reservations() {
+        let mut checksum = HeaderValue::from_static("abc");
+        checksum.set_sensitive(true);
+        let mut trailers = HeaderMap::new();
+        trailers.append("Grpc-Status", HeaderValue::from_static("0"));
+        trailers.append("Content-Type", HeaderValue::from_static("text/plain"));
+        trailers.reserve_position("X-Later");
+        trailers.append("X-Checksum", checksum);
+        trailers.append("Host", HeaderValue::from_static("example.com"));
+        trailers.append("x-note", HeaderValue::from_static("n"));
+        let capacity = trailers.capacity();
+
+        let mut filtered = sanitize_outgoing_trailers(trailers, None);
+        assert_eq!(filtered.capacity(), capacity);
+        filtered.insert("X-Later", HeaderValue::from_static("l"));
+        let ordered: Vec<_> = filtered
+            .ordered_iter()
+            .map(|(name, value)| (name.as_original_str(), value.to_str().unwrap()))
+            .collect();
+        assert_eq!(
+            ordered,
+            [
+                ("Grpc-Status".into(), "0"),
+                ("X-Later".into(), "l"),
+                ("X-Checksum".into(), "abc"),
+                ("x-note".into(), "n"),
+            ]
+        );
+        assert!(filtered["x-checksum"].is_sensitive());
     }
 
     /// A message can opt forbidden fields back in, never those that frame or route it.
@@ -497,18 +592,18 @@ mod tests {
         };
 
         assert_eq!(
-            names(filter_allowed_trailers(trailers(), None)),
+            names(sanitize_outgoing_trailers(trailers(), None)),
             ["grpc-status"]
         );
         assert_eq!(
-            names(filter_allowed_trailers(
+            names(sanitize_outgoing_trailers(
                 trailers(),
                 Some(&ForbiddenTrailers::AllowAll)
             )),
             ["set-cookie", "content-type", "grpc-status"]
         );
         assert_eq!(
-            names(filter_allowed_trailers(
+            names(sanitize_outgoing_trailers(
                 trailers(),
                 Some(&ForbiddenTrailers::AllowSome(
                     [rama_http_types::header::SET_COOKIE].into()
@@ -524,7 +619,7 @@ mod tests {
         trailers.insert("grpc-status", HeaderValue::from_static("0"));
         let capacity = trailers.capacity();
 
-        let filtered = filter_allowed_trailers(trailers, None);
+        let filtered = sanitize_outgoing_trailers(trailers, None);
 
         assert_eq!(filtered.capacity(), capacity);
         assert_eq!(filtered["grpc-status"], "0");

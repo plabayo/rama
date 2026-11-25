@@ -216,7 +216,10 @@ fn parse_authority_ref(bytes: &[u8], mode: ParserMode) -> Result<AuthorityRef<'_
     if bytes.len() > super::MAX_URI_LEN {
         return Err(ParseError::TooLong { len: bytes.len() });
     }
-    if let Some(authority) = parse_unbracketed_ipv6_authority_ref(bytes, mode)? {
+    // RFC 3986 §3.2.2 admits IPv6 only as a bracketed IP-literal.
+    if mode == ParserMode::Graceful
+        && let Some(authority) = parse_unbracketed_ipv6_authority_ref(bytes, mode)?
+    {
         return Ok(authority);
     }
     let authority = scan_authority(bytes, 0, bytes.len(), mode)?;
@@ -232,6 +235,7 @@ fn parse_authority_ref(bytes: &[u8], mode: ParserMode) -> Result<AuthorityRef<'_
 
 /// A standalone authority whose host parses as an unbracketed IPv6 address
 /// is that address without a port, matching the owned [`Authority`] parser.
+/// Graceful parsing only.
 ///
 /// [`Authority`]: crate::address::Authority
 fn parse_unbracketed_ipv6_authority_ref(

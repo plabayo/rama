@@ -1,13 +1,26 @@
+use rama_http::{HeaderMap, HeaderValue, Method, Version};
+
 use super::*;
-use crate::profile::capture::completeness::ProfileCaptureCompleteness;
 use crate::profile::{
-    capture::{CAPTURE_REVISION, joint::CapturedSlot},
+    capture::{
+        CAPTURE_REVISION,
+        completeness::ProfileCaptureCompleteness,
+        joint::CapturedSlot,
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+    },
+    evidence::{
+        bucket::CountedObservationBucket,
+        ingestion::ObservationId,
+        transaction::{
+            CaptureRunCheckpoint, CaptureRunId, IngestionAttempt, IngestionBatchLimits,
+            PendingBucketObservation, PreparedIngestion, StoredObservationBucket,
+        },
+    },
     model::{
         identity::{FetchContext, ResumptionContext},
         scope::ProfileObservationScope,
     },
 };
-use rama_http::{HeaderMap, HeaderValue, Method, Version};
 
 fn capture() -> ProfileCapture {
     let mut headers = HeaderMap::new();
@@ -159,4 +172,89 @@ fn incomplete_empty_connections_are_rejected_before_recording() {
         capture.prepare(false, JointCaptureLimits::default()),
         Err(ProfileDataError::Incomplete("empty profile capture"))
     ));
+}
+
+#[test]
+fn reordered_outer_quic_parameters_ingest_once_as_joint_evidence() {
+    let mut capture = capture();
+    capture.flow = None;
+    capture.joint.level = CaptureLevel::Connection;
+    let limits = OrderCaptureLimits::default();
+    let tuple = |ids: [u64; 2]| {
+        OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            OrderNamespace::QuicParameter,
+            ids.map(|id| (id, [1])),
+            limits,
+        )
+        .unwrap()
+        .canonical(limits)
+        .unwrap()
+    };
+    capture.joint.slots = Box::new([
+        CapturedSlot {
+            kind: CapturedSlotKind::QuicParameters,
+            value: tuple([1, 4]),
+        },
+        CapturedSlot {
+            kind: CapturedSlotKind::QuicOuterParameters,
+            value: tuple([4, 1]),
+        },
+    ]);
+    let prepared = capture
+        .prepare(false, JointCaptureLimits::default())
+        .unwrap();
+    let limits = IngestionBatchLimits::default();
+    let run =
+        CaptureRunCheckpoint::new(CaptureRunId::new(100, [1; 12]), false, 100, limits).unwrap();
+    let buckets: Vec<_> = prepared
+        .buckets
+        .iter()
+        .map(|input| StoredObservationBucket {
+            authorized: false,
+            day: 100,
+            bucket: CountedObservationBucket::new(
+                input
+                    .value
+                    .validated_domain(limits.bucket.input_bytes)
+                    .unwrap(),
+                input.scope.id,
+                [3; 32],
+                limits.bucket,
+            )
+            .unwrap()
+            .snapshot(),
+        })
+        .collect();
+    let pending: Vec<_> = prepared
+        .buckets
+        .iter()
+        .zip(&buckets)
+        .map(|(input, previous)| PendingBucketObservation {
+            expected_scope: &input.scope,
+            previous,
+            value: &input.value,
+        })
+        .collect();
+    let result = run
+        .prepare(
+            100,
+            IngestionAttempt {
+                authorized: false,
+                observation_day: 100,
+                observation: ObservationId {
+                    run: run.run.0,
+                    sequence: 1,
+                },
+            },
+            &pending,
+            [3; 32],
+            limits,
+        )
+        .unwrap();
+    let PreparedIngestion::Commit { buckets, .. } = result else {
+        panic!("new observation must commit")
+    };
+    assert_eq!(buckets.len(), 2);
+    assert!(buckets.iter().all(|bucket| bucket.bucket.counts.total == 1));
 }

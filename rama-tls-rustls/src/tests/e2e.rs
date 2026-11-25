@@ -2,7 +2,11 @@ use rama_core::conversion::RamaTryFrom;
 use rama_core::{Layer, Service as _, ServiceInput};
 use rama_crypto::cert::generate_server_auth;
 use rama_crypto::pki_types::{CertificateDer, ServerName};
-use rama_net::{address::Host, stream::service::EchoService, tls::AlpnPolicy};
+use rama_net::{
+    address::{Domain, Host},
+    stream::service::EchoService,
+    tls::AlpnPolicy,
+};
 use rama_tls::{
     client::{
         DistrustedServerKeys, DynTlsServerCertChainPolicy, ServerCertChain, ServerCertChainKind,
@@ -83,7 +87,7 @@ where
     .into_layer(EchoService::new());
 
     let client_config = TlsClientConfig::new()
-        .with_server_name(server_name.clone())
+        .with_server_name(rama_net::tls::ServerName::try_from(&server_name).unwrap())
         .with_server_cert_pins(pins)
         .with_server_verify(server_verify_mode)
         .try_with_server_trust_anchors([trust_anchor])
@@ -122,7 +126,7 @@ where
     .into_layer(EchoService::new());
     let server_name = Host::from_static("localhost");
     let client_config = TlsClientConfig::new()
-        .with_server_name(server_name.clone())
+        .with_server_name(rama_net::tls::ServerName::try_from(&server_name).unwrap())
         .with_server_trust(trust);
     let connector_data = TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(
         client_config.as_extensions(),
@@ -244,7 +248,7 @@ async fn unrelated_scoped_pin_set_delegates_to_default_verification() {
             Host::from_static("localhost"),
             |_| TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1, 2, 3]))
-                    .with_server_name(Host::from_static("other.example"))
+                    .with_server_name(Domain::from_static("other.example"))
             ),
         )
         .await
@@ -259,11 +263,11 @@ async fn matching_any_applicable_pin_set_connects() {
             Host::from_static("localhost"),
             |cert_chain| TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1, 2, 3]))
-                    .with_server_name(Host::from_static("localhost"))
+                    .with_server_name(Domain::from_static("localhost"))
             )
             .with_pin_set(
                 TlsServerCertPinSet::new(cert_chain[0].clone())
-                    .with_server_name(Host::from_static("localhost"))
+                    .with_server_name(Domain::from_static("localhost"))
             ),
         )
         .await
@@ -278,7 +282,7 @@ async fn matching_scoped_pin_set_rejects_a_mismatch() {
             Host::from_static("localhost"),
             |_| TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1, 2, 3]))
-                    .with_server_name(Host::from_static("localhost"))
+                    .with_server_name(Domain::from_static("localhost"))
             ),
         )
         .await
@@ -293,7 +297,7 @@ async fn unrelated_scoped_pin_set_is_not_a_check_when_verification_is_disabled()
             Host::from_static("localhost"),
             |_| TlsServerCertPins::new(
                 TlsServerCertPinSet::new(CertificateDer::from(vec![1, 2, 3]))
-                    .with_server_name(Host::from_static("other.example"))
+                    .with_server_name(Domain::from_static("other.example"))
             ),
         )
         .await
@@ -355,7 +359,8 @@ where
 
     let (cert_chain, private_key) =
         generate_server_auth(generated_auth).expect("generated server auth");
-    let client_config = make_config(&cert_chain).with_server_name(server_name.clone());
+    let client_config = make_config(&cert_chain)
+        .with_server_name(rama_net::tls::ServerName::try_from(&server_name).unwrap());
     let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
         cert_chain,
         private_key,
@@ -629,7 +634,8 @@ where
     let (cert_chain, private_key) =
         generate_server_auth(GeneratedServerAuthConfig::default()).expect("generated server auth");
     let server_name = Host::from_static("localhost");
-    let config = make_config(&cert_chain).with_server_name(server_name.clone());
+    let config = make_config(&cert_chain)
+        .with_server_name(rama_net::tls::ServerName::try_from(&server_name).unwrap());
     let rec = Rec::default();
     let config = if config
         .as_extensions()
@@ -722,7 +728,7 @@ async fn connects_with_alpn(
     let server_name = Host::from_static("localhost");
     let client_config = offer(
         TlsClientConfig::new()
-            .with_server_name(server_name.clone())
+            .with_server_name(rama_net::tls::ServerName::try_from(&server_name).unwrap())
             .try_with_server_trust_anchors([trust_anchor])
             .unwrap(),
     );

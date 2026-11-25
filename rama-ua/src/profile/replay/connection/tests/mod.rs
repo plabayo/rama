@@ -1,15 +1,27 @@
+use rama_http::proto::h2::frame::EarlyFrame;
+#[cfg(feature = "tls")]
+use rama_tls::{CipherSuite, ExtensionId, ProtocolVersion};
+
 use super::*;
+#[cfg(feature = "tls")]
+use crate::profile::capture::tls::{
+    TlsCaptureTransport, TlsCapturedExtension, TlsCapturedExtensionValue,
+};
 use crate::profile::{
+    analysis::{capture::analyze_capture_bucket, order::OrderAnalysisConfig},
     capture::{
         completeness::ProfileCaptureCompleteness,
         http2::{H2CapturedFrame, H2CapturedSetting},
         joint::CapturedSlot,
     },
-    format::canonical::{CanonicalValue, ValueId},
+    evidence::{
+        bucket::{CountedObservationBucket, ProfileBucketLimits},
+        ingestion::ObservationId,
+    },
+    format::canonical::{CanonicalDomain, CanonicalValue, ValueId},
     model::{identity::ConnectionContext, scope::ProfileObservationScope},
     selection::{DrawKey, variants::PreparedConnectionProfile},
 };
-use rama_http::proto::h2::frame::EarlyFrame;
 
 mod h3_startup;
 
@@ -55,6 +67,7 @@ fn selection(capture: CanonicalValue) -> ConnectionSelection {
                 revision: 0,
             },
         },
+        ech_ready: false,
     }
 }
 
@@ -261,6 +274,7 @@ fn unsupported_connection_components_never_certify_exact_replay() {
         #[cfg(feature = "tls")]
         tls: None,
         quic_parameters: None,
+        quic_outer_parameters: None,
         h3_peer_settings: None,
         h3_settings_evidence: None,
         quic_versions: None,
@@ -392,14 +406,6 @@ fn settings_evidence(
     values: &[CanonicalValue],
     selected: &CanonicalValue,
 ) -> H3SettingsReplayEvidence {
-    use crate::profile::{
-        analysis::{capture::analyze_capture_bucket, order::OrderAnalysisConfig},
-        evidence::{
-            bucket::{CountedObservationBucket, ProfileBucketLimits},
-            ingestion::ObservationId,
-        },
-        format::canonical::CanonicalDomain,
-    };
     let mut bucket = CountedObservationBucket::new(
         CanonicalDomain::Order,
         ValueId([4; 32]),
@@ -587,12 +593,6 @@ fn h3_settings_generation_requires_enough_samples_and_exact_binding() {
 #[cfg(feature = "tls")]
 #[test]
 fn unsupported_ech_cipher_is_reported_and_outer_order_still_transforms() {
-    use crate::profile::capture::tls::{
-        TlsCaptureTransport, TlsCapturedExtension, TlsCapturedExtensionValue as Value,
-    };
-    use crate::profile::replay::request::LoweredProfileItem;
-    use rama_tls::{CipherSuite, ExtensionId, ProtocolVersion};
-
     let limits = TlsCaptureLimits::default();
     let mut outer = TlsCapture {
         completeness: ProfileCaptureCompleteness::Complete,
@@ -603,7 +603,7 @@ fn unsupported_ech_cipher_is_reported_and_outer_order_still_transforms() {
         extensions: vec![
             TlsCapturedExtension {
                 id: u16::from(ExtensionId::ENCRYPTED_CLIENT_HELLO),
-                value: Value::EchOuter {
+                value: TlsCapturedExtensionValue::EchOuter {
                     kdf: 1,
                     aead: 1,
                     enc: 32,
@@ -612,7 +612,9 @@ fn unsupported_ech_cipher_is_reported_and_outer_order_still_transforms() {
             },
             TlsCapturedExtension {
                 id: u16::from(ExtensionId::SUPPORTED_VERSIONS),
-                value: Value::U16List(vec![u16::from(ProtocolVersion::TLSv1_3)].into()),
+                value: TlsCapturedExtensionValue::U16List(
+                    vec![u16::from(ProtocolVersion::TLSv1_3)].into(),
+                ),
             },
         ]
         .into(),
@@ -655,9 +657,17 @@ fn unsupported_ech_cipher_is_reported_and_outer_order_still_transforms() {
     let mut prepared = selection(pair.canonical(JointCaptureLimits::default()).unwrap())
         .prepare_components()
         .unwrap();
-    prepared.use_ech_outer_for_replay().unwrap();
+    // Without a ready endpoint the outer is the GREASE offer and no inner is compared.
+    let mut grease = prepared.clone();
+    grease.use_ech_outer_for_replay(false).unwrap();
+    assert_eq!(grease.tls.as_ref(), Some(&outer));
+    assert!(grease.tls_outer.is_none());
+    assert!(grease.preservation_report.differences.is_empty());
+    prepared.use_ech_outer_for_replay(true).unwrap();
     assert_eq!(prepared.tls, Some(outer));
     assert!(prepared.tls_outer.is_none());
+    // Without a matched outer there is nothing to replace.
+    prepared.use_ech_outer_for_replay(false).unwrap();
     assert!(prepared.preservation_report.differences.contains(
         &ProfilePreservationDifference::LoweredProfileItem {
             item: LoweredProfileItem::TlsEchInner

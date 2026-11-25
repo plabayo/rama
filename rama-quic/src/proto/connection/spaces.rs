@@ -1161,6 +1161,7 @@ const MAX_ACK_BLOCKS: usize = 64;
 #[cfg(test)]
 mod test {
     use super::*;
+    use rama_core::bytes::Bytes;
 
     fn sent_packet(now: Instant, ack_eliciting: bool) -> SentPacket {
         SentPacket {
@@ -1178,7 +1179,6 @@ mod test {
 
     #[test]
     fn crypto_probes_deduplicate_copies_and_preserve_late_ack_delivery() {
-        use rama_core::bytes::Bytes;
         let now = Instant::now();
         let bytes = Bytes::from_static(b"0123456789ab");
         let mut space = PacketSpace::new(now);

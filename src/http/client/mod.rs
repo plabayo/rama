@@ -640,7 +640,8 @@ mod tests {
     ) {
         use crate::extensions::Extensions;
         use crate::net::client::pool::ConnectionReuse;
-        use crate::tls::client::{ServerVerifyMode, TlsServerName, TlsServerVerify};
+        use crate::net::tls::ServerName;
+        use crate::tls::client::{ServerVerifyMode, TlsServerVerify};
 
         // The rules of the connection to the proxy crossed the CONNECT boundary first; the origin's own
         // were published on top of them.
@@ -659,7 +660,7 @@ mod tests {
         };
         let same = routed();
         same.insert(TlsServerVerify(ServerVerifyMode::Disable));
-        same.insert(TlsServerName(crate::net::address::Host::from_static(
+        same.insert(ServerName::from(crate::net::address::Domain::from_static(
             "elsewhere.example",
         )));
         assert!(
@@ -1959,13 +1960,12 @@ mod tests {
                 address::HostWithPort,
                 client::{EstablishedClientConnection, ProxyRoute},
                 stream::service::EchoService,
-                tls::{ApplicationProtocol, TlsAlpn},
+                tls::{ApplicationProtocol, ServerName, TlsAlpn},
             },
             tls::{
                 SecureTransport,
                 client::{
-                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerName,
-                    TlsServerVerify,
+                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerVerify,
                 },
                 rustls::{client::TlsConnector, server::TlsAcceptorLayer},
                 server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -2051,7 +2051,7 @@ mod tests {
 
         let proxy_config = TlsClientConfig::new()
             .with_alpn_http_2()
-            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .with_server_name(crate::net::address::Domain::tld_localhost())
             .try_with_server_trust_anchors([proxy_trust])
             .expect("proxy trust");
         let proxy_tls = TlsConnector::auto(transport).with_base_config(proxy_config);
@@ -2060,7 +2060,7 @@ mod tests {
         let proxy = HttpConnectProxyConnectorLayer::new().into_layer(proxy_connections);
         let origin_config = TlsClientConfig::new()
             .with_alpn(Default::default())
-            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .with_server_name(crate::net::address::Domain::tld_localhost())
             .try_with_server_trust_anchors([origin_trust])
             .expect("origin trust");
         let connector = TlsConnector::auto(proxy).with_base_config(origin_config);
@@ -2078,7 +2078,7 @@ mod tests {
             .insert(TlsServerVerify(ServerVerifyMode::Disable));
         input
             .extensions
-            .insert(TlsServerName(crate::net::address::Host::from_static(
+            .insert(ServerName::from(crate::net::address::Domain::from_static(
                 "elsewhere.example",
             )));
         let client = async move {
@@ -2146,12 +2146,12 @@ mod tests {
                 address::HostWithPort,
                 client::{EstablishedClientConnection, ProxyRoute},
                 stream::service::EchoService,
+                tls::ServerName,
             },
             tls::{
                 SecureTransport,
                 client::{
-                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerName,
-                    TlsServerVerify,
+                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerVerify,
                 },
                 rustls::{client::TlsConnector, server::TlsAcceptorLayer},
                 server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -2234,7 +2234,7 @@ mod tests {
 
         let proxy_config = TlsClientConfig::new()
             .with_alpn_http_2()
-            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .with_server_name(crate::net::address::Domain::from_static("localhost"))
             .try_with_server_trust_anchors([proxy_trust])
             .expect("proxy trust");
         let proxy_tls = TlsConnector::auto(transport).with_base_config(proxy_config);
@@ -2243,7 +2243,7 @@ mod tests {
         let proxy = HttpConnectProxyConnectorLayer::new().into_layer(proxy_connections);
         let origin_config = TlsClientConfig::new()
             .with_alpn(Default::default())
-            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .with_server_name(crate::net::address::Domain::from_static("localhost"))
             .try_with_server_trust_anchors([origin_trust])
             .expect("origin trust");
         let connector = TlsConnector::auto(proxy).with_base_config(origin_config);
@@ -2260,7 +2260,7 @@ mod tests {
             .insert(TlsServerVerify(ServerVerifyMode::Disable));
         input
             .extensions
-            .insert(TlsServerName(crate::net::address::Host::from_static(
+            .insert(ServerName::from(crate::net::address::Domain::from_static(
                 "elsewhere.example",
             )));
         let client = async move {
@@ -2327,14 +2327,13 @@ mod tests {
                 address::HostWithPort,
                 client::{EstablishedClientConnection, ProxyRoute},
                 stream::service::EchoService,
-                tls::{ApplicationProtocol, TlsAlpn},
+                tls::{ApplicationProtocol, ServerName, TlsAlpn},
             },
             tls::{
                 SecureTransport,
                 boring::{client::TlsConnector, server::TlsAcceptorLayer},
                 client::{
-                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerName,
-                    TlsServerVerify,
+                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerVerify,
                 },
                 server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
             },
@@ -2419,7 +2418,7 @@ mod tests {
 
         let proxy_config = TlsClientConfig::new()
             .with_alpn_http_2()
-            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .with_server_name(crate::net::address::Domain::tld_localhost())
             .try_with_server_trust_anchors([proxy_trust])
             .expect("proxy trust");
         let proxy_tls = TlsConnector::auto(transport).with_base_config(proxy_config);
@@ -2428,7 +2427,7 @@ mod tests {
         let proxy = HttpConnectProxyConnectorLayer::new().into_layer(proxy_connections);
         let origin_config = TlsClientConfig::new()
             .with_alpn(Default::default())
-            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .with_server_name(crate::net::address::Domain::tld_localhost())
             .try_with_server_trust_anchors([origin_trust])
             .expect("origin trust");
         let connector = TlsConnector::auto(proxy).with_base_config(origin_config);
@@ -2446,7 +2445,7 @@ mod tests {
             .insert(TlsServerVerify(ServerVerifyMode::Disable));
         input
             .extensions
-            .insert(TlsServerName(crate::net::address::Host::from_static(
+            .insert(ServerName::from(crate::net::address::Domain::from_static(
                 "elsewhere.example",
             )));
         let client = async move {
@@ -2512,13 +2511,13 @@ mod tests {
                 address::HostWithPort,
                 client::{EstablishedClientConnection, ProxyRoute},
                 stream::service::EchoService,
+                tls::ServerName,
             },
             tls::{
                 SecureTransport,
                 boring::{client::TlsConnector, server::TlsAcceptorLayer},
                 client::{
-                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerName,
-                    TlsServerVerify,
+                    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerVerify,
                 },
                 server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
             },
@@ -2600,7 +2599,7 @@ mod tests {
 
         let proxy_config = TlsClientConfig::new()
             .with_alpn_http_2()
-            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .with_server_name(crate::net::address::Domain::from_static("localhost"))
             .try_with_server_trust_anchors([proxy_trust])
             .expect("proxy trust");
         let proxy_tls = TlsConnector::auto(transport).with_base_config(proxy_config);
@@ -2609,7 +2608,7 @@ mod tests {
         let proxy = HttpConnectProxyConnectorLayer::new().into_layer(proxy_connections);
         let origin_config = TlsClientConfig::new()
             .with_alpn(Default::default())
-            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .with_server_name(crate::net::address::Domain::from_static("localhost"))
             .try_with_server_trust_anchors([origin_trust])
             .expect("origin trust");
         let connector = TlsConnector::auto(proxy).with_base_config(origin_config);
@@ -2626,7 +2625,7 @@ mod tests {
             .insert(TlsServerVerify(ServerVerifyMode::Disable));
         input
             .extensions
-            .insert(TlsServerName(crate::net::address::Host::from_static(
+            .insert(ServerName::from(crate::net::address::Domain::from_static(
                 "elsewhere.example",
             )));
         let client = async move {

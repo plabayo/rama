@@ -2,6 +2,9 @@ mod controller;
 mod trigger;
 mod worker;
 
+#[cfg(test)]
+mod warn_capture;
+
 pub use controller::NativeTrustRefreshError;
 pub(super) use controller::{NativeTrustReload, NativeTrustScope};
 #[cfg(unix)]

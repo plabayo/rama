@@ -673,7 +673,7 @@ where
                         me.reply.send_reset(Reason::INTERNAL_ERROR);
                         return Poll::Ready(Err(crate::Error::new_user_header()));
                     }
-                    super::strip_connection_headers(
+                    super::sanitize_outgoing_headers(
                         res.headers_mut(),
                         super::MessageKind::Response,
                     );

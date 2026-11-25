@@ -4,6 +4,8 @@
 //! pooling and records the established service only after validating the peer.
 //! These types do not impose Alt-Svc or DNS freshness and retry rules.
 
+use std::sync::Arc;
+
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, Extensions},
@@ -15,7 +17,6 @@ use rama_net::{
     tls::ApplicationProtocol,
 };
 use rama_utils::macros::generate_set_and_with;
-use std::sync::Arc;
 
 /// An HTTP origin, including its scheme and effective port.
 ///
@@ -305,8 +306,29 @@ impl EstablishedHttpService {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Arc;
+
+    use rama_net::address::Domain;
+
+    use super::*;
+
+    #[test]
+    fn canonical_identity_unifies_numeric_origins_without_changing_dns_scope() {
+        let origin = |host| HttpOrigin::new(Protocol::HTTPS, HostWithPort::new(host, 443)).unwrap();
+        let address = origin("192.0.2.1".parse().unwrap());
+        assert_eq!(
+            address,
+            origin(Host::Name(Domain::from_static("192.0.2.1")))
+        );
+        assert_ne!(
+            address,
+            origin(Host::Name(Domain::from_static("192.0.2.1.")))
+        );
+        assert_eq!(
+            origin(Host::EXAMPLE_NAME),
+            origin(Host::from_static("EXAMPLE.com."))
+        );
+    }
 
     #[test]
     fn origins_canonicalize_hosts_and_preserve_scheme_and_port() {

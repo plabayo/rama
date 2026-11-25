@@ -76,7 +76,7 @@ where
         .with_store_server_cert_chain(true);
 
     if let Some(domain) = domain {
-        tls_config.set_server_name(domain.into());
+        tls_config.set_server_name(domain);
     }
 
     let inner_client = EasyHttpWebClient::connector_builder(WeakScope::detached())

@@ -1,11 +1,10 @@
-use crate::profile::{
-    analysis::profile::ProfileAnalysisLimits,
-    format::{
-        archive::{ProfileArchiveLimits, ProfileArchiveWriter, load_profile_archive_snapshot},
-        canonical::CanonicalDomain,
-    },
-    model::time::profile_utc_day,
+use std::{
+    convert::Infallible,
+    time::{Duration, SystemTime},
 };
+
+#[cfg(feature = "tls")]
+use rama_core::extensions::Extensions;
 use rama_core::{Layer, Service, service::service_fn};
 use rama_http::{
     Body, Request, Response, Version,
@@ -18,13 +17,18 @@ use rama_net::Protocol;
 use rama_tls::{
     CipherSuite, CompressionAlgorithm, ProtocolVersion, SecureTransport,
     client::{ClientHello, ClientHelloExtension, NegotiatedTlsParameters},
-};
-use std::{
-    convert::Infallible,
-    time::{Duration, SystemTime},
+    server::{ServerHandshakeHellos, publish_server_client_hellos},
 };
 
 use super::*;
+use crate::profile::{
+    analysis::profile::ProfileAnalysisLimits,
+    format::{
+        archive::{ProfileArchiveLimits, ProfileArchiveWriter, load_profile_archive_snapshot},
+        canonical::CanonicalDomain,
+    },
+    model::time::profile_utc_day,
+};
 
 #[derive(Debug)]
 struct Observer(ProfileInspector);
@@ -562,6 +566,8 @@ async fn accepted_ech_without_outer_keeps_requests_and_skips_only_that_connectio
         let connection = store
             .begin_connection_if_enabled(None, Protocol::HTTPS, None)
             .unwrap();
+        let extensions = Extensions::new();
+        publish_server_client_hellos(&extensions, Some(accepted), Some(hello.clone()));
         service
             .serve(
                 Request::builder()
@@ -570,7 +576,12 @@ async fn accepted_ech_without_outer_keeps_requests_and_skips_only_that_connectio
                     .header("sec-fetch-mode", "navigate")
                     .extension(ConnectionId(connection))
                     .extension(SecureTransport::with_client_hello(hello.clone()))
-                    .extension(rama_tls::server::ServerEchAccepted::new(accepted))
+                    .extension(
+                        extensions
+                            .get_ref::<ServerHandshakeHellos>()
+                            .unwrap()
+                            .clone(),
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -611,4 +622,85 @@ async fn accepted_ech_without_outer_keeps_requests_and_skips_only_that_connectio
             .unwrap()
             .is_none()
     );
+}
+
+#[cfg(feature = "tls")]
+#[derive(Debug)]
+struct ObservationOnlyObserver {
+    inspector: ProfileInspector,
+    hello: ClientHello,
+}
+
+#[cfg(feature = "tls")]
+impl CaptureObserver for ObservationOnlyObserver {
+    fn request(&self, parts: &rama_http::request::Parts, metadata: &CaptureMetadata) {
+        metadata.connection.get_or_insert(|| TlsObservation {
+            client_hello: Some(self.hello.clone()),
+            parameters: None,
+            ja3: None,
+            ja4: None,
+            peetprint: None,
+        });
+        self.inspector.observe(parts, metadata);
+    }
+
+    fn response(&self, _: &rama_http::response::Parts, _: &CaptureMetadata) {}
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn observation_only_observers_retain_tls_in_evidence_exports() {
+    let ua = "custom-observer/1";
+    let (database, hello) = tls_profile_database(ua);
+    let store = CaptureStore::with_storage(
+        Storage::new(MemoryStore::new(StorageLimits::default())),
+        CaptureConfig {
+            observer: Arc::new(ObservationOnlyObserver {
+                inspector: ProfileInspector::new(Arc::new(database)),
+                hello,
+            }),
+            ..CaptureConfig::default()
+        },
+        Default::default(),
+    );
+    let connection = store
+        .begin_connection_if_enabled(None, Protocol::HTTPS, None)
+        .unwrap();
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |request: Request| {
+            request.into_body().collect().await.unwrap();
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
+    service
+        .serve(
+            Request::builder()
+                .uri("https://example.test/")
+                .header("user-agent", ua)
+                .header("sec-fetch-mode", "navigate")
+                .extension(ConnectionId(connection))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap();
+    let day = profile_utc_day(SystemTime::now()).unwrap();
+    let mut export = ProfileExport::new(&store, &[1].into(), &BTreeSet::new());
+    let analysis = export
+        .next_evidence(day, 14, [3; 32], ProfileAnalysisLimits::default())
+        .await
+        .unwrap()
+        .unwrap()
+        .analyze(false, day, 14, ProfileAnalysisLimits::default())
+        .unwrap()
+        .analysis;
+    assert!(
+        analysis.scopes.iter().any(
+            |scope| scope.flow.is_none() && scope.observations.domain == CanonicalDomain::Joint
+        )
+    );
+    assert_eq!(export.skipped_tls_connections(), 0);
 }

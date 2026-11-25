@@ -1,6 +1,7 @@
 //! Opt-in HTTP/3 connection coalescing across origins one certificate covers.
 
-use crate::client::pool::connection_version_requirement;
+use std::{slice, sync::Arc};
+
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, Extensions, ExtensionsRef as _},
@@ -11,19 +12,20 @@ use rama_http_types::{
     conn::{HttpOrigin, HttpServiceSource, SelectedHttpService},
 };
 use rama_net::{
-    address::Host,
+    address::{Host, HostRef},
     client::{
         ConnectRequest, ConnectorTarget,
         pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
     },
-    tls::ApplicationProtocol,
+    tls::{ApplicationProtocol, ServerName},
 };
 use rama_quic::{Connection, tls::QuicClientConfigProvider};
 use rama_tls::client::{
     NegotiatedTlsParameters, TlsClientConfig, TlsServerAuthenticatedAliases,
     TlsServerAuthentication,
 };
-use std::{slice, sync::Arc};
+
+use crate::client::pool::connection_version_requirement;
 
 /// HTTPS origins that may share one HTTP/3 connection ([RFC 9114 §3.3]).
 ///
@@ -102,10 +104,12 @@ fn configured(extensions: &Extensions) -> Option<(Arc<Http3Coalescing>, &Selecte
     let selected = extensions.get_ref::<SelectedHttpService>()?;
     let ConnectorTarget(target) = extensions.get_ref::<ConnectorTarget>()?;
     let candidate = &selected.candidate;
+    let target_host = target.host.canonical_identity();
     (candidate.source == HttpServiceSource::Configured
         && candidate.protocol == ApplicationProtocol::HTTP_3
-        && &candidate.target == target
-        && matches!(target.host, Host::Address(_))
+        && candidate.target.port == target.port
+        && &candidate.target.host == target_host.as_ref()
+        && matches!(target_host.as_ref(), Host::Address(_))
         && group.contains(&selected.origin))
     .then_some((group, selected))
 }
@@ -113,7 +117,8 @@ fn configured(extensions: &Extensions) -> Option<(Arc<Http3Coalescing>, &Selecte
 /// The set whose origins share this input's pool identity, if any.
 pub(crate) fn pool_group(input: &ConnectRequest) -> Option<Arc<Http3Coalescing>> {
     let (group, selected) = configured(input.extensions())?;
-    (selected.origin.authority() == &input.authority
+    (selected.origin.authority().port == input.authority.port
+        && &selected.origin.authority().host == input.authority.host.canonical_identity().as_ref()
         && connection_version_requirement(input) == Some(Version::HTTP_3))
     .then_some(group)
 }
@@ -130,10 +135,15 @@ impl PendingAliases {
     pub(super) fn new(
         input: &ConnectRequest,
         tls: TlsClientConfig,
-        authenticated: Option<&Host>,
+        authenticated: Option<&ServerName>,
     ) -> Option<Self> {
         let group = pool_group(input)?;
-        (authenticated == Some(&input.authority.host)).then_some(Self { group, tls })
+        authenticated
+            .is_some_and(|name| {
+                HostRef::from(name)
+                    == HostRef::from(input.authority.host.canonical_identity().as_ref())
+            })
+            .then_some(Self { group, tls })
     }
 
     pub(super) fn verify(self, connection: &Connection, provider: &dyn QuicClientConfigProvider) {
@@ -154,12 +164,15 @@ impl PendingAliases {
         };
         let mut aliases = Vec::new();
         for origin in self.group.iter() {
-            let name = &origin.authority().host;
-            if name != &primary
-                && !aliases.contains(name)
-                && provider.peer_matches_name(self.tls.as_extensions(), leaf, name)
+            // A certificate can only vouch for an origin named by a server name.
+            let Ok(name) = ServerName::try_from(&origin.authority().host) else {
+                continue;
+            };
+            if name != primary
+                && !aliases.contains(&name)
+                && provider.peer_matches_name(self.tls.as_extensions(), leaf, &name)
             {
-                aliases.push(name.clone());
+                aliases.push(name);
             }
         }
         extensions.insert(TlsServerAuthenticatedAliases::new(primary, aliases));
@@ -175,7 +188,12 @@ pub(crate) fn restrict_reuse(request: &Extensions, connection: &Extensions) {
     let verified = connection
         .get_ref::<TlsServerAuthentication>()
         .zip(connection.get_arc::<TlsServerAuthenticatedAliases>())
-        .filter(|(current, aliases)| current.0.as_ref() == Some(aliases.primary()));
+        .filter(|(current, aliases)| {
+            current
+                .0
+                .as_ref()
+                .is_some_and(|name| name == aliases.primary())
+        });
     let scope = match verified {
         Some((_, aliases)) => Scope::Verified(aliases),
         None => Scope::Origin(selected.origin.clone()),
@@ -210,7 +228,8 @@ impl ConnectionReusePolicy for CoalescingReuse {
         let selected = input.get_ref::<SelectedHttpService>()?;
         let permitted = match self.0.as_ref() {
             Scope::Origin(origin) => &selected.origin == origin,
-            Scope::Verified(aliases) => aliases.covers(&selected.origin.authority().host),
+            Scope::Verified(aliases) => ServerName::try_from(&selected.origin.authority().host)
+                .is_ok_and(|name| aliases.covers(&name)),
         };
         permitted.then(ReuseKey::of::<Self>)
     }
