@@ -3,7 +3,7 @@
     reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
 )]
 
-use std::{cmp::Reverse, convert::Infallible, error::Error, fmt};
+use std::{convert::Infallible, error::Error, fmt};
 
 use rama_core::{
     Layer,
@@ -15,9 +15,7 @@ use rama_core::{
 };
 use rama_http_types::Method;
 use rama_http_types::{Body, OriginalRouterUri, StatusCode};
-use rama_net::uri::{
-    PathPattern, PathPatternSegmentKind, PathPatternSegmentSpecificity, PathRouter,
-};
+use rama_net::uri::PathRouter;
 use rama_utils::collections::NonEmptySmallVec;
 
 use crate::{
@@ -57,9 +55,9 @@ where
 
 /// A basic router that can be used to route requests to different services based on the request path.
 ///
-/// Each route compiles to a [`PathPattern`]; on lookup the most-specific
+/// Each route compiles to a [`PathPattern`](rama_net::uri::PathPattern); on lookup the most-specific
 /// matching pattern wins (static segments beat captures beat catch-alls).
-/// Routes use [`PathPattern`] syntax, not RFC 6570 URI Templates; see the
+/// Routes use [`PathPattern`](rama_net::uri::PathPattern) syntax, not RFC 6570 URI Templates; see the
 /// [`uri` module](rama_net::uri#patterns-and-templates).
 /// Nested services are mounted under a prefix via a typed [`PathRouter`].
 /// Path matching uses [`PathMatchPolicy::default`] unless an explicit policy
@@ -81,7 +79,7 @@ where
 /// ```
 #[allow(unused)]
 pub struct Router<State = (), Layer = DefaultEndpointLayer, O = Response, E = RouterError> {
-    routes: Vec<RouteEntry<O, E>>,
+    routes: PathRouter<RouteEntry<O, E>>,
     sub_services: Option<PathRouter<SubService<O, E>>>,
     path_match_policy: PathMatchPolicy,
     not_found: Option<BoxService<Request, O, E>>,
@@ -89,47 +87,19 @@ pub struct Router<State = (), Layer = DefaultEndpointLayer, O = Response, E = Ro
     state: State,
 }
 
-/// One registered route path: its compiled pattern, a specificity key (kept
-/// sorted most-specific-first across `routes`), and the per-method handlers
-/// sharing this path.
+/// The per-method handlers sharing one registered route path.
 struct RouteEntry<O, E> {
-    pattern: PathPattern,
-    /// Per-segment specificity ranks (static=2, capture=1, catch-all=0);
-    /// higher under `Vec`'s ordering = more specific.
-    specificity: Vec<SegmentSpecificityRank>,
     handlers: Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>,
     fallback_handlers: Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>,
 }
 
-/// Specificity rank of one segment. Literal beats dynamic beats catch-all; for
-/// two dynamic segments, more literal bytes and fewer wildcard/capture/optional
-/// parts wins (e.g. `{file}.json` beats `{file}`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct SegmentSpecificityRank {
-    kind: u8,
-    literal_bytes: usize,
-    fewer_dynamic_parts: Reverse<usize>,
-    fewer_optional_parts: Reverse<usize>,
-}
-
-fn rank(spec: PathPatternSegmentSpecificity) -> SegmentSpecificityRank {
-    let kind = match spec.kind {
-        PathPatternSegmentKind::Literal => 2,
-        PathPatternSegmentKind::Dynamic => 1,
-        PathPatternSegmentKind::CatchAll => 0,
-    };
-    SegmentSpecificityRank {
-        kind,
-        literal_bytes: spec.literal_bytes,
-        fewer_dynamic_parts: Reverse(spec.dynamic_parts),
-        fewer_optional_parts: Reverse(spec.optional_parts),
+impl<O, E> Default for RouteEntry<O, E> {
+    fn default() -> Self {
+        Self {
+            handlers: Vec::new(),
+            fallback_handlers: Vec::new(),
+        }
     }
-}
-
-/// Per-segment specificity key for a compiled pattern. The pattern itself is
-/// the authority on what each segment is — the router never parses the syntax.
-fn specificity_of(pattern: &PathPattern) -> Vec<SegmentSpecificityRank> {
-    pattern.segment_specificity().map(rank).collect()
 }
 
 impl<S, L, O, E> std::fmt::Debug for Router<S, L, O, E> {
@@ -175,7 +145,7 @@ where
         path_match_policy: PathMatchPolicy,
     ) -> Self {
         Self {
-            routes: Vec::new(),
+            routes: PathRouter::new(),
             sub_services: None,
             path_match_policy,
             not_found: None,
@@ -502,7 +472,7 @@ where
         Router<State, Layer, O, E>: Service<Request, Output = O, Error = E>,
     {
         let router = Self {
-            routes: Vec::new(),
+            routes: PathRouter::new(),
             sub_services: None,
             path_match_policy: self.path_match_policy,
             not_found: None,
@@ -645,24 +615,10 @@ where
 
         let pattern = compile_pattern_with_policy(path.as_ref(), self.path_match_policy);
 
-        if let Some(entry) = self.routes.iter_mut().find(|e| e.pattern == pattern) {
-            entry.handlers.push((matcher, service));
-        } else {
-            let specificity = specificity_of(&pattern);
-            // keep `routes` most-specific-first; first match wins at lookup
-            let pos = self
-                .routes
-                .partition_point(|e| e.specificity >= specificity);
-            self.routes.insert(
-                pos,
-                RouteEntry {
-                    pattern,
-                    specificity,
-                    handlers: vec![(matcher, service)],
-                    fallback_handlers: Vec::new(),
-                },
-            );
-        }
+        self.routes
+            .get_or_insert_full_with(pattern, RouteEntry::default)
+            .handlers
+            .push((matcher, service));
 
         self
     }
@@ -713,23 +669,10 @@ where
             .boxed();
         let pattern = compile_pattern_with_policy(path.as_ref(), self.path_match_policy);
 
-        if let Some(entry) = self.routes.iter_mut().find(|e| e.pattern == pattern) {
-            entry.fallback_handlers.push((matcher, service));
-        } else {
-            let specificity = specificity_of(&pattern);
-            let pos = self
-                .routes
-                .partition_point(|entry| entry.specificity >= specificity);
-            self.routes.insert(
-                pos,
-                RouteEntry {
-                    pattern,
-                    specificity,
-                    handlers: Vec::new(),
-                    fallback_handlers: vec![(matcher, service)],
-                },
-            );
-        }
+        self.routes
+            .get_or_insert_full_with(pattern, RouteEntry::default)
+            .fallback_handlers
+            .push((matcher, service));
 
         self
     }
@@ -826,17 +769,13 @@ where
         let mut allowed_methods: Option<MethodMatcher> = None;
         let mut fallback_handler = None;
 
-        // most-specific-first: the first matching route owns the path
+        // The most specific matching route owns the path
         // (method mismatch -> 405, no fall-through to a vaguer route).
-        for entry in self.routes.iter() {
-            let Some(captured) = entry
-                .pattern
-                .captures(path)
-                .map(|captures| UriParams::from_captures(&captures))
-            else {
-                continue;
-            };
-
+        let matched = self.routes.match_full(path).map(|matched| {
+            let (entry, _, captures) = matched.into_parts();
+            (entry, UriParams::from_captures(&captures))
+        });
+        if let Some((entry, captured)) = matched {
             // merge with any existing (nested-router) UriParams
             let params = match req.extensions().get_ref::<UriParams>() {
                 Some(existing) => {
@@ -877,7 +816,6 @@ where
                     allowed_methods = Some(allowed_methods.map_or(m, |acc| acc.or_method(m)));
                 }
             }
-            break;
         }
 
         let (mut parts, body) = req.into_parts();
@@ -961,6 +899,7 @@ mod tests {
         service::service_fn,
     };
     use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt, header};
+    use rama_net::uri::PathRef;
 
     use super::*;
     use crate::{
@@ -1326,34 +1265,6 @@ mod tests {
         assert!(res.headers().get(header::ALLOW).is_none());
     }
 
-    #[test]
-    fn specificity_reflects_segment_kinds() {
-        let spec = |p: &str| {
-            specificity_of(&compile_pattern_with_policy(p, PathMatchPolicy::default()))
-                .into_iter()
-                .map(|rank| rank.kind)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(spec("/a/b/c"), vec![2, 2, 2]); // all literal
-        assert_eq!(spec("/users/{id}"), vec![2, 1]); // literal + capture
-        assert_eq!(spec("/files/{}.json"), vec![2, 1]); // literal + affixed wildcard
-        assert_eq!(spec("/assets/{*path}"), vec![2, 0]); // literal + catch-all
-        // An invalid catch-all body is a literal in the matcher, so it ranks as
-        // a literal here too — the router no longer guesses, so no drift.
-        assert_eq!(spec("/api/{*bad name}"), vec![2, 2]);
-    }
-
-    #[test]
-    fn specificity_breaks_dynamic_ties_with_literal_weight() {
-        let compile = |path| compile_pattern_with_policy(path, PathMatchPolicy::default());
-        let plain = specificity_of(&compile("/files/{name}"));
-        let json = specificity_of(&compile("/files/{name}.json"));
-        let wildcard_json = specificity_of(&compile("/files/{}.json"));
-
-        assert!(json > plain);
-        assert!(wildcard_json > plain);
-    }
-
     #[tokio::test]
     async fn test_router_capture_beats_catch_all_either_order() {
         fn name_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
@@ -1475,8 +1386,12 @@ mod tests {
         router.set_fallback_match_route("/same", HttpMatcher::method_post(), create_user_service());
 
         assert_eq!(router.routes.len(), 1);
-        assert_eq!(router.routes[0].handlers.len(), 1);
-        assert_eq!(router.routes[0].fallback_handlers.len(), 1);
+        let matched = router
+            .routes
+            .match_full(PathRef::from_raw_str("/same"))
+            .unwrap();
+        assert_eq!(matched.value().handlers.len(), 1);
+        assert_eq!(matched.value().fallback_handlers.len(), 1);
     }
 
     #[tokio::test]

@@ -1080,3 +1080,70 @@ async fn path_router_service_inserts_owned_captures() {
     let err = router.serve(Input::new("/teams/42")).await.unwrap_err();
     assert_matches!(err, PathRouterError::NotFound);
 }
+
+#[test]
+fn leading_literal_segments_decide_captures_like_the_full_match() {
+    let captured = |pattern: &PathPattern, path: &str| {
+        pattern
+            .captures(PathRef::from_raw_str(path))
+            .map(|captures| captures.get("id").map(str::to_owned))
+    };
+    let exact = PathPattern::new("/r0/items/{id}");
+    let found = Some(Some("42".to_owned()));
+    assert_eq!(captured(&exact, "/r0/items/42"), found);
+    // An encoded literal still names the same segment.
+    assert_eq!(captured(&exact, "/%720/items/42"), found);
+    for miss in [
+        "",
+        "/",
+        "/r0",
+        "/r0/",
+        "/r0/items",
+        "/r0/items/",
+        "/r1/items/42",
+        "/r0/item/42",
+        "/R0/items/42",
+        "/r0/items/42/more",
+        "//r0/items/42",
+    ] {
+        assert_eq!(captured(&exact, miss), None, "{miss:?}");
+    }
+
+    let relaxed = PathPattern::new_with_opts(
+        "/r0/items/{id}",
+        PathMatchOptions {
+            ignore_ascii_case: true,
+            ..PathMatchOptions::default()
+        },
+    );
+    assert_eq!(captured(&relaxed, "/R0/ITEMS/42"), found);
+    assert_eq!(captured(&relaxed, "/r1/items/42"), None);
+
+    let prefix = PathPattern::new_prefix("/r0/items");
+    for hit in ["/r0/items", "/r0/items/", "/r0/items/42/more"] {
+        assert_eq!(captured(&prefix, hit), Some(None), "{hit:?}");
+    }
+    for miss in ["/r0", "/r0/item/42", "/r1/items"] {
+        assert_eq!(captured(&prefix, miss), None, "{miss:?}");
+    }
+
+    // A pattern without captures matches the same paths and binds nothing.
+    let literal = PathPattern::new("/health/live");
+    assert!(
+        literal
+            .captures(PathRef::from_raw_str("/health/live"))
+            .is_some_and(|captures| captures.is_empty())
+    );
+    for miss in ["/health", "/health/live/", "/health/live/x", "/health/dead"] {
+        assert_eq!(captured(&literal, miss), None, "{miss:?}");
+    }
+
+    // An optional first segment is not a leading literal.
+    let optional = PathPattern::new("/{id}?/items");
+    assert_eq!(captured(&optional, "/42/items"), found);
+    assert_eq!(captured(&optional, "/items"), Some(Some(String::new())));
+    // Literal segments after a catch-all are not positional.
+    let globbed = PathPattern::new("/static/{*}/items/{id}");
+    assert_eq!(captured(&globbed, "/static/a/b/items/42"), found);
+    assert_eq!(captured(&globbed, "/assets/a/b/items/42"), None);
+}
