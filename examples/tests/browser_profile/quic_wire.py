@@ -14,7 +14,7 @@ import json
 from flows import FLOWS, operation_flow
 from pdml import field, identity, one, pdml_packets
 from qpack_bootstrap_wire import verify_bootstrap
-from quic_stream_wire import stream_prefixes, varint, varint_field
+from quic_stream_wire import requestless_connections, stream_prefixes, varint, varint_field
 from read_form import tls_read_form
 from tls_wire import Reader, byte_span
 
@@ -342,16 +342,31 @@ def parameters_match(captured, observed):
     return True
 
 
+def control_streams(data, server_port, groups, *, from_server):
+    """Yield one control stream per peer that progressed to HTTP/3 requests."""
+    requestless = None
+    for (connection, server), prefixes in groups.items():
+        if server != from_server:
+            continue
+        controls = [stream for stream in prefixes if stream.stream_type == 0]
+        if not controls:
+            # A peer can abandon a speculative connection after opening only QPACK.
+            if requestless is None:
+                requestless = requestless_connections(data, server_port)
+            if connection in requestless:
+                continue
+        if len(controls) != 1:
+            raise ValueError("missing or multiple HTTP/3 control streams")
+        yield connection, prefixes, controls[0]
+
+
 def client_settings(data, server_port, *, from_server=False):
     """Count logical SETTINGS once from one complete native control-stream prefix."""
     result, logical = {}, {}
-    for (connection, server), streams in stream_prefixes(data, server_port).items():
-        if server != from_server:
-            continue
-        controls = [stream for stream in streams if stream.stream_type == 0]
-        if len(controls) != 1:
-            raise ValueError("missing or multiple HTTP/3 control streams")
-        control = controls[0]
+    groups = stream_prefixes(data, server_port)
+    for connection, _, control in control_streams(
+        data, server_port, groups, from_server=from_server
+    ):
         source, frames = Reader(control.payload), 0
         while source.remaining():
             start = source.offset

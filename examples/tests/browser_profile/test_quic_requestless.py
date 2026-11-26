@@ -4,6 +4,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from admission import admit
 from flows import DRIVER_FLOWS
+from quic_wire import client_settings
 from quic_stream_wire import quic_exclusions, requestless_connections
 from wire_fixtures import computed, document, scalar, stream_packet
 
@@ -40,6 +41,19 @@ class RequestlessQuicTests(unittest.TestCase):
             native(stream_packet(0, b"request", connection=2)),
         )
         self.assertEqual(requestless_connections(data, 443), {1})
+
+    def test_missing_control_requires_proof_the_connection_was_requestless(self):
+        for server, stream in [(False, 2), (True, 3)]:
+            packet = stream_packet(stream, b"\x02", server=server, connection=1)
+            qpack = native(packet)
+            with self.subTest(server=server):
+                self.assertEqual(client_settings(document(qpack), 443, from_server=server), {})
+                for extra in (
+                    native(stream_packet(0, b"request", connection=1)),
+                    native(packet, decrypted=False),
+                ):
+                    with self.assertRaisesRegex(ValueError, "missing or multiple"):
+                        client_settings(document(qpack, extra), 443, from_server=server)
 
     def test_undecrypted_or_frameless_packets_exclude_the_connection(self):
         for options in (dict(decrypted=False), dict(frames=False)):

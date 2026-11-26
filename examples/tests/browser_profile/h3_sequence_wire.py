@@ -9,7 +9,7 @@ No request values or QPACK strings are returned in reports.
 from dataclasses import dataclass, field as data_field
 from qpack_wire import ENCODER_STREAM, encoder_instruction_evidence
 from quic_stream_wire import StreamPrefix, stream_prefixes, varint
-from quic_wire import H3_SETTINGS, client_settings
+from quic_wire import H3_SETTINGS, client_settings, control_streams
 from tls_wire import Reader
 
 CONTROL_STREAM = 0
@@ -77,14 +77,9 @@ def sequence_evidence(data, server_port):
     settings = client_settings(data, server_port, from_server=True)
     instructions = encoder_instruction_evidence(data, server_port, streams)
     result = {}
-    for (connection, from_server), prefixes in streams.items():
-        if from_server:
-            continue
-        control = [
-            stream for stream in prefixes if stream.stream_type == CONTROL_STREAM
-        ]
-        if len(control) != 1:
-            raise ValueError("missing or repeated HTTP/3 control stream")
+    for connection, prefixes, control in control_streams(
+        data, server_port, streams, from_server=False
+    ):
         # Abandoned before server SETTINGS; comparison still requires request connections.
         if connection not in settings:
             continue
@@ -96,7 +91,7 @@ def sequence_evidence(data, server_port):
         ]
         result[connection] = SequenceEvidence(
             tuple(prefixes),
-            tuple(control_frames(control[0])),
+            tuple(control_frames(control)),
             context,
             *instructions.get(connection, ((), ())),
         )
