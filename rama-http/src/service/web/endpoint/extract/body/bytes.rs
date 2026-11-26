@@ -94,7 +94,7 @@ async fn collect_body(body: crate::Body) -> Result<Bytes, BytesRejection> {
 mod test {
     use super::*;
     use crate::layer::body_limit::BodyLimitLayer;
-    use crate::service::web::WebService;
+    use crate::service::web::Router;
     use crate::{Method, Request, StatusCode};
     use rama_core::{Layer, Service, extensions::Extension};
     use std::sync::{
@@ -104,7 +104,7 @@ mod test {
 
     #[tokio::test]
     async fn test_bytes() {
-        let service = WebService::default().with_get("/", async |Bytes(body): Bytes| {
+        let service = Router::default().with_get("/", async |Bytes(body): Bytes| {
             assert_eq!(body, "test");
         });
 
@@ -119,7 +119,7 @@ mod test {
     #[tokio::test]
     async fn body_limit_returns_payload_too_large() {
         let service = BodyLimitLayer::new(4)
-            .layer(WebService::default().with_post("/", async |_: Bytes| StatusCode::NO_CONTENT));
+            .layer(Router::default().with_post("/", async |_: Bytes| StatusCode::NO_CONTENT));
 
         let req = Request::builder()
             .method(Method::POST)

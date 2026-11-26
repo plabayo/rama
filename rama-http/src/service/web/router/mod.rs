@@ -3,11 +3,20 @@
     reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
 )]
 
-use std::{convert::Infallible, error::Error, fmt};
+use std::{
+    any::Any,
+    convert::Infallible,
+    error::Error,
+    fmt,
+    path::Path,
+    sync::{Arc, Weak},
+};
+
+use parking_lot::Mutex;
 
 use rama_core::{
     Layer,
-    extensions::{Extensions, ExtensionsRef},
+    extensions::{Extension, Extensions, ExtensionsRef},
     layer::MapResult,
     matcher::Matcher,
     service::{BoxService, Service},
@@ -16,13 +25,18 @@ use rama_core::{
 use rama_http_types::Method;
 use rama_http_types::{Body, OriginalRouterUri, StatusCode};
 use rama_net::uri::PathRouter;
-use rama_utils::collections::NonEmptySmallVec;
+use rama_utils::{
+    collections::{NonEmptySmallVec, smallvec::SmallVec},
+    include_dir,
+};
 
 use crate::{
     Request, Response,
     headers::Allow,
     matcher::path::compile_pattern_with_policy,
     matcher::{HttpMatcher, MethodMatcher, PathMatchPolicy, UriParams},
+    mime::Mime,
+    service::fs::{DirectoryServeMode, ServeDir},
     service::web::{
         IntoEndpointService, IntoEndpointServiceWithState,
         response::{ErrorResponse, Headers, IntoResponse},
@@ -81,6 +95,8 @@ where
 pub struct Router<State = (), Layer = DefaultEndpointLayer, O = Response, E = RouterError> {
     routes: PathRouter<RouteEntry<O, E>>,
     sub_services: Option<PathRouter<SubService<O, E>>>,
+    /// Matchers without a route path, tried in registration order.
+    matchers: Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>,
     path_match_policy: PathMatchPolicy,
     not_found: Option<BoxService<Request, O, E>>,
     layer: Layer,
@@ -147,6 +163,7 @@ where
         Self {
             routes: PathRouter::new(),
             sub_services: None,
+            matchers: Vec::new(),
             path_match_policy,
             not_found: None,
             layer: Default::default(),
@@ -179,6 +196,7 @@ where
         Router {
             routes: self.routes,
             sub_services: self.sub_services,
+            matchers: self.matchers,
             path_match_policy: self.path_match_policy,
             not_found: self.not_found,
             layer,
@@ -193,6 +211,7 @@ where
         Router {
             routes: self.routes,
             sub_services: self.sub_services,
+            matchers: self.matchers,
             path_match_policy: self.path_match_policy,
             not_found: self.not_found,
             layer: DefaultEndpointLayer,
@@ -474,6 +493,7 @@ where
         let router = Self {
             routes: PathRouter::new(),
             sub_services: None,
+            matchers: Vec::new(),
             path_match_policy: self.path_match_policy,
             not_found: None,
             layer: self.layer.clone(),
@@ -565,11 +585,17 @@ where
         nested: BoxService<Request, O, E>,
     ) -> &mut Self {
         let router = self.sub_services.get_or_insert_default();
-        router.insert_prefix_with_opts(
-            prefix.as_ref().trim(),
-            self.path_match_policy.options(),
-            SubService { svc: nested },
-        );
+        // `/assets`, `/assets/` and `/assets/?` name the same mount.
+        let prefix = prefix.as_ref().trim();
+        let prefix = prefix.strip_suffix("/?").unwrap_or(prefix);
+        let prefix = prefix.trim_end_matches('/');
+        let opts = self.path_match_policy.options();
+        // A prefix mounted before keeps its services; this one answers after them.
+        let mut mount = router
+            .insert_prefix_with_opts(prefix, opts, SubService::default())
+            .unwrap_or_default();
+        mount.services.push(nested);
+        router.insert_prefix_with_opts(prefix, opts, mount);
 
         self
     }
@@ -677,6 +703,205 @@ where
         self
     }
 
+    /// Add a route for every request `matcher` accepts.
+    ///
+    /// A matcher that requires exactly one path becomes a route on that path and
+    /// ranks like any other route. A matcher without one is tried in registration
+    /// order once no route or mount answered, before the not-found service.
+    #[inline(always)]
+    #[must_use]
+    pub fn with_matcher<I, T>(mut self, matcher: HttpMatcher<Body>, service: I) -> Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+        L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.set_matcher(matcher, service);
+        self
+    }
+
+    /// Add a route for every request `matcher` accepts.
+    ///
+    /// A matcher that requires exactly one path becomes a route on that path and
+    /// ranks like any other route. A matcher without one is tried in registration
+    /// order once no route or mount answered, before the not-found service.
+    pub fn set_matcher<I, T>(&mut self, matcher: HttpMatcher<Body>, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+        L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
+    {
+        let service = self
+            .layer
+            .layer(service.into_endpoint_service_with_state(self.state.clone()))
+            .boxed();
+        match matcher.into_path_and_rest() {
+            Ok((pattern, rest)) => self
+                .routes
+                .get_or_insert_full_with(pattern, RouteEntry::default)
+                .handlers
+                .push((rest, service)),
+            Err(matcher) => self.matchers.push((matcher, service)),
+        }
+        self
+    }
+
+    /// Serve the file at `path` under `prefix`.
+    ///
+    /// A request the file does not answer continues with the rest of this router.
+    #[inline(always)]
+    #[must_use]
+    pub fn with_file(mut self, prefix: impl AsRef<str>, path: impl AsRef<Path>, mime: Mime) -> Self
+    where
+        L: Layer<FileMount, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.set_file(prefix, path, mime);
+        self
+    }
+
+    /// Serve the file at `path` under `prefix`.
+    ///
+    /// A request the file does not answer continues with the rest of this router.
+    pub fn set_file(
+        &mut self,
+        prefix: impl AsRef<str>,
+        path: impl AsRef<Path>,
+        mime: Mime,
+    ) -> &mut Self
+    where
+        L: Layer<FileMount, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.set_file_mount(prefix, ServeDir::new_single_file(path, mime))
+    }
+
+    /// Serve the directory at `path` under `prefix`.
+    ///
+    /// A request for a file it does not hold continues with the rest of this router.
+    #[inline(always)]
+    #[must_use]
+    pub fn with_dir(self, prefix: impl AsRef<str>, path: impl AsRef<Path>) -> Self
+    where
+        L: Layer<FileMount, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.with_dir_with_serve_mode(prefix, path, DirectoryServeMode::default())
+    }
+
+    /// Serve the directory at `path` under `prefix`.
+    ///
+    /// A request for a file it does not hold continues with the rest of this router.
+    #[inline(always)]
+    pub fn set_dir(&mut self, prefix: impl AsRef<str>, path: impl AsRef<Path>) -> &mut Self
+    where
+        L: Layer<FileMount, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.set_dir_with_serve_mode(prefix, path, DirectoryServeMode::default())
+    }
+
+    /// Serve the directory at `path` under `prefix`, with a custom serve mode.
+    ///
+    /// A request for a file it does not hold continues with the rest of this router.
+    #[inline(always)]
+    #[must_use]
+    pub fn with_dir_with_serve_mode(
+        mut self,
+        prefix: impl AsRef<str>,
+        path: impl AsRef<Path>,
+        mode: DirectoryServeMode,
+    ) -> Self
+    where
+        L: Layer<FileMount, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.set_dir_with_serve_mode(prefix, path, mode);
+        self
+    }
+
+    /// Serve the directory at `path` under `prefix`, with a custom serve mode.
+    ///
+    /// A request for a file it does not hold continues with the rest of this router.
+    pub fn set_dir_with_serve_mode(
+        &mut self,
+        prefix: impl AsRef<str>,
+        path: impl AsRef<Path>,
+        mode: DirectoryServeMode,
+    ) -> &mut Self
+    where
+        L: Layer<FileMount, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.set_file_mount(prefix, ServeDir::new(path).with_directory_serve_mode(mode))
+    }
+
+    /// Serve the embedded directory `dir` under `prefix`.
+    ///
+    /// A request for a file it does not hold continues with the rest of this router.
+    #[inline(always)]
+    #[must_use]
+    pub fn with_dir_embed(self, prefix: impl AsRef<str>, dir: include_dir::Dir<'static>) -> Self
+    where
+        L: Layer<FileMount, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.with_dir_embed_with_serve_mode(prefix, dir, DirectoryServeMode::default())
+    }
+
+    /// Serve the embedded directory `dir` under `prefix`.
+    ///
+    /// A request for a file it does not hold continues with the rest of this router.
+    #[inline(always)]
+    pub fn set_dir_embed(
+        &mut self,
+        prefix: impl AsRef<str>,
+        dir: include_dir::Dir<'static>,
+    ) -> &mut Self
+    where
+        L: Layer<FileMount, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.set_dir_embed_with_serve_mode(prefix, dir, DirectoryServeMode::default())
+    }
+
+    /// Serve the embedded directory `dir` under `prefix`, with a custom serve mode.
+    ///
+    /// A request for a file it does not hold continues with the rest of this router.
+    #[inline(always)]
+    #[must_use]
+    pub fn with_dir_embed_with_serve_mode(
+        mut self,
+        prefix: impl AsRef<str>,
+        dir: include_dir::Dir<'static>,
+        mode: DirectoryServeMode,
+    ) -> Self
+    where
+        L: Layer<FileMount, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.set_dir_embed_with_serve_mode(prefix, dir, mode);
+        self
+    }
+
+    /// Serve the embedded directory `dir` under `prefix`, with a custom serve mode.
+    ///
+    /// A request for a file it does not hold continues with the rest of this router.
+    pub fn set_dir_embed_with_serve_mode(
+        &mut self,
+        prefix: impl AsRef<str>,
+        dir: include_dir::Dir<'static>,
+        mode: DirectoryServeMode,
+    ) -> &mut Self
+    where
+        L: Layer<FileMount, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.set_file_mount(
+            prefix,
+            ServeDir::new_embedded(dir).with_directory_serve_mode(mode),
+        )
+    }
+
+    fn set_file_mount<F>(&mut self, prefix: impl AsRef<str>, files: ServeDir<F>) -> &mut Self
+    where
+        L: Layer<FileMount, Service: Service<Request, Output = O, Error = E>>,
+    {
+        let files = files
+            .fallback(HandBackToRouter)
+            .with_call_fallback_on_method_not_allowed(true);
+        let nested = self.layer.layer(files).boxed();
+        self.set_sub_service_inner(prefix, nested)
+    }
+
     /// use the provided service when no route matches the request.
     #[inline(always)]
     #[must_use]
@@ -735,8 +960,31 @@ impl IntoResponse for RouterError {
                 StatusCode::METHOD_NOT_ALLOWED,
             )
                 .into_response(),
-            Self::NotFound => StatusCode::NOT_FOUND.into_response(),
+            Self::NotFound => {
+                let response = StatusCode::NOT_FOUND.into_response();
+                response.extensions().insert(RouterMiss);
+                response
+            }
         }
+    }
+}
+
+/// Marks the response a router's miss was turned into, so the router that mounted
+/// it still continues with a request handed back to it.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
+struct RouterMiss;
+
+/// Whether a mount's result is a router's miss, as an error or turned into a response.
+fn is_router_miss<O: 'static, E>(result: &Result<O, E>) -> bool {
+    match result {
+        Err(_) => true,
+        Ok(output) => (output as &dyn Any)
+            .downcast_ref::<Response>()
+            .is_some_and(|response| {
+                response.status() == StatusCode::NOT_FOUND
+                    && response.extensions().contains::<RouterMiss>()
+            }),
     }
 }
 
@@ -746,8 +994,17 @@ impl From<Infallible> for RouterError {
     }
 }
 
+/// The services mounted on one prefix, in registration order.
 struct SubService<O, E> {
-    svc: BoxService<Request, O, E>,
+    services: Vec<BoxService<Request, O, E>>,
+}
+
+impl<O, E> Default for SubService<O, E> {
+    fn default() -> Self {
+        Self {
+            services: Vec::new(),
+        }
+    }
 }
 
 impl<State, L, O, E> Service<Request> for Router<State, L, O, E>
@@ -763,11 +1020,9 @@ where
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         let path = req.uri().path_ref_or_root();
 
-        // Collect allowed methods when a path matches but no method matches.
-        // Initialised here so it is visible after the route scan and after
-        // sub_services, letting sub_services take priority over a 405.
-        let mut allowed_methods: Option<MethodMatcher> = None;
-        let mut fallback_handler = None;
+        // What the matched path takes, for a 405 once nothing else answered.
+        let mut path_methods = PathMethods::default();
+        let mut fallback_handlers = None;
 
         // The most specific matching route owns the path
         // (method mismatch -> 405, no fall-through to a vaguer route).
@@ -799,92 +1054,139 @@ where
                 }
             }
 
-            for (matcher, service) in entry.fallback_handlers.iter() {
-                if matcher.matches(Some(&mext), &req) {
-                    fallback_handler = Some((mext, service));
+            // No handler took the request: mounts and matchers get their turn first.
+            for (matcher, _) in entry.handlers.iter().chain(&entry.fallback_handlers) {
+                path_methods.add(matcher, req.method());
+            }
+            fallback_handlers = Some(&entry.fallback_handlers);
+        }
+
+        let mut req = req;
+        if let Some(mounts) = self.sub_services.as_ref() {
+            // Mounts answer by longest prefix. One that hands the request back gives
+            // the next shorter prefix its turn.
+            let mut max_segments = usize::MAX;
+            let mut tried: SmallVec<[&SubService<O, E>; 4]> = SmallVec::new();
+            'mounts: loop {
+                let matched = mounts
+                    .match_prefix_within(req.uri().path_ref_or_root(), max_segments)
+                    .map(|matched| {
+                        let (mount, segments, captures) = matched.into_parts();
+                        (mount, segments, UriParams::from_captures(&captures))
+                    });
+                let Some((mount, segments, captured)) = matched else {
                     break;
+                };
+                // A prefix with an optional segment matches at more than one length.
+                if tried.iter().any(|tried| std::ptr::eq(*tried, mount)) {
+                    let Some(shorter) = segments.checked_sub(1) else {
+                        break;
+                    };
+                    max_segments = shorter;
+                    continue;
+                }
+                tried.push(mount);
+
+                // Services sharing a prefix answer in registration order.
+                for service in &mount.services {
+                    let (mut parts, body) = req.into_parts();
+                    let mut modified_uri = parts.uri.clone();
+                    if !modified_uri.path_mut().strip_leading_segments(segments) {
+                        tracing::warn!(
+                            "failed to strip {segments} matched path segments from Uri (bug??)",
+                        );
+                        return Err(RouterError::Internal.into());
+                    }
+
+                    // The mount works on a fork, so a request it hands back is as it arrived.
+                    let extensions = parts.extensions.fork();
+                    if !captured.is_empty() {
+                        let params = match extensions.get_ref::<UriParams>() {
+                            Some(existing) => {
+                                let mut params = existing.clone();
+                                params.extend(captured.iter());
+                                params
+                            }
+                            None => captured.clone(),
+                        };
+                        extensions.insert(params);
+                    }
+                    if !extensions.contains::<OriginalRouterUri>() {
+                        extensions.insert(OriginalRouterUri(parts.uri.clone()));
+                    }
+                    // Owned here, so a cancelled request does not keep the slot alive.
+                    let slot = Arc::new(Mutex::new(None));
+                    extensions.insert(RouterHandBack(Arc::downgrade(&slot)));
+                    let original_uri = std::mem::replace(&mut parts.uri, modified_uri);
+                    let original_extensions = std::mem::replace(&mut parts.extensions, extensions);
+
+                    tracing::trace!(
+                        "svc request using sub service of router with {segments} matched path segments removed from path; new uri: {}",
+                        parts.uri,
+                    );
+                    let result = service.serve(Request::from_parts(parts, body)).await;
+                    let handed = slot.lock().take();
+                    // An answer from a service that looked elsewhere first stands.
+                    let Some(handed) =
+                        handed.filter(|handed| handed.by_files || is_router_miss(&result))
+                    else {
+                        return result;
+                    };
+
+                    path_methods.merge(handed.path_methods);
+                    let (mut parts, body) = handed.request.into_parts();
+                    parts.uri = original_uri;
+                    parts.extensions = original_extensions;
+                    req = Request::from_parts(parts, body);
+                }
+
+                let Some(shorter) = segments.checked_sub(1) else {
+                    break 'mounts;
+                };
+                max_segments = shorter;
+            }
+        }
+
+        if !self.matchers.is_empty() {
+            // one scratch store serves every matcher that leaves it empty
+            let mut mext = Extensions::new();
+            for (matcher, service) in &self.matchers {
+                if matcher.matches(Some(&mext), &req) {
+                    req.extensions().extend(&mext);
+                    return service.serve(req).await;
                 }
                 if mext.self_iter_all().next().is_some() {
                     mext = Extensions::new();
                 }
             }
+        }
 
-            // Path matched but no method matched — collect for a potential 405.
-            // Do not return yet: a sub_service may still handle this request.
-            for (matcher, _) in entry.handlers.iter().chain(&entry.fallback_handlers) {
-                if let Some(m) = matcher.allowed_methods() {
-                    allowed_methods = Some(allowed_methods.map_or(m, |acc| acc.or_method(m)));
+        if let Some(handlers) = fallback_handlers.filter(|handlers| !handlers.is_empty()) {
+            let mut mext = Extensions::new();
+            for (matcher, service) in handlers {
+                if matcher.matches(Some(&mext), &req) {
+                    req.extensions().extend(&mext);
+                    return service.serve(req).await;
+                }
+                if mext.self_iter_all().next().is_some() {
+                    mext = Extensions::new();
                 }
             }
         }
 
-        let (mut parts, body) = req.into_parts();
-
-        let sub_match = self.sub_services.as_ref().and_then(|router| {
-            router
-                .match_prefix(parts.uri.path_ref_or_root())
-                .map(|matched| {
-                    let (sub_svc, matched_segment_count, captures) = matched.into_parts();
-                    (
-                        sub_svc,
-                        matched_segment_count,
-                        UriParams::from_captures(&captures),
-                    )
-                })
-        });
-
-        if let Some((sub_svc, matched_segment_count, captured)) = sub_match {
-            let mut modified_uri = parts.uri.clone();
-            if !modified_uri
-                .path_mut()
-                .strip_prefix_segments(matched_segment_count)
-            {
-                tracing::warn!(
-                    "failed to strip {matched_segment_count} matched path segments from Uri (bug??)",
-                );
-                return Err(RouterError::Internal.into());
-            }
-
-            if !captured.is_empty() {
-                let params = match parts.extensions.get_ref::<UriParams>() {
-                    Some(existing) => {
-                        let mut params = existing.clone();
-                        params.extend(captured.iter());
-                        params
-                    }
-                    None => captured,
-                };
-                parts.extensions.insert(params);
-            }
-
-            if !parts.extensions.contains::<OriginalRouterUri>() {
-                parts.extensions.insert(OriginalRouterUri(parts.uri));
-            }
-            parts.uri = modified_uri;
-
-            tracing::trace!(
-                "svc request using sub service of router with {matched_segment_count} matched path segments removed from path; new uri: {}",
-                parts.uri,
-            );
-            let req = Request::from_parts(parts, body);
-            return sub_svc.svc.serve(req).await;
+        // Mounted in another router, this one hands back what it has no answer for.
+        if self.not_found.is_none() {
+            req = match RouterHandBack::hand_back(req, path_methods, false) {
+                Ok(()) => return Err(RouterError::NotFound.into()),
+                Err(req) => req,
+            };
         }
 
-        if let Some((extensions, fallback)) = fallback_handler {
-            parts.extensions.extend(&extensions);
-            return fallback.serve(Request::from_parts(parts, body)).await;
-        }
-
-        // A route matched the path but no registered method matched, and no sub_service
-        // handled the request — return 405 with the Allow header per RFC 7231.
-        if let Some(matcher) = allowed_methods
-            && let Some(methods) = NonEmptySmallVec::collect(matcher.iter())
-        {
+        if let Some(methods) = path_methods.refused() {
             return Err(RouterError::MethodNotAllowed(Box::new(methods)).into());
         }
 
         if let Some(not_found) = &self.not_found {
-            let req = Request::from_parts(parts, body);
             not_found.serve(req).await
         } else {
             Err(RouterError::NotFound.into())
@@ -892,939 +1194,104 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use rama_core::{
-        extensions::{Extension, ExtensionsRef},
-        service::service_fn,
-    };
-    use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt, header};
-    use rama_net::uri::PathRef;
+/// The methods the handlers of a matched path take.
+#[derive(Debug, Clone, Copy, Default)]
+struct PathMethods {
+    listed: Option<MethodMatcher>,
+    /// A handler that takes the request's method refused it for another reason.
+    taken: bool,
+}
 
-    use super::*;
-    use crate::{
-        layer::error_handling::ErrorHandlerLayer,
-        matcher::{PathCase, PathDecoding, UriParams},
-        service::web::extract::State,
-    };
-
-    fn root_service() -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(|_req| async {
-            Ok(Response::builder()
-                .status(200)
-                .body(Body::from("Hello, World!"))
-                .unwrap())
-        })
-    }
-
-    fn create_user_service() -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(|_req| async {
-            Ok(Response::builder()
-                .status(200)
-                .body(Body::from("Create User"))
-                .unwrap())
-        })
-    }
-
-    fn get_users_service() -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(|_req| async {
-            Ok(Response::builder()
-                .status(200)
-                .body(Body::from("List Users"))
-                .unwrap())
-        })
-    }
-
-    fn get_user_service() -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(|req: Request| async move {
-            let uri_params = req.extensions().get_ref::<UriParams>().unwrap();
-            let id = uri_params.get("user_id").unwrap();
-            Ok(Response::builder()
-                .status(200)
-                .body(Body::from(format!("Get User: {id}")))
-                .unwrap())
-        })
-    }
-
-    fn delete_user_service() -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(|req: Request| async move {
-            let uri_params = req.extensions().get_ref::<UriParams>().unwrap();
-            let id = uri_params.get("user_id").unwrap();
-            Ok(Response::builder()
-                .status(200)
-                .body(Body::from(format!("Delete User: {id}")))
-                .unwrap())
-        })
-    }
-
-    fn serve_assets_service() -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(|req: Request| async move {
-            let uri_params = req.extensions().get_ref::<UriParams>().unwrap();
-            let path = uri_params.get("path").unwrap();
-            Ok(Response::builder()
-                .status(200)
-                .body(Body::from(format!("Serve Assets: /{path}")))
-                .unwrap())
-        })
-    }
-
-    fn not_found_service() -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(|_req| async {
-            Ok(Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Body::from("Not Found"))
-                .unwrap())
-        })
-    }
-
-    fn label_service(
-        label: &'static str,
-    ) -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(move |_req| async move { Ok(Response::new(Body::from(label))) })
-    }
-
-    fn capture_service(
-        name: &'static str,
-    ) -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(move |req: Request| async move {
-            let params = req.extensions().get_ref::<UriParams>().unwrap();
-            Ok(Response::new(Body::from(
-                params.get(name).unwrap().to_owned(),
-            )))
-        })
-    }
-
-    fn joined_capture_service(
-        first: &'static str,
-        second: &'static str,
-    ) -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(move |req: Request| async move {
-            let params = req.extensions().get_ref::<UriParams>().unwrap();
-            Ok(Response::new(Body::from(format!(
-                "{}|{}",
-                params.get(first).unwrap(),
-                params.get(second).unwrap()
-            ))))
-        })
-    }
-
-    async fn get_text<S>(service: &S, path: &str) -> (StatusCode, String)
-    where
-        S: Service<Request, Output = Response, Error = Infallible>,
-    {
-        let response = service
-            .serve(Request::get(path).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        let status = response.status();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        (status, String::from_utf8(body.to_vec()).unwrap())
-    }
-
-    fn get_user_order_service() -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(|req: Request| async move {
-            let uri_params = req.extensions().get_ref::<UriParams>().unwrap();
-            let user_id = uri_params.get("user_id").unwrap();
-            let order_id = uri_params.get("order_id").unwrap();
-            Ok(Response::builder()
-                .status(200)
-                .body(Body::from(format!(
-                    "Get Order: {order_id} for User: {user_id}",
-                )))
-                .unwrap())
-        })
-    }
-
-    // Echoes the request content back, proving the QUERY body (the query) reaches the handler.
-    fn query_echo_service() -> impl Service<Request, Output = Response, Error = Infallible> {
-        service_fn(|req: Request| async move {
-            let body = req.into_body().collect().await.unwrap().to_bytes();
-            Ok(Response::builder()
-                .status(200)
-                .body(Body::from(format!(
-                    "query: {}",
-                    String::from_utf8_lossy(&body)
-                )))
-                .unwrap())
-        })
-    }
-
-    #[tokio::test]
-    async fn test_router() {
-        let cases = vec![
-            (Method::GET, "/", "Hello, World!", StatusCode::OK),
-            (Method::GET, "/users", "List Users", StatusCode::OK),
-            (Method::POST, "/users", "Create User", StatusCode::OK),
-            (Method::GET, "/users/123", "Get User: 123", StatusCode::OK),
-            (
-                Method::DELETE,
-                "/users/123",
-                "Delete User: 123",
-                StatusCode::OK,
-            ),
-            (
-                Method::GET,
-                "/users/123/orders/456",
-                "Get Order: 456 for User: 123",
-                StatusCode::OK,
-            ),
-            (
-                Method::PUT,
-                "/users/123",
-                "",
-                StatusCode::METHOD_NOT_ALLOWED,
-            ),
-            (
-                Method::GET,
-                "/assets/css/style.css",
-                "Serve Assets: /css/style.css",
-                StatusCode::OK,
-            ),
-            (
-                Method::GET,
-                "/not-found",
-                "Not Found",
-                StatusCode::NOT_FOUND,
-            ),
-        ];
-
-        for prefix in ["/", ""] {
-            let router = Router::new()
-                .with_get(prefix, root_service())
-                .with_get(format!("{prefix}users"), get_users_service())
-                .with_post(format!("{prefix}users"), create_user_service())
-                .with_get(format!("{prefix}users/{{user_id}}"), get_user_service())
-                .with_delete(format!("{prefix}users/{{user_id}}"), delete_user_service())
-                .with_get(
-                    format!("{prefix}users/{{user_id}}/orders/{{order_id}}"),
-                    get_user_order_service(),
-                )
-                .with_get(format!("{prefix}assets/{{*path}}"), serve_assets_service())
-                .with_not_found(not_found_service());
-
-            let router = ErrorHandlerLayer::new().layer(router);
-
-            for (method, path, expected_body, expected_status) in cases.iter() {
-                let req = match *method {
-                    Method::GET => Request::get(*path),
-                    Method::POST => Request::post(*path),
-                    Method::PUT => Request::put(*path),
-                    Method::DELETE => Request::delete(*path),
-                    _ => panic!("Unsupported HTTP method"),
-                }
-                .body(Body::empty())
-                .unwrap();
-
-                let res = router.serve(req).await.unwrap();
-                assert_eq!(
-                    res.status(),
-                    *expected_status,
-                    "method: {method} ; path = {path}; prefix = {prefix}"
-                );
-                let body = res.into_body().collect().await.unwrap().to_bytes();
-                assert_eq!(
-                    body, expected_body,
-                    "method: {method} ; path = {path}; prefix = {prefix}"
-                );
-            }
+impl PathMethods {
+    fn add(&mut self, matcher: &HttpMatcher<Body>, method: &Method) {
+        self.taken |= matcher.method_verdict(method) != Some(false);
+        // The list only serves a 405, which a taken method rules out.
+        if !self.taken {
+            self.list(Some(matcher.methods_not_ruled_out()));
         }
     }
 
-    #[tokio::test]
-    async fn test_router_query_method() {
-        let router = Router::new()
-            .with_query("/search", query_echo_service())
-            .with_get("/search", get_users_service())
-            .with_not_found(not_found_service());
-
-        let router = ErrorHandlerLayer::new().layer(router);
-
-        // QUERY with a body is routed to the QUERY handler and the body reaches it.
-        let req = Request::query("/search")
-            .header(header::CONTENT_TYPE, "application/sql")
-            .body(Body::from("SELECT 1"))
-            .unwrap();
-        let res = router.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "query: SELECT 1");
-
-        // GET on the same path is distinct from QUERY and hits the GET handler.
-        let req = Request::get("/search").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "List Users");
-
-        // A method registered on neither route → 405 listing GET and QUERY in the Allow header.
-        let req = Request::post("/search").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
-        assert_eq!(
-            res.headers()
-                .get(header::ALLOW)
-                .expect("Allow header must be present on 405")
-                .to_str()
-                .unwrap(),
-            "GET, QUERY"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_router_merges_case_insensitive_pattern_registrations() {
-        let router = Router::new()
-            .with_get("/Users/{user_id}", get_user_service())
-            .with_post("/users/{user_id}", create_user_service());
-
-        let router = ErrorHandlerLayer::new().layer(router);
-
-        let req = Request::post("/USERS/123").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "Create User");
-
-        let req = Request::put("/users/123").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
-        assert_eq!(
-            res.headers().get(header::ALLOW).unwrap().to_str().unwrap(),
-            "GET, POST"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_router_method_not_allowed() {
-        let router = Router::new()
-            .with_get("/users", get_users_service())
-            .with_post("/users", create_user_service())
-            .with_get("/users/{user_id}", get_user_service())
-            .with_delete("/users/{user_id}", delete_user_service())
-            .with_not_found(not_found_service());
-
-        let router = ErrorHandlerLayer::new().layer(router);
-
-        // PUT /users/123 → 405: verify status, Allow header, and empty body in one shot
-        let req = Request::put("/users/123").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
-        assert_eq!(
-            res.headers()
-                .get(header::ALLOW)
-                .expect("Allow header must be present on 405")
-                .to_str()
-                .unwrap(),
-            "DELETE, GET"
-        );
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert!(
-            body.is_empty(),
-            "405 body must be empty, not from not_found service"
-        );
-
-        // DELETE /users → 405 with a different Allow set (GET, POST)
-        let req = Request::delete("/users").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
-        assert_eq!(
-            res.headers().get(header::ALLOW).unwrap().to_str().unwrap(),
-            "GET, POST"
-        );
-
-        // Unknown path → 404, no Allow header (not_found service body present)
-        let req = Request::get("/nonexistent").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        assert!(
-            res.headers().get(header::ALLOW).is_none(),
-            "404 must not carry Allow header"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_router_method_not_allowed_no_not_found_service() {
-        // Verify 405 fires correctly when no custom not_found service is registered.
-        let router = Router::new()
-            .with_get("/users/{user_id}", get_user_service())
-            .with_delete("/users/{user_id}", delete_user_service());
-
-        let router = ErrorHandlerLayer::new().layer(router);
-
-        let req = Request::put("/users/123").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
-        assert_eq!(
-            res.headers().get(header::ALLOW).unwrap().to_str().unwrap(),
-            "DELETE, GET"
-        );
-
-        // Unknown path without not_found service → plain 404, no Allow header
-        let req = Request::get("/nonexistent").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        assert!(res.headers().get(header::ALLOW).is_none());
-    }
-
-    #[tokio::test]
-    async fn test_router_capture_beats_catch_all_either_order() {
-        fn name_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
-            service_fn(|req: Request| async move {
-                let p = req.extensions().get_ref::<UriParams>().unwrap();
-                Ok(Response::builder()
-                    .status(200)
-                    .body(Body::from(format!("name:{}", p.get("name").unwrap())))
-                    .unwrap())
-            })
-        }
-        fn rest_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
-            service_fn(|req: Request| async move {
-                let p = req.extensions().get_ref::<UriParams>().unwrap();
-                Ok(Response::builder()
-                    .status(200)
-                    .body(Body::from(format!("rest:{}", p.get("rest").unwrap())))
-                    .unwrap())
-            })
-        }
-
-        // `{name}` (rank 1) must win over `{*rest}` (rank 0) on a single-segment
-        // path, independent of registration order.
-        let routers = [
-            Router::new()
-                .with_get("/files/{name}", name_svc())
-                .with_get("/files/{*rest}", rest_svc()),
-            Router::new()
-                .with_get("/files/{*rest}", rest_svc())
-                .with_get("/files/{name}", name_svc()),
-        ];
-        for router in routers {
-            let router = ErrorHandlerLayer::new().layer(router);
-            let req = Request::get("/files/x").body(Body::empty()).unwrap();
-            let res = router.serve(req).await.unwrap();
-            let body = res.into_body().collect().await.unwrap().to_bytes();
-            assert_eq!(body, "name:x");
-        }
-
-        // A multi-segment path no longer fits `{name}` and falls to the catch-all.
-        let router = ErrorHandlerLayer::new().layer(
-            Router::new()
-                .with_get("/files/{name}", name_svc())
-                .with_get("/files/{*rest}", rest_svc()),
-        );
-        let req = Request::get("/files/a/b").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "rest:a/b");
-    }
-
-    #[tokio::test]
-    async fn test_router_affixed_dynamic_beats_plain_dynamic_either_order() {
-        fn plain_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
-            service_fn(|req: Request| async move {
-                let p = req.extensions().get_ref::<UriParams>().unwrap();
-                Ok(Response::builder()
-                    .status(200)
-                    .body(Body::from(format!("plain:{}", p.get("name").unwrap())))
-                    .unwrap())
-            })
-        }
-        fn json_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
-            service_fn(|req: Request| async move {
-                let p = req.extensions().get_ref::<UriParams>().unwrap();
-                Ok(Response::builder()
-                    .status(200)
-                    .body(Body::from(format!("json:{}", p.get("name").unwrap())))
-                    .unwrap())
-            })
-        }
-
-        let routers = [
-            Router::new()
-                .with_get("/files/{name}", plain_svc())
-                .with_get("/files/{name}.json", json_svc()),
-            Router::new()
-                .with_get("/files/{name}.json", json_svc())
-                .with_get("/files/{name}", plain_svc()),
-        ];
-        for router in routers {
-            let router = ErrorHandlerLayer::new().layer(router);
-            let req = Request::get("/files/readme.json")
-                .body(Body::empty())
-                .unwrap();
-            let res = router.serve(req).await.unwrap();
-            let body = res.into_body().collect().await.unwrap().to_bytes();
-            assert_eq!(body, "json:readme");
+    fn list(&mut self, methods: Option<MethodMatcher>) {
+        if let Some(methods) = methods {
+            self.listed = Some(self.listed.map_or(methods, |all| all.or_method(methods)));
         }
     }
 
-    #[tokio::test]
-    async fn test_router_equal_specificity_preserves_registration_order() {
-        fn svc(
-            label: &'static str,
-        ) -> impl Service<Request, Output = Response, Error = Infallible> {
-            service_fn(move |_req: Request| async move {
-                Ok(Response::builder()
-                    .status(200)
-                    .body(Body::from(label))
-                    .unwrap())
-            })
-        }
-
-        let router = ErrorHandlerLayer::new().layer(
-            Router::new()
-                .with_get("/files/{a}", svc("first"))
-                .with_get("/files/{b}", svc("second")),
-        );
-        let req = Request::get("/files/readme").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "first");
+    fn merge(&mut self, other: Self) {
+        self.list(other.listed);
+        self.taken |= other.taken;
     }
 
-    #[test]
-    fn fallback_registration_reuses_an_existing_path_entry() {
-        let mut router = Router::new().with_get("/same", root_service());
-        router.set_fallback_match_route("/same", HttpMatcher::method_post(), create_user_service());
-
-        assert_eq!(router.routes.len(), 1);
-        let matched = router
-            .routes
-            .match_full(PathRef::from_raw_str("/same"))
-            .unwrap();
-        assert_eq!(matched.value().handlers.len(), 1);
-        assert_eq!(matched.value().fallback_handlers.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn fallback_routes_keep_specificity_order() {
-        fn svc(
-            label: &'static str,
-        ) -> impl Service<Request, Output = Response, Error = Infallible> {
-            service_fn(move |_req: Request| async move { Ok(Response::new(Body::from(label))) })
+    /// The methods to name in a 405: none when the path takes the request's method,
+    /// which another matcher then refused.
+    fn refused(self) -> Option<NonEmptySmallVec<7, Method>> {
+        if self.taken {
+            return None;
         }
-
-        let router = Router::new()
-            .with_fallback_match_route(
-                "/assets/{*path}",
-                HttpMatcher::method_get(),
-                svc("catch-all"),
-            )
-            .with_fallback_match_route("/assets/app.js", HttpMatcher::method_get(), svc("static"));
-        let response = router
-            .serve(Request::get("/assets/app.js").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-
-        assert_eq!(
-            response.into_body().collect().await.unwrap().to_bytes(),
-            "static"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_router_anonymous_glob_surfaces_via_uri_params() {
-        fn glob_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
-            service_fn(|req: Request| async move {
-                let p = req.extensions().get_ref::<UriParams>().unwrap();
-                // anon `{*}` is the glob, not a named param
-                assert!(p.get("rest").is_none());
-                Ok(Response::builder()
-                    .status(200)
-                    .body(Body::from(format!("glob:{}", p.glob().unwrap())))
-                    .unwrap())
-            })
-        }
-        let router =
-            ErrorHandlerLayer::new().layer(Router::new().with_get("/assets/{*}", glob_svc()));
-        let req = Request::get("/assets/css/app.css")
-            .body(Body::empty())
-            .unwrap();
-        let res = router.serve(req).await.unwrap();
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        // glob() is path-style (leading `/`), unlike a named catch-all param.
-        assert_eq!(body, "glob:/css/app.css");
-    }
-
-    #[tokio::test]
-    async fn test_router_invalid_catch_all_mount_is_literal() {
-        // RAMA-PR1027-001: `{*bad name}` is an invalid catch-all body, so the
-        // matcher treats it as a literal segment. The mount must therefore NOT
-        // collapse to `/api`; `/api/users` must not reach the nested service.
-        let app = Router::new()
-            .with_sub_service(
-                "/api/{*bad name}",
-                Router::new().with_get("/", root_service()),
-            )
-            .with_not_found(not_found_service());
-        let app = ErrorHandlerLayer::new().layer(app);
-
-        let req = Request::get("/api/users").body(Body::empty()).unwrap();
-        let res = app.serve(req).await.unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::NOT_FOUND,
-            "invalid catch-all must not mount the sub-service at /api"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_sub_service_mount_respects_segment_boundaries() {
-        for prefix in ["/api", "/api/{id}"] {
-            let app = Router::new()
-                .with_sub_service(prefix, Router::new().with_get("/", root_service()))
-                .with_not_found(not_found_service());
-            let app = ErrorHandlerLayer::new().layer(app);
-
-            let req = Request::get("/apix/123").body(Body::empty()).unwrap();
-            let res = app.serve(req).await.unwrap();
-            assert_eq!(
-                res.status(),
-                StatusCode::NOT_FOUND,
-                "mount prefix {prefix:?} must not match inside a path segment",
-            );
-        }
-    }
-
-    #[tokio::test]
-    #[tracing_test::traced_test]
-    async fn test_router_nest() {
-        let cases = [
-            (Method::GET, "/", "Hello, World!", StatusCode::OK),
-            (Method::GET, "/api/users", "List Users", StatusCode::OK),
-            (Method::POST, "/api/users", "Create User", StatusCode::OK),
-            (
-                Method::DELETE,
-                "/api/users/123",
-                "Delete User: 123",
-                StatusCode::OK,
-            ),
-            (
-                Method::GET,
-                "/api/users/123",
-                "Get User: 123",
-                StatusCode::OK,
-            ),
-            (
-                Method::GET,
-                "/api/users/123/orders/456",
-                "Get Order: 456 for User: 123",
-                StatusCode::OK,
-            ),
-            (Method::GET, "/api/state", "state", StatusCode::OK),
-            (Method::GET, "/api/users/123/state", "state", StatusCode::OK),
-            // to test case insensitive :)
-            (Method::GET, "/Api/USERS/123/State", "state", StatusCode::OK),
-        ];
-
-        let state = "state".to_owned();
-
-        for prefix in ["/", ""] {
-            let api_router = Router::new_with_state(state.clone())
-                .with_get(format!("{prefix}users"), get_users_service())
-                .with_get(
-                    format!("{prefix}state"),
-                    async |State(state): State<String>| state,
-                )
-                .with_post(format!("{prefix}users"), create_user_service())
-                .with_delete(format!("{prefix}users/{{user_id}}"), delete_user_service())
-                .with_sub_router_make_fn(
-                    format!("{prefix}users/{{user_id}}/{{*}}"), // glob should be dropped by nester
-                    |router| {
-                        router
-                            .with_get(prefix, get_user_service())
-                            .with_get(
-                                format!("{prefix}orders/{{order_id}}"),
-                                get_user_order_service(),
-                            )
-                            .with_get(
-                                format!("{prefix}/state"),
-                                async |State(state): State<String>| state,
-                            )
-                    },
-                );
-
-            let app = Router::new()
-                .with_sub_service(format!("{prefix}api"), api_router)
-                .with_get(prefix, root_service());
-
-            let app = ErrorHandlerLayer::new().layer(app);
-
-            for (method, path, expected_body, expected_status) in cases.iter() {
-                let req = match *method {
-                    Method::GET => Request::get(*path),
-                    Method::POST => Request::post(*path),
-                    Method::DELETE => Request::delete(*path),
-                    _ => panic!("Unsupported HTTP method"),
-                }
-                .body(Body::empty())
-                .unwrap();
-
-                let res = app.serve(req).await.unwrap();
-                assert_eq!(
-                    res.status(),
-                    *expected_status,
-                    "method: {method} ; path = {path}; prefix = {prefix}"
-                );
-                let body = res.into_body().collect().await.unwrap().to_bytes();
-                assert_eq!(
-                    body, expected_body,
-                    "method: {method} ; path = {path}; prefix = {prefix}"
-                );
-            }
-
-            // PUT /api/users/123 → the outer router has no direct route for this path,
-            // but the api_router has DELETE /users/{user_id} registered directly.
-            // However the sub-router for users/{user_id}/* takes priority (deferred 405),
-            // and that sub-router has GET / — so the final 405 reflects Allow: GET.
-            let req = Request::put("/api/users/123").body(Body::empty()).unwrap();
-            let res = app.serve(req).await.unwrap();
-            assert_eq!(
-                res.status(),
-                StatusCode::METHOD_NOT_ALLOWED,
-                "nested router: PUT /api/users/123 must be 405; prefix = {prefix}"
-            );
-            assert_eq!(
-                res.headers().get(header::ALLOW).unwrap().to_str().unwrap(),
-                "GET",
-                "nested router: Allow header reflects sub-router's registered methods; prefix = {prefix}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn default_and_strict_path_policy_matrix() {
-        assert_eq!(
-            PathMatchPolicy::default(),
-            PathMatchPolicy::new(PathCase::AsciiInsensitive, PathDecoding::PercentDecoded)
-        );
-
-        let default = ErrorHandlerLayer::new().layer(
-            Router::new()
-                .with_get("/send/{value}", capture_service("value"))
-                .with_get("/case", label_service("lower"))
-                .with_get("/CASE", label_service("upper"))
-                .with_not_found(not_found_service()),
-        );
-        assert_eq!(
-            default.get_ref().path_match_policy(),
-            PathMatchPolicy::default()
-        );
-
-        for (path, expected) in [
-            ("/send/abc", "abc"),
-            ("/SEND/abc", "abc"),
-            ("/send/a%2Fb", "a/b"),
-            ("/send/a%252Fb", "a%2Fb"),
-            ("/send/%2e%2e", ".."),
-        ] {
-            assert_eq!(
-                get_text(&default, path).await,
-                (StatusCode::OK, expected.into())
-            );
-        }
-        for path in ["/case", "/CASE", "/CaSe"] {
-            assert_eq!(
-                get_text(&default, path).await,
-                (StatusCode::OK, "lower".into())
-            );
-        }
-
-        let strict = ErrorHandlerLayer::new().layer(
-            Router::new_with_path_match_policy(PathMatchPolicy::STRICT)
-                .with_get("/send/{value}", capture_service("value"))
-                .with_get("/case", label_service("lower"))
-                .with_get("/CASE", label_service("upper"))
-                .with_get("/encoded/a%2Fb", label_service("upper escape"))
-                .with_get("/encoded/a%2fb", label_service("lower escape"))
-                .with_not_found(not_found_service()),
-        );
-        assert_eq!(
-            strict.get_ref().path_match_policy(),
-            PathMatchPolicy::STRICT
-        );
-
-        for (path, expected) in [
-            ("/send/abc", "abc"),
-            ("/send/a%2Fb", "a%2Fb"),
-            ("/send/a%252Fb", "a%252Fb"),
-            ("/send/%2e%2e", "%2e%2e"),
-            ("/case", "lower"),
-            ("/CASE", "upper"),
-            ("/encoded/a%2Fb", "upper escape"),
-            ("/encoded/a%2fb", "lower escape"),
-        ] {
-            assert_eq!(
-                get_text(&strict, path).await,
-                (StatusCode::OK, expected.into())
-            );
-        }
-        for path in ["/SEND/abc", "/CaSe"] {
-            assert_eq!(get_text(&strict, path).await.0, StatusCode::NOT_FOUND);
-        }
-
-        // The URI retains malformed input for display, but its encoded path
-        // view escapes the stray percent sign. Decoded routing reverses that
-        // canonical escape once; raw routing preserves the encoded view.
-        for (input, decoded, raw) in [
-            ("/send/%", "%", "%25"),
-            ("/send/%2", "%2", "%252"),
-            ("/send/%GG", "%GG", "%25GG"),
-        ] {
-            let request = Request::get(input).body(Body::empty()).unwrap();
-            assert_eq!(request.uri().to_string(), input);
-            assert_eq!(
-                get_text(&default, input).await,
-                (StatusCode::OK, decoded.into())
-            );
-            assert_eq!(get_text(&strict, input).await, (StatusCode::OK, raw.into()));
-        }
-    }
-
-    #[tokio::test]
-    async fn path_policy_axes_are_independent() {
-        let sensitive_decoded =
-            PathMatchPolicy::new(PathCase::Sensitive, PathDecoding::PercentDecoded);
-        let router = ErrorHandlerLayer::new().layer(
-            Router::new_with_path_match_policy(sensitive_decoded)
-                .with_get("/send/{value}", capture_service("value"))
-                .with_not_found(not_found_service()),
-        );
-        assert_eq!(
-            get_text(&router, "/send/a%2Fb").await,
-            (StatusCode::OK, "a/b".into())
-        );
-        assert_eq!(
-            get_text(&router, "/SEND/a%2Fb").await.0,
-            StatusCode::NOT_FOUND
-        );
-
-        let insensitive_raw = PathMatchPolicy::new(PathCase::AsciiInsensitive, PathDecoding::Raw);
-        let router = ErrorHandlerLayer::new().layer(
-            Router::new_with_path_match_policy(insensitive_raw)
-                .with_get("/send/{value}", capture_service("value"))
-                .with_not_found(not_found_service()),
-        );
-        assert_eq!(
-            get_text(&router, "/SEND/a%2Fb").await,
-            (StatusCode::OK, "a%2Fb".into())
-        );
-    }
-
-    #[test]
-    fn stateful_router_policy_is_defaulted_or_explicit() {
-        let default = Router::<String>::new_with_state("state".to_owned());
-        assert_eq!(default.path_match_policy(), PathMatchPolicy::default());
-
-        let strict = Router::<String>::new_with_state_and_path_match_policy(
-            "state".to_owned(),
-            PathMatchPolicy::STRICT,
-        );
-        assert_eq!(strict.path_match_policy(), PathMatchPolicy::STRICT);
-    }
-
-    #[tokio::test]
-    async fn path_policy_applies_to_wildcards_and_mounted_prefixes() {
-        let default = ErrorHandlerLayer::new().layer(
-            Router::new()
-                .with_get("/assets/{*path}", capture_service("path"))
-                .with_sub_service(
-                    "/tenants/{tenant}",
-                    Router::new().with_get("/{item}", joined_capture_service("tenant", "item")),
-                )
-                .with_not_found(not_found_service()),
-        );
-        assert_eq!(
-            get_text(&default, "/ASSETS/a%2Fb/c%2Ed").await,
-            (StatusCode::OK, "a/b/c.d".into())
-        );
-        assert_eq!(
-            get_text(&default, "/TENANTS/Acme%2FBlue/Part%2FOne").await,
-            (StatusCode::OK, "Acme/Blue|Part/One".into())
-        );
-
-        let strict = ErrorHandlerLayer::new().layer(
-            Router::new_with_path_match_policy(PathMatchPolicy::STRICT)
-                .with_get("/assets/{*path}", capture_service("path"))
-                .with_sub_service(
-                    "/tenants/{tenant}",
-                    Router::new().with_get("/{item}", joined_capture_service("tenant", "item")),
-                )
-                .with_not_found(not_found_service()),
-        );
-        assert_eq!(
-            get_text(&strict, "/assets/a%2Fb/c%2Ed").await,
-            (StatusCode::OK, "a%2Fb/c%2Ed".into())
-        );
-        assert_eq!(
-            get_text(&strict, "/tenants/Acme%2FBlue/Part%2FOne").await,
-            (StatusCode::OK, "Acme%2FBlue|Part/One".into())
-        );
-        for path in ["/ASSETS/a%2Fb/c%2Ed", "/TENANTS/Acme%2FBlue/Part%2FOne"] {
-            assert_eq!(get_text(&strict, path).await.0, StatusCode::NOT_FOUND);
-        }
-    }
-
-    #[tokio::test]
-    async fn nested_and_fallback_routes_inherit_the_router_policy() {
-        let router = Router::new_with_path_match_policy(PathMatchPolicy::STRICT)
-            .with_sub_router_make_fn("/api", |nested| {
-                assert_eq!(nested.path_match_policy(), PathMatchPolicy::STRICT);
-                nested.with_get("/Value", label_service("nested"))
-            })
-            .with_fallback_match_route(
-                "/problem/{value}",
-                HttpMatcher::method_get(),
-                capture_service("value"),
-            )
-            .with_not_found(not_found_service());
-        let router = ErrorHandlerLayer::new().layer(router);
-
-        assert_eq!(
-            get_text(&router, "/api/Value").await,
-            (StatusCode::OK, "nested".into())
-        );
-        assert_eq!(
-            get_text(&router, "/problem/a%2Fb").await,
-            (StatusCode::OK, "a%2Fb".into())
-        );
-        for path in ["/API/Value", "/api/value", "/PROBLEM/a%2Fb"] {
-            assert_eq!(get_text(&router, path).await.0, StatusCode::NOT_FOUND);
-        }
-    }
-    #[derive(Debug, Clone, Extension)]
-    struct Leaked;
-
-    /// Records match metadata and then declines the request.
-    struct InsertThenDecline;
-
-    impl Matcher<Request> for InsertThenDecline {
-        fn matches(&self, ext: Option<&Extensions>, _req: &Request) -> bool {
-            if let Some(ext) = ext {
-                ext.insert(Leaked);
-            }
-            false
-        }
-    }
-
-    #[tokio::test]
-    async fn test_router_failed_matcher_leaves_no_extensions() {
-        async fn leak_free(req: Request) -> StatusCode {
-            if req.extensions().contains::<Leaked>() {
-                StatusCode::INTERNAL_SERVER_ERROR
-            } else {
-                StatusCode::OK
-            }
-        }
-
-        let router = Router::new()
-            .with_match_route(
-                "/items/{id}",
-                HttpMatcher::custom(InsertThenDecline),
-                StatusCode::IM_A_TEAPOT,
-            )
-            .with_match_route("/items/{id}", HttpMatcher::method_get(), leak_free);
-
-        let req = Request::get("/items/42").body(Body::empty()).unwrap();
-        let res = router.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
+        NonEmptySmallVec::collect(self.listed?.iter())
     }
 }
+
+/// Where a nested router or a file mount without an answer returns the request to
+/// the router that mounted it.
+#[derive(Clone, Extension)]
+#[extension(tags(http))]
+struct RouterHandBack(Weak<Mutex<Option<HandedBack>>>);
+
+struct HandedBack {
+    request: Request,
+    path_methods: PathMethods,
+    /// Set by a file mount, whose placeholder answer is not an error.
+    by_files: bool,
+}
+
+impl fmt::Debug for RouterHandBack {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RouterHandBack").finish_non_exhaustive()
+    }
+}
+
+impl RouterHandBack {
+    /// Return `request` to the router that mounted the caller, if one is waiting for it.
+    fn hand_back(
+        request: Request,
+        path_methods: PathMethods,
+        by_files: bool,
+    ) -> Result<(), Request> {
+        let slot = request
+            .extensions()
+            .get_ref::<Self>()
+            .and_then(|hand_back| hand_back.0.upgrade());
+        let Some(slot) = slot else {
+            return Err(request);
+        };
+        *slot.lock() = Some(HandedBack {
+            request,
+            path_methods,
+            by_files,
+        });
+        Ok(())
+    }
+}
+
+/// The fallback of a file mount: the router that mounted it continues with the request.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct HandBackToRouter;
+
+impl Service<Request> for HandBackToRouter {
+    type Output = Response;
+    type Error = Infallible;
+
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
+        // Outside a router there is nothing to continue with.
+        _ = RouterHandBack::hand_back(req, PathMethods::default(), true);
+        Ok(StatusCode::NOT_FOUND.into_response())
+    }
+}
+
+/// The service behind [`Router::with_dir`], [`Router::with_file`] and their variants.
+pub type FileMount = ServeDir<HandBackToRouter>;
+
+#[cfg(test)]
+mod tests;

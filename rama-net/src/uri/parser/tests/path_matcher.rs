@@ -1147,3 +1147,39 @@ fn leading_literal_segments_decide_captures_like_the_full_match() {
     assert_eq!(captured(&globbed, "/static/a/b/items/42"), found);
     assert_eq!(captured(&globbed, "/assets/a/b/items/42"), None);
 }
+
+#[test]
+fn prefix_patterns_report_themselves() {
+    assert!(PathPattern::new_prefix("/api").is_prefix());
+    assert!(!PathPattern::new("/api").is_prefix());
+}
+
+#[test]
+fn bounded_prefix_lookup_covers_at_most_the_given_segments() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/a/b", "long");
+    router.insert_prefix("/a/{id}?", "optional");
+    router.insert_prefix("/", "root");
+
+    let matched = router.match_prefix_within(p("/a/b/c"), usize::MAX).unwrap();
+    assert_eq!(
+        (*matched.value(), matched.matched_segment_count()),
+        ("long", 2)
+    );
+    // Within one segment the optional part is left out, and so is its capture.
+    let matched = router.match_prefix_within(p("/a/b/c"), 1).unwrap();
+    assert_eq!(
+        (*matched.value(), matched.matched_segment_count()),
+        ("optional", 1)
+    );
+    assert_eq!(matched.captures().get("id"), Some(""));
+    let matched = router.match_prefix_within(p("/a/z/c"), 2).unwrap();
+    assert_eq!(matched.captures().get("id"), Some("z"));
+    let matched = router.match_prefix_within(p("/a/b/c"), 0).unwrap();
+    assert_eq!(
+        (*matched.value(), matched.matched_segment_count()),
+        ("root", 0)
+    );
+}

@@ -5,26 +5,16 @@
 
 use std::convert::Infallible;
 
-use rama_core::{
-    Service,
-    extensions::ExtensionsRef,
-    service::{BoxService, StaticOutput},
-};
+use rama_core::{Service, extensions::ExtensionsRef, service::StaticOutput};
 
-use crate::{Body, Request, Response, Version, matcher::HttpMatcher};
+use crate::{Request, Response, Version};
 
 pub mod extract;
 pub mod response;
 
 use response::IntoResponse;
 
-#[derive(Debug, Clone)]
-pub(crate) struct Endpoint {
-    pub(crate) matcher: HttpMatcher<Body>,
-    pub(crate) service: BoxService<Request, Response, Infallible>,
-}
-
-/// Accept multiple types as an endpoint service for [`super::WebService`].
+/// Accept multiple types as an endpoint service for [`super::Router`].
 ///
 /// Function handlers enter a generic HTTP application context: HTTP/2 and HTTP/3
 /// Cookie fields are joined before extraction. Existing [`Service<Request>`]
@@ -306,7 +296,7 @@ mod tests {
     #[tokio::test]
     async fn routed_functions_join_cookies_but_transport_services_preserve_lines() {
         let application =
-            crate::service::web::WebService::new().with_get("/", async |request: Request| {
+            crate::service::web::Router::new().with_get("/", async |request: Request| {
                 assert_application_cookies(request.headers());
                 StatusCode::OK
             });
@@ -327,7 +317,7 @@ mod tests {
             );
             Ok::<_, Infallible>(StatusCode::OK)
         });
-        let relay = crate::service::web::WebService::new().with_get("/", relay);
+        let relay = crate::service::web::Router::new().with_get("/", relay);
 
         for version in [Version::HTTP_2, Version::HTTP_3] {
             assert_eq!(
@@ -497,7 +487,7 @@ mod tests {
             foo: String,
         }
 
-        let svc = crate::service::web::WebService::default().with_get(
+        let svc = crate::service::web::Router::default().with_get(
             "/{foo}/bar",
             async |Host(host): Host, Path(params): Path<Params>| {
                 format!("{} => {}", host, params.foo)

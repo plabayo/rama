@@ -45,15 +45,16 @@ use rama::{
     graceful::Scope,
     http::{
         Response,
-        layer::trace::TraceLayer,
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         matcher::HttpMatcher,
         server::HttpServer,
         service::web::{
-            WebService,
+            Router,
             extract::multipart::{Multipart, MultipartRejection},
             response::{Html, IntoResponse},
         },
     },
+    layer::ArcLayer,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -83,8 +84,8 @@ async fn main() {
         HttpServer::auto(weak_scope)
             .listen(
                 "127.0.0.1:12028",
-                TraceLayer::new_for_http().layer(
-                    WebService::default()
+                (TraceLayer::new_for_http(), ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
+                    Router::new()
                         .with_get(
                             "/",
                             Html(

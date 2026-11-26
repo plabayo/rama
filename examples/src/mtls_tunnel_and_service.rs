@@ -37,14 +37,14 @@ use rama::{
     Layer,
     graceful::Scope,
     http::{
-        layer::trace::TraceLayer,
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::{
-            WebService,
+            Router,
             response::{Html, Redirect},
         },
     },
-    layer::TraceErrLayer,
+    layer::{ArcLayer, TraceErrLayer},
     net::{address::SocketAddress, proxy::IoForwardService},
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
@@ -116,11 +116,16 @@ async fn main() {
     scope.spawn_task(async move {
         let tcp_service = TlsAcceptorLayer::new(tls_server_data).into_layer(
             HttpServer::auto(weak_scope.clone()).service(
-                TraceLayer::new_for_http().into_layer(
-                    WebService::default()
-                        .with_get("/", Redirect::temporary("/hello"))
-                        .with_get("/hello", Html("<h1>Hello, authorized client!</h1>")),
-                ),
+                (
+                    TraceLayer::new_for_http(),
+                    ArcLayer::new(),
+                    ErrorHandlerLayer::new(),
+                )
+                    .into_layer(
+                        Router::new()
+                            .with_get("/", Redirect::temporary("/hello"))
+                            .with_get("/hello", Html("<h1>Hello, authorized client!</h1>")),
+                    ),
             ),
         );
 

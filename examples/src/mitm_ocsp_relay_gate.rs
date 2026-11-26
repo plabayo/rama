@@ -9,7 +9,7 @@
 //! `IoForwardService` to bridge the terminated streams, plus
 //! `IoToProxyBridgeIoLayer` for the local hermetic mode's egress dial. The local
 //! upstream is a rama `HttpServer` behind a `TlsAcceptorLayer`, and the
-//! revocation endpoints are a rama `WebService`.
+//! revocation endpoints are a rama `Router`.
 //!
 //! `--upstream-revocation` (`ocsp` / `crl` / `none`) sets what the local upstream
 //! cert advertises; `--leaf-revocation` (`staple` default, or `crl` / `ocsp` /
@@ -48,17 +48,18 @@ use rama::{
         Body, Request, Response, StatusCode,
         header::{CONNECTION, CONTENT_TYPE},
         layer::{
+            error_handling::ErrorHandlerLayer,
             trace::TraceLayer,
             upgrade::{EagerHttpProxyConnector, UpgradeLayer},
         },
         matcher::MethodMatcher,
         server::HttpServer,
         service::web::{
-            WebService,
+            Router,
             extract::{Bytes, Path, State},
         },
     },
-    layer::{ConsumeErrLayer, MapOutput, TimeoutLayer},
+    layer::{ArcLayer, ConsumeErrLayer, MapOutput, TimeoutLayer},
     net::proxy::{IoForwardOutcome, IoForwardService},
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -226,7 +227,7 @@ async fn main() -> Result<(), BoxError> {
             ca_id: responder.ca().id(),
             responder: responder.clone(),
         });
-        let web = WebService::new_with_state(state)
+        let web = Router::new_with_state(state)
             .with_get("/crl", revocation_crl)
             .with_post("/ocsp", revocation_ocsp_post)
             .with_get("/ocsp/{req}", revocation_ocsp_get);
@@ -235,7 +236,12 @@ async fn main() -> Result<(), BoxError> {
         // HTTP/1.1 and (on the constrained CI runner) can stall on `auto`'s h2
         // detection or a kept-alive socket. http1 + `Connection: close` per
         // response keeps that in-handshake fetch deterministic and self-closing.
-        tokio::spawn(listener.serve(HttpServer::new_http1(scope.clone()).service(web)));
+        tokio::spawn(
+            listener.serve(
+                HttpServer::new_http1(scope.clone())
+                    .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(web)),
+            ),
+        );
         issuer = issuer.with_revocation(responder);
     }
     let relay = TlsMitmRelay::new(issuer);

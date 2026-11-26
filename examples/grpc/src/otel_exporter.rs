@@ -48,11 +48,14 @@ use rama::{
     http::{
         client::EasyHttpWebClient,
         grpc,
-        layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
+        layer::{
+            error_handling::ErrorHandlerLayer, opentelemetry::RequestMetricsLayer,
+            trace::TraceLayer,
+        },
         server::HttpServer,
-        service::web::{WebService, response::Html},
+        service::web::{Router, response::Html},
     },
-    layer::AddInputExtensionLayer,
+    layer::{AddInputExtensionLayer, ArcLayer},
     net::stream::layer::opentelemetry::NetworkMetricsLayer,
     tcp::server::TcpListener,
     telemetry::{
@@ -147,12 +150,16 @@ async fn main() {
     scope.spawn_task(async move {
         // http service
         let http_service = HttpServer::auto(weak_scope.clone()).service(
-            (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
-                WebService::default().with_get("/", async |ext: Extensions| {
+            (
+                TraceLayer::new_for_http(),
+                RequestMetricsLayer::default(),
+                ArcLayer::new(),
+                ErrorHandlerLayer::new(),
+            )
+                .into_layer(Router::new().with_get("/", async |ext: Extensions| {
                     ext.get_ref::<Metrics>().unwrap().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
-                }),
-            ),
+                })),
         );
 
         // service setup & go

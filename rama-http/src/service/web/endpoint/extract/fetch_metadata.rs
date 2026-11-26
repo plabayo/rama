@@ -35,7 +35,7 @@ mod tests {
         SEC_FETCH_DEST, SEC_FETCH_MODE, SEC_FETCH_SITE, SEC_FETCH_USER, SEC_PURPOSE,
     };
     use crate::headers::{SecFetchDest, SecFetchMode, SecFetchSite};
-    use crate::service::web::WebService;
+    use crate::service::web::Router;
     use crate::service::web::endpoint::extract::test_support::serve_get;
 
     async fn describe(metadata: Option<FetchMetadata>) -> String {
@@ -59,7 +59,7 @@ mod tests {
 
     #[tokio::test]
     async fn extracts_navigation() {
-        let svc = WebService::default().with_get("/", describe);
+        let svc = Router::default().with_get("/", describe);
         let (status, body) = serve_get(
             &svc,
             "/",
@@ -77,7 +77,7 @@ mod tests {
 
     #[tokio::test]
     async fn extracts_partial_set() {
-        let svc = WebService::default().with_get("/", describe);
+        let svc = Router::default().with_get("/", describe);
         let (status, body) = serve_get(&svc, "/", &[(&SEC_FETCH_SITE, "cross-site")]).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "cross-site - - false -");
@@ -85,7 +85,7 @@ mod tests {
 
     #[tokio::test]
     async fn extracts_speculative_navigation() {
-        let svc = WebService::default().with_get("/", describe);
+        let svc = Router::default().with_get("/", describe);
         let (status, body) = serve_get(
             &svc,
             "/",
@@ -106,7 +106,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_metadata_is_none() {
-        let svc = WebService::default().with_get("/", describe);
+        let svc = Router::default().with_get("/", describe);
         assert_eq!(
             serve_get(&svc, "/", &[]).await,
             (StatusCode::OK, "none".into())

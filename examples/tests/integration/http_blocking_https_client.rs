@@ -2,7 +2,8 @@ use super::utils;
 use rama::{
     Layer,
     graceful::WeakScope,
-    http::{server::HttpServer, service::web::WebService},
+    http::{layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router},
+    layer::ArcLayer,
     tcp::server::TcpListener,
     tls::boring::server::TlsAcceptorLayer,
 };
@@ -16,8 +17,10 @@ async fn test_http_blocking_https_client() {
 
     let tls = utils::TestTlsConfig::new();
     let service = TlsAcceptorLayer::new(tls.server.clone()).into_layer(
-        HttpServer::new_http1(WeakScope::detached())
-            .service(WebService::default().with_get("/", BODY)),
+        HttpServer::new_http1(WeakScope::detached()).service(
+            (ArcLayer::new(), ErrorHandlerLayer::new())
+                .into_layer(Router::new().with_get("/", BODY)),
+        ),
     );
     let listener = TcpListener::bind_address("127.0.0.1:0", WeakScope::detached())
         .await

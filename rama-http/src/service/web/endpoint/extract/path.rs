@@ -68,7 +68,7 @@ impl<T> DerefMut for Path<T> {
 mod tests {
     use super::*;
 
-    use crate::service::web::WebService;
+    use crate::service::web::Router;
     use crate::{Body, Request, StatusCode};
     use rama_core::Service;
 
@@ -80,7 +80,7 @@ mod tests {
             bar: u32,
         }
 
-        let svc = WebService::default().with_get(
+        let svc = Router::default().with_get(
             "/a/{foo}/{bar}/b/{}",
             async |Path(params): Path<Params>| {
                 assert_eq!(params.foo, "hello");

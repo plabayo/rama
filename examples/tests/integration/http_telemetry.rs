@@ -1,6 +1,7 @@
 use super::utils;
 
 use rama::{
+    Layer,
     bytes::Bytes,
     extensions::Extension,
     graceful::WeakScope,
@@ -16,9 +17,11 @@ use rama::{
                 common::v1::{KeyValue, any_value::Value},
             },
         },
+        layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
-        service::web::{WebService, extract::State},
+        service::web::{Router, extract::State},
     },
+    layer::ArcLayer,
     tcp::server::TcpListener,
 };
 
@@ -151,7 +154,7 @@ fn find_string_attr<'a>(attrs: &'a [KeyValue], key: &str) -> Option<&'a str> {
 
 async fn spawn_fake_otlp_collector(state: Arc<CollectorState>) {
     let scope = WeakScope::detached();
-    let web = WebService::new_with_state(state)
+    let web = Router::new_with_state(state)
         .with_post(
             "/v1/metrics",
             async |State(state): State<Arc<CollectorState>>, req: Request| {
@@ -170,7 +173,8 @@ async fn spawn_fake_otlp_collector(state: Arc<CollectorState>) {
                 StatusCode::OK
             },
         );
-    let http_service = HttpServer::auto(scope.clone()).service(web);
+    let http_service = HttpServer::auto(scope.clone())
+        .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(web));
 
     let listener = TcpListener::build(scope)
         .bind_address("127.0.0.1:4318")

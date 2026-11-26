@@ -21,7 +21,7 @@ mod tests {
         body::util::BodyExt,
         header,
         service::web::{
-            WebService,
+            Router,
             extract::{Form, Text},
         },
     };
@@ -29,10 +29,9 @@ mod tests {
 
     #[tokio::test]
     async fn owned_uri_composes_with_text_body_extractor() {
-        let service = WebService::default()
-            .with_post("/items", async |uri: Uri, Text(body): Text| {
-                format!("{uri}: {body}")
-            });
+        let service = Router::default().with_post("/items", async |uri: Uri, Text(body): Text| {
+            format!("{uri}: {body}")
+        });
         let request = Request::builder()
             .method(Method::POST)
             .uri("/items?source=test")
@@ -54,7 +53,7 @@ mod tests {
             source: String,
         }
 
-        let service = WebService::default()
+        let service = Router::default()
             .with_get("/items", async |uri: Uri, Form(input): Form<Input>| {
                 format!("{uri}: {}", input.source)
             });

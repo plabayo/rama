@@ -41,7 +41,7 @@ use crate::{
 /// reports as an unsatisfied [`IntoEndpointService`] or [`IntoEndpointServiceWithState`]
 /// bound rather than naming the missing impl.
 ///
-/// When registering a `Result<O, E>` handler with [`WebService`](super::super::WebService),
+/// When registering a `Result<O, E>` handler with [`Router`](super::super::Router),
 /// response conversion additionally requires `O: IntoResponse` and `E: Into<ErrorResponse>`.
 /// Implementing [`IntoResponse`] for `E` provides the latter conversion, but is not
 /// required: [`ErrorResponse`] itself also satisfies it, as used by
@@ -54,7 +54,7 @@ use crate::{
 ///
 /// ```
 /// use rama_http::Response;
-/// use rama_http::service::web::WebService;
+/// use rama_http::service::web::Router;
 /// use rama_http::service::web::extract::{Query, query::FailedToDeserializeQueryString};
 /// use rama_http::service::web::response::IntoResponse;
 ///
@@ -86,7 +86,7 @@ use crate::{
 ///     Ok(format!("page {}", params.page))
 /// }
 ///
-/// let _service = WebService::default().with_get("/items", list);
+/// let _service = Router::default().with_get("/items", list);
 /// ```
 pub trait EndpointServiceFn<T, State>:
     private::Sealed<T, State> + Clone + Send + Sync + 'static

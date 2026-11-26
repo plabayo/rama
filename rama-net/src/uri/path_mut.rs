@@ -215,6 +215,31 @@ impl<'a> PathMut<'a> {
         true
     }
 
+    /// Drop the first `count` path segments and keep the rest as written, a
+    /// trailing slash included.
+    ///
+    /// Returns `false` when the path has fewer than `count` segments.
+    pub fn strip_leading_segments(&mut self, count: usize) -> bool {
+        if count == 0 {
+            return true;
+        }
+        let new = {
+            let path: &[u8] = &self.owned.path;
+            let Some((_, end)) = segment_range_bounds(path, 0, count) else {
+                return false;
+            };
+            let rest = &path[end..];
+            let mut new = BytesMut::with_capacity(rest.len() + 1);
+            if !rest.starts_with(b"/") {
+                new.extend_from_slice(b"/");
+            }
+            new.extend_from_slice(rest);
+            new
+        };
+        self.owned.path = new;
+        true
+    }
+
     /// [`strip_prefix`](Self::strip_prefix) with explicit [`PathMatchOptions`].
     #[expect(
         clippy::needless_pass_by_value,

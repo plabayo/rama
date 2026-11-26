@@ -51,7 +51,7 @@ use rama::{
         server::HttpServer,
         service::{
             client::HttpClientExt as _,
-            web::{Router, WebService, response::IntoResponse as _},
+            web::{Router, response::IntoResponse as _},
         },
         ws::{
             Message,
@@ -240,8 +240,10 @@ where
             HeaderValue::from_static("res-bar"),
         ),
         CorsLayer::permissive(),
+        ArcLayer::new(),
+        ErrorHandlerLayer::new(),
     )
-        .layer(WebService::default().with_post(
+        .layer(Router::new().with_post(
             match params.server {
                 Size::Small => "small",
                 Size::Large => "large",

@@ -16,7 +16,7 @@ The easiest way to implement routers in Rama is by making use of
 In case you need this routing to be done on the web you can make use of:
 
 - [`match_service!` macro](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html) in case you want/like a static dispatch approach;
-- or you can use the [`WebService` router](https://ramaproxy.org/docs/rama/http/service/web/struct.WebService.html) if dynamic dispatch is what you prefer.
+- or you can use the [`Router`](https://ramaproxy.org/docs/rama/http/service/web/struct.Router.html) if dynamic dispatch is what you prefer.
 
 On the transport layer you could make use of the [`SocketMatcher`](https://ramaproxy.org/docs/rama/net/stream/matcher/struct.SocketMatcher.html)
 matcher. And of course for any layer there is always the option to roll out your own `Matcher` implementation or even start from scratch entirely.
@@ -41,7 +41,7 @@ The above is a visualisation of the concept in action where `Service A` would be
 Examples of routers:
 
 - static dispatch: [/examples/src/http_service_match.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_service_match.rs)
-- dynamic dispatch: [/examples/src/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_web_service_dir_and_api.rs)
+- dynamic dispatch: [/examples/src/http_router_dir_and_api.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_router_dir_and_api.rs)
 
 ### Use your imagination
 

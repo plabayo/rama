@@ -44,17 +44,17 @@
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
 )]
 
-use rama::Layer;
-use rama::http::layer::trace::TraceLayer;
+use rama::http::layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer};
 use rama::http::matcher::HttpMatcher;
 use rama::http::protocols::html::{Either, body, br, form, h1, html, input, label, p};
 use rama::http::service::web::response::IntoResponse;
-use rama::http::service::web::{WebService, extract::Form};
+use rama::http::service::web::{Router, extract::Form};
 use rama::telemetry::tracing::{
     self,
     level_filters::LevelFilter,
     subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
+use rama::{Layer, layer::ArcLayer};
 use rama::{graceful::Scope, http::server::HttpServer};
 
 use serde::{Deserialize, Serialize};
@@ -87,14 +87,17 @@ async fn main() {
         HttpServer::auto(weak_scope)
             .listen(
                 "127.0.0.1:12002",
-                TraceLayer::new_for_http().layer(
-                    WebService::default()
-                        .with_get("/", index_form)
-                        .with_matcher(
+                (
+                    TraceLayer::new_for_http(),
+                    ArcLayer::new(),
+                    ErrorHandlerLayer::new(),
+                )
+                    .into_layer(
+                        Router::new().with_get("/", index_form).with_matcher(
                             HttpMatcher::method_get().or_method_post().and_path("/form"),
                             send_form_data,
                         ),
-                ),
+                    ),
             )
             .await
             .expect("failed to run service");

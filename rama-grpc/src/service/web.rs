@@ -341,7 +341,8 @@ mod tests {
                     .unwrap(),
             )
             .await;
-        assert_matches!(http_1, Err(RouterError::MethodNotAllowed(_)));
+        // The route takes POST, so another transport is a miss and no method refusal.
+        assert_matches!(http_1, Err(RouterError::NotFound));
 
         for content_type in [
             None,

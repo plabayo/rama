@@ -755,16 +755,50 @@ impl<T> PathRouter<T> {
     /// Match `path` against the most specific registered prefix.
     #[must_use]
     pub fn match_prefix<'a, 'p>(&'a self, path: PathRef<'p>) -> Option<PathRouteMatch<'a, 'p, T>> {
+        self.match_prefix_within(path, usize::MAX)
+    }
+
+    /// Match `path` against the most specific registered prefix that covers at
+    /// most its first `max_segments` segments.
+    #[must_use]
+    pub fn match_prefix_within<'a, 'p>(
+        &'a self,
+        path: PathRef<'p>,
+        max_segments: usize,
+    ) -> Option<PathRouteMatch<'a, 'p, T>> {
         let segments: SmallVec<[EncodedSegment<'p>; 8]> = path
             .segments()
             .map(|segment| segment.as_encoded_str())
             .collect();
-        let segments = prefix_content_segments(&segments);
+        let content = prefix_content_segments(&segments);
+        let segments = &content[..content.len().min(max_segments)];
         let matched = self.root.match_prefix(segments, 0)?;
-        let captures = if matched.route.has_captures {
+        let captures = if !matched.route.has_captures {
+            PathCaptures::empty(&matched.route.pattern.names)
+        } else if segments.len() == content.len() {
             matched.route.pattern.captures(path)?
         } else {
-            PathCaptures::empty(&matched.route.pattern.names)
+            // Captures come from the segments this lookup may cover, not from the whole path.
+            let mut covered = String::new();
+            for segment in segments {
+                covered.push('/');
+                covered.push_str(segment.as_ref());
+            }
+            let captures = matched
+                .route
+                .pattern
+                .captures(PathRef::from_raw_str(&covered))?;
+            PathCaptures {
+                names: captures.names,
+                bindings: captures
+                    .bindings
+                    .into_iter()
+                    .map(|binding| Binding {
+                        value: Cow::Owned(binding.value.into_owned()),
+                        ..binding
+                    })
+                    .collect(),
+            }
         };
         Some(PathRouteMatch {
             value: &matched.route.value,
@@ -1416,6 +1450,13 @@ impl PathPattern {
         // All path content consumed: the pattern must be exhausted and the
         // observed trailing slash must satisfy the policy.
         pat_iter.next().is_none() && self.trailing.accepts(trailing)
+    }
+
+    /// Whether this pattern matches a leading run of the path's segments
+    /// instead of the complete path.
+    #[must_use]
+    pub fn is_prefix(&self) -> bool {
+        self.prefix
     }
 
     /// Match and return captured values, or `None` when `path` doesn't

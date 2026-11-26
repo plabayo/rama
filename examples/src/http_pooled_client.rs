@@ -27,11 +27,12 @@ use rama::{
     http::{
         BodyExtractExt,
         client::{EasyHttpWebClient, HttpPooledConnectorConfig},
+        layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
-        service::{client::HttpClientExt, web::WebService},
+        service::{client::HttpClientExt, web::Router},
     },
     layer::{
-        LimitLayer,
+        ArcLayer, LimitLayer,
         limit::{Policy, PolicyOutput, policy::PolicyResult},
     },
     tcp::server::TcpListener,
@@ -117,8 +118,10 @@ fn setup_tracing() {
 
 async fn run_server(addr: &str, ready: Sender<()>) {
     tracing::info!("running service at: {addr}");
-    let http_service =
-        HttpServer::default().service(WebService::default().with_get("/", "Hello, World!"));
+    let http_service = HttpServer::default().service(
+        (ArcLayer::new(), ErrorHandlerLayer::new())
+            .into_layer(Router::new().with_get("/", "Hello, World!")),
+    );
 
     let serve = TcpListener::build(WeakScope::detached())
         .bind_address(addr)

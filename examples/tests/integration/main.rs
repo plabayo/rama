@@ -122,6 +122,8 @@ mod http_rate_limit;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod http_record_har;
 #[cfg(feature = "http-full")]
+mod http_router_dir_and_api;
+#[cfg(feature = "http-full")]
 mod http_rss_blog;
 #[cfg(feature = "http-full")]
 mod http_rss_podcast;
@@ -149,8 +151,6 @@ mod http_telemetry;
 mod http_user_agent_classifier;
 #[cfg(feature = "http-full")]
 mod http_web_router;
-#[cfg(feature = "http-full")]
-mod http_web_service_dir_and_api;
 #[cfg(all(feature = "http-full", feature = "rustls", feature = "aws-lc"))]
 mod https_connect_proxy;
 #[cfg(all(feature = "http-full", feature = "rustls", feature = "aws-lc"))]

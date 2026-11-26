@@ -704,7 +704,7 @@ mod test {
     use super::*;
     use crate::StatusCode;
     use crate::body::util::{BodyExt, LengthLimitError};
-    use crate::service::web::WebService;
+    use crate::service::web::Router;
     use rama_core::Service;
     use rama_core::extensions::ExtensionsRef;
     use rama_core::futures::StreamExt as _;
@@ -749,13 +749,12 @@ mod test {
     /// it: what a browser sends cross-site as `text/plain` is never multipart.
     #[tokio::test]
     async fn test_multipart_content_type_is_the_whole_value() {
-        let service =
-            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
-                match mp.next_field().await {
-                    Ok(Some(field)) if field.name() == Some("name") => StatusCode::OK,
-                    _ => StatusCode::BAD_REQUEST,
-                }
-            });
+        let service = Router::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+            match mp.next_field().await {
+                Ok(Some(field)) if field.name() == Some("name") => StatusCode::OK,
+                _ => StatusCode::BAD_REQUEST,
+            }
+        });
         for (lines, status) in [
             (vec![ct()], StatusCode::OK),
             (
@@ -783,25 +782,24 @@ mod test {
 
     #[tokio::test]
     async fn test_multipart_text_and_file() {
-        let service =
-            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
-                let f1 = mp.next_field().await.unwrap().unwrap();
-                assert_eq!(f1.name(), Some("name"));
-                assert_eq!(f1.file_name(), None);
-                assert_eq!(f1.text().await.unwrap(), "glen");
+        let service = Router::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+            let f1 = mp.next_field().await.unwrap().unwrap();
+            assert_eq!(f1.name(), Some("name"));
+            assert_eq!(f1.file_name(), None);
+            assert_eq!(f1.text().await.unwrap(), "glen");
 
-                let f2 = mp.next_field().await.unwrap().unwrap();
-                assert_eq!(f2.name(), Some("avatar"));
-                assert_eq!(f2.file_name(), Some("a.bin"));
-                assert_eq!(
-                    f2.content_type().map(|m| m.essence_str()),
-                    Some("application/octet-stream")
-                );
-                assert_eq!(f2.bytes().await.unwrap().as_ref(), b"\x00\x01\x02");
+            let f2 = mp.next_field().await.unwrap().unwrap();
+            assert_eq!(f2.name(), Some("avatar"));
+            assert_eq!(f2.file_name(), Some("a.bin"));
+            assert_eq!(
+                f2.content_type().map(|m| m.essence_str()),
+                Some("application/octet-stream")
+            );
+            assert_eq!(f2.bytes().await.unwrap().as_ref(), b"\x00\x01\x02");
 
-                assert!(mp.next_field().await.unwrap().is_none());
-                StatusCode::OK
-            });
+            assert!(mp.next_field().await.unwrap().is_none());
+            StatusCode::OK
+        });
 
         let body = body_with(&[
             ("name", None, None, b"glen"),
@@ -823,7 +821,7 @@ mod test {
 
     #[tokio::test]
     async fn test_multipart_composes_after_owned_headers() {
-        let service = WebService::default().with_post(
+        let service = Router::default().with_post(
             "/",
             async |headers: HeaderMap, mut multipart: Multipart| -> StatusCode {
                 assert_eq!(headers.get("x-request-id").unwrap(), "multipart-test");
@@ -853,12 +851,11 @@ mod test {
         // RFC 2046 §5.1.1 allows the boundary to be quoted in the
         // Content-Type header, especially when it contains characters that
         // require it. The quotes are not part of the boundary.
-        let service =
-            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
-                let f = mp.next_field().await.unwrap().unwrap();
-                assert_eq!(f.text().await.unwrap(), "v");
-                StatusCode::OK
-            });
+        let service = Router::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+            let f = mp.next_field().await.unwrap().unwrap();
+            assert_eq!(f.text().await.unwrap(), "v");
+            StatusCode::OK
+        });
 
         let body = body_with(&[("k", None, None, b"v")]);
         let req = rama_http_types::Request::builder()
@@ -883,13 +880,12 @@ mod test {
         body.extend_from_slice(&body_with(&[("k", None, None, b"v")]));
         body.extend_from_slice(b"trailing epilogue ignored\r\n");
 
-        let service =
-            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
-                let f = mp.next_field().await.unwrap().unwrap();
-                assert_eq!(f.name(), Some("k"));
-                assert_eq!(f.text().await.unwrap(), "v");
-                StatusCode::OK
-            });
+        let service = Router::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+            let f = mp.next_field().await.unwrap().unwrap();
+            assert_eq!(f.name(), Some("k"));
+            assert_eq!(f.text().await.unwrap(), "v");
+            StatusCode::OK
+        });
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
@@ -915,12 +911,11 @@ mod test {
         body.extend_from_slice(BOUNDARY.as_bytes());
         body.extend_from_slice(b"--\t \r\n"); // padding before final CRLF
 
-        let service =
-            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
-                let f = mp.next_field().await.unwrap().unwrap();
-                assert_eq!(f.text().await.unwrap(), "v");
-                StatusCode::OK
-            });
+        let service = Router::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+            let f = mp.next_field().await.unwrap().unwrap();
+            assert_eq!(f.text().await.unwrap(), "v");
+            StatusCode::OK
+        });
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
@@ -951,14 +946,13 @@ mod test {
         body.extend_from_slice(BOUNDARY.as_bytes());
         body.extend_from_slice(b"--\r\n");
 
-        let service =
-            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
-                let f = mp.next_field().await.unwrap().unwrap();
-                assert_eq!(f.name(), Some("file"));
-                assert_eq!(f.file_name(), None);
-                assert_eq!(f.text().await.unwrap(), "hello");
-                StatusCode::OK
-            });
+        let service = Router::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+            let f = mp.next_field().await.unwrap().unwrap();
+            assert_eq!(f.name(), Some("file"));
+            assert_eq!(f.file_name(), None);
+            assert_eq!(f.text().await.unwrap(), "hello");
+            StatusCode::OK
+        });
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
@@ -988,14 +982,13 @@ mod test {
         body.extend_from_slice(BOUNDARY.as_bytes());
         body.extend_from_slice(b"--\r\n");
 
-        let service =
-            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
-                let f = mp.next_field().await.unwrap().unwrap();
-                assert_eq!(f.name(), Some("file"));
-                assert_eq!(f.file_name(), Some("résumé.txt"));
-                assert_eq!(f.text().await.unwrap(), "hello");
-                StatusCode::OK
-            });
+        let service = Router::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+            let f = mp.next_field().await.unwrap().unwrap();
+            assert_eq!(f.name(), Some("file"));
+            assert_eq!(f.file_name(), Some("résumé.txt"));
+            assert_eq!(f.text().await.unwrap(), "hello");
+            StatusCode::OK
+        });
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
@@ -1021,13 +1014,12 @@ mod test {
         body.extend_from_slice(BOUNDARY.as_bytes());
         body.extend_from_slice(b"--\r\n");
 
-        let service =
-            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
-                let f = mp.next_field().await.unwrap().unwrap();
-                assert_eq!(f.file_name(), Some("we\"ird.txt"));
-                assert_eq!(f.text().await.unwrap(), "hello");
-                StatusCode::OK
-            });
+        let service = Router::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+            let f = mp.next_field().await.unwrap().unwrap();
+            assert_eq!(f.file_name(), Some("we\"ird.txt"));
+            assert_eq!(f.text().await.unwrap(), "hello");
+            StatusCode::OK
+        });
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
@@ -1040,7 +1032,7 @@ mod test {
 
     #[tokio::test]
     async fn test_multipart_invalid_boundary() {
-        let service = WebService::default().with_post("/", async |_: Multipart| StatusCode::OK);
+        let service = Router::default().with_post("/", async |_: Multipart| StatusCode::OK);
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
@@ -1056,7 +1048,7 @@ mod test {
         // Regression: previously the extractor would accept any media type
         // that carried a `boundary=` parameter (e.g. multipart/mixed).
         // RFC 7578 §4.1 mandates multipart/form-data specifically.
-        let service = WebService::default().with_post("/", async |_: Multipart| StatusCode::OK);
+        let service = Router::default().with_post("/", async |_: Multipart| StatusCode::OK);
 
         let body = body_with(&[("k", None, None, b"v")]);
         let req = rama_http_types::Request::builder()
@@ -1073,7 +1065,7 @@ mod test {
 
     #[tokio::test]
     async fn test_multipart_rejects_missing_content_type() {
-        let service = WebService::default().with_post("/", async |_: Multipart| StatusCode::OK);
+        let service = Router::default().with_post("/", async |_: Multipart| StatusCode::OK);
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
             .body("ignored".into())
@@ -1084,7 +1076,7 @@ mod test {
 
     #[tokio::test]
     async fn test_multipart_field_limit_exceeded() {
-        let service = WebService::default().with_post(
+        let service = Router::default().with_post(
             "/",
             async |mut mp: Multipart| -> Result<StatusCode, MultipartRejection> {
                 let f = mp.next_field().await?.unwrap();
@@ -1114,7 +1106,7 @@ mod test {
         use crate::layer::body_limit::BodyLimitLayer;
         use rama_core::Layer;
 
-        let service = BodyLimitLayer::new(8).layer(WebService::default().with_post(
+        let service = BodyLimitLayer::new(8).layer(Router::default().with_post(
             "/",
             async |mut mp: Multipart| -> Result<StatusCode, MultipartRejection> {
                 let field = mp.next_field().await?.unwrap();
@@ -1139,7 +1131,7 @@ mod test {
 
     #[tokio::test]
     async fn test_stream_read_failure_returns_internal_server_error() {
-        let service = WebService::default().with_post(
+        let service = Router::default().with_post(
             "/",
             async |mut mp: Multipart| -> Result<StatusCode, MultipartRejection> {
                 _ = mp.next_field().await?;
@@ -1207,16 +1199,15 @@ mod test {
 
     #[tokio::test]
     async fn test_multipart_field_as_stream_chunks() {
-        let service =
-            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
-                let mut field = mp.next_field().await.unwrap().unwrap();
-                let mut total = Vec::new();
-                while let Some(chunk) = field.chunk().await.unwrap() {
-                    total.extend_from_slice(&chunk);
-                }
-                assert_eq!(total, b"hello world");
-                StatusCode::OK
-            });
+        let service = Router::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+            let mut field = mp.next_field().await.unwrap().unwrap();
+            let mut total = Vec::new();
+            while let Some(chunk) = field.chunk().await.unwrap() {
+                total.extend_from_slice(&chunk);
+            }
+            assert_eq!(total, b"hello world");
+            StatusCode::OK
+        });
 
         let body = body_with(&[("payload", None, None, b"hello world")]);
         let req = rama_http_types::Request::builder()
@@ -1232,24 +1223,23 @@ mod test {
     async fn test_roundtrip_with_client_form() {
         use crate::service::client::multipart as client;
 
-        let service =
-            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
-                let f1 = mp.next_field().await.unwrap().unwrap();
-                assert_eq!(f1.name(), Some("greeting"));
-                assert_eq!(f1.text().await.unwrap(), "hello world");
+        let service = Router::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+            let f1 = mp.next_field().await.unwrap().unwrap();
+            assert_eq!(f1.name(), Some("greeting"));
+            assert_eq!(f1.text().await.unwrap(), "hello world");
 
-                let f2 = mp.next_field().await.unwrap().unwrap();
-                assert_eq!(f2.name(), Some("payload"));
-                assert_eq!(f2.file_name(), Some("blob.bin"));
-                assert_eq!(
-                    f2.content_type().map(|m| m.essence_str()),
-                    Some("application/octet-stream")
-                );
-                assert_eq!(f2.bytes().await.unwrap().as_ref(), &[7u8, 8, 9, 10]);
+            let f2 = mp.next_field().await.unwrap().unwrap();
+            assert_eq!(f2.name(), Some("payload"));
+            assert_eq!(f2.file_name(), Some("blob.bin"));
+            assert_eq!(
+                f2.content_type().map(|m| m.essence_str()),
+                Some("application/octet-stream")
+            );
+            assert_eq!(f2.bytes().await.unwrap().as_ref(), &[7u8, 8, 9, 10]);
 
-                assert!(mp.next_field().await.unwrap().is_none());
-                StatusCode::OK
-            });
+            assert!(mp.next_field().await.unwrap().is_none());
+            StatusCode::OK
+        });
 
         let form = client::Form::new().text("greeting", "hello world").part(
             "payload",
@@ -1306,8 +1296,8 @@ mod test {
         body_with(&parts)
     }
 
-    fn part_counting_service() -> WebService {
-        WebService::default().with_post(
+    fn part_counting_service() -> Router {
+        Router::default().with_post(
             "/",
             async |mut mp: Multipart| -> Result<String, MultipartRejection> {
                 let mut count = 0usize;
@@ -1590,13 +1580,12 @@ mod test {
 
     #[tokio::test]
     async fn test_multipart_boundary_parameter_rules() {
-        let service =
-            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
-                match mp.next_field().await {
-                    Ok(Some(_)) => StatusCode::OK,
-                    _ => StatusCode::IM_A_TEAPOT,
-                }
-            });
+        let service = Router::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+            match mp.next_field().await {
+                Ok(Some(_)) => StatusCode::OK,
+                _ => StatusCode::IM_A_TEAPOT,
+            }
+        });
         for (content_type, status) in [
             (ct(), StatusCode::OK),
             // the first of repeated parameters is the one in use

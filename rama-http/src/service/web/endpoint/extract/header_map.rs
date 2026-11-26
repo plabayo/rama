@@ -21,7 +21,7 @@ mod tests {
         body::util::BodyExt,
         header,
         service::web::{
-            WebService,
+            Router,
             extract::{Body as ExtractBody, FromRequest, Json, State},
         },
     };
@@ -64,7 +64,7 @@ mod tests {
             message: String,
         }
 
-        let service = WebService::new_with_state("prefix".to_owned()).with_post(
+        let service = Router::new_with_state("prefix".to_owned()).with_post(
             "/",
             async |State(prefix): State<String>, headers: HeaderMap, Json(input): Json<Input>| {
                 assert_eq!(headers.get(header::AUTHORIZATION).unwrap(), "Bearer secret");
@@ -95,7 +95,7 @@ mod tests {
             _message: String,
         }
 
-        let service = WebService::default().with_post(
+        let service = Router::default().with_post(
             "/",
             async |headers: HeaderMap, body: Option<Json<Input>>| {
                 assert_eq!(headers.get(header::AUTHORIZATION).unwrap(), "Bearer secret");
@@ -121,7 +121,7 @@ mod tests {
             _message: String,
         }
 
-        let service = WebService::default()
+        let service = Router::default()
             .with_post("/", async |_headers: HeaderMap, Json(_): Json<Input>| {
                 StatusCode::OK
             });
@@ -156,7 +156,7 @@ mod tests {
             _message: String,
         }
 
-        let service = WebService::default().with_post(
+        let service = Router::default().with_post(
             "/",
             async |_headers: RejectingHeaders, Json(_): Json<Input>| StatusCode::OK,
         );
@@ -174,7 +174,7 @@ mod tests {
 
     #[tokio::test]
     async fn composes_with_streaming_body_extractor() {
-        let service = WebService::default().with_post(
+        let service = Router::default().with_post(
             "/",
             async |headers: HeaderMap, ExtractBody(body): ExtractBody| {
                 assert_eq!(headers.get("x-request-id").unwrap(), "123");

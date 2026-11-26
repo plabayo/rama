@@ -4,9 +4,13 @@ use rama::{
     Layer, Service,
     graceful::WeakScope,
     http::{
-        Body, BodyExtractExt, Request, Version, client::EasyHttpWebClient,
-        layer::trace::TraceLayer, server::HttpServer, service::web::WebService,
+        Body, BodyExtractExt, Request, Version,
+        client::EasyHttpWebClient,
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
+        server::HttpServer,
+        service::web::Router,
     },
+    layer::ArcLayer,
     net::address::SocketAddress,
     telemetry::tracing::subscriber::{
         self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
@@ -43,8 +47,12 @@ async fn start_server(
     server
         .serve(
             conn,
-            TraceLayer::new_for_http()
-                .into_layer(WebService::default().with_get("/", "Hello, World")),
+            (
+                TraceLayer::new_for_http(),
+                ArcLayer::new(),
+                ErrorHandlerLayer::new(),
+            )
+                .into_layer(Router::new().with_get("/", "Hello, World")),
         )
         .await
         .expect("serving endpoint");

@@ -47,11 +47,14 @@ use rama::{
     graceful::Scope,
     http::{
         client::EasyHttpWebClient,
-        layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
+        layer::{
+            error_handling::ErrorHandlerLayer, opentelemetry::RequestMetricsLayer,
+            trace::TraceLayer,
+        },
         server::HttpServer,
-        service::web::{WebService, response::Html},
+        service::web::{Router, response::Html},
     },
-    layer::AddInputExtensionLayer,
+    layer::{AddInputExtensionLayer, ArcLayer},
     net::{stream::layer::opentelemetry::NetworkMetricsLayer, uri::Uri},
     tcp::server::TcpListener,
     telemetry::{
@@ -155,8 +158,13 @@ async fn main() {
     scope.spawn_task(async move {
         // http service
         let http_service = HttpServer::auto(weak_scope.clone()).service(
-            (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
-                WebService::default().with_get("/", async |ext: Extensions| {
+            (
+                TraceLayer::new_for_http(),
+                RequestMetricsLayer::default(),
+                ArcLayer::new(),
+                ErrorHandlerLayer::new(),
+            )
+                .into_layer(Router::new().with_get("/", async |ext: Extensions| {
                     let state = ext.get_ref::<AppState>().unwrap();
                     state.counter.add(1, &[]);
 
@@ -166,8 +174,7 @@ async fn main() {
                     state.logger.emit(record);
 
                     Html("<h1>Hello!</h1>")
-                }),
-            ),
+                })),
         );
 
         // service setup & go

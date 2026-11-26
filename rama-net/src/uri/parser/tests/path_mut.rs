@@ -369,6 +369,31 @@ fn strip_prefix_preserves_query_and_authority() {
 }
 
 #[test]
+fn strip_leading_segments_keeps_the_rest_as_written() {
+    for (start, count, stripped, want) in [
+        ("/api/users/42", 0, true, "/api/users/42"),
+        ("/api/users/42", 1, true, "/users/42"),
+        ("/api/docs/", 1, true, "/docs/"),
+        ("/api/", 1, true, "/"),
+        ("/api", 1, true, "/"),
+        ("/api/users/42", 3, true, "/"),
+        ("/api/users/42", 4, false, "/api/users/42"),
+    ] {
+        let mut uri: Uri = parse_graceful(start).unwrap();
+        assert_eq!(
+            uri.path_mut().strip_leading_segments(count),
+            stripped,
+            "start={start:?}, count={count}",
+        );
+        assert_eq!(
+            uri.path().map(|path| path.as_encoded_str()),
+            Some(crate::std::borrow::Cow::Borrowed(want)),
+            "start={start:?}, count={count}",
+        );
+    }
+}
+
+#[test]
 fn strip_prefix_segments_shapes() {
     for (start, count, stripped, want) in [
         ("/api/users/42", 0, false, "/api/users/42"), // re-root only: no change

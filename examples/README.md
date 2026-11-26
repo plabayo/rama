@@ -27,7 +27,7 @@ You can find these integration tests at [./tests/integration](./tests/integratio
 - [`http_listener_hello.rs`](./src/http_listener_hello.rs) - Basic HTTP listener example
 - [`http_service_fs.rs`](./src/http_service_fs.rs) - File system service for serving static files
 - [`http_service_include_dir.rs`](./src/http_service_include_dir.rs) - File system service for serving embedded files
-- [`http_web_service_dir_and_api.rs`](./src/http_web_service_dir_and_api.rs) - Combined directory and API service
+- [`http_router_dir_and_api.rs`](./src/http_router_dir_and_api.rs) - One `Router` combining routes, matchers, a nested router and a directory mount
 - [`http_web_router.rs`](./src/http_web_router.rs) - HTTP router implementation
 - [`http_service_match.rs`](./src/http_service_match.rs) - Service matching example
 - [`http_abort.rs`](./src/http_abort.rs) - A small example how one can control a lower network layer from within the http (application) layer

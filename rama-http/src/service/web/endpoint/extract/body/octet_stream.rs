@@ -174,15 +174,14 @@ fn content_type_match(headers: &HeaderMap) -> ContentTypeMatch {
 mod test {
     use super::*;
     use crate::StatusCode;
-    use crate::service::web::WebService;
+    use crate::service::web::Router;
     use rama_core::Service;
 
     #[tokio::test]
     async fn test_octet_stream() {
-        let service =
-            WebService::default().with_post("/", async |OctetStream(body): OctetStream| {
-                assert_eq!(body.as_ref(), b"\x00\x01\x02\x03");
-            });
+        let service = Router::default().with_post("/", async |OctetStream(body): OctetStream| {
+            assert_eq!(body.as_ref(), b"\x00\x01\x02\x03");
+        });
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
@@ -198,8 +197,8 @@ mod test {
 
     #[tokio::test]
     async fn test_octet_stream_missing_content_type() {
-        let service = WebService::default()
-            .with_post("/", async |OctetStream(_): OctetStream| StatusCode::OK);
+        let service =
+            Router::default().with_post("/", async |OctetStream(_): OctetStream| StatusCode::OK);
 
         // The second is `text/plain` to the CORS safelist.
         for content_type in ["text/plain", "text/plain;,application/octet-stream"] {
@@ -219,7 +218,7 @@ mod test {
 
     #[tokio::test]
     async fn test_octet_stream_optional_present() {
-        let service = WebService::default().with_post("/", async |body: Option<OctetStream>| {
+        let service = Router::default().with_post("/", async |body: Option<OctetStream>| {
             let OctetStream(b) = body.expect("body present");
             assert_eq!(b.as_ref(), b"data");
         });
@@ -240,10 +239,9 @@ mod test {
     async fn test_octet_stream_accepts_absent_content_type() {
         // Per RFC 9110 §8.3 a receiver MAY treat a missing Content-Type as
         // application/octet-stream. We do.
-        let service =
-            WebService::default().with_post("/", async |OctetStream(body): OctetStream| {
-                assert_eq!(body.as_ref(), b"raw");
-            });
+        let service = Router::default().with_post("/", async |OctetStream(body): OctetStream| {
+            assert_eq!(body.as_ref(), b"raw");
+        });
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
@@ -260,7 +258,7 @@ mod test {
         // would happily parse the same request. Now the optional variant
         // mirrors the acceptance policy and treats a body indicated by
         // Content-Length as present.
-        let service = WebService::default().with_post("/", async |body: Option<OctetStream>| {
+        let service = Router::default().with_post("/", async |body: Option<OctetStream>| {
             let OctetStream(b) = body.expect("body present");
             assert_eq!(b.as_ref(), b"data");
         });
@@ -276,7 +274,7 @@ mod test {
 
     #[tokio::test]
     async fn test_octet_stream_optional_absent() {
-        let service = WebService::default().with_post("/", async |body: Option<OctetStream>| {
+        let service = Router::default().with_post("/", async |body: Option<OctetStream>| {
             assert!(body.is_none());
             StatusCode::OK
         });

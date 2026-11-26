@@ -9,7 +9,7 @@
 //!
 //! ```rust
 //! use rama_http::layer::header_from_str_config::{HeaderFromStrConfigLayer, Repeated};
-//! use rama_http::service::web::WebService;
+//! use rama_http::service::web::Router;
 //! use rama_http::{Body, Request, StatusCode, HeaderName};
 //! use rama_core::{extensions::{Extension, ExtensionsRef}, Service, Layer};
 //!
@@ -35,7 +35,7 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     let service = HeaderFromStrConfigLayer::<ProxyLabel, Repeated<ProxyLabels>>::required(HeaderName::from_static("x-proxy-labels"))
-//!         .into_layer(WebService::default()
+//!         .into_layer(Router::default()
 //!             .with_get("/", async |req: Request| {
 //!                 let labels: &ProxyLabels = req.extensions().get_ref().unwrap();
 //!                 assert_eq!("a+b+c", labels.0.iter().map(|l| l.0.as_str()).collect::<Vec<_>>().join("+"));

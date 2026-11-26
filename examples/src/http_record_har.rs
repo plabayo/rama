@@ -37,6 +37,7 @@ use rama::{
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
+            error_handling::ErrorHandlerLayer,
             har::{
                 self,
                 layer::HARExportLayer,
@@ -51,7 +52,7 @@ use rama::{
         matcher::{DomainMatcher, MethodMatcher},
         proxy::mitm::HttpMitmRelay,
         server::HttpServer,
-        service::web::WebService,
+        service::web::Router,
     },
     io::{BridgeIo, Io},
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapOutputLayer, TimeoutLayer},
@@ -99,22 +100,20 @@ async fn main() -> Result<(), BoxError> {
             .expect("bind tcp proxy to 127.0.0.1:12040");
 
         let toggle_har_layer = har_layer.clone();
-        let toggle_service = Arc::new(WebService::default().with_post(
-            "/switch",
-            move |_req: Request| {
-                let har_toggle_ctl = har_toggle_ctl.clone();
-                let har_layer = toggle_har_layer.clone();
-                async move {
-                    if let Err(err) = har_toggle_ctl.send(()).await {
-                        tracing::error!("failed to toggle HAR recording: {err}");
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    } else {
-                        har_layer.recorder().stop_record().await;
-                        StatusCode::OK
-                    }
+        let toggle_router = Router::new().with_post("/switch", move |_req: Request| {
+            let har_toggle_ctl = har_toggle_ctl.clone();
+            let har_layer = toggle_har_layer.clone();
+            async move {
+                if let Err(err) = har_toggle_ctl.send(()).await {
+                    tracing::error!("failed to toggle HAR recording: {err}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                } else {
+                    har_layer.recorder().stop_record().await;
+                    StatusCode::OK
                 }
-            },
-        ));
+            }
+        });
+        let toggle_service = Arc::new(ErrorHandlerLayer::new().into_layer(toggle_router));
 
         let connect = EagerHttpProxyConnector::new(
             TimeoutLayer::new(Duration::from_secs(30)).into_layer(

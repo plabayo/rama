@@ -55,7 +55,7 @@ mod tests {
 
     use crate::header::X_FORWARDED_HOST;
     use crate::layer::forwarded::GetForwardedHeaderService;
-    use crate::service::web::WebService;
+    use crate::service::web::Router;
     use crate::service::web::endpoint::extract::test_support::serve_get;
     use crate::{HeaderName, StatusCode};
 
@@ -69,10 +69,10 @@ mod tests {
 
     async fn test_host_from_request(uri: &str, host: &str, headers: Vec<(&HeaderName, &str)>) {
         let required = GetForwardedHeaderService::x_forwarded_host(
-            WebService::default().with_get("/", extract_required),
+            Router::default().with_get("/", extract_required),
         );
         let optional = GetForwardedHeaderService::x_forwarded_host(
-            WebService::default().with_get("/", extract_optional),
+            Router::default().with_get("/", extract_optional),
         );
 
         for (status, body) in [
@@ -124,8 +124,8 @@ mod tests {
 
     #[tokio::test]
     async fn missing_host() {
-        let required = WebService::default().with_get("/", extract_required);
-        let optional = WebService::default().with_get("/", extract_optional);
+        let required = Router::default().with_get("/", extract_required);
+        let optional = Router::default().with_get("/", extract_optional);
 
         assert_eq!(
             serve_get(&required, "/", &[]).await.0,

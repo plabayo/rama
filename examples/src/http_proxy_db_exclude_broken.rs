@@ -29,10 +29,11 @@ use rama::{
     http::{
         BodyExtractExt,
         client::EasyHttpWebClient,
+        layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
-        service::{client::HttpClientExt, web::WebService},
+        service::{client::HttpClientExt, web::Router},
     },
-    layer::Layer,
+    layer::{ArcLayer, Layer},
     net::{address::ProxyProtocol, transport::TransportProtocol},
     proxy::{
         IpCategory, MemoryProxyDB, Proxy, ProxyContext, ProxyDB, ProxyDBLayer, ProxyFilter,
@@ -165,8 +166,10 @@ async fn spawn_target_server() {
     let listener = TcpListener::bind_address(TARGET_ADDRESS, WeakScope::detached())
         .await
         .expect("bind target server");
-    let server = HttpServer::default()
-        .service(WebService::default().with_get("/", "Hello through a healthy proxy"));
+    let server = HttpServer::default().service(
+        (ArcLayer::new(), ErrorHandlerLayer::new())
+            .into_layer(Router::new().with_get("/", "Hello through a healthy proxy")),
+    );
     tokio::spawn(listener.serve(server));
 }
 

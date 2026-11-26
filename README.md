@@ -314,7 +314,7 @@ Available at <https://ramaproxy.org/book/faq.html>.
 [TLS fingerprinting]: https://ramaproxy.org/docs/rama/tls/fingerprint/index.html
 [SNI routing guide]: https://ramaproxy.org/book/proxies/sni.html
 [SNI router example]: ./examples/src/tls_sni_router.rs
-[Typed handlers and routing]: https://ramaproxy.org/docs/rama/http/service/web/struct.WebService.html
+[Typed handlers and routing]: https://ramaproxy.org/docs/rama/http/service/web/struct.Router.html
 [static files]: https://ramaproxy.org/docs/rama/http/service/fs/index.html
 [authentication]: https://ramaproxy.org/docs/rama/http/layer/auth/index.html
 [limits]: https://ramaproxy.org/docs/rama/layer/limit/index.html

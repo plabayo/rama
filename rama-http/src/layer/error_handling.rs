@@ -11,7 +11,7 @@
 //! use rama_http::{
 //!     service::client::HttpClientExt,
 //!     layer::{error_handling::ErrorHandlerLayer, timeout::TimeoutLayer},
-//!     service::web::WebService,
+//!     service::web::Router,
 //!     service::web::response::IntoResponse,
 //!     Body, Request, Response, StatusCode,
 //! };
@@ -36,7 +36,7 @@
 //!         TimeoutLayer::new(Duration::from_secs(5)),
 //!         ).into_layer(service_fn(handler));
 //!
-//!     let service = WebService::default().with_get("/", home_handler);
+//!     let service = Router::default().with_get("/", home_handler);
 //!
 //!     _ = service.serve(Request::builder()
 //!         .method("GET")

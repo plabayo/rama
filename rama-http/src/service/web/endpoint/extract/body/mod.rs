@@ -74,7 +74,7 @@ mod test {
     use super::*;
     use crate::body::util::is_length_limit_error;
     use crate::layer::timeout::TimeoutBody;
-    use crate::service::web::{WebService, extract::datastar::ReadSignals};
+    use crate::service::web::{Router, extract::datastar::ReadSignals};
     use crate::{
         Method, Request, StatusCode,
         body::util::{BodyExt, Pending},
@@ -198,7 +198,7 @@ mod test {
 
     #[tokio::test]
     async fn test_body() {
-        let service = WebService::default().with_get("/", async |Body(body): Body| {
+        let service = Router::default().with_get("/", async |Body(body): Body| {
             let body = body.collect().await.unwrap().to_bytes();
             assert_eq!(body, "test");
         });

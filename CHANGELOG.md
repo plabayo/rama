@@ -394,6 +394,19 @@ stays at 1.96 and the edition at 2024.
   `with_http_method_mode(HttpMethodMode::ExceptMethod(list))`, and
   `with_known_non_http_protocol_methods()` with
   `with_http_method_mode(HttpMethodMode::except_known_non_http())`.
+* **`WebService` folded into `Router`**: `WebService` was removed; use
+  `Router`. Constructors, method routes, `with_matcher`, `with_not_found`
+  and the `with_file` / `with_dir` / `with_dir_embed` family keep their
+  names. `with_nest_service` becomes `with_endpoint_service` (or
+  `with_sub_service` when the types already match) and `with_nest_make_fn`
+  becomes `with_sub_router_make_fn`. `Router` is not `Clone` and fails with
+  `RouterError`: share it through `ArcLayer` and wrap it in
+  `ErrorHandlerLayer` where needed. Precedence no longer follows
+  registration order: the most specific path wins, then mounts by longest
+  prefix, then matchers without a path in registration order. File mounts
+  and nested routers pass on what they have no answer for; other mounted
+  services own their prefix. `match_service!` remains for strictly ordered
+  matching.
 * **Peeking without timeouts**: `PeekTimeoutPolicy`, `with_peek_timeout` and
   `with_peek_timeout_policy` were removed from `PeekRouter`, `TlsPeekRouter`,
   `PeekTlsClientHelloService`, `SniRouter`, `Socks5PeekRouter` and
