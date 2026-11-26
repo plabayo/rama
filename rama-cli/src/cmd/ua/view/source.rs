@@ -1,7 +1,10 @@
 //! Bounded file and database loading for the profile viewer.
 
 use super::display::{Row, VIEWER_BYTES, push_row};
-use crate::{cmd::serve::fp::CountedProfileSource, utils::terminal::display_text};
+use crate::{
+    cmd::serve::fp::{CountedProfileSource, ReadBudget},
+    utils::terminal::display_text,
+};
 use rama::{
     error::{BoxError, BoxErrorExt as _},
     ua::profile::{
@@ -41,13 +44,19 @@ pub(super) async fn load(
     let rows = if let Some(path) = path {
         tokio::task::spawn_blocking(move || file_rows(path, authorized)).await??
     } else {
-        let mut source =
-            CountedProfileSource::open(authorized, days, ProfileArchiveLimits::default().profiles)
-                .await?;
+        // The viewer keeps rows within its own byte bound, not an archive's work bound.
+        let mut source = CountedProfileSource::open(
+            authorized,
+            days,
+            ProfileArchiveLimits::default().profiles,
+            ReadBudget::PerProfile,
+        )
+        .await?;
         let mut rows = Vec::new();
         let mut remaining = VIEWER_BYTES;
         let day = source.day();
-        while let Some(entry) = source.next().await? {
+        while let Some(profile) = source.next().await? {
+            let entry = profile.entry;
             let row = tokio::task::spawn_blocking(move || {
                 let entry =
                     entry.analyze(authorized, day, days, ProfileAnalysisLimits::default())?;
@@ -56,24 +65,23 @@ pub(super) async fn load(
             .await??;
             push_row(&mut rows, &mut remaining, row)?;
         }
-        if source.truncated() > 0 {
+        let tally = source.tally();
+        if tally.truncated > 0 {
             write!(
                 source_label,
                 " / {} profiles limited to their best-supported scopes",
-                source.truncated(),
+                tally.truncated,
             )?;
         }
-        if source.skipped() > 0 || source.limited() {
+        if !tally.over_profile_bound.is_empty() {
             write!(
                 source_label,
-                " / {} over-limit profiles skipped{}",
-                source.skipped(),
-                if source.limited() {
-                    " / read budget reached"
-                } else {
-                    ""
-                }
+                " / {} over-limit profiles skipped",
+                tally.over_profile_bound.len(),
             )?;
+        }
+        if tally.over_count {
+            write!(source_label, " / profile count bound reached")?;
         }
         rows
     };

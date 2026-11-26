@@ -3,8 +3,8 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
 };
-use rama_http::utils::request_connect_protocol;
-use rama_http_types::Request;
+use rama_http::utils::{request_adaptable_upgrade, request_signals_upgrade};
+use rama_http_types::{Request, Version, proto::ext::Protocol as ConnectProtocol};
 use rama_net::{
     AuthorityInputExt, ProtocolInputExt, TransportProtocolInputExt,
     client::{
@@ -42,11 +42,19 @@ fn try_from_http_request<Body>(request: &Request<Body>) -> Result<ConnectRequest
     // be a TargetHttpVersion: that would pin TLS ALPN merely because an HTTP
     // request has an initial version.
     extensions.insert(HttpRequestVersion(request.version()));
-    // An advertisement promises HTTP support, not this upgrade protocol or the
-    // peer's extended-CONNECT setting. Preserve the handshake's current version
-    // unless the caller explicitly requested version adaptation.
-    if !extensions.contains::<TargetHttpVersion>() && request_connect_protocol(request).is_some() {
-        extensions.insert(TargetHttpVersion(request.version()));
+    if !extensions.contains::<TargetHttpVersion>() && request_signals_upgrade(request) {
+        match request_adaptable_upgrade(request).filter(|_| request.version() <= Version::HTTP_11) {
+            // Selection keys on the protocol to keep this upgrade off unannounced HTTP/3.
+            Some(protocol) => {
+                if !extensions.contains::<ConnectProtocol>() {
+                    extensions.insert(protocol);
+                }
+            }
+            // A handshake the version adapter cannot translate must stay on its version.
+            None => {
+                extensions.insert(TargetHttpVersion(request.version()));
+            }
+        }
     }
 
     Ok(ConnectRequest::new_with_extensions(authority, extensions)
@@ -226,51 +234,153 @@ mod tests {
     }
 
     #[test]
-    fn upgrades_preserve_version_unless_explicitly_adapted() {
-        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
-            let mut request = Request::builder()
+    fn upgrades_stay_on_their_version_unless_adaptable() {
+        let request = |version: Version, method: Method, headers: &[(&str, &str)]| {
+            let mut builder = Request::builder()
                 .uri("https://example.com/socket")
                 .version(version)
-                .body(())
-                .unwrap();
-            if version == Version::HTTP_11 {
-                request
-                    .headers_mut()
-                    .insert(header::CONNECTION, "upgrade".parse().unwrap());
-                request
-                    .headers_mut()
-                    .insert(header::UPGRADE, "websocket".parse().unwrap());
-            } else {
-                *request.method_mut() = Method::CONNECT;
-                request
-                    .extensions()
-                    .insert(ConnectProtocol::from_static("websocket"));
+                .method(method);
+            for (name, value) in headers {
+                builder = builder.header(*name, *value);
             }
+            builder.body(()).unwrap()
+        };
+        let upgrade = |value| [("connection", "upgrade"), ("upgrade", value)];
+        let with_protocol = |request: Request<()>, protocol| {
+            request
+                .extensions()
+                .insert(ConnectProtocol::from_static(protocol));
+            request
+        };
+        // (case, request, target the connect request carries, protocol it carries)
+        let cases = [
+            (
+                "websocket upgrade",
+                request(Version::HTTP_11, Method::GET, &upgrade("websocket")),
+                None,
+                Some("websocket"),
+            ),
+            (
+                "websocket upgrade on HTTP/1.0",
+                request(Version::HTTP_10, Method::GET, &upgrade("websocket")),
+                None,
+                Some("websocket"),
+            ),
+            (
+                "websocket upgrade that is not a GET",
+                request(Version::HTTP_11, Method::POST, &upgrade("websocket")),
+                Some(Version::HTTP_11),
+                None,
+            ),
+            (
+                "other upgrade",
+                request(Version::HTTP_11, Method::GET, &upgrade("test")),
+                Some(Version::HTTP_11),
+                None,
+            ),
+            (
+                "multi-token upgrade",
+                request(Version::HTTP_11, Method::GET, &upgrade("h2c, websocket")),
+                Some(Version::HTTP_11),
+                None,
+            ),
+            (
+                "connection upgrade without upgrade",
+                request(
+                    Version::HTTP_11,
+                    Method::GET,
+                    &[("connection", "keep-alive, Upgrade")],
+                ),
+                Some(Version::HTTP_11),
+                None,
+            ),
+            (
+                "upgrade without connection",
+                request(Version::HTTP_11, Method::GET, &[("upgrade", "connect-udp")]),
+                Some(Version::HTTP_11),
+                None,
+            ),
+            (
+                "protocol on a GET",
+                with_protocol(request(Version::HTTP_11, Method::GET, &[]), "connect-udp"),
+                Some(Version::HTTP_11),
+                Some("connect-udp"),
+            ),
+            (
+                "h2 extended CONNECT",
+                with_protocol(request(Version::HTTP_2, Method::CONNECT, &[]), "websocket"),
+                Some(Version::HTTP_2),
+                Some("websocket"),
+            ),
+            (
+                "h3 extended CONNECT",
+                with_protocol(
+                    request(Version::HTTP_3, Method::CONNECT, &[]),
+                    "connect-udp",
+                ),
+                Some(Version::HTTP_3),
+                Some("connect-udp"),
+            ),
+            (
+                "ordinary request",
+                request(Version::HTTP_11, Method::GET, &[]),
+                None,
+                None,
+            ),
+        ];
+        for (case, request, target, protocol) in cases {
             let input = try_from_http_request(&request).unwrap();
             assert_eq!(
-                input.extensions().get_ref::<TargetHttpVersion>(),
-                Some(&TargetHttpVersion(version))
+                input
+                    .extensions()
+                    .get_ref::<TargetHttpVersion>()
+                    .map(|target| target.0),
+                target,
+                "{case}"
             );
+            assert_eq!(
+                input
+                    .extensions()
+                    .get_ref::<ConnectProtocol>()
+                    .map(|protocol| protocol.as_str()),
+                protocol,
+                "{case}"
+            );
+            // An explicit target is kept.
             request
                 .extensions()
                 .insert(TargetHttpVersion(Version::HTTP_2));
             let input = try_from_http_request(&request).unwrap();
             assert_eq!(
                 input.extensions().get_ref::<TargetHttpVersion>(),
-                Some(&TargetHttpVersion(Version::HTTP_2))
+                Some(&TargetHttpVersion(Version::HTTP_2)),
+                "{case}"
             );
         }
-        let request = Request::builder()
-            .uri("https://example.com/")
+    }
+
+    /// Retries and redirects fork each attempt from the caller's store, so the protocol
+    /// written back on one attempt never reaches the next.
+    #[tokio::test]
+    async fn a_written_back_protocol_stays_on_its_attempt() {
+        let inner = service_fn(async |input: ConnectRequest| {
+            Ok::<_, Infallible>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        });
+        let adapter = HttpConnectRequestAdapter::new(inner);
+        let mut request = Request::builder()
+            .uri("https://example.com/socket")
+            .header(header::CONNECTION, "upgrade")
             .header(header::UPGRADE, "websocket")
-            .body(())
+            .body(NonCloneBody)
             .unwrap();
-        assert!(
-            !try_from_http_request(&request)
-                .unwrap()
-                .extensions()
-                .contains::<TargetHttpVersion>()
-        );
+        let caller = request.fork_extensions_in_place();
+        let established = adapter.serve(request).await.unwrap();
+        assert!(established.input.extensions().contains::<ConnectProtocol>());
+        assert!(!caller.contains::<ConnectProtocol>());
+        assert!(!caller.fork().contains::<ConnectProtocol>());
     }
 
     #[test]

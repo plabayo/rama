@@ -142,6 +142,45 @@ async fn dns_produces_endpoint_facts_without_changing_origin() {
     );
 }
 
+/// A `wss` origin is its `https` origin's server (RFC 9460 section 9.6): its records'
+/// endpoint, address hints and ECH apply; plaintext `ws` is not discovered.
+#[tokio::test]
+async fn wss_uses_the_https_records_of_its_origin() {
+    for (protocol, discovered) in [
+        (Protocol::HTTPS, true),
+        (Protocol::WSS, true),
+        (Protocol::WS, false),
+        (Protocol::HTTP, false),
+    ] {
+        let layer = setup(true);
+        let request = ConnectRequest::new("origin.example:443".parse().unwrap())
+            .with_application_protocol(protocol.clone());
+        layer.discover(&request).await.unwrap();
+        let Some(snapshot) = request.extensions().get_ref::<HttpServiceCandidates>() else {
+            assert!(!discovered, "{protocol:?}");
+            continue;
+        };
+        assert!(discovered, "{protocol:?}");
+        assert_eq!(
+            snapshot.get(0).unwrap().target.to_string(),
+            "physical.example.:9443",
+            "{protocol:?}"
+        );
+        let extensions = snapshot.candidate_extensions(0).unwrap();
+        assert!(
+            extensions.contains::<ConnectorTargetStream>(),
+            "{protocol:?}"
+        );
+        assert!(
+            extensions
+                .get_ref::<TargetEchConfig>()
+                .unwrap()
+                .matches_target(&snapshot.get(0).unwrap().target),
+            "{protocol:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn intent_and_required_ech_control_reliance() {
     for (intent, required, reliant) in [

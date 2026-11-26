@@ -186,11 +186,7 @@ fn signing_digest_for(key: &PKeyRef<Private>) -> Option<MessageDigest> {
 fn sign_x509(builder: &mut X509Builder, key: &PKeyRef<Private>) -> Result<(), ErrorStack> {
     match signing_digest_for(key) {
         Some(digest) => builder.sign(key, digest),
-        // SAFETY: rama-boring 0.7.2 has no digest-less signing API, so this deviates from
-        // `MessageDigest::from_ptr`'s non-null contract. `X509Builder::sign` corresponds to
-        // `X509_sign`, which documents a NULL `md` as "`pkey`'s default" (pure EdDSA here);
-        // the null value is used by nothing else and does not outlive this call.
-        None => builder.sign(key, unsafe { MessageDigest::from_ptr(std::ptr::null()) }),
+        None => builder.sign_without_digest(key),
     }
 }
 

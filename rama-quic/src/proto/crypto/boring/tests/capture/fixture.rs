@@ -6,7 +6,7 @@ use rama_core::error::BoxError;
 use rama_crypto::dep::boring::ssl::Padding;
 use rama_net::tls::ServerName;
 use rama_tls::client::ClientHello;
-use rama_tls_boring::client::BoringClientConfigExt as _;
+use rama_tls_boring::client::{BoringClientConfigExt as _, profile::wire::NonNegotiableValues};
 use rama_ua::profile::{
     capture::{
         completeness::ProfileCaptureCompleteness,
@@ -85,7 +85,12 @@ pub(super) fn prepare_with_cache(
     peer: &ServerName,
     capture: &TlsCapture,
 ) -> Result<ClientConfig, BoxError> {
-    let wire = tls::compile(policy, capture, &mut ProfilePreservationReport::default())?;
+    let wire = tls::compile(
+        policy,
+        capture,
+        NonNegotiableValues::new(),
+        &mut ProfilePreservationReport::default(),
+    )?;
     let effective = policy.clone().with_overrides(wire.as_extensions());
     Ok(cache.client_config_for_peer(&effective, effective.as_extensions(), peer)?)
 }

@@ -37,6 +37,7 @@ use std::sync::Arc;
 mod connection;
 mod fixture;
 mod native;
+mod negotiable;
 mod offer;
 mod quic;
 #[cfg(feature = "http")]
@@ -84,12 +85,27 @@ fn input() -> ConnectRequest {
     request
 }
 
+/// Compile with the default choice, which filters values the backend cannot negotiate.
 fn compile_tcp(
     captured: &TlsCapture,
     anchors: Option<&BoringRequestedTrustAnchors>,
 ) -> Result<(TlsClientConfig, ProfilePreservationReport), BoxError> {
+    compile_tcp_with(captured, anchors, wire::NonNegotiableValues::new())
+}
+
+fn compile_tcp_with(
+    captured: &TlsCapture,
+    anchors: Option<&BoringRequestedTrustAnchors>,
+    retention: wire::NonNegotiableValues,
+) -> Result<(TlsClientConfig, ProfilePreservationReport), BoxError> {
     let mut report = ProfilePreservationReport::default();
-    let config = wire::compile(wire::TransportShape::Tcp, captured, anchors, &mut report)?;
+    let config = wire::compile(
+        wire::TransportShape::Tcp,
+        captured,
+        anchors,
+        retention,
+        &mut report,
+    )?;
     Ok((config, report))
 }
 

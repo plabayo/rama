@@ -286,6 +286,16 @@ pub struct SendCommand {
     /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http2
     http_3: bool,
 
+    #[arg(
+        long = "ws-alpn",
+        conflicts_with_all = ["http_09", "http_10", "http_11", "http_2", "http_3"]
+    )]
+    /// (WebSocket) let the TLS ALPN result choose between the HTTP/1.1 upgrade and Extended CONNECT
+    ///
+    /// Without it a WebSocket with no version flag is HTTP/1.1. A version flag already fixes the
+    /// handshake, so the two are mutually exclusive.
+    ws_alpn: bool,
+
     #[arg(long)]
     /// (HTTP) disable learning and use of Alt-Svc advertisements.
     /// HTTPS DNS service discovery and explicit --http3 remain available.

@@ -52,7 +52,9 @@ use rama_ua::profile::{
     selection::variants::ConnectionSelection,
 };
 
-use super::wire;
+use rama_utils::macros::generate_set_and_with;
+
+use super::wire::{self, NonNegotiableValues};
 use crate::client::{BoringTlsClientConfigProvider, BoringTlsConnectorConfig};
 
 /// Register with the common UA connect modifier outside the native TLS connector.
@@ -64,15 +66,31 @@ use crate::client::{BoringTlsClientConfigProvider, BoringTlsConnectorConfig};
 /// disabling the caller's session store or copying sessions into the adapter.
 /// Captured items that conflict with the destination or caller are lowered to
 /// that behaviour and reported in the connection's preservation report.
+///
+/// Captured values the backend cannot negotiate are filtered out of the offer
+/// unless [`NonNegotiableValues`] retains them.
 #[derive(Debug, Clone)]
 pub struct ConnectionProfileCompiler {
     policy: TlsClientConfig,
+    non_negotiable: NonNegotiableValues,
 }
 
 impl ConnectionProfileCompiler {
     pub fn new(policy: TlsClientConfig) -> Self {
-        Self { policy }
+        Self {
+            policy,
+            non_negotiable: NonNegotiableValues::new(),
+        }
     }
+
+    generate_set_and_with!(
+        /// Set per list whether captured values the backend cannot negotiate are
+        /// filtered out (the default) or sent as captured.
+        pub fn non_negotiable_values(mut self, values: NonNegotiableValues) -> Self {
+            self.non_negotiable = values;
+            self
+        }
+    );
 
     pub(super) fn prepare_capture(
         &self,
@@ -116,8 +134,13 @@ impl ConnectionProfileCompiler {
                 .copied()
                 .unwrap_or(ClientHandshake::Full)
         };
-        let mut settings =
-            wire::compile_for_policy(wire::TransportShape::Tcp, capture, &current, report)?;
+        let mut settings = wire::compile_for_policy(
+            wire::TransportShape::Tcp,
+            capture,
+            &current,
+            self.non_negotiable,
+            report,
+        )?;
         let captured_policy = captured_policy.unwrap_or_else(|| wire::captured_sni_policy(capture));
         let captured_sni = captured_policy != TlsClientSni::Disabled;
         let sni_policy = current.sni_policy.copied().unwrap_or(captured_policy);
@@ -140,7 +163,7 @@ impl ConnectionProfileCompiler {
                     .eq(offer.0.iter().map(|protocol| protocol.as_bytes()))
             }) {
                 lower(report, LoweredProfileItem::CallerTlsAlpn);
-                settings.set_alpn(caller.0.clone());
+                wire::set_alpn(&settings, caller.clone());
             }
         }
         #[cfg(feature = "http")]
@@ -171,11 +194,10 @@ impl ConnectionProfileCompiler {
             };
             if !fits {
                 lower(report, LoweredProfileItem::TlsAlpnTargetVersion);
-                settings.set_alpn(wanted.into_iter().collect());
+                wire::set_alpn(&settings, TlsAlpn(wanted.into_iter().collect()));
             }
         }
         settings.set_client_handshake(handshake);
-        wire::narrow_alps(&settings);
         settings.write_to(&effective);
         if BoringTlsConnectorConfig::from_extensions(&effective)
             .pool_id()

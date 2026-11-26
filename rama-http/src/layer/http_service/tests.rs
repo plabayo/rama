@@ -727,6 +727,79 @@ async fn unknown_protocols_and_required_version_filter_before_dialing() {
 
 #[cfg(feature = "tls")]
 #[tokio::test]
+async fn upgrades_skip_http3_alternatives_unless_targeted_or_allowed() {
+    // (connect protocol, explicit target, opt-in, expected dial)
+    for (upgrade, target, allow, expected) in [
+        (false, None, false, "h3.example:443"),
+        (true, None, false, "h2.example:443"),
+        (true, Some(Version::HTTP_3), false, "h3.example:443"),
+        (true, None, true, "h3.example:443"),
+    ] {
+        let input = input();
+        advertise(
+            &input,
+            &[
+                (ApplicationProtocol::HTTP_3, "h3.example:443"),
+                (ApplicationProtocol::HTTP_2, "h2.example:443"),
+            ],
+        );
+        if upgrade {
+            input.extensions().insert(ConnectProtocol::WEBSOCKET);
+        }
+        if let Some(version) = target {
+            input.extensions().insert(TargetHttpVersion(version));
+        }
+        let protocol = if expected.starts_with("h3") {
+            ApplicationProtocol::HTTP_3
+        } else {
+            ApplicationProtocol::HTTP_2
+        };
+        let fake = FakeConnector::new([Outcome::Success(protocol)]);
+        HttpServiceConnector::new(fake.clone())
+            .with_http3_upgrades(allow)
+            .serve(input)
+            .await
+            .unwrap();
+        let records = fake.records.lock();
+        let context = format!("upgrade={upgrade} target={target:?} allow={allow}");
+        assert_eq!(records.len(), 1, "{context}");
+        assert_eq!(records[0].target.to_string(), expected, "{context}");
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn a_wss_upgrade_uses_its_https_origin_alternatives_http3_only_when_allowed() {
+    for (allow, expected) in [(false, "h2.example:443"), (true, "h3.example:443")] {
+        let mut input = input();
+        advertise(
+            &input,
+            &[
+                (ApplicationProtocol::HTTP_3, "h3.example:443"),
+                (ApplicationProtocol::HTTP_2, "h2.example:443"),
+            ],
+        );
+        input.application_protocol = Some(Protocol::WSS);
+        input.extensions().insert(ConnectProtocol::WEBSOCKET);
+        let protocol = if allow {
+            ApplicationProtocol::HTTP_3
+        } else {
+            ApplicationProtocol::HTTP_2
+        };
+        let fake = FakeConnector::new([Outcome::Success(protocol)]);
+        HttpServiceConnector::new(fake.clone())
+            .with_http3_upgrades(allow)
+            .serve(input)
+            .await
+            .unwrap();
+        let records = fake.records.lock();
+        assert_eq!(records.len(), 1, "allow={allow}");
+        assert_eq!(records[0].target.to_string(), expected, "allow={allow}");
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
 async fn maximum_attempts_reserves_origin_fallback() {
     let input = input();
     advertise(
@@ -1204,7 +1277,7 @@ async fn candidate_limit_counts_unknown_protocols_before_a_supported_candidate()
         ],
     );
     let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_2)]);
-    HttpServiceLayer::new()
+    HttpServiceConnectorLayer::new()
         .with_max_candidates(1)
         .layer(fake.clone())
         .serve(input)

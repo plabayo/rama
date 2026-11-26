@@ -5,8 +5,11 @@ import hashlib
 import subprocess
 
 
-def fixture_certificate(root):
-    """Return a server key, server certificate, fixture CA and Chromium SPKI."""
+def fixture_certificate(root, names=()):
+    """Return a server key, server certificate, fixture CA and Chromium SPKI.
+
+    The certificate covers localhost, 127.0.0.1 and any extra DNS `names`.
+    """
     key, certificate = root / "key.pem", root / "cert.pem"
     ca_key, ca = root / "ca-key.pem", root / "ca.pem"
     request = root / "server.csr"
@@ -16,7 +19,8 @@ def fixture_certificate(root):
         "[server]\nbasicConstraints=critical,CA:FALSE\n"
         "keyUsage=critical,digitalSignature,keyEncipherment\n"
         "extendedKeyUsage=serverAuth\n"
-        "subjectAltName=DNS:localhost,IP:127.0.0.1\n"
+        "subjectAltName=DNS:localhost,IP:127.0.0.1"
+        + "".join(f",DNS:{name}" for name in names) + "\n"
     )
     commands = [
         ["openssl", "req", "-config", str(config), "-x509", "-newkey",

@@ -67,8 +67,8 @@ const MAXIMUM_IDENTITY_BYTES: usize = kib(16);
 /// leaving it unset preserves the observation weights.
 pub struct ProfileSelector {
     /// Exact User-Agent of the profiles to draw from, such as one auto-detected
-    /// from the request. Emulation relaxes it to the browser family when no
-    /// profile has this exact User-Agent.
+    /// from the request. Emulation relaxes an auto-detected one to the browser family
+    /// when no profile has this exact User-Agent; a configured one only by the fallback policy.
     #[serde(default)]
     pub user_agent: Option<Box<str>>,
     /// Captured client family.
@@ -401,26 +401,42 @@ impl UserAgentDatabase {
             latest_versions: request.client.latest_versions,
             capabilities: ProfileCapabilities::default(),
         })?;
+        // The candidate draw weight is computed once, when the candidates are listed.
         let captured = candidates
             .iter()
-            .map(|candidate| candidate.profile)
-            .filter_map(|profile| {
-                profile
+            .filter_map(|candidate| {
+                candidate
+                    .profile
                     .captured
                     .as_ref()
-                    .map(|analysis| (profile, analysis))
+                    .map(|analysis| (candidate.profile, analysis, candidate.weight))
             })
             .collect::<Vec<_>>();
         if captured.is_empty() {
             return Err(SelectionError::MissingProfile);
         }
-        let mut matching = captured
-            .into_iter()
-            .filter_map(|(profile, analysis)| {
-                closest_flow(analysis, &request.flow, flow.id, protocol)
-                    .map(|distance| (profile, analysis, distance))
-            })
-            .collect::<Vec<_>>();
+        // The request's version is known only once the connection negotiates one: a profile
+        // without the flow under the request's version may hold it under the other.
+        let mut other = None;
+        let mut matching = Vec::with_capacity(captured.len());
+        for (profile, analysis, weight) in captured {
+            let mut distance = closest_flow(analysis, &request.flow, flow.id, protocol);
+            if distance.is_none() {
+                if other.is_none() {
+                    other = Some(other_negotiable_flow(
+                        &request.flow,
+                        request.required,
+                        protocol,
+                    )?);
+                }
+                distance = other.as_ref().and_then(Option::as_ref).and_then(
+                    |(version, flow, canonical)| closest_flow(analysis, flow, *canonical, *version),
+                );
+            }
+            if let Some(distance) = distance {
+                matching.push((profile, analysis, (distance, weight)));
+            }
+        }
         if matching.is_empty() {
             return Err(SelectionError::MissingFlow);
         }
@@ -531,10 +547,10 @@ impl UserAgentDatabase {
         // Profiles that captured the flow itself win over those that only come close.
         if let Some(closest) = matching
             .iter()
-            .map(|(_profile, _analysis, distance)| *distance)
+            .map(|(_profile, _analysis, (distance, _weight))| *distance)
             .min()
         {
-            matching.retain(|(_profile, _analysis, distance)| *distance == closest);
+            matching.retain(|(_profile, _analysis, (distance, _weight))| *distance == closest);
         }
         matching.sort_unstable_by_key(|(_profile, analysis, _distance)| analysis.id);
         let scope = selection_scope(
@@ -604,8 +620,8 @@ impl UserAgentDatabase {
         });
         let mut weights = matching
             .iter()
-            .map(|(profile, _analysis, _distance)| observation_weight(profile.observation_weight()))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|(_profile, _analysis, (_distance, weight))| analyzed_observation_weight(*weight))
+            .collect::<Vec<_>>();
         if let Some(exact) = exact_ech {
             prefer_exact_weights(&mut weights, &exact);
         }
@@ -658,6 +674,92 @@ impl SelectedProfile {
     /// Borrow the selected request flow.
     pub fn flow(&self) -> &FlowKey {
         &self.flow
+    }
+
+    /// This selection widened to a TLS connection that reached `version` outside the
+    /// pre-connect requirement, when the profile holds that version's data.
+    pub(crate) fn for_negotiated(&self, version: Version) -> Option<Self> {
+        let secure = self.required.tls_tcp || self.required.tls_quic;
+        if !secure || protocol_supported(self.required, version) {
+            return None;
+        }
+        let required = match version {
+            Version::HTTP_3 => CapabilitySet {
+                h3: true,
+                tls_quic: true,
+                quic: true,
+                ..CapabilitySet::default()
+            },
+            Version::HTTP_2 => CapabilitySet {
+                h2: true,
+                tls_tcp: true,
+                ..CapabilitySet::default()
+            },
+            Version::HTTP_11 => CapabilitySet {
+                h1: true,
+                tls_tcp: true,
+                ..CapabilitySet::default()
+            },
+            _ => return None,
+        };
+        (CapabilitySet::from(self.profile.capabilities()).supports(required)
+            && self
+                .flow_versions()
+                .is_none_or(|versions| protocol_supported(versions, version)))
+        .then(|| Self {
+            required,
+            ..self.clone()
+        })
+    }
+
+    /// This selection narrowed to the one TCP HTTP version under which the profile holds a
+    /// flow for this request, when its offer would let the peer pick the other.
+    pub(crate) fn for_flow_version(&self) -> Option<(Version, Self)> {
+        if !(self.required.tls_tcp && self.required.h1 && self.required.h2) {
+            return None;
+        }
+        let versions = self.flow_versions()?;
+        let (version, required) = match (versions.h1, versions.h2) {
+            (true, false) => (
+                Version::HTTP_11,
+                CapabilitySet {
+                    h2: false,
+                    ..self.required
+                },
+            ),
+            (false, true) => (
+                Version::HTTP_2,
+                CapabilitySet {
+                    h1: false,
+                    ..self.required
+                },
+            ),
+            _ => return None,
+        };
+        let mut flow = self.flow.clone();
+        if let FlowKey::Http {
+            version: flow_version,
+            ..
+        } = &mut flow
+        {
+            *flow_version = version;
+        }
+        Some((
+            version,
+            Self {
+                required,
+                flow,
+                ..self.clone()
+            },
+        ))
+    }
+
+    /// The HTTP versions under which the profile holds a flow of this request's kind.
+    fn flow_versions(&self) -> Option<CapabilitySet> {
+        let analysis = self.profile.captured.as_ref()?;
+        self.request_shapes
+            .flow_versions(analysis)
+            .of_flow(&self.flow)
     }
 
     /// Check that the profile supports the negotiated protocol.
@@ -749,6 +851,17 @@ impl SelectedProfile {
                             variant.value.id() == pin && offered(*index, variant_index, offers)
                         },
                     )
+                });
+            } else if !self.required.h2
+                && self.required.tls_tcp
+                && scopes
+                    .iter()
+                    .any(|(index, _)| self.request_shapes.connection_http1_only(analysis, *index))
+            {
+                // A captured http/1.1-only offer replays as is; narrowing another one changes
+                // more than ALPN. A pinned variant is named by the caller and wins.
+                scopes.retain(|(index, _)| {
+                    self.request_shapes.connection_http1_only(analysis, *index)
                 });
             }
             scopes
@@ -1047,7 +1160,7 @@ impl SelectedProfile {
                         .is_none_or(|pin| variant.value.id() == pin)
                 })
                 .collect();
-            let (compatible, covered) = request_variants_for_headers(
+            let (variants, covered) = request_variants_for_headers(
                 &available,
                 protocol,
                 &requested,
@@ -1055,14 +1168,8 @@ impl SelectedProfile {
                 index,
                 &self.request_shapes,
             )?;
-            let fits = !compatible.is_empty();
-            let variants = if fits {
-                compatible
-            } else {
-                available.into_iter().map(|(_, variant)| variant).collect()
-            };
             if !variants.is_empty() {
-                candidates.push((index, scope, variants, fits.then_some(covered)));
+                candidates.push((index, scope, variants, covered));
             }
         }
         // A scope whose variants fit the caller's request-owned headers wins over one that
@@ -1073,7 +1180,7 @@ impl SelectedProfile {
         } else {
             // Request replay reports the remaining shape differences.
             tracing::debug!(
-                "no captured request variant matches the caller headers; drawing from all"
+                "no captured request variant matches the caller headers; replaying a different shape"
             );
         }
         if candidates.is_empty() {
@@ -1244,19 +1351,59 @@ fn protocol_reuse_class(version: Version) -> u8 {
 }
 
 /// Distance of the closest request scope of `analysis` that can replay `flow`.
+/// The flow under the other HTTP version a connection for `required` may negotiate, if any.
+fn other_negotiable_flow(
+    flow: &FlowKey,
+    required: CapabilitySet,
+    protocol: Version,
+) -> Result<Option<(Version, FlowKey, ValueId)>, ProfileDataError> {
+    let version = match protocol {
+        Version::HTTP_11 if required.h2 && required.tls_tcp => Version::HTTP_2,
+        Version::HTTP_2 if required.h1 && required.tls_tcp => Version::HTTP_11,
+        _ => return Ok(None),
+    };
+    let mut flow = flow.clone();
+    if let FlowKey::Http {
+        version: flow_version,
+        ..
+    } = &mut flow
+    {
+        *flow_version = version;
+    }
+    let canonical = flow.canonical(MAXIMUM_IDENTITY_BYTES)?.id;
+    Ok(Some((version, flow, canonical)))
+}
+
 fn closest_flow(
     analysis: &AnalyzedProfile,
     flow: &FlowKey,
     canonical: ValueId,
     protocol: Version,
 ) -> Option<FlowDistance> {
-    analysis
-        .scopes
+    // The version's component list holds exactly its usable scopes, in order.
+    protocol_scopes(analysis, protocol)
         .iter()
-        .enumerate()
-        .filter(|(index, _scope)| request_scope_usable(analysis, *index, protocol))
-        .filter_map(|(_index, scope)| scope_flow_distance(scope, flow, canonical))
+        .filter_map(|&index| analysis.scopes.get(index))
+        .filter(|scope| scope.observations.domain == CanonicalDomain::Joint)
+        .filter_map(|scope| scope_flow_distance(scope, flow, canonical))
         .min()
+}
+
+/// Indices of the scopes holding data for `version`, as `request_scope_supports` checks.
+fn protocol_scopes(analysis: &AnalyzedProfile, version: Version) -> &[usize] {
+    let scopes = if matches!(
+        version,
+        Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11
+    ) {
+        &analysis.components.h1
+    } else if version == Version::HTTP_2 {
+        &analysis.components.h2
+    } else if version == Version::HTTP_3 {
+        &analysis.components.h3
+    } else {
+        return &[];
+    };
+    scopes.as_deref().unwrap_or_default()
 }
 
 fn request_scope_usable(analysis: &AnalyzedProfile, index: usize, protocol: Version) -> bool {
@@ -1383,13 +1530,12 @@ fn eligible_request_scopes<'a>(
     required: CapabilitySet,
 ) -> impl Iterator<Item = (usize, &'a AnalyzedProfileScope, FlowDistance)> {
     let candidates = move || {
-        analysis
-            .scopes
+        protocol_scopes(analysis, protocol)
             .iter()
-            .enumerate()
-            .filter(move |(index, scope)| {
-                connection_context_matches(&scope.context.connection, connection)
-                    && request_scope_usable(analysis, *index, protocol)
+            .filter_map(move |&index| analysis.scopes.get(index).map(|scope| (index, scope)))
+            .filter(move |(_index, scope)| {
+                scope.observations.domain == CanonicalDomain::Joint
+                    && connection_context_matches(&scope.context.connection, connection)
             })
             .filter_map(move |(index, scope)| {
                 scope_flow_distance(scope, flow, canonical).map(|distance| (index, scope, distance))
@@ -1477,12 +1623,15 @@ fn flow_distance(observed: &FlowKey, requested: &FlowKey) -> Option<FlowDistance
                 connection: requested_connection,
             },
         ) => {
+            let websocket = is_websocket(*observed_initiator, observed_fetch.as_ref());
             if observed_version != requested_version
                 || !connection_context_matches(observed_connection, requested_connection)
                 // A tunnel or WebSocket handshake never replays as an ordinary request.
-                || (*observed_method == Method::CONNECT) != (*requested_method == Method::CONNECT)
-                || is_websocket(*observed_initiator, observed_fetch.as_ref())
-                    != is_websocket(*requested_initiator, requested_fetch.as_ref())
+                || websocket != is_websocket(*requested_initiator, requested_fetch.as_ref())
+                // A WebSocket handshake is a GET over HTTP/1.1 and a CONNECT over HTTP/2 or 3.
+                || (!websocket
+                    && (*observed_method == Method::CONNECT)
+                        != (*requested_method == Method::CONNECT))
             {
                 return None;
             }
@@ -1495,7 +1644,7 @@ fn flow_distance(observed: &FlowKey, requested: &FlowKey) -> Option<FlowDistance
             Some(FlowDistance {
                 mode: differs(|fetch| fetch.mode.as_deref()),
                 destination: differs(|fetch| fetch.destination.as_deref()),
-                method: observed_method != requested_method,
+                method: !websocket && observed_method != requested_method,
                 user_activation: differs(|fetch| fetch.user_activation.as_deref()),
                 site: differs(|fetch| fetch.site.as_deref()),
                 initiator: !initiator_matches(
@@ -1524,6 +1673,97 @@ fn flow_distance(observed: &FlowKey, requested: &FlowKey) -> Option<FlowDistance
 fn is_websocket(initiator: Option<RequestInitiator>, fetch: Option<&FetchContext>) -> bool {
     initiator == Some(RequestInitiator::Ws)
         || fetch.is_some_and(|fetch| fetch.mode.as_deref() == Some("websocket"))
+}
+
+/// What a request flow is for, as [`flow_distance`] tells them apart. A WebSocket
+/// handshake changes form, not kind, with its HTTP version.
+#[derive(Debug, Clone, Copy)]
+enum FlowKind {
+    Ordinary,
+    Tunnel,
+    WebSocket,
+}
+
+impl FlowKind {
+    const ALL: [Self; 3] = [Self::Ordinary, Self::Tunnel, Self::WebSocket];
+
+    fn of(
+        method: &Method,
+        initiator: Option<RequestInitiator>,
+        fetch: Option<&FetchContext>,
+    ) -> Self {
+        if is_websocket(initiator, fetch) {
+            Self::WebSocket
+        } else if *method == Method::CONNECT {
+            Self::Tunnel
+        } else {
+            Self::Ordinary
+        }
+    }
+}
+
+/// Per [`FlowKind`], the HTTP versions under which a profile holds a flow that a request
+/// on a fresh connection can replay.
+#[derive(Debug, Default)]
+pub(super) struct FlowVersions([CapabilitySet; 3]);
+
+impl FlowVersions {
+    pub(super) fn of(analysis: &AnalyzedProfile) -> Self {
+        let mut versions = Self::default();
+        let fresh = ConnectionContext::default();
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let mut mark = |kind: FlowKind| {
+                let set = &mut versions.0[kind as usize];
+                match version {
+                    Version::HTTP_11 => set.h1 = true,
+                    Version::HTTP_2 => set.h2 = true,
+                    _ => set.h3 = true,
+                }
+            };
+            for scope in protocol_scopes(analysis, version)
+                .iter()
+                .filter_map(|&index| analysis.scopes.get(index))
+                .filter(|scope| scope.observations.domain == CanonicalDomain::Joint)
+            {
+                match &scope.flow {
+                    Some(FlowKey::Http {
+                        method,
+                        initiator,
+                        fetch,
+                        connection,
+                        ..
+                    }) if connection_context_matches(connection, &fresh) => {
+                        mark(FlowKind::of(method, *initiator, fetch.as_ref()));
+                    }
+                    // Matched by its exact flow identity alone, it may serve any kind.
+                    None if scope.context.flow.is_some() => {
+                        FlowKind::ALL.into_iter().for_each(&mut mark);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        versions
+    }
+
+    /// The versions holding a flow that `flow` can replay; `None` for a flow that is not on
+    /// a fresh connection, which these versions do not describe.
+    fn of_flow(&self, flow: &FlowKey) -> Option<CapabilitySet> {
+        let FlowKey::Http {
+            method,
+            initiator,
+            fetch,
+            connection,
+            ..
+        } = flow
+        else {
+            return None;
+        };
+        let fresh = connection.resumption != ResumptionContext::Resumed
+            && connection.early_data.is_none()
+            && connection.token_present.is_none();
+        fresh.then(|| self.0[FlowKind::of(method, *initiator, fetch.as_ref()) as usize])
+    }
 }
 
 /// A request without an initiator is described by its Fetch metadata, or else
@@ -1629,12 +1869,6 @@ fn prefer_exact_weights(weights: &mut [u64], exact: &[bool]) {
             *weight = (preferred / divisor).max(1) as u64;
         }
     }
-}
-
-fn observation_weight(
-    weight: Result<ObservationWeight, ProfileDataError>,
-) -> Result<u64, SelectionError> {
-    weight.map(analyzed_observation_weight).map_err(Into::into)
 }
 
 fn analyzed_weight(weight: &AnalyzedOrderWeight) -> Result<u64, SelectionError> {

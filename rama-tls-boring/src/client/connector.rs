@@ -1878,7 +1878,7 @@ mod tests {
     }
 
     #[test]
-    fn inherited_http_alpn_suppresses_incompatible_alps() {
+    fn inherited_http_alpn_sends_its_configured_alps() {
         let base = Extensions::new();
         base.insert(TlsAlpn::http_1());
         base.insert(BoringAlps {
@@ -1898,12 +1898,12 @@ mod tests {
             effective
                 .get_ref::<BoringAlps>()
                 .map(|alps| (alps.protocols.as_slice(), alps.new_codepoint)),
-            Some(([].as_slice(), true)),
+            Some(([ApplicationProtocol::HTTP_2].as_slice(), true)),
         );
     }
 
     #[test]
-    fn request_alpn_overrides_base_and_recouples_alps() {
+    fn request_alpn_over_a_base_offer_sends_the_configured_alps() {
         let base = Extensions::new();
         base.insert(TlsAlpn::http_auto());
         base.insert(BoringAlps {
@@ -1924,7 +1924,7 @@ mod tests {
             effective
                 .get_ref::<BoringAlps>()
                 .map(|alps| alps.protocols.as_slice()),
-            Some([].as_slice()),
+            Some([ApplicationProtocol::HTTP_2].as_slice()),
         );
     }
 

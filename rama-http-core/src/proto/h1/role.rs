@@ -1305,7 +1305,7 @@ impl Client {
 
         // A capture/inspection body may still need polling to finish bookkeeping
         // although its exact payload length is zero. As in HTTP/2, do not invent
-        // Content-Length for GET/HEAD/DELETE/CONNECT. In particular, Capsule
+        // Content-Length for GET/HEAD/DELETE/CONNECT/OPTIONS/TRACE. In particular, Capsule
         // Protocol upgrade requests forbid even Content-Length: 0.
         if matches!(body, BodyLength::Known(0))
             && !headers::method_has_defined_payload_semantics(&head.subject.0)
@@ -3131,6 +3131,8 @@ mod tests {
             Method::HEAD,
             Method::DELETE,
             Method::CONNECT,
+            Method::OPTIONS,
+            Method::TRACE,
             Method::POST,
         ] {
             for explicit in [false, true] {

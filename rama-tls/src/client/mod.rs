@@ -169,6 +169,9 @@ pub struct NegotiatedTlsAlgorithms {
 /// handshake authenticated no server identity: verification was disabled or
 /// there was no server name to verify against. Negotiated ALPN or a received
 /// certificate alone does not prove server authentication.
+///
+/// A client TLS stack publishes this after its handshake. HTTP alternative services
+/// (Alt-Svc, HTTPS records) are learned and used only on connections whose name matches.
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(tls), scope(connection))]
 pub struct TlsServerAuthentication(pub Option<ServerName>);

@@ -8,8 +8,9 @@ use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Version,
     header::{
         ACCEPT, ALT_USED, COOKIE, Entry, PRIORITY, SEC_FETCH_DEST, SEC_FETCH_MODE, SEC_FETCH_SITE,
-        SEC_FETCH_USER, TE, UPGRADE_INSECURE_REQUESTS,
+        SEC_FETCH_USER, SEC_WEBSOCKET_KEY, TE, UPGRADE_INSECURE_REQUESTS,
     },
+    headers::{HeaderEncode as _, SecWebSocketKey},
     proto::{
         h2::{PseudoHeader, PseudoHeaderOrder},
         h3::{
@@ -150,6 +151,12 @@ pub enum LoweredProfileItem {
     TlsCipherSuites,
     /// The captured offer is preserved, but some advertised suites cannot negotiate.
     TlsCipherNegotiation,
+    /// The captured groups are preserved, but some advertised groups cannot negotiate.
+    TlsGroupNegotiation,
+    /// The captured signature schemes are preserved, but some cannot negotiate.
+    TlsSignatureAlgorithmNegotiation,
+    /// The captured version list is preserved, but some versions cannot negotiate.
+    TlsVersionNegotiation,
     /// Unsupported groups were dropped, or the native list kept.
     TlsSupportedGroups,
     /// Unsupported signature schemes were dropped, or the native list kept.
@@ -170,8 +177,6 @@ pub enum LoweredProfileItem {
     TlsTrustAnchors,
     /// Extended master secret and renegotiation info are sent together.
     TlsLegacyExtensionPair,
-    /// The engine's transport-parameter length differs from the capture.
-    QuicTransportParametersLength,
     /// Wire parameters use the effective tuple instead of a distinct captured ECH outer.
     QuicEchOuterParameters,
     /// A parameter absent from the captured outer was added to the clear QUIC offer.
@@ -729,6 +734,17 @@ fn replay_headers(
                     });
                 }
                 profile
+            }
+            // An Extended CONNECT handshake needs no key of its own, yet the browser sent
+            // one; an HTTP/1.1 upgrade keeps the key its client validates the answer with.
+            PlannedValue::Request(RequestBinding::WebSocketKey)
+                if original_value.is_none()
+                    && profile_te
+                    && table.get(*field).name == SEC_WEBSOCKET_KEY =>
+            {
+                SecWebSocketKey::random()
+                    .encode_to_value()
+                    .ok_or(ProfileDataError::Invalid("WebSocket key"))?
             }
             PlannedValue::Request(_)
                 if original_value.is_none() && is_alt_used_binding(table.get(*field)) =>

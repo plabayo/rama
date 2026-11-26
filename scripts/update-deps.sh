@@ -30,7 +30,20 @@ done
 for gomod in $(git ls-files 'go.mod' '*/go.mod'); do
     dir=$(dirname "$gomod")
     echo "== $dir"
-    (cd "$dir" && go get -u -t ./... && go mod tidy)
+    (
+        cd "$dir"
+        # A copy restores exactly the files as they were, local edits included.
+        saved=$(mktemp -d)
+        trap 'rm -rf "$saved"' EXIT
+        cp go.mod "$saved/go.mod"
+        if [ -f go.sum ]; then cp go.sum "$saved/go.sum"; fi
+        # An upgrade that fails, or that a dependency does not build against, is not taken.
+        if ! { go get -u -t ./... && go mod tidy && go vet ./... >/dev/null 2>&1; }; then
+            echo "$dir: upgraded versions do not build; keeping the previous ones" >&2
+            cp "$saved/go.mod" go.mod
+            if [ -f "$saved/go.sum" ]; then cp "$saved/go.sum" go.sum; else rm -f go.sum; fi
+        fi
+    )
 done
 
 echo "== GitHub Actions"

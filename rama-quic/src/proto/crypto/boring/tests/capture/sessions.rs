@@ -9,7 +9,7 @@ use rama_quic_proto::{
     transport_parameters::TransportParameterId,
 };
 use rama_tls::CipherSuite;
-use rama_tls_boring::client::BoringClientConfigExt as _;
+use rama_tls_boring::client::{BoringClientConfigExt as _, profile::wire::NonNegotiableValues};
 use rama_ua::profile::{
     capture::{
         completeness::ProfileCaptureCompleteness,
@@ -105,7 +105,7 @@ fn captured_wire_choices_never_override_explicit_cipher_policy() {
     let source = reference(&policy, Version::V1);
     policy.set_cipher_suites(vec![CipherSuite::TLS13_AES_128_GCM_SHA256]);
     let mut report = ProfilePreservationReport::default();
-    tls::compile(&policy, &source, &mut report).unwrap();
+    tls::compile(&policy, &source, NonNegotiableValues::new(), &mut report).unwrap();
     assert_eq!(
         report.differences.as_ref(),
         [ProfilePreservationDifference::LoweredProfileItem {

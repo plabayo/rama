@@ -42,7 +42,7 @@ pub(super) struct CompareCommand {
     /// QPACK dynamic reference indexes. Bootstrap stream IDs remain exact.
     #[arg(long, conflicts_with = "native_replay")]
     replay: bool,
-    /// Compare Rama native replay, rebinding only the reference bootstrap to stream 0.
+    /// Compare native replay with its single-version TCP offer and stream-zero HTTP/3 bootstrap.
     #[arg(long)]
     native_replay: bool,
     /// Read the authorized partition in both archives.
@@ -219,6 +219,10 @@ fn compare_with_coverage(
     };
     let mut budget = CaptureComparisonLimits::default().work;
     for profile in observed {
+        let policy = reference
+            .iter()
+            .find(|candidate| candidate.id == profile.id)
+            .map_or_else(|| mode.into(), |source| mode.for_reference(source));
         if profile.scopes.is_empty() {
             return Err(BoxError::from_static_str("empty observed profile"));
         }
@@ -266,7 +270,7 @@ fn compare_with_coverage(
                     let comparison = compare_retained_captures(
                         candidates,
                         &read,
-                        mode,
+                        policy,
                         CaptureComparisonLimits {
                             work: budget,
                             ..Default::default()

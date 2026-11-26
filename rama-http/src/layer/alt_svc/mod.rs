@@ -9,8 +9,10 @@
 //! separate mechanism and must not be recorded as an Alt-Svc advertisement.
 //!
 //! Each request supplies its logical origin; connection metadata supplies the
-//! actual endpoint, authenticated identity and policy scope. The middleware records
-//! response hints. It sets the typed `Alt-Used` request header only when configured
+//! actual endpoint, authenticated identity and policy scope. Connections with
+//! verification disabled therefore never teach `https` alternatives; a custom TLS
+//! stack must publish `TlsServerAuthentication` and its `ConnectionPolicyScope` to
+//! take part. The middleware records response hints. It sets the typed `Alt-Used` request header only when configured
 //! with `send_alt_used` or asked by a request's [`SendAltUsed`] extension, since
 //! RFC 7838 §5 makes it a SHOULD that some clients never send. Connection selection, authentication and retry policy remain
 //! the transport's responsibility; a request is dispatched exactly once.

@@ -39,6 +39,8 @@ async fn relay(request: Request<()>) -> Request<()> {
             client: Some("test-browser".into()),
             ..ProfileSelector::default()
         })
+        // The caller's own User-Agent names no profile; the fallback keeps the named client.
+        .with_select_fallback(ProfileSelectFallback::SameClient)
         .with_seed(ProfileSeed([1; 32]))
         .with_connection_key(DrawKey([2; 32]))
         .with_request_key(DrawKey([3; 32]))
@@ -235,7 +237,9 @@ async fn preserved_tls_leaves_the_captured_offer_unapplied() {
         .extensions()
         .insert(UserAgent::new("caller/1").with_tls_agent(TlsAgent::Preserve));
     let emitted = emulate(
-        embedded().with_selector(client(UserAgentKind::Chromium)),
+        embedded()
+            .with_selector(client(UserAgentKind::Chromium))
+            .with_select_fallback(ProfileSelectFallback::SameClient),
         request,
     )
     .await

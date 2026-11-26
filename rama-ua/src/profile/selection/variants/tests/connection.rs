@@ -1,4 +1,7 @@
 #[cfg(feature = "tls")]
+use std::collections::BTreeSet;
+
+#[cfg(feature = "tls")]
 use rama_core::extensions::NoExtensionsTransfer;
 
 use super::*;
@@ -181,6 +184,100 @@ fn ech_select(
         ProfileSeed([9; 32]),
         DrawKey([10; 32]),
     )
+}
+
+/// An ordinary TCP connection whose ClientHello offers `protocols` in ALPN, or no ALPN when empty.
+#[cfg(feature = "tls")]
+fn alpn_connection(protocols: &[&[u8]]) -> CanonicalValue {
+    let alpn = TlsCapturedExtension {
+        id: 16,
+        value: TlsCapturedExtensionValue::Protocols(
+            protocols
+                .iter()
+                .map(|protocol| protocol.to_vec().into())
+                .collect(),
+        ),
+    };
+    let hello = TlsCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        transport: TlsCaptureTransport::Tcp,
+        protocol_version: 771,
+        ciphers: vec![4865].into(),
+        compression: vec![0].into(),
+        extensions: (!protocols.is_empty())
+            .then_some(alpn)
+            .into_iter()
+            .collect(),
+    }
+    .canonical(TlsCaptureLimits::default())
+    .unwrap();
+    ordinary_connection(hello)
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn an_http1_only_offer_draws_a_captured_http1_only_hello() {
+    let both = alpn_connection(&[b"h2", b"http/1.1"]);
+    let http1 = alpn_connection(&[b"http/1.1"]);
+    // A hello without ALPN is no http/1.1-only offer.
+    let none = alpn_connection(&[]);
+    let database = ech_database(vec![both.clone(), http1, none.clone()]);
+    for byte in 0..64 {
+        let seed = ProfileSeed([byte; 32]);
+        let key = DrawKey([byte; 32]);
+        let selected = database
+            .select(
+                &SelectionRequest {
+                    client: ProfileSelector::default(),
+                    required: ECH_REQUIRED,
+                    flow: flow(ConnectionContext::default(), Version::HTTP_11),
+                    pins: VariantPins::default(),
+                },
+                seed,
+                key,
+            )
+            .unwrap();
+        let connection = selected
+            .connection(&ConnectionContext::default(), seed, key)
+            .unwrap();
+        assert_eq!(connection.effective.scope, ValueId([2; 32]));
+    }
+    // A pinned mixed-offer variant is named by the caller and wins over the preference.
+    let database = ech_database(vec![both.clone(), alpn_connection(&[b"http/1.1"])]);
+    let pin = both.id;
+    let selected = ech_select(&database, Some(pin)).unwrap();
+    let connection = selected
+        .connection(
+            &ConnectionContext::default(),
+            ProfileSeed([9; 32]),
+            DrawKey([10; 32]),
+        )
+        .unwrap();
+    assert_eq!(connection.effective.scope, ValueId([1; 32]));
+    // Without a captured http/1.1-only hello every offer stays drawable.
+    let database = ech_database(vec![both, none]);
+    let mut drawn = BTreeSet::new();
+    for byte in 0..64 {
+        let seed = ProfileSeed([byte; 32]);
+        let key = DrawKey([byte; 32]);
+        let selected = database
+            .select(
+                &SelectionRequest {
+                    client: ProfileSelector::default(),
+                    required: ECH_REQUIRED,
+                    flow: flow(ConnectionContext::default(), Version::HTTP_11),
+                    pins: VariantPins::default(),
+                },
+                seed,
+                key,
+            )
+            .unwrap();
+        let connection = selected
+            .connection(&ConnectionContext::default(), seed, key)
+            .unwrap();
+        drawn.insert(connection.effective.scope);
+    }
+    assert_eq!(drawn, BTreeSet::from([ValueId([1; 32]), ValueId([2; 32])]));
 }
 
 #[cfg(feature = "tls")]

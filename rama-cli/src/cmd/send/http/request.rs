@@ -62,6 +62,12 @@ pub(super) async fn build(
     }
 
     apply_preferences(cfg, &mut request)?;
+    // An unpinned WebSocket would follow the ALPN offer; that takes `--ws-alpn`.
+    if is_ws && !cfg.ws_alpn && !request.extensions().contains::<TargetHttpVersion>() {
+        request
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_11));
+    }
     if req.emulate_connection_bootstrap {
         request
             .extensions()
@@ -391,6 +397,162 @@ mod tests {
                         .collect();
                     assert_eq!(actual, expected, "{version}, ws={is_ws}, {name}");
                 }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn version_flags_decide_and_websockets_default_to_http1() {
+        // A version flag already fixes the handshake that `--ws-alpn` would leave to ALPN.
+        for version in ["--http1.0", "--http1.1", "--http2", "--http3"] {
+            assert!(
+                TestCli::try_parse_from([
+                    "rama-request-test",
+                    "--ws-alpn",
+                    version,
+                    "wss://example.test/ws",
+                ])
+                .is_err(),
+                "{version}"
+            );
+        }
+        // (args, uri, is_ws, Ok((version, target, method)) or Err)
+        let cases: &[(
+            &[&str],
+            &str,
+            bool,
+            Option<(Version, Option<Version>, Method)>,
+        )] = &[
+            (
+                &[],
+                "wss://example.test/ws",
+                true,
+                Some((Version::HTTP_11, Some(Version::HTTP_11), Method::GET)),
+            ),
+            (
+                &[],
+                "ws://example.test/ws",
+                true,
+                Some((Version::HTTP_11, Some(Version::HTTP_11), Method::GET)),
+            ),
+            (
+                &["--emulate"],
+                "wss://example.test/ws",
+                true,
+                Some((Version::HTTP_11, Some(Version::HTTP_11), Method::GET)),
+            ),
+            (
+                &["--emulate"],
+                "ws://example.test/ws",
+                true,
+                Some((Version::HTTP_11, Some(Version::HTTP_11), Method::GET)),
+            ),
+            (
+                &["--http1.0"],
+                "ws://example.test/ws",
+                true,
+                Some((Version::HTTP_10, Some(Version::HTTP_10), Method::GET)),
+            ),
+            (
+                &["--http1.1"],
+                "wss://example.test/ws",
+                true,
+                Some((Version::HTTP_11, Some(Version::HTTP_11), Method::GET)),
+            ),
+            (
+                &["--emulate", "--http1.1"],
+                "wss://example.test/ws",
+                true,
+                Some((Version::HTTP_11, Some(Version::HTTP_11), Method::GET)),
+            ),
+            (
+                &["--http2"],
+                "wss://example.test/ws",
+                true,
+                Some((Version::HTTP_2, Some(Version::HTTP_2), Method::CONNECT)),
+            ),
+            (
+                &["--emulate", "--http2"],
+                "wss://example.test/ws",
+                true,
+                Some((Version::HTTP_2, Some(Version::HTTP_2), Method::CONNECT)),
+            ),
+            (
+                &["--http3"],
+                "wss://example.test/ws",
+                true,
+                Some((Version::HTTP_3, Some(Version::HTTP_3), Method::CONNECT)),
+            ),
+            (&["--http3"], "ws://example.test/ws", true, None),
+            (
+                &["--http1.1", "--http2"],
+                "wss://example.test/ws",
+                true,
+                None,
+            ),
+            (
+                &["--ws-alpn"],
+                "wss://example.test/ws",
+                true,
+                Some((Version::HTTP_11, None, Method::GET)),
+            ),
+            (
+                &["--ws-alpn", "--emulate"],
+                "wss://example.test/ws",
+                true,
+                Some((Version::HTTP_11, None, Method::GET)),
+            ),
+            (
+                &["--ws-alpn"],
+                "ws://example.test/ws",
+                true,
+                Some((Version::HTTP_11, None, Method::GET)),
+            ),
+            (
+                &["--ws-alpn"],
+                "https://example.test/",
+                false,
+                Some((Version::HTTP_11, None, Method::GET)),
+            ),
+            (
+                &[],
+                "https://example.test/",
+                false,
+                Some((Version::HTTP_11, None, Method::GET)),
+            ),
+            (
+                &["--emulate"],
+                "https://example.test/",
+                false,
+                Some((Version::HTTP_11, None, Method::GET)),
+            ),
+            (
+                &["--http2"],
+                "https://example.test/",
+                false,
+                Some((Version::HTTP_2, Some(Version::HTTP_2), Method::GET)),
+            ),
+        ];
+        for (args, uri, is_ws, expected) in cases {
+            let mut cfg = config(args);
+            cfg.req.uri = (*uri).into();
+            let result = build(&cfg, &cfg.req, *is_ws).await;
+            let context = format!("{args:?} {uri}");
+            match (expected, result) {
+                (Some((version, target, method)), Ok(request)) => {
+                    assert_eq!(request.version(), *version, "{context}");
+                    assert_eq!(
+                        request
+                            .extensions()
+                            .get_ref::<TargetHttpVersion>()
+                            .map(|target| target.0),
+                        *target,
+                        "{context}"
+                    );
+                    assert_eq!(request.method(), method, "{context}");
+                }
+                (None, Err(_)) => {}
+                (_, result) => panic!("{context}: {result:?}"),
             }
         }
     }

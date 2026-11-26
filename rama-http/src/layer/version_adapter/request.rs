@@ -1,6 +1,6 @@
 use crate::{
     layer::remove_header::{coalesce_cookie_headers, remove_illegal_h2_request_headers},
-    utils::{is_plain_connect, request_connect_protocol},
+    utils::{is_adaptable_upgrade, is_plain_connect, request_connect_protocol},
 };
 use rama_core::{
     Layer, Service,
@@ -225,11 +225,6 @@ pub fn ensure_valid_h2_or_h3_request<Body>(request: &mut Request<Body>) -> Resul
 #[extension(tags(http))]
 pub(crate) struct DowngradeWebSocketKey(pub(crate) SecWebSocketKey);
 
-/// Whether a [`Protocol`] is the WebSocket Extended CONNECT / `Upgrade` protocol.
-pub(crate) fn is_websocket_protocol(protocol: &Protocol) -> bool {
-    protocol.as_str().eq_ignore_ascii_case("websocket")
-}
-
 /// Translate the handshake envelope of an HTTP/1.x request up to HTTP/2 or HTTP/3.
 ///
 /// Converts a WebSocket `Upgrade` handshake into an Extended CONNECT (RFC 8441 for
@@ -239,10 +234,12 @@ pub(crate) fn is_websocket_protocol(protocol: &Protocol) -> bool {
 /// stripping illegal headers) is handled separately by [`ensure_valid_h2_or_h3_request`].
 fn translate_request_upgrade<Body>(request: &mut Request<Body>) -> Result<(), BoxError> {
     match request_connect_protocol(request) {
-        Some(protocol) if is_websocket_protocol(&protocol) => {
+        Some(protocol) if is_adaptable_upgrade(request.method(), request.version(), &protocol) => {
             // `GET` + `Upgrade: websocket` -> `CONNECT` + `:protocol: websocket`.
             tracing::trace!("translating h1 websocket upgrade into h2/h3 extended CONNECT");
             *request.method_mut() = Method::CONNECT;
+            // The challenge belongs to the HTTP/1.1 handshake being replaced.
+            request.headers_mut().remove(SEC_WEBSOCKET_KEY);
             // The tunnel bytes are the Extended CONNECT stream itself, which no
             // Content-Length of the upgrade request describes.
             remove_body_framing(request.headers_mut());
@@ -252,9 +249,10 @@ fn translate_request_upgrade<Body>(request: &mut Request<Body>) -> Result<(), Bo
         }
         Some(protocol) => {
             return Err(BoxError::from_static_str(
-                "cannot translate an HTTP/1 upgrade into an HTTP/2+ Extended CONNECT: only websocket is supported",
+                "cannot translate an HTTP/1 upgrade into an HTTP/2+ Extended CONNECT: only a websocket GET is supported",
             )
-            .context_str_field("protocol", protocol.as_str()));
+            .context_str_field("protocol", protocol.as_str())
+            .context_str_field("method", request.method().as_str()));
         }
         None => {}
     }
@@ -269,7 +267,7 @@ fn translate_request_upgrade<Body>(request: &mut Request<Body>) -> Result<(), Bo
 /// [`ensure_valid_h1_request`].
 fn translate_request_downgrade<Body>(request: &mut Request<Body>) -> Result<(), BoxError> {
     match request_connect_protocol(request) {
-        Some(protocol) if is_websocket_protocol(&protocol) => {
+        Some(protocol) if is_adaptable_upgrade(request.method(), request.version(), &protocol) => {
             // `CONNECT` + `:protocol: websocket` -> `GET` + `Upgrade: websocket`.
             tracing::trace!("translating h2/h3 extended CONNECT websocket into h1 upgrade");
             *request.method_mut() = Method::GET;
@@ -622,6 +620,25 @@ mod tests {
     }
 
     #[test]
+    fn extended_connect_forwarding_preserves_an_existing_key() {
+        let key = "dGhlIHNhbXBsZSBub25jZQ==";
+        for from in [Version::HTTP_2, Version::HTTP_3] {
+            for to in [Version::HTTP_2, Version::HTTP_3] {
+                let mut req = Request::builder()
+                    .version(from)
+                    .method(Method::CONNECT)
+                    .uri("https://example.com/chat")
+                    .header(SEC_WEBSOCKET_KEY, key)
+                    .body(())
+                    .unwrap();
+                req.extensions().insert(Protocol::from_static("websocket"));
+                adapt_request_version(&mut req, to).unwrap();
+                assert_eq!(req.headers().get(SEC_WEBSOCKET_KEY).unwrap(), key);
+            }
+        }
+    }
+
+    #[test]
     fn test_h2_to_h3_only_changes_version() {
         let mut req = Request::builder()
             .version(Version::HTTP_2)
@@ -641,22 +658,26 @@ mod tests {
 
     #[test]
     fn test_h1_to_h2_unsupported_upgrade_errors() {
-        let mut req = Request::builder()
-            .version(Version::HTTP_11)
-            .method(Method::GET)
-            .uri("https://example.com/")
-            .header(UPGRADE, "myproto")
-            .header(CONNECTION, "Upgrade")
-            .body(())
-            .unwrap();
-
-        // a genuine non-websocket upgrade switch we can't translate -> explicit error,
-        // not a silent strip.
-        let err = adapt_request_version(&mut req, Version::HTTP_2).unwrap_err();
-        assert!(
-            err.to_string().contains("only websocket is supported"),
-            "{err}"
-        );
+        // A genuine upgrade we can't translate is an explicit error, not a silent strip:
+        // another protocol, or a WebSocket upgrade that is not an opening handshake (GET).
+        for (method, upgrade) in [(Method::GET, "myproto"), (Method::POST, "websocket")] {
+            for version in [Version::HTTP_2, Version::HTTP_3] {
+                let mut req = Request::builder()
+                    .version(Version::HTTP_11)
+                    .method(method.clone())
+                    .uri("https://example.com/")
+                    .header(UPGRADE, upgrade)
+                    .header(CONNECTION, "Upgrade")
+                    .body(())
+                    .unwrap();
+                let err = adapt_request_version(&mut req, version).unwrap_err();
+                assert!(
+                    err.to_string()
+                        .contains("only a websocket GET is supported"),
+                    "{method} {upgrade} {version:?}: {err}"
+                );
+            }
+        }
     }
 
     #[test]

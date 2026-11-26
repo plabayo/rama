@@ -3,8 +3,8 @@ module rama-connect-ip-interop-peer
 go 1.26.0
 
 require (
-	github.com/quic-go/connect-ip-go v0.7.0
-	github.com/quic-go/quic-go v0.65.0
+	github.com/quic-go/connect-ip-go v0.8.0
+	github.com/quic-go/quic-go v0.66.0
 	github.com/yosida95/uritemplate/v3 v3.0.2
 )
 

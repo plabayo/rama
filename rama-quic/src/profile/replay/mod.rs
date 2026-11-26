@@ -62,7 +62,7 @@ use {
             target_ech_ready,
         },
     },
-    rama_tls_boring::client::profile::wire,
+    rama_tls_boring::client::profile::wire::{self, NonNegotiableValues},
     rama_ua::{
         TlsAgent, UserAgent,
         profile::{
@@ -72,7 +72,7 @@ use {
             },
         },
     },
-    rama_utils::fmt::hex,
+    rama_utils::{fmt::hex, macros::generate_set_and_with},
 };
 
 use crate::tls::QuicClientConfigProvider;
@@ -84,17 +84,35 @@ use crate::tls::QuicClientConfigProvider;
 /// after that wins and an earlier one is replaced. Compile once for each connection
 /// input; use a fresh input to select a different native recipe. Captured TLS
 /// currently requires BoringSSL; other providers report unsupported components
-/// during admission.
+/// during admission. Captured values BoringSSL cannot negotiate are filtered out
+/// of the offer unless [`NonNegotiableValues`] retains them.
 #[derive(Debug, Clone)]
 pub struct ConnectionProfileCompiler {
     policy: TlsClientConfig,
     provider: Arc<dyn QuicClientConfigProvider>,
+    #[cfg(feature = "boring")]
+    non_negotiable: NonNegotiableValues,
 }
 
 impl ConnectionProfileCompiler {
     pub fn new(policy: TlsClientConfig, provider: Arc<dyn QuicClientConfigProvider>) -> Self {
-        Self { policy, provider }
+        Self {
+            policy,
+            provider,
+            #[cfg(feature = "boring")]
+            non_negotiable: NonNegotiableValues::new(),
+        }
     }
+
+    #[cfg(feature = "boring")]
+    generate_set_and_with!(
+        /// Set per list whether captured values BoringSSL cannot negotiate are
+        /// filtered out (the default) or sent as captured.
+        pub fn non_negotiable_values(mut self, values: NonNegotiableValues) -> Self {
+            self.non_negotiable = values;
+            self
+        }
+    );
 }
 
 impl<Input> Compiler<Input> for ConnectionProfileCompiler
@@ -365,7 +383,7 @@ impl ConnectionProfileCompiler {
         }
         let transport = compile_transport(components, true, selection.ech_ready)?.map(Arc::new);
         let report = &mut components.preservation_report;
-        let mut wire = tls::compile(&policy, &capture, report)?;
+        let mut wire = tls::compile(&policy, &capture, self.non_negotiable, report)?;
         let caller_alpn_differs = caller_alpn.as_ref().is_some_and(|caller| {
             wire.as_extensions()
                 .get_ref::<TlsAlpn>()
@@ -382,9 +400,8 @@ impl ConnectionProfileCompiler {
             lower(report, LoweredProfileItem::CallerTlsAlpn);
         }
         if let Some(caller) = caller_alpn {
-            wire.set_alpn(caller.0);
+            wire::set_alpn(&wire, caller);
         }
-        wire::narrow_alps(&wire);
         let current_scope = policy.as_extensions().get_arc::<TlsSessionProfileScope>();
         let caller_scope = match input.extensions().get_ref::<AppliedSessionScope>() {
             Some(previous)

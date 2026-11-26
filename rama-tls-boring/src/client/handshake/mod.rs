@@ -4,16 +4,17 @@
 //! certificate pins and ClientHello shaping. The same session starts the eventual
 //! handshake, so preflight does not build and discard a second native context.
 
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use rama_boring::ssl::{NameType, Ssl};
 use rama_core::{
+    conversion::RamaTryFrom as _,
     error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
     io::Io,
 };
 use rama_net::tls::ServerName;
-use rama_tls::client::ClientHandshake;
+use rama_tls::{ProtocolVersion, client::ClientHandshake};
 
 use super::{TlsConnectError, TlsConnectorData};
 use crate::TlsStream;
@@ -27,6 +28,7 @@ pub struct PreparedClient {
     ssl: Ssl,
     server_name: Option<ServerName>,
     ech_required: bool,
+    offered_versions: Option<Arc<[u16]>>,
 }
 
 impl fmt::Debug for PreparedClient {
@@ -48,6 +50,7 @@ impl TryFrom<TlsConnectorData> for PreparedClient {
         }
         let server_name = data.server_name.clone();
         let ech_required = data.ech_required;
+        let offered_versions = data.offered_versions.clone();
         let mut ssl = data.into_ssl()?;
         // Clients do not renegotiate; release handshake configuration afterwards.
         ssl.set_shed_handshake_config(true);
@@ -55,6 +58,7 @@ impl TryFrom<TlsConnectorData> for PreparedClient {
             ssl,
             server_name,
             ech_required,
+            offered_versions,
         })
     }
 }
@@ -69,6 +73,7 @@ impl PreparedClient {
             ssl,
             server_name,
             ech_required,
+            offered_versions,
         } = self;
         let stream = rama_boring_tokio::SslStreamBuilder::new(ssl, stream)
             .connect()
@@ -84,6 +89,19 @@ impl PreparedClient {
                     outgoing_sni,
                 }
             })?;
+        // The engine negotiates its min..max range; a listed set with gaps is enforced here.
+        if let Some(offered) = offered_versions {
+            let negotiated = stream
+                .ssl()
+                .version()
+                .and_then(|version| ProtocolVersion::rama_try_from(version).ok())
+                .map(u16::from);
+            if negotiated.is_none_or(|version| !offered.contains(&version)) {
+                return Err(TlsConnectError::Builder(BoxError::from_static_str(
+                    "server selected a TLS version the offer did not list",
+                )));
+            }
+        }
         let accepted = stream.ssl().ech_accepted();
         if ech_required && !accepted {
             return Err(TlsConnectError::Builder(BoxError::from_static_str(

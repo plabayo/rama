@@ -82,6 +82,9 @@ pub(crate) struct ExportProfilesCommand {
     /// Maximum output bytes; exceeding the limit publishes no document.
     #[arg(long, default_value_t = ProfileArchiveLimits::default().bytes)]
     pub max_output_bytes: usize,
+    /// List the User-Agent of every profile the export left out, under its reason.
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
 }
 
 #[derive(Debug, Args)]

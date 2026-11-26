@@ -16,6 +16,7 @@ use rama::{
     http::{
         Body, Method, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
+        conn::TargetHttpVersion,
         header,
         layer::{
             alt_svc::AltSvcCache,
@@ -258,7 +259,7 @@ async fn request_dns_override_does_not_poison_shared_alt_backoff() {
 }
 
 #[tokio::test]
-async fn https_upgrade_preserves_version_with_h2_and_h3_advertisements() {
+async fn https_upgrade_preserves_explicit_h1_target_with_h2_and_h3_advertisements() {
     let (auth, tls) = credentials();
     let origin = Server::start(auth.clone(), Version::HTTP_11).await;
     let h2 = Server::start(auth.clone(), Version::HTTP_2).await;
@@ -280,6 +281,7 @@ async fn https_upgrade_preserves_version_with_h2_and_h3_advertisements() {
         let (client, endpoint) = client_with_http3_cache(tls.clone(), cache).await;
         let request = Request::builder()
             .version(Version::HTTP_11)
+            .extension(TargetHttpVersion(Version::HTTP_11))
             .method(Method::GET)
             .uri(format!(
                 "https://localhost:{}/socket",

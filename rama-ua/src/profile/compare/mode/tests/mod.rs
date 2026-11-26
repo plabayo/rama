@@ -2,7 +2,7 @@ use super::*;
 #[cfg(feature = "tls")]
 use crate::profile::capture::{
     joint::{CaptureLevel, CapturedSlot, JointCapture},
-    tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport},
+    tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtension},
 };
 use crate::profile::{
     capture::{
@@ -242,4 +242,56 @@ fn replay_rebinds_bootstrap_stream_without_changing_the_request_recipe() {
             .stream_id,
         4
     );
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn single_version_tcp_replay_requires_the_exact_narrowed_offer() {
+    fn hello(protocols: &[&[u8]]) -> CanonicalValue {
+        TlsCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            transport: TlsCaptureTransport::Tcp,
+            protocol_version: 771,
+            ciphers: Box::new([4865]),
+            compression: Box::new([0]),
+            extensions: Box::new([TlsCapturedExtension {
+                id: 16,
+                value: TlsCapturedExtensionValue::Protocols(
+                    protocols.iter().map(|p| Box::from(*p)).collect(),
+                ),
+            }]),
+        }
+        .canonical(TlsCaptureLimits::default())
+        .unwrap()
+    }
+
+    let both = hello(&[b"h2", b"http/1.1"]);
+    let h1 = hello(&[b"http/1.1"]);
+    let policy = CaptureComparisonPolicy {
+        mode: ComparisonMode::NativeReplay,
+        tcp_alpn: Some(b"http/1.1"),
+    };
+    let check = |observed| {
+        compare_retained_captures(
+            std::slice::from_ref(&both),
+            observed,
+            policy,
+            CaptureComparisonLimits::default(),
+        )
+        .unwrap()
+        .matched
+    };
+    assert!(check(&h1));
+    assert!(!check(&both));
+    assert!(!check(&hello(&[b"h2"])));
+    assert!(!matches(
+        std::slice::from_ref(&both),
+        &h1,
+        ComparisonMode::Literal
+    ));
+    assert!(matches(
+        std::slice::from_ref(&both),
+        &both,
+        ComparisonMode::NativeReplay
+    ));
 }

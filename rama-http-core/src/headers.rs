@@ -272,10 +272,16 @@ fn from_digits(bytes: &[u8]) -> Option<u64> {
     Some(result)
 }
 
+// RFC 9110 defines no use for OPTIONS content and forbids TRACE content, so no length is anticipated.
 pub(super) fn method_has_defined_payload_semantics(method: &Method) -> bool {
     !matches!(
         *method,
-        Method::GET | Method::HEAD | Method::DELETE | Method::CONNECT
+        Method::GET
+            | Method::HEAD
+            | Method::DELETE
+            | Method::CONNECT
+            | Method::OPTIONS
+            | Method::TRACE
     )
 }
 

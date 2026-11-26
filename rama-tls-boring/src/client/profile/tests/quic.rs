@@ -102,11 +102,10 @@ fn compiled_quic_offer_uses_fresh_keys_and_current_transport_parameters() {
     let source = source(&source_parameters);
     let mut report = ProfilePreservationReport::default();
     let config = wire::compile(
-        TransportShape::Quic {
-            parameters_len: current_parameters.len(),
-        },
+        TransportShape::Quic,
         &source,
         None,
+        wire::NonNegotiableValues::new(),
         &mut report,
     )
     .unwrap();
@@ -148,37 +147,21 @@ fn compiled_quic_offer_uses_fresh_keys_and_current_transport_parameters() {
 fn quic_wire_compilation_rejects_transport_mismatch_and_reports_lowered_shapes() {
     let parameters = [0x0f, 4, 1, 2, 3, 4];
     let observation = source(&parameters);
-    let binding = TransportShape::Quic {
-        parameters_len: parameters.len(),
-    };
+    let binding = TransportShape::Quic;
     let compile = |shape, captured: &TlsCapture| {
         let mut report = ProfilePreservationReport::default();
-        wire::compile(shape, captured, None, &mut report).map(|_| lowered(&report))
+        wire::compile(
+            shape,
+            captured,
+            None,
+            wire::NonNegotiableValues::new(),
+            &mut report,
+        )
+        .map(|_| lowered(&report))
     };
     compile(TransportShape::Tcp, &observation).unwrap_err();
     compile(binding, &capture()).unwrap_err();
-    assert_eq!(
-        compile(
-            TransportShape::Quic {
-                parameters_len: parameters[..5].len(),
-            },
-            &observation,
-        )
-        .unwrap(),
-        [LoweredProfileItem::QuicTransportParametersLength]
-    );
-
-    let mut missing = observation.clone();
-    missing.extensions = missing
-        .extensions
-        .into_vec()
-        .into_iter()
-        .filter(|extension| extension.id != u16::from(ExtensionId::QUIC_TRANSPORT_PARAMETERS))
-        .collect();
-    assert_eq!(
-        compile(binding, &missing).unwrap(),
-        [LoweredProfileItem::QuicTransportParametersLength]
-    );
+    assert_eq!(compile(binding, &observation).unwrap(), []);
 
     let mut filtered = observation;
     let extension = filtered
@@ -220,11 +203,10 @@ fn counted_server_padding_replays_exact_native_quic_values() {
         let source = captured(&hello(&original, &parameters));
         let mut report = ProfilePreservationReport::default();
         let compiled = wire::compile(
-            TransportShape::Quic {
-                parameters_len: parameters.len(),
-            },
+            TransportShape::Quic,
             &source,
             None,
+            wire::NonNegotiableValues::new(),
             &mut report,
         )
         .unwrap();
@@ -251,11 +233,10 @@ fn quic_replays_captured_trust_anchors() {
     ));
     let mut report = ProfilePreservationReport::default();
     let config = wire::compile(
-        TransportShape::Quic {
-            parameters_len: parameters.len(),
-        },
+        TransportShape::Quic,
         &source,
         None,
+        wire::NonNegotiableValues::new(),
         &mut report,
     )
     .unwrap();
@@ -271,4 +252,56 @@ fn quic_replays_captured_trust_anchors() {
             _ => None,
         });
     assert_eq!(body, anchors.extension_body());
+}
+
+#[test]
+fn quic_offers_filter_by_default_and_retain_on_request() {
+    let parameters = [0x0f, 4, 1, 2, 3, 4];
+    let original = source(&parameters);
+    let mut offered = original.clone();
+    let mut ciphers = offered.ciphers.to_vec();
+    ciphers.extend([0xfe00, 0xffff]);
+    offered.ciphers = ciphers.into();
+    let shape = TransportShape::Quic;
+    for (retention, item, expected) in [
+        (
+            wire::NonNegotiableValues::new(),
+            LoweredProfileItem::TlsCipherSuites,
+            &original,
+        ),
+        (
+            wire::NonNegotiableValues::new().with_cipher_suites(wire::NonNegotiable::Retain),
+            LoweredProfileItem::TlsCipherNegotiation,
+            &offered,
+        ),
+    ] {
+        let mut report = ProfilePreservationReport::default();
+        let config = wire::compile(shape, &offered, None, retention, &mut report).unwrap();
+        assert_eq!(lowered(&report), [item]);
+        assert_eq!(
+            replay_form(&captured(&hello(&config, &parameters))),
+            replay_form(expected)
+        );
+    }
+}
+
+#[test]
+fn a_quic_capture_without_tls13_is_refused() {
+    let parameters = [0x0f, 4, 1, 2, 3, 4];
+    let mut captured = source(&parameters);
+    for extension in &mut captured.extensions {
+        if extension.id == u16::from(ExtensionId::SUPPORTED_VERSIONS) {
+            extension.value =
+                TlsCapturedExtensionValue::U16List(vec![ProtocolVersion::TLSv1_2.into()].into());
+        }
+    }
+    let mut report = ProfilePreservationReport::default();
+    wire::compile(
+        TransportShape::Quic,
+        &captured,
+        None,
+        wire::NonNegotiableValues::new(),
+        &mut report,
+    )
+    .unwrap_err();
 }

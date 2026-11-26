@@ -172,6 +172,187 @@ fn request_shape_selects_cookie_variant_and_ignores_unobserved_caller_fields() {
 }
 
 #[test]
+fn caller_alt_used_selects_a_variant_that_recorded_it_at_its_captured_slot() {
+    let context = ConnectionContext::default();
+    let field = |name: &'static str, value: HeaderValueSource| HeaderOccurrence {
+        name: HeaderName::from_static(name),
+        occurrence: 0,
+        sensitive: false,
+        representation: None,
+        value,
+    };
+    let accept = || field("accept", HeaderValueSource::Profile(Box::from(&b"*/*"[..])));
+    let priority = || {
+        field(
+            "priority",
+            HeaderValueSource::Profile(Box::from(&b"u=0, i"[..])),
+        )
+    };
+    let alt_used = || {
+        field(
+            "alt-used",
+            HeaderValueSource::Request(RequestBinding::Authority),
+        )
+    };
+    let without = request_variant_with_headers(Version::HTTP_3, vec![accept(), priority()]);
+    let with =
+        request_variant_with_headers(Version::HTTP_3, vec![accept(), alt_used(), priority()]);
+    let mut captured = profile("browser", h3_capabilities(), context.clone());
+    let analysis = Arc::make_mut(captured.captured.as_mut().unwrap());
+    let scope = analysis
+        .scopes
+        .iter_mut()
+        .find(|scope| scope.context.flow.is_some())
+        .unwrap();
+    scope.observations.counts = counts(1001);
+    scope.observations.retained_samples = 2;
+    scope.observations.sample_values = Box::new([without.id, with.id]);
+    scope.observations.variants = Box::new([
+        AnalyzedCaptureVariant {
+            value: without.into(),
+            weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1000)),
+        },
+        AnalyzedCaptureVariant {
+            value: with.clone().into(),
+            weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1)),
+        },
+    ]);
+
+    let database: UserAgentDatabase = [captured].into_iter().collect();
+    let flow = flow(context.clone(), Version::HTTP_3);
+    let mut caller_headers = HeaderMap::new();
+    caller_headers.insert("alt-used", HeaderValue::from_static("alternative.example"));
+    for draw in 0..16u8 {
+        let selected = database
+            .select(
+                &request(context.clone()),
+                ProfileSeed([draw; 32]),
+                DrawKey([70; 32]),
+            )
+            .unwrap();
+        let connection = selected
+            .connection(&context, ProfileSeed([draw; 32]), DrawKey([71; 32]))
+            .unwrap();
+        let chosen = selected
+            .request(
+                &connection,
+                &flow,
+                &caller_headers,
+                ProfileSeed([draw; 32]),
+                DrawKey([72; 32]),
+            )
+            .unwrap();
+        assert_eq!(chosen.variant, with.id, "draw {draw}");
+        let headers = chosen
+            .replay_request(&caller_headers)
+            .unwrap()
+            .headers
+            .unwrap();
+        assert_eq!(
+            headers
+                .ordered_iter()
+                .map(|(name, _value)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["accept", "alt-used", "priority"],
+            "draw {draw}"
+        );
+    }
+}
+
+#[test]
+fn caller_alt_used_keeps_a_captured_slot_when_no_variant_matches_exactly() {
+    let context = ConnectionContext::default();
+    let field = |name: &'static str, value: HeaderValueSource| HeaderOccurrence {
+        name: HeaderName::from_static(name),
+        occurrence: 0,
+        sensitive: false,
+        representation: None,
+        value,
+    };
+    let accept = || field("accept", HeaderValueSource::Profile(Box::from(&b"*/*"[..])));
+    let priority = || {
+        field(
+            "priority",
+            HeaderValueSource::Profile(Box::from(&b"u=0, i"[..])),
+        )
+    };
+    let alt_used = || {
+        field(
+            "alt-used",
+            HeaderValueSource::Request(RequestBinding::Authority),
+        )
+    };
+    let cookie = || field("cookie", HeaderValueSource::Request(RequestBinding::Cookie));
+    // Neither variant has both the cookie and the Alt-Used slot the caller sends.
+    let without =
+        request_variant_with_headers(Version::HTTP_3, vec![accept(), cookie(), priority()]);
+    let with =
+        request_variant_with_headers(Version::HTTP_3, vec![accept(), alt_used(), priority()]);
+    let mut captured = profile("browser", h3_capabilities(), context.clone());
+    let analysis = Arc::make_mut(captured.captured.as_mut().unwrap());
+    let scope = analysis
+        .scopes
+        .iter_mut()
+        .find(|scope| scope.context.flow.is_some())
+        .unwrap();
+    scope.observations.counts = counts(1001);
+    scope.observations.retained_samples = 2;
+    scope.observations.sample_values = Box::new([without.id, with.id]);
+    scope.observations.variants = Box::new([
+        AnalyzedCaptureVariant {
+            value: without.into(),
+            weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1000)),
+        },
+        AnalyzedCaptureVariant {
+            value: with.clone().into(),
+            weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1)),
+        },
+    ]);
+
+    let database: UserAgentDatabase = [captured].into_iter().collect();
+    let flow = flow(context.clone(), Version::HTTP_3);
+    let mut caller_headers = HeaderMap::new();
+    caller_headers.insert("alt-used", HeaderValue::from_static("alternative.example"));
+    caller_headers.insert("cookie", HeaderValue::from_static("session=secret"));
+    for draw in 0..16u8 {
+        let selected = database
+            .select(
+                &request(context.clone()),
+                ProfileSeed([draw; 32]),
+                DrawKey([73; 32]),
+            )
+            .unwrap();
+        let connection = selected
+            .connection(&context, ProfileSeed([draw; 32]), DrawKey([74; 32]))
+            .unwrap();
+        let chosen = selected
+            .request(
+                &connection,
+                &flow,
+                &caller_headers,
+                ProfileSeed([draw; 32]),
+                DrawKey([75; 32]),
+            )
+            .unwrap();
+        assert_eq!(chosen.variant, with.id, "draw {draw}");
+        let headers = chosen
+            .replay_request(&caller_headers)
+            .unwrap()
+            .headers
+            .unwrap();
+        let names: Vec<_> = headers
+            .ordered_iter()
+            .map(|(name, _value)| name.as_str())
+            .collect();
+        assert_eq!(
+            names.iter().position(|name| *name == "alt-used"),
+            Some(1),
+            "draw {draw}: {names:?}"
+        );
+    }
+}
+
+#[test]
 fn equal_protocol_classifiers_derive_the_same_request_key_across_profiles() {
     let context = ConnectionContext::default();
     let database: UserAgentDatabase = [profile("complete", h3_capabilities(), context.clone())]

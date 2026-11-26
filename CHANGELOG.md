@@ -490,7 +490,9 @@ stays at 1.96 and the edition at 2024.
   values placed in `HttpUpgradeMitmRelayExtensions`. Upgrade `Parts` gained a
   `read_err` field that callers of `Upgraded::downcast` should check, and
   `Rewind`/`PrefixedIo` may return replayed and inner bytes in one read. The
-  `IoBufMut::as_uninit` method was replaced by `as_mut_slice` and `spare_mut`
+  `IoBufMut::as_uninit` method was replaced by `as_mut_slice` and `spare_mut`.
+  `WebSocketRequestBuilder::new` and `new_with_service` are now `new_h1` and
+  `new_h1_with_service`; use `new_auto` to let the client pick the version
   (#1169, #1216, #1291).
 * **Strict and case-sensitive values**: closed-set enums built with
   `enum_builder!` can now be strict. `CrossOriginEmbedderPolicyValue`,
@@ -609,7 +611,7 @@ stays at 1.96 and the edition at 2024.
   `with_dial9_attach_options`, and `--cfg tokio_unstable` is optional (#1147, by
   Julián Montes de Oca). The OpenTelemetry re-exports moved to `opentelemetry`
   0.33 and `tracing-opentelemetry` 0.34, and `rama::tls::boring::core`
-  re-exports rama-boring 0.7, a breaking release with soundness fixes.
+  re-exports rama-boring 0.8, a breaking release with soundness fixes.
 * **Network and CLI defaults**: `TCP_NODELAY` is on for TCP sockets Rama
   creates (set `tcp_no_delay` in `SocketOptions` to change it). The proxy
   started by `rama serve proxy` serves HTTP and SOCKS5 on `--bind` by default
@@ -741,9 +743,12 @@ as a compiled, compressed binary, so loading it only decodes.
   picks the profile from proxy-auth labels (`ProfileSelectorUsernameParser`).
 * **Behaviour to know about**: without a user agent and without a fallback, 0.5
   draws any profile weighted by observations, where 0.4 selected nothing. A
-  request whose kind the profile never captured replays the nearest captured
-  flow and keeps the caller's `Sec-Fetch-*` headers. An invalid input header
-  order is ignored instead of failing the request. `is_optional(true)` also
+  profile is never swapped for another identity: with a detected User-Agent
+  only "no profile has this User-Agent" relaxes selection, and other misses
+  fail unless a `ProfileSelectFallback` is set. A request whose kind the
+  profile never captured replays the nearest captured flow and keeps the
+  caller's `Sec-Fetch-*` headers. An invalid input header order is ignored
+  instead of failing the request. `is_optional(true)` also
   covers connection preparation, which then connects natively.
 * **CLI and your own profiles**: `rama send --emulate` takes an optional
   profile file (`--emulate=profiles.json`), defaults to the embedded set and
@@ -799,6 +804,14 @@ as a compiled, compressed binary, so loading it only decodes.
     with the Capsule Protocol (RFC 9297) on HTTP/1.1, HTTP/2 and HTTP/3
     (`rama::http::datagram`); a relay can move capsules onto the next hop's
     native datagrams (#1228, #1231; #1339 by Brecht Stamper).
+  * Added `WebSocketRequestBuilder::new_auto`, `new_auto_with_service` and
+    `websocket_auto()` on `HttpClientWebSocketExt` and
+    `BlockingHttpClientWebSocketExt`: the client stack picks the handshake, an
+    upgrade when ALPN selects HTTP/1.1 and Extended CONNECT over HTTP/2.
+    `websocket()` stays on HTTP/1.1, `websocket_with_request` with an HTTP/1.x
+    request and no `TargetHttpVersion` is the auto form, and a `wss`
+    connection without configured ALPN still offers only `http/1.1`.
+    `rama send --ws-alpn` opts into the same choice.
   * Added HTTP early data with `425 Too Early` recovery: per-request
     `EarlyDataPermit`/`ForbidEarlyData`, client retry helpers, server and
     gateway gates, a typed `Early-Data` header, and exposure preserved across
@@ -886,6 +899,18 @@ as a compiled, compressed binary, so loading it only decodes.
     GREASE, per-handshake extension permutation, requested trust anchors and
     TLS 1.2 tickets, and opt-in TLS session resumption for clients and servers
     (#1234, building on #1196 by Yann).
+  * Profile replay and the BoringSSL MITM relay reproduce legacy hellos: TLS
+    1.1 and 1.0 when the captured or mirrored hello lists them (other clients
+    and servers keep TLS 1.2 as minimum), the 3DES and CBC cipher suites and
+    RFC 7919 FFDHE groups that rama-boring 0.8 adds (off by default), and
+    `extended_master_secret` without `renegotiation_info`
+    (`BoringExtensionPresence::omit_renegotiation_info`), also through
+    `TlsClientConfig::new_from_client_hello`. Values the backend cannot
+    negotiate are left out of each list, GREASE and the renegotiation SCSV
+    kept. The TLS and QUIC `ConnectionProfileCompiler` accepts a per-list
+    `NonNegotiableValues` policy. `RetainLegacy` also keeps recognized legacy
+    values, and `Retain` keeps all captured values. A captured or configured ALPN and ALPS pair is
+    sent as configured.
 * **Profiles, emulation and fingerprinting** (`rama-ua`, `rama-fp`):
   * Added the profile system: capture, counted evidence, analysis, variant
     selection with seeds and pins, and replay for TLS over TCP and QUIC, QUIC
@@ -905,7 +930,10 @@ as a compiled, compressed binary, so loading it only decodes.
   * The echo and fp services report HTTP/3 SETTINGS, QPACK and pseudo-header
     order, the QUIC first flight and transport parameters, TLS over QUIC, ECH
     acceptance, and how JA3, JA4 and PeetPrint compare with the recorded
-    profile for that user agent (#1258, #1281, #1286, #1354).
+    profile for that user agent (#1258, #1281, #1286, #1354). With
+    `rama serve echo --ws`, WebSocket handshake responses carry the
+    `x-rama-fingerprint-*` headers on HTTP/1.1, HTTP/2 and HTTP/3, and
+    `--alt-svc-h2-bind` advertises an extra HTTP/2 listener through Alt-Svc.
   * Added typed `Sec-Fetch-Dest`, `Sec-Fetch-Mode`, `Sec-Fetch-User`,
     `Sec-Purpose` and `X-Requested-With` headers and a `FetchMetadata`
     extractor (#1289, #1290).
@@ -993,6 +1021,11 @@ as a compiled, compressed binary, so loading it only decodes.
     (`redirect_to_trailing_slash`, `ignore_multi_range_requests`,
     `with_enforce_not_acceptable`) and a Rama-owned HTTP-date formatter and
     parser (`rama::http::utils::http_date`) (#1139, #1321, #1355).
+  * Added `rama::http::utils::request_signals_upgrade` and
+    `request_adaptable_upgrade`, and `HttpServiceConnector::with_http3_upgrades`
+    (`set_http3_upgrades` in the web client's `configure_http_service`) to let
+    an upgrade without a target version follow an HTTP/3 alternative, which
+    it does not by default.
   * Added the encode-only `DateNow` typed header, which writes the current
     `Date` from bytes shared per second per thread, and `Server::default()`.
 * **Core, errors and utilities**:
@@ -1074,6 +1107,22 @@ as a compiled, compressed binary, so loading it only decodes.
 * The embedded user-agent profiles are a compiled, compressed set that is
   analysed at export time, so loading only decodes it. The set was refreshed
   throughout the cycle (#1258, #1282, #1286, #1310, #1329, #1355, #1364).
+  `rama ua export --embed` reads every profile and reports what it leaves out
+  and why (`-v` lists them).
+* Profile emulation offers a secure TCP request without a target version or
+  caller ALPN the HTTP versions captured for its kind of request (ordinary,
+  tunnel or WebSocket). It follows an Alt-Svc or HTTPS
+  record alternative (such as HTTP/3) when the profile holds data for that
+  version instead of staying on TCP, and prefers a captured hello offering
+  only `http/1.1` when HTTP/2 is not required.
+* The web client no longer pins a WebSocket handshake without a target
+  version to HTTP/1.1, so it follows ALPN, and keeps every other request that
+  signals an upgrade on its own version instead of sending it over HTTP/2
+  with the upgrade stripped. Such requests do not move to an HTTP/3
+  alternative unless `http3_upgrades` is set, `wss` URIs use the Alt-Svc and
+  HTTPS records of their `https` origin, `HttpUpgradeMitmRelay` forwards an
+  upgrade on the ingress HTTP version, and an HTTP/1 WebSocket upgrade that
+  is not a `GET` fails instead of becoming Extended CONNECT.
 * The BoringSSL acceptor only issues session tickets with
   `with_session_resumption(true)` (#1234).
 * Apple Network Extension: provider-side refusals fail open by default, egress
@@ -1097,7 +1146,7 @@ as a compiled, compressed binary, so loading it only decodes.
   written without a copy, small files are served from one blocking call, SSE
   decoding and encoding were rewritten, the HTML rewriter streams text-mode
   element bodies, MITM certificates are issued off the runtime, HTTP/3 request
-  heads and user-agent profile connects decode and allocate less, and the
+  heads and user-agent profile selection, draws and connects cost less, and the
   in-memory proxy database filters by transport without scanning every match
   (#1140, #1176, #1184, #1301, #1325, #1328, #1336, #1348; #1240 by Abdelkader
   Boudih; #1268 by Brecht Stamper).
@@ -1111,7 +1160,7 @@ as a compiled, compressed binary, so loading it only decodes.
   http-body, http-body-util, hyper-util, headers, h3, tower-http, axum, tonic,
   tungstenite, lol-html, quinn, quinn-udp and rustls-native-certs (#1139,
   #1239, #1241, #1298, #1318, #1368).
-* Raised `rama-boring` to 0.7 and OpenTelemetry to 0.33, unpinned `time`
+* Raised `rama-boring` to 0.8 and OpenTelemetry to 0.33, unpinned `time`
   (#1220, by Abdelkader Boudih), and refreshed dependencies, including venndb
   0.7.1 for the in-memory proxy database (#1310, #1369).
 * Release workflows separate build and test jobs from privileged signing and
@@ -1142,6 +1191,8 @@ as a compiled, compressed binary, so loading it only decodes.
   metadata, HAR headers, FastCGI records and HTTP/1 trailers fail instead of
   panicking. HTTP/2 and HTTP/3 trim leading and trailing whitespace from the
   field values they send and refuse values they forbid (#1321, #1355, #1366).
+* Fixed HTTP/1, HTTP/2 and HTTP/3 clients adding `content-length: 0` to
+  `OPTIONS` and `TRACE` requests without a body.
 * Fixed HTTP/2 adaptive flow control (`adaptive_window`) stopping after the
   first bandwidth sample, which left the receive window at its 65,535-byte
   default (#1362, by Kai).

@@ -5,9 +5,10 @@ use std::{
     io::{self, Read, Write},
 };
 
+use moka::sync::Cache;
 #[cfg(feature = "compression")]
 use rama_boring::ssl::SslSignatureAlgorithm;
-use rama_boring::ssl::{HandshakeError, SslCurve, UnknownValues};
+use rama_boring::ssl::{HandshakeError, SslConnector, SslCurve, UnknownValues};
 use rama_core::conversion::RamaTryInto as _;
 use rama_net::{
     address::Domain,
@@ -29,6 +30,7 @@ use rama_ua::{
 use super::{
     BoringClientConfigExt, BoringRequestedTrustAnchors, BoringTlsConnectorConfig,
     TlsConnectorContext, TlsConnectorContextBuilder, TlsConnectorData,
+    connector_data::shared_security_context_in,
 };
 
 #[test]
@@ -342,19 +344,13 @@ impl NativeLimits {
             .collect()
     }
 
-    /// Without `Preserve`, finite-field groups (no native implementation) are left out.
+    /// Without `Preserve`, groups BoringSSL does not implement are left out.
     fn supported_groups(captured: &[SupportedGroup]) -> Vec<String> {
         captured
             .iter()
             .filter(|group| {
-                !matches!(
-                    group,
-                    SupportedGroup::FFDHE2048
-                        | SupportedGroup::FFDHE3072
-                        | SupportedGroup::FFDHE4096
-                        | SupportedGroup::FFDHE6144
-                        | SupportedGroup::FFDHE8192
-                )
+                let native: Result<SslCurve, _> = (**group).rama_try_into();
+                group.is_grease() || native.is_ok()
             })
             .map(|group| grease_or(group.is_grease(), group))
             .collect()
@@ -661,27 +657,28 @@ fn ids(hello: &ClientHello) -> Vec<Option<u16>> {
 fn wire_variants_of_one_policy_share_a_context_and_keep_their_own_hellos() {
     let plain = plain_variant();
     let variant = wire_variant();
+    // One native context per security policy, whatever the wire settings. A local
+    // cache: the process-wide one is shared with concurrently running tests.
+    let contexts = Cache::new(8);
+    let context = |config: &TlsClientConfig| {
+        let view = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
+        shared_security_context_in(&contexts, &view, None, None).unwrap()
+    };
+    let same = |a: &SslConnector, b: &SslConnector| {
+        std::ptr::eq(
+            a.configure().unwrap().ssl_context(),
+            b.configure().unwrap().ssl_context(),
+        )
+    };
+    let shared = context(&plain);
+    assert!(same(&shared, &context(&variant)));
+    assert!(same(&shared, &context(&plain)));
+    // A different policy gets its own.
+    let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+    assert!(!same(&shared, &context(&insecure)));
     let first = TlsConnectorData::try_from(&plain).unwrap();
     let second = TlsConnectorData::try_from(&variant).unwrap();
     let third = TlsConnectorData::try_from(&plain).unwrap();
-    // One native context per security policy, whatever the wire settings.
-    assert!(std::ptr::eq(
-        first.config.ssl_context(),
-        second.config.ssl_context()
-    ));
-    assert!(std::ptr::eq(
-        first.config.ssl_context(),
-        third.config.ssl_context()
-    ));
-    // A different policy gets its own.
-    let insecure = TlsConnectorData::try_from(
-        &TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
-    )
-    .unwrap();
-    assert!(!std::ptr::eq(
-        first.config.ssl_context(),
-        insecure.config.ssl_context()
-    ));
 
     let (first, second, third) = (
         hello_from_data(first),
@@ -773,11 +770,11 @@ fn wire_variants_of_one_policy_share_a_context_and_keep_their_own_hellos() {
 
 #[test]
 fn naming_only_unusable_groups_fails_instead_of_offering_defaults() {
-    let config = TlsClientConfig::new().with_supported_groups(vec![SupportedGroup::FFDHE2048]);
+    let config = TlsClientConfig::new().with_supported_groups(vec![SupportedGroup::FFDHE4096]);
     TlsConnectorData::try_from(&config).unwrap_err();
     // One usable group is enough, and is all that is offered.
     let config = TlsClientConfig::new()
-        .with_supported_groups(vec![SupportedGroup::FFDHE2048, SupportedGroup::X25519]);
+        .with_supported_groups(vec![SupportedGroup::FFDHE4096, SupportedGroup::X25519]);
     let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
     let groups = hello
         .extensions()
@@ -1183,4 +1180,5 @@ fn preserved_and_pinned_hellos_round_trip_exactly() {
     }
 }
 
+mod alps;
 mod server_padding;

@@ -315,7 +315,7 @@ fn request_capabilities_follow_real_transport_and_alpn_inputs() {
         .body(())
         .unwrap();
     assert_eq!(
-        required_capabilities(&automatic).unwrap(),
+        required_capabilities(&automatic, None).unwrap(),
         CapabilitySet {
             h1: true,
             h2: true,
@@ -330,7 +330,7 @@ fn request_capabilities_follow_real_transport_and_alpn_inputs() {
         .body(())
         .unwrap();
     assert_eq!(
-        required_capabilities(&clear_h2).unwrap(),
+        required_capabilities(&clear_h2, None).unwrap(),
         CapabilitySet {
             h2: true,
             ..CapabilitySet::default()
@@ -343,7 +343,7 @@ fn request_capabilities_follow_real_transport_and_alpn_inputs() {
         .body(())
         .unwrap();
     assert_eq!(
-        required_capabilities(&h3).unwrap(),
+        required_capabilities(&h3, None).unwrap(),
         CapabilitySet {
             h3: true,
             tls_quic: true,
@@ -357,7 +357,7 @@ fn request_capabilities_follow_real_transport_and_alpn_inputs() {
         .extensions()
         .insert(TlsAlpn([ApplicationProtocol::HTTP_3].into_iter().collect()));
     assert!(matches!(
-        required_capabilities(&incompatible),
+        required_capabilities(&incompatible, None),
         Err(crate::profile::selection::variants::SelectionError::IncompatibleTransport)
     ));
 }

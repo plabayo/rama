@@ -903,12 +903,15 @@ pub(crate) enum AlpsCoupling {
     Suppressed,
 }
 
-/// Set an ALPN offer and keep inherited ALPS protocols within that offer.
+/// Set an ALPN offer; a changed offer keeps inherited ALPS protocols within it.
 pub(crate) fn set_alpn_list_with_coupled_alps(
     extensions: &Extensions,
     alpn: TlsAlpn,
 ) -> AlpsCoupling {
     let offered = alpn.0.clone();
+    let unchanged = extensions
+        .get_ref::<TlsAlpn>()
+        .is_some_and(|current| current.0 == offered);
     extensions.insert(alpn);
 
     let Some((protocols, new_codepoint)) = extensions
@@ -917,6 +920,14 @@ pub(crate) fn set_alpn_list_with_coupled_alps(
     else {
         return AlpsCoupling::NotConfigured;
     };
+    if unchanged {
+        // An unchanged offer is sent with its ALPS list as configured or captured.
+        return if protocols.is_empty() {
+            AlpsCoupling::Suppressed
+        } else {
+            AlpsCoupling::Retained
+        };
+    }
 
     let protocols: Vec<_> = protocols
         .into_iter()
@@ -936,9 +947,9 @@ pub(crate) fn set_alpn_list_with_coupled_alps(
 
 /// Offer exactly one ALPN protocol and keep ALPS coherent with that offer.
 ///
-/// ALPS settings are scoped to a negotiated ALPN protocol. BoringSSL requires
-/// every configured ALPS protocol to also occur in its ALPN offer, so callers
-/// which narrow ALPN must update both extensions together. Mirrored ALPS is
+/// BoringSSL sends the configured ALPS list as is, also for protocols outside
+/// the ALPN offer, and only requires settings for the protocol the server
+/// negotiates. An offer that changes keeps ALPS within it: mirrored ALPS is
 /// retained only when it included `protocol`; otherwise an empty newest value
 /// shadows it in the append-only [`Extensions`] chain. The connector registers
 /// no application settings for that empty value, causing BoringSSL to omit ALPS
@@ -1026,9 +1037,9 @@ impl TlsPoolComponent for BoringLegacyExtensions {
     }
 }
 
-/// Presence of optional TLS 1.3 ClientHello extensions BoringSSL decides itself.
+/// Presence of optional ClientHello extensions BoringSSL decides itself.
 ///
-/// The default is the native choice for both.
+/// The default is the native choice for each.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls), scope(connection))]
 #[non_exhaustive]
@@ -1038,6 +1049,8 @@ pub struct BoringExtensionPresence {
     /// Omit psk_key_exchange_modes. Such a connection offers no session, so it
     /// never resumes (RFC 8446 §4.2.9).
     pub omit_psk_key_exchange_modes: bool,
+    /// Omit renegotiation_info from an initial ClientHello, keeping extended_master_secret.
+    pub omit_renegotiation_info: bool,
 }
 
 impl TlsPoolComponent for BoringExtensionPresence {
@@ -1269,9 +1282,10 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         if !extension_bodies.is_empty() {
             config.set_extension_bodies(extension_bodies);
         }
-        // Browsers over QUIC send both although only TLS 1.3 can be negotiated there.
+        // Browsers send both, over QUIC too; a hello signalling RFC 5746 by SCSV omits RI.
         let sent = |id| hello.extensions().iter().any(|ext| ext.id() == id);
-        if sent(ExtensionId::EXTENDED_MASTER_SECRET) && sent(ExtensionId::RENEGOTIATION_INFO) {
+        let extended_master_secret = sent(ExtensionId::EXTENDED_MASTER_SECRET);
+        if extended_master_secret {
             config.set_legacy_extensions(true);
         }
         let offers_tls13 = hello.extensions().iter().any(|ext| {
@@ -1281,6 +1295,8 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         let presence = BoringExtensionPresence {
             ec_point_formats: sent(ExtensionId::EC_POINT_FORMATS),
             omit_psk_key_exchange_modes: offers_tls13 && !sent(ExtensionId::PSK_KEY_EXCHANGE_MODES),
+            omit_renegotiation_info: extended_master_secret
+                && !sent(ExtensionId::RENEGOTIATION_INFO),
         };
         if presence != BoringExtensionPresence::default() {
             config.set_extension_presence(presence);
@@ -1296,10 +1312,10 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         config.set_tls12_session_tickets(tls12_session_tickets);
         config.set_requested_trust_anchors(requested_trust_anchors);
 
-        // Egress version safety (mitm mirror): cap boring's max negotiated version
-        // when the mirrored ClientHello isn't a viable TLS 1.3 offer.
-        if let Some(max) = egress_max_version_clamp(hello) {
-            config.set_max_version(max);
+        // Without supported_versions the legacy field is the highest version offered;
+        // a higher native maximum would add the extension the hello did not send.
+        if hello.supported_versions().is_none() {
+            config.set_max_version(hello.protocol_version());
         }
 
         config
@@ -1312,46 +1328,6 @@ const NATIVE_EXTENSIONS: [u16; 33] = [
     0, 5, 10, 11, 13, 14, 16, 18, 19, 20, 21, 23, 27, 34, 35, 41, 42, 43, 44, 45, 47, 51, 57, 4832,
     13172, 17513, 17613, 30032, 0x8a3b, 0xca34, 0xfe0d, 0xff01, 0xffa5,
 ];
-
-/// Compute the egress max-version clamp for a mirrored [`ClientHello`], or
-/// `None` when no clamp is needed.
-///
-/// Two cases require a clamp (otherwise boring would happily offer TLS 1.3 on
-/// egress even when the mirrored client wouldn't or couldn't):
-/// - the hello has **no `supported_versions` extension** (legacy hello): cap to
-///   the legacy `protocol_version`;
-/// - the hello advertises TLS 1.3 but isn't viable as 1.3 (no TLS 1.3 cipher
-///   suite, or no TLS 1.3-capable signature algorithm): clamp to TLS 1.2 rather
-///   than sending an internally inconsistent ClientHello servers reject.
-fn egress_max_version_clamp(hello: &ClientHello) -> Option<ProtocolVersion> {
-    let Some(versions) = hello.supported_versions() else {
-        // No supported_versions extension: the negotiated version lives only in
-        // the legacy field, so cap egress to it.
-        return Some(hello.protocol_version());
-    };
-
-    let advertises_tls13 = versions
-        .iter()
-        .filter(|v| !v.is_grease())
-        .any(|v| *v == ProtocolVersion::TLSv1_3);
-    if !advertises_tls13 {
-        return None;
-    }
-
-    let has_tls13_cipher = hello
-        .cipher_suites()
-        .iter()
-        .filter(|c| !c.is_grease())
-        .any(|c| c.is_tls13());
-    let has_tls13_sig_alg = hello.ext_signature_algorithms().is_some_and(|schemes| {
-        schemes
-            .iter()
-            .filter(|s| !s.is_grease())
-            .any(|s| s.is_tls13_capable())
-    });
-
-    (!has_tls13_cipher || !has_tls13_sig_alg).then_some(ProtocolVersion::TLSv1_2)
-}
 
 /// Classification of request overrides understood by Boring.
 #[derive(Debug, Clone, Copy, Default)]
@@ -1396,53 +1372,39 @@ mod tests {
     }
 
     #[test]
-    fn clamp_to_tls12_when_tls13_advertised_without_tls13_cipher() {
-        let hello = ClientHello::new(
-            ProtocolVersion::TLSv1_2,
-            // no TLS 1.3 cipher suite
-            vec![CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256],
-            vec![CompressionAlgorithm::Null],
-            vec![
-                ClientHelloExtension::SupportedVersions(vec![
-                    ProtocolVersion::TLSv1_3,
-                    ProtocolVersion::TLSv1_2,
-                ]),
-                ClientHelloExtension::SignatureAlgorithms(vec![SignatureScheme::RSA_PSS_SHA256]),
-            ],
-        );
-        assert_eq!(clamp_of(&hello), Some(ProtocolVersion::TLSv1_2));
-    }
-
-    #[test]
-    fn clamp_to_tls12_when_tls13_advertised_without_tls13_capable_sig_alg() {
-        let hello = ClientHello::new(
-            ProtocolVersion::TLSv1_2,
-            vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
-            vec![CompressionAlgorithm::Null],
-            vec![
-                ClientHelloExtension::SupportedVersions(vec![ProtocolVersion::TLSv1_3]),
-                // PKCS1 is TLS 1.2-only
-                ClientHelloExtension::SignatureAlgorithms(vec![SignatureScheme::RSA_PKCS1_SHA256]),
-            ],
-        );
-        assert_eq!(clamp_of(&hello), Some(ProtocolVersion::TLSv1_2));
-    }
-
-    #[test]
-    fn no_clamp_for_viable_tls13_hello() {
-        let hello = ClientHello::new(
-            ProtocolVersion::TLSv1_2,
-            vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
-            vec![CompressionAlgorithm::Null],
-            vec![
-                ClientHelloExtension::SupportedVersions(vec![
-                    ProtocolVersion::TLSv1_3,
-                    ProtocolVersion::TLSv1_2,
-                ]),
-                ClientHelloExtension::SignatureAlgorithms(vec![SignatureScheme::RSA_PSS_SHA256]),
-            ],
-        );
-        assert_eq!(clamp_of(&hello), None);
+    fn a_hello_listing_tls13_is_mirrored_without_a_cap() {
+        // Whether the origin can use TLS 1.3 with these suites and signature algorithms
+        // is between it and the client; the mirror offers what was listed.
+        let hello = |cipher, scheme| {
+            ClientHello::new(
+                ProtocolVersion::TLSv1_2,
+                vec![cipher],
+                vec![CompressionAlgorithm::Null],
+                vec![
+                    ClientHelloExtension::SupportedVersions(vec![
+                        ProtocolVersion::TLSv1_3,
+                        ProtocolVersion::TLSv1_2,
+                    ]),
+                    ClientHelloExtension::SignatureAlgorithms(vec![scheme]),
+                ],
+            )
+        };
+        for (cipher, scheme) in [
+            (
+                CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                SignatureScheme::RSA_PSS_SHA256,
+            ),
+            (
+                CipherSuite::TLS13_AES_128_GCM_SHA256,
+                SignatureScheme::RSA_PKCS1_SHA256,
+            ),
+            (
+                CipherSuite::TLS13_AES_128_GCM_SHA256,
+                SignatureScheme::RSA_PSS_SHA256,
+            ),
+        ] {
+            assert_eq!(clamp_of(&hello(cipher, scheme)), None);
+        }
     }
 }
 

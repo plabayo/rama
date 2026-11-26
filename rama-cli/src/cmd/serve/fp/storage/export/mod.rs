@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt::Write as _,
     fs::{self, File},
     io::{self, BufWriter, Read as _, Write as _},
@@ -23,12 +24,18 @@ use rama::{
     },
     utils::{
         fs::{CreatedFilePermissions, OpenOptions, TempDir},
-        octets::kib,
+        octets::{kib, mib},
     },
 };
 
-use super::CountedProfileSource;
-use crate::cmd::ua::{CompactProfilesCommand, ExportProfilesCommand};
+use super::{
+    CountedProfileSource, ReadBudget,
+    profile_source::{ReadTally, SourcedProfile},
+};
+use crate::{
+    cmd::ua::{CompactProfilesCommand, ExportProfilesCommand},
+    utils::terminal::display_text,
+};
 
 /// A private directory next to the destination, so publishing is a rename.
 fn stage(output: &Path) -> Result<(TempDir, File), BoxError> {
@@ -159,15 +166,140 @@ fn excluded(user_agents: &[Box<str>], profile: &AnalyzedProfile) -> bool {
 }
 
 /// Report how many profiles the exclusions removed, so a stale exclusion is visible.
-fn report_exclusions(user_agents: &[Box<str>], excluded: usize) -> io::Result<()> {
+fn report_exclusions(
+    out: &mut impl io::Write,
+    user_agents: &[Box<str>],
+    excluded: usize,
+) -> io::Result<()> {
     if user_agents.is_empty() {
         return Ok(());
     }
     writeln!(
-        io::stderr(),
+        out,
         "Profile export: {excluded} of {} excluded User-Agents found and left out.",
         user_agents.len(),
     )
+}
+
+/// Profiles the export read and then left out itself.
+#[derive(Debug, Default)]
+struct ExportLeftOut {
+    legacy_only: Vec<Box<str>>,
+    excluded: Vec<Box<str>>,
+}
+
+/// List the profiles behind a reason line when the operator asked for them.
+fn list_profiles<'a>(
+    out: &mut impl io::Write,
+    verbose: bool,
+    labels: impl IntoIterator<Item = &'a Box<str>>,
+) -> io::Result<()> {
+    if verbose {
+        for label in labels {
+            writeln!(out, "  {}", display_text(label))?;
+        }
+    }
+    Ok(())
+}
+
+/// The cumulative analysis work bound an export reads under.
+fn read_budget(command: &ExportProfilesCommand) -> ReadBudget {
+    if command.embed {
+        ReadBudget::Embedded
+    } else {
+        ReadBudget::Archive
+    }
+}
+
+/// Account for every profile in the export window, so a smaller set says why.
+fn report_export(
+    out: &mut impl io::Write,
+    command: &ExportProfilesCommand,
+    read: &ReadTally,
+    left_out: &ExportLeftOut,
+) -> io::Result<()> {
+    let verbose = command.verbose;
+    let exported = read.read - left_out.legacy_only.len() - left_out.excluded.len();
+    // Profiles past the count bound are neither counted nor read.
+    let more = if read.over_count { "+" } else { "" };
+    writeln!(
+        out,
+        "Profile export: {}{more} profiles in the {}-day window; {exported} exported, {}{more} left out.",
+        read.listed,
+        command.days,
+        read.listed - exported,
+    )?;
+    if read.over_count {
+        writeln!(
+            out,
+            "Profile export: profiles past --max-profiles {} left unread; raise --max-profiles to read them.",
+            command.max_profiles,
+        )?;
+    }
+    if !read.over_work_bound.is_empty()
+        && let Some(bound) = read_budget(command).maximum_work()
+    {
+        writeln!(
+            out,
+            "Profile export: {} left out unread; the analysis work bound of {} MiB was reached.",
+            read.over_work_bound.len(),
+            bound / mib(1),
+        )?;
+        list_profiles(out, verbose, &read.over_work_bound)?;
+    }
+    if !read.over_profile_bound.is_empty() {
+        let mut reasons = BTreeMap::<_, usize>::new();
+        for (reason, _) in &read.over_profile_bound {
+            *reasons.entry(*reason).or_default() += 1;
+        }
+        let mut line = format!(
+            "Profile export: {} left out over a per-profile bound:",
+            read.over_profile_bound.len()
+        );
+        for (index, (reason, count)) in reasons.into_iter().enumerate() {
+            let separator = if index == 0 { " " } else { ", " };
+            write!(line, "{separator}{reason} ({count})").map_err(io::Error::other)?;
+        }
+        writeln!(out, "{line}.")?;
+        list_profiles(
+            out,
+            verbose,
+            read.over_profile_bound.iter().map(|(_, label)| label),
+        )?;
+    }
+    if !read.left_window.is_empty() {
+        writeln!(
+            out,
+            "Profile export: {} left the window while the export ran.",
+            read.left_window.len(),
+        )?;
+        list_profiles(out, verbose, &read.left_window)?;
+    }
+    if !left_out.legacy_only.is_empty() {
+        writeln!(
+            out,
+            "Profile export: {} legacy-only profiles left out; --include-legacy keeps them.",
+            left_out.legacy_only.len(),
+        )?;
+        list_profiles(out, verbose, &left_out.legacy_only)?;
+    }
+    report_exclusions(out, &command.exclude_user_agents, left_out.excluded.len())?;
+    list_profiles(out, verbose, &left_out.excluded)?;
+    if read.truncated > 0 {
+        writeln!(
+            out,
+            "Profile export: {} profiles over their scope bound kept every flow, then the scopes seen in the most runs and days; {} scopes ({} stored) left out.",
+            read.truncated, read.dropped_scopes, read.dropped_stored_scopes,
+        )?;
+    }
+    if read.superseded_scopes > 0 {
+        writeln!(
+            out,
+            "Profile export: {} stored scopes of {} profiles left out for a newer capture revision.",
+            read.superseded_scopes, read.superseded_profiles,
+        )?;
+    }
+    Ok(())
 }
 
 /// Publish analyzed profiles as the compiled set that rama-ua embeds.
@@ -204,22 +336,27 @@ pub(crate) async fn export_counted_profiles(
             "profile export limits must be positive",
         ));
     }
-    let mut source =
-        CountedProfileSource::open(command.authorized, command.days, command.max_profiles).await?;
+    // An archive must load under the loader's work bound; an embedded set bounds the analyses it retains.
+    let mut source = CountedProfileSource::open(
+        command.authorized,
+        command.days,
+        command.max_profiles,
+        read_budget(&command),
+    )
+    .await?;
     let day = source.day();
     if command.import_legacy {
         super::legacy::import_from_environment(command.authorized).await?;
     }
     let include_legacy = command.include_legacy;
-    let mut legacy = 0usize;
-    let mut excluded_count = 0usize;
+    let mut left_out = ExportLeftOut::default();
     if command.embed {
         let (authorized, horizon) = (command.authorized, command.days);
         let mut profiles = Vec::new();
-        while let Some(entry) = source.next().await? {
+        while let Some(SourcedProfile { label, entry }) = source.next().await? {
             if !include_legacy && legacy_only(entry.evidence.scopes.iter().map(|s| s.window.domain))
             {
-                legacy += 1;
+                left_out.legacy_only.push(label);
                 continue;
             }
             let analyzed = tokio::task::spawn_blocking(move || {
@@ -227,71 +364,40 @@ pub(crate) async fn export_counted_profiles(
             })
             .await??;
             if excluded(&command.exclude_user_agents, &analyzed.analysis) {
-                excluded_count += 1;
+                left_out.excluded.push(label);
                 continue;
             }
             profiles.push(analyzed.analysis);
         }
-        report_exclusions(&command.exclude_user_agents, excluded_count)?;
-        let (output, replace, max) = (command.output, command.replace, command.max_output_bytes);
+        let (output, replace, max) = (
+            command.output.clone(),
+            command.replace,
+            command.max_output_bytes,
+        );
         tokio::task::spawn_blocking(move || publish_compiled(&output, replace, max, &profiles))
             .await??;
     } else {
+        let (output, replace, authorized, days) = (
+            command.output.clone(),
+            command.replace,
+            command.authorized,
+            command.days,
+        );
         let mut staged = tokio::task::spawn_blocking(move || {
-            StagedExport::create(
-                command.output,
-                command.replace,
-                command.authorized,
-                day,
-                command.days,
-                limits,
-            )
+            StagedExport::create(output, replace, authorized, day, days, limits)
         })
         .await??;
-        while let Some(entry) = source.next().await? {
+        while let Some(SourcedProfile { label, entry }) = source.next().await? {
             if !include_legacy && legacy_only(entry.evidence.scopes.iter().map(|s| s.window.domain))
             {
-                legacy += 1;
+                left_out.legacy_only.push(label);
                 continue;
             }
             staged = tokio::task::spawn_blocking(move || staged.write(entry)).await??;
         }
         tokio::task::spawn_blocking(move || staged.finish()).await??;
     }
-    if legacy > 0 {
-        writeln!(
-            io::stderr(),
-            "Profile export: {legacy} legacy-only profiles left out; --include-legacy keeps them.",
-        )?;
-    }
-    if source.skipped() > 0 || source.limited() {
-        writeln!(
-            io::stderr(),
-            "Profile export: {} over-limit profiles skipped; read budget {}.",
-            source.skipped(),
-            if source.limited() {
-                "reached"
-            } else {
-                "not reached"
-            }
-        )?;
-    }
-    if source.truncated() > 0 {
-        writeln!(
-            io::stderr(),
-            "Profile export: {} profiles over their scope bound kept every flow, then the scopes seen in the most runs and days; {} scopes ({} stored) left out.",
-            source.truncated(),
-            source.dropped_scopes(),
-            source.dropped_stored_scopes(),
-        )?;
-    }
-    if source.superseded_scopes() > 0 {
-        writeln!(
-            io::stderr(),
-            "Profile export: {} stored scopes left out for a newer capture revision.",
-            source.superseded_scopes(),
-        )?;
-    }
+    report_export(&mut io::stderr(), &command, source.tally(), &left_out)?;
     Ok(())
 }
 
@@ -338,7 +444,11 @@ pub(crate) fn compact_profile_archive(command: &CompactProfilesCommand) -> Resul
         .into_iter()
         .filter(|profile| !excluded(&command.exclude_user_agents, profile))
         .collect();
-    report_exclusions(&command.exclude_user_agents, kept - profiles.len())?;
+    report_exclusions(
+        &mut io::stderr(),
+        &command.exclude_user_agents,
+        kept - profiles.len(),
+    )?;
     publish_compiled(
         &command.output,
         command.replace,

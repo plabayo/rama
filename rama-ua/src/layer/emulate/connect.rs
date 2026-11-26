@@ -4,11 +4,14 @@ use rama_core::{
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
-use rama_http::conn::TargetHttpVersion;
+use std::sync::Arc;
+
+use rama_http::conn::{SelectedHttpService, TargetHttpVersion};
 use rama_net::{
     HttpVersionInputExt, TargetHttpVersionInputExt,
     client::{ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection},
     http::FallbackHttpVersion,
+    tls::TlsAlpn,
 };
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -82,6 +85,21 @@ where
     type Output = EstablishedClientConnection<S::Connection, Input>;
 
     async fn serve(&self, req: Input) -> Result<Self::Output, Self::Error> {
+        // A discovered alternative may reach another version the selected profile holds;
+        // a caller ALPN keeps the pre-connect requirement.
+        if req.extensions().contains::<SelectedHttpService>()
+            && !req.extensions().contains::<TlsAlpn>()
+            && let Some(context) = EmulationContext::of(req.extensions())
+            && let Some(selected) = req
+                .target_http_version()
+                .and_then(|version| context.selected.for_negotiated(version))
+        {
+            EmulationContext {
+                selected: Arc::new(selected),
+                ..context.clone()
+            }
+            .publish(req.extensions());
+        }
         let mut skipped = false;
         let ech = EmulationContext::of(req.extensions()).is_some() && self.compiler.ech_ready(&req);
         let prepared =

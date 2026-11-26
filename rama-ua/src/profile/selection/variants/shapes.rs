@@ -13,7 +13,7 @@ use rama_http::{
 #[cfg(feature = "tls")]
 use rama_tls::ExtensionId;
 
-use super::{CookieLayoutEvidence, SelectionError};
+use super::{CookieLayoutEvidence, FlowVersions, SelectionError};
 #[cfg(feature = "tls")]
 use super::{derived::OrdinaryEvidence, extension_order::matches_pinned};
 #[cfg(test)]
@@ -60,6 +60,7 @@ pub(super) struct RequestHeaderShape {
 pub(crate) struct RequestShapeCache {
     decoded: OnceLock<DecodedRequests>,
     cookie_layouts: OnceLock<[CookieLayoutEvidence; 2]>,
+    flow_versions: OnceLock<FlowVersions>,
     #[cfg(feature = "tls")]
     connection_modes: OnceLock<ConnectionModes>,
     #[cfg(feature = "tls")]
@@ -82,6 +83,18 @@ struct ConnectionShape {
     wire_tls: Option<ValueId>,
     #[cfg(feature = "tls")]
     grease: bool,
+    #[cfg(feature = "tls")]
+    http1_only_alpn: bool,
+}
+
+/// Whether a captured ClientHello offers exactly `http/1.1` in ALPN.
+#[cfg(feature = "tls")]
+fn alpn_is_http1_only(tls: &TlsCapture) -> bool {
+    tls.extensions.iter().any(|extension| {
+        extension.id == u16::from(ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION)
+            && matches!(&extension.value, TlsCapturedExtensionValue::Protocols(protocols)
+                if protocols.len() == 1 && protocols[0].as_ref() == b"http/1.1")
+    })
 }
 
 /// Decoded ClientHellos of one connection scope variant.
@@ -142,6 +155,7 @@ fn classify_connections(analysis: &AnalyzedProfile) -> ConnectionModes {
                 Ok(ConnectionShape {
                     ordinary: !inner,
                     paired,
+                    http1_only_alpn: alpn_is_http1_only(&wire),
                     wire_tls: wire
                         .structural(TlsCaptureLimits::uniform(
                             JointCaptureLimits::default().value_bytes,
@@ -464,6 +478,7 @@ pub(super) struct DecodedRequestShape {
     version: Option<Version>,
     pub(super) fields: Vec<RequestHeaderShape>,
     cookie_layout: CookieLayoutEvidence,
+    alt_used: bool,
 }
 
 impl RequestShapeCache {
@@ -503,6 +518,25 @@ impl RequestShapeCache {
     /// Whether the connection has accepted-ECH evidence.
     pub(super) fn ech_connection(&self, analysis: &AnalyzedProfile, index: usize) -> bool {
         self.connection_mode(analysis, index).paired
+    }
+
+    /// Per request kind, the HTTP versions holding a flow of that kind.
+    pub(super) fn flow_versions(&self, analysis: &AnalyzedProfile) -> &FlowVersions {
+        self.flow_versions
+            .get_or_init(|| FlowVersions::of(analysis))
+    }
+
+    /// Whether the connection's captured ALPN offer is exactly `http/1.1`.
+    pub(super) fn connection_http1_only(&self, analysis: &AnalyzedProfile, index: usize) -> bool {
+        #[cfg(feature = "tls")]
+        {
+            self.connection_mode(analysis, index).http1_only_alpn
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            let _ = (analysis, index);
+            false
+        }
     }
 
     /// Whether the connection has a supported GREASE fallback.
@@ -689,7 +723,7 @@ impl RequestShapeCache {
         scope: usize,
         variant: usize,
         version: Version,
-    ) -> Result<&[RequestHeaderShape], ProfileDataError> {
+    ) -> Result<&DecodedRequestShape, ProfileDataError> {
         // Scope/variant coordinates retain identity even when supplied IDs
         // collide. They also avoid copying canonical bytes into a cache key.
         let decoded = &self
@@ -706,12 +740,13 @@ impl RequestShapeCache {
                 "request selection header version",
             ));
         }
-        Ok(&decoded.fields)
+        Ok(decoded)
     }
 }
 
 /// The variants matching the caller's request-owned fields that this scope recorded,
-/// and how many of the caller's fields that is.
+/// with how many of the caller's fields that is; without a match, the variants to
+/// fall back to and `None`.
 pub(super) fn request_variants_for_headers<'a>(
     variants: &[(usize, &'a AnalyzedCaptureVariant)],
     version: Version,
@@ -719,19 +754,22 @@ pub(super) fn request_variants_for_headers<'a>(
     analysis: &AnalyzedProfile,
     scope: usize,
     cache: &RequestShapeCache,
-) -> Result<(Vec<&'a AnalyzedCaptureVariant>, usize), SelectionError> {
+) -> Result<(Vec<&'a AnalyzedCaptureVariant>, Option<usize>), SelectionError> {
     let mut decoded = Vec::with_capacity(variants.len());
     let mut observed = Vec::<RequestHeaderShape>::new();
+    let mut observed_alt_used = false;
     for (index, variant) in variants {
         let shape = cache.shape(analysis, scope, *index, version)?;
-        for field in shape {
+        for field in &shape.fields {
             if !observed.contains(field) {
                 observed.push(field.clone());
             }
         }
+        observed_alt_used |= shape.alt_used;
         decoded.push((*variant, shape));
     }
 
+    let mut caller_alt_used = false;
     let mut requested: Vec<_> = requested
         .fields
         .iter()
@@ -740,6 +778,7 @@ pub(super) fn request_variants_for_headers<'a>(
                 return None;
             };
             if is_stack_owned(&field.name, *binding) {
+                caller_alt_used = true;
                 return None;
             }
             let shape = RequestHeaderShape {
@@ -752,14 +791,26 @@ pub(super) fn request_variants_for_headers<'a>(
         .collect();
     sort_request_shape(&mut requested, version);
 
+    // A caller `Alt-Used` needs a captured slot, else it is appended where no browser sends it.
+    let require_alt_used = caller_alt_used && observed_alt_used;
     // How many caller request-owned fields this scope recorded at all.
-    let covered = requested.len();
+    let covered = requested.len() + usize::from(require_alt_used);
+    let compatible: Vec<_> = decoded
+        .iter()
+        .filter_map(|(variant, shape)| {
+            (shape.fields == requested && (!require_alt_used || shape.alt_used)).then_some(*variant)
+        })
+        .collect();
+    if !compatible.is_empty() {
+        return Ok((compatible, Some(covered)));
+    }
+    // The fallback still keeps a caller `Alt-Used` at a captured slot.
     Ok((
         decoded
             .into_iter()
-            .filter_map(|(variant, shape)| (shape == requested).then_some(variant))
+            .filter_map(|(variant, shape)| (!require_alt_used || shape.alt_used).then_some(variant))
             .collect(),
-        covered,
+        None,
     ))
 }
 
@@ -780,6 +831,7 @@ fn request_shape<'a>(
     let mut shape = Vec::new();
     let mut version = None;
     let mut cookie_layout = CookieLayoutEvidence::Unknown;
+    let mut alt_used = false;
     if let Some(headers) = plan.headers() {
         version = Some(headers.version);
         if matches!(headers.version, Version::HTTP_2 | Version::HTTP_3)
@@ -798,6 +850,7 @@ fn request_shape<'a>(
                 return None;
             };
             if is_stack_owned(&entry.name, *binding) {
+                alt_used = true;
                 return None;
             }
             Some(RequestHeaderShape {
@@ -812,11 +865,12 @@ fn request_shape<'a>(
         version,
         fields: shape,
         cookie_layout,
+        alt_used,
     }
 }
 
-/// The alternative-service layer writes `Alt-Used` for the endpoint in use, so the
-/// caller never supplies it and it must not steer which captured variant is drawn.
+/// The alternative-service layer writes `Alt-Used` for the endpoint in use, so its
+/// captured slot stays out of the compared shape; only a caller value asks for that slot.
 fn is_stack_owned(name: &HeaderName, binding: RequestBinding) -> bool {
     binding == RequestBinding::Authority && *name == ALT_USED
 }

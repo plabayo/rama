@@ -37,7 +37,7 @@ use rama_net::{
     tls::{ApplicationProtocol, ServerName, TargetEchConfig},
 };
 use rama_tls::{
-    ExtensionId, KeyLogIntent, SignatureScheme, SupportedGroup,
+    ExtensionId, KeyLogIntent, ProtocolVersion, SignatureScheme, SupportedGroup,
     client::{
         ClientAuth, ClientHandshake, DynTlsServerCertChainPolicy, ServerVerificationScope,
         ServerVerifyMode, TargetEchResolution, TlsClientConfig, TlsClientSni, TlsPoolId,
@@ -55,6 +55,7 @@ use crate::{
     client::{
         BoringServerTrustCache, BoringServerVerification,
         config::{BoringExtensionPresence, BoringTlsConnectorConfig},
+        negotiable::version_supported,
         server_answer::ServerAnswerRecorder,
         session::{
             self, SessionStore, TlsClientSession, TlsClientSessionKey, TlsClientSessionStore,
@@ -80,6 +81,7 @@ pub struct TlsConnectorData {
     pub(super) client_handshake: ClientHandshake,
     remembers_sessions: bool,
     session_store: Option<SessionStore>,
+    pub(crate) offered_versions: Option<Arc<[u16]>>,
 }
 
 /// Shared client configuration, including native context callbacks and session state.
@@ -132,7 +134,7 @@ struct WirePlan {
     alpn_protos: Option<Bytes>,
     curves: Option<ListPlan<SslCurve>>,
     key_shares: Option<ListPlan<SslCurve>>,
-    versions: Option<Vec<u16>>,
+    versions: Option<Arc<[u16]>>,
     verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
     signature_algorithms: Option<Vec<u16>>,
     min_version: Option<SslVersion>,
@@ -193,6 +195,7 @@ impl WirePlan {
             .set_legacy_extensions(self.legacy_extensions)
             .set_ec_point_formats(self.extension_presence.ec_point_formats)
             .set_omit_psk_key_exchange_modes(self.extension_presence.omit_psk_key_exchange_modes)
+            .set_omit_renegotiation_info(self.extension_presence.omit_renegotiation_info)
             .set_ech_grease(self.ech_grease);
         for (id, body) in self
             .extension_bodies
@@ -399,11 +402,18 @@ impl TlsConnectorContext {
             client_handshake: self.options.client_handshake,
             remembers_sessions: self.options.remembers_sessions,
             session_store: self.options.session_store.clone(),
+            offered_versions: self.options.wire.versions.clone(),
         })
     }
 }
 
 impl TlsConnectorData {
+    /// The supported_versions list sent as set, when it is not the native range.
+    #[must_use]
+    pub fn offered_versions(&self) -> Option<&[u16]> {
+        self.offered_versions.as_deref()
+    }
+
     /// Whether this session has endpoint ECH configuration.
     pub(crate) fn has_target_ech(&self) -> bool {
         self.ech_configured.is_some()
@@ -460,6 +470,8 @@ impl TlsConnectorData {
     /// Prepare one TLS session, including peer identity verification and certificate pins.
     /// The caller selects its transport and starts the handshake. A transport
     /// requiring a stored session must supply it before emitting handshake output.
+    /// The engine negotiates its min..max range, so a caller must reject a negotiated
+    /// version missing from [`Self::offered_versions`].
     pub fn into_ssl(mut self) -> Result<rama_boring::ssl::Ssl, BoxError> {
         if self.ech_required && self.ech_configured.is_none() {
             return Err(BoxError::from_static_str(
@@ -605,6 +617,16 @@ fn shared_security_context(
     const MAX_SHARED_CONTEXTS: u64 = 64;
     static CONTEXTS: LazyLock<Cache<TlsPoolId, SslConnector>> =
         LazyLock::new(|| Cache::new(MAX_SHARED_CONTEXTS));
+    shared_security_context_in(&CONTEXTS, value, prepared, owner)
+}
+
+// The cache is a parameter so tests can observe sharing without the process-wide one.
+pub(super) fn shared_security_context_in(
+    shared: &Cache<TlsPoolId, SslConnector>,
+    value: &BoringTlsConnectorConfig<'_>,
+    prepared: Option<&BoringServerVerification>,
+    owner: Option<&BoringServerTrustCache>,
+) -> Result<SslConnector, BoxError> {
     let uses_derived_store = prepared.is_some()
         && value
             .server_trust
@@ -616,7 +638,7 @@ fn shared_security_context(
         };
         owner.stateless_contexts()
     } else {
-        &CONTEXTS
+        shared
     };
     let Some(scope) = value
         .context_scope_with_verification(prepared)
@@ -765,10 +787,6 @@ impl ConnectorOptions {
                 (_, _) => ListPlan::Raw(p.0.iter().map(|g| u16::from(*g)).collect()),
             }
         });
-        let versions: Option<Vec<u16>> = value
-            .versions
-            .filter(|p| p.0.iter().any(|v| v.is_grease()))
-            .map(|p| p.0.iter().map(|v| u16::from(*v)).collect());
         let delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>> =
             value.delegated_credentials.map(|p| {
                 p.0.iter()
@@ -777,17 +795,21 @@ impl ConnectorOptions {
             });
 
         // Versions: min/max derived from the offered list, explicit overrides win.
-        // (The max override also doubles as the mitm egress safety clamp.)
+        // (The max override also caps a mirrored hello without supported_versions.)
         let mut min_version: Option<SslVersion> = None;
         let mut max_version: Option<SslVersion> = None;
         if let Some(versions) = value.versions {
-            if let Some(min) = versions.0.iter().filter(|v| !v.is_grease()).min() {
+            if value.min_version.is_none()
+                && let Some(min) = versions.0.iter().filter(|v| !v.is_grease()).min()
+            {
                 min_version = Some((*min).rama_try_into().map_err(|v| {
                     BoxError::from_static_str("boring connector: cast min proto version")
                         .context_field("protocol_version", v)
                 })?);
             }
-            if let Some(max) = versions.0.iter().filter(|v| !v.is_grease()).max() {
+            if value.max_version.is_none()
+                && let Some(max) = versions.0.iter().filter(|v| !v.is_grease()).max()
+            {
                 max_version = Some((*max).rama_try_into().map_err(|v| {
                     BoxError::from_static_str("boring connector: cast max proto version")
                         .context_field("protocol_version", v)
@@ -807,15 +829,7 @@ impl ConnectorOptions {
             })?);
         }
 
-        // A TLS 1.3-only `supported_versions` offer derives min == max == TLS 1.3
-        // from the list. If an egress max-version clamp (mitm safety, see
-        // `BoringMaxVersion` / `TlsClientConfig::rama_from(&ClientHello)`) then lowered
-        // max to TLS 1.2, min would exceed max, which boring rejects. TLS 1.3 is
-        // the only version above TLS 1.2, so lower exactly that floor to keep the
-        // connector internally consistent (a lower legitimate floor is untouched).
-        if min_version == Some(SslVersion::TLS1_3) && max_version == Some(SslVersion::TLS1_2) {
-            min_version = Some(SslVersion::TLS1_2);
-        }
+        let versions = value.versions.and_then(|p| raw_versions(&p.0, value));
 
         let requested_trust_anchors = value
             .requested_trust_anchors
@@ -1109,6 +1123,30 @@ fn client_credential_scope(
 enum NativeGrease {
     First,
     FirstAndLast,
+}
+
+/// The supported_versions list to send as set, when a native min..max range would
+/// differ from it by more than order: GREASE, a version outside explicit bounds the
+/// engine cannot negotiate, or a version inside the range the list skips.
+fn raw_versions(
+    listed: &[ProtocolVersion],
+    value: &BoringTlsConnectorConfig<'_>,
+) -> Option<Arc<[u16]>> {
+    let real = || listed.iter().copied().filter(|v| !v.is_grease());
+    let min = value.min_version.map(|p| p.0).or_else(|| real().min())?;
+    let max = value.max_version.map(|p| p.0).or_else(|| real().max())?;
+    let outside = |v: ProtocolVersion| v < min || v > max;
+    let raw = listed.iter().any(ProtocolVersion::is_grease)
+        || real().any(|v| !version_supported(u16::from(v)) && outside(v))
+        || [
+            ProtocolVersion::TLSv1_0,
+            ProtocolVersion::TLSv1_1,
+            ProtocolVersion::TLSv1_2,
+            ProtocolVersion::TLSv1_3,
+        ]
+        .into_iter()
+        .any(|v| !outside(v) && !listed.contains(&v));
+    raw.then(|| listed.iter().map(|v| u16::from(*v)).collect())
 }
 
 /// `list` as set, or with GREASE slots where the native list has them when it names none.
@@ -1458,24 +1496,26 @@ mod tests {
 
     #[test]
     fn sni_policy_separates_stateless_native_contexts() {
+        // A local cache: the process-wide one is shared with concurrently running tests.
+        let contexts = Cache::new(8);
+        let context = |config: &TlsClientConfig| {
+            let view = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
+            shared_security_context_in(&contexts, &view, None, None).unwrap()
+        };
+        // Connectors stay alive while compared, so a freed context cannot reuse an address.
+        let same = |a: &SslConnector, b: &SslConnector| {
+            std::ptr::eq(
+                a.configure().unwrap().ssl_context(),
+                b.configure().unwrap().ssl_context(),
+            )
+        };
         let config = TlsClientConfig::new().with_server_name(Domain::from_static("127.0.0.1"));
-        let baseline = TlsConnectorData::try_from(&config).unwrap();
-        let repeated = TlsConnectorData::try_from(&config).unwrap();
-        assert!(std::ptr::eq(
-            baseline.config.ssl_context(),
-            repeated.config.ssl_context()
-        ));
+        let baseline = context(&config);
+        assert!(same(&baseline, &context(&config)));
         let opted = config.with_sni_policy(TlsClientSni::IncludeIp);
-        let first = TlsConnectorData::try_from(&opted).unwrap();
-        let second = TlsConnectorData::try_from(&opted).unwrap();
-        assert!(!std::ptr::eq(
-            baseline.config.ssl_context(),
-            first.config.ssl_context()
-        ));
-        assert!(std::ptr::eq(
-            first.config.ssl_context(),
-            second.config.ssl_context()
-        ));
+        let first = context(&opted);
+        assert!(!same(&baseline, &first));
+        assert!(same(&first, &context(&opted)));
     }
 
     #[test]
@@ -1707,21 +1747,21 @@ mod tests {
     }
 
     /// Build connector data straight from a captured ClientHello, through the
-    /// full pieces pipeline (clamp decision in `config.rs` + min/max derivation
-    /// here), so these tests exercise the real `tls13` egress safeguard.
+    /// full pieces pipeline (mirror in `config.rs` + min/max derivation
+    /// here).
     fn connector_data_from_hello(hello: &ClientHello) -> TlsConnectorData {
         let config = TlsClientConfig::new_from_client_hello(hello);
         TlsConnectorData::try_from(&config).expect("build connector data from client hello")
     }
 
     #[test]
-    fn tls13_only_but_not_viable_clamps_and_keeps_min_le_max() {
-        // TLS 1.3 advertised, but no TLS 1.3 cipher suites: not viable.
+    fn tls13_only_but_not_viable_hello_stays_tls13_only() {
+        // TLS 1.3 advertised, but no TLS 1.3 cipher suites: not viable, yet the only
+        // version listed, so the mirror offers no other.
         let hello = hello_from(vec![ProtocolVersion::TLSv1_3], Vec::new(), Vec::new());
         let mut data = connector_data_from_hello(&hello);
-        // Regression guard for the min>max inversion: both ends pinned to TLS 1.2.
-        assert_eq!(data.config.max_proto_version(), Some(SslVersion::TLS1_2));
-        assert_eq!(data.config.min_proto_version(), Some(SslVersion::TLS1_2));
+        assert_eq!(data.config.max_proto_version(), Some(SslVersion::TLS1_3));
+        assert_eq!(data.config.min_proto_version(), Some(SslVersion::TLS1_3));
     }
 
     #[test]
@@ -1740,11 +1780,10 @@ mod tests {
     }
 
     #[test]
-    fn tls13_viability_clamp_truth_table_never_inverts_min_max() {
+    fn tls13_viability_never_inverts_min_max_or_caps_the_offer() {
         // Drive the whole pipeline for every TLS 1.3 viability combination: the
         // connector must always be internally consistent (boring never sees
-        // min > max), and the clamp must fire exactly when TLS 1.3 is offered
-        // without being coherently viable.
+        // min > max), and a listed TLS 1.3 is never capped.
         for supported in [false, true] {
             for ciphers in [false, true] {
                 for sigalgs in [false, true] {
@@ -1770,18 +1809,17 @@ mod tests {
                     let min = data.config.min_proto_version();
                     let max = data.config.max_proto_version();
 
-                    // The only inversion the clamp could introduce is min=1.3, max=1.2.
                     assert!(
                         !(min == Some(SslVersion::TLS1_3) && max == Some(SslVersion::TLS1_2)),
                         "inverted min>max (supported={supported} ciphers={ciphers} sigalgs={sigalgs}): min={min:?} max={max:?}"
                     );
 
-                    // Clamp fires iff TLS 1.3 is offered but not viable.
-                    if supported && (!ciphers || !sigalgs) {
+                    // A listed TLS 1.3 is offered as listed, viable or not.
+                    if supported {
                         assert_eq!(
                             max,
-                            Some(SslVersion::TLS1_2),
-                            "expected TLS 1.2 clamp (supported={supported} ciphers={ciphers} sigalgs={sigalgs})"
+                            Some(SslVersion::TLS1_3),
+                            "(ciphers={ciphers} sigalgs={sigalgs})"
                         );
                     }
                 }

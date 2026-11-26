@@ -35,6 +35,7 @@ from flows import (
     replay_args,
     require,
 )
+from read_form import native_replay_reference
 from tls_wire import (
     PRE_SHARED_KEY_EXTENSION,
     client_hellos,
@@ -594,8 +595,9 @@ def verify_tls_replay(
         "exact request tuple mismatch; see wire-comparison.json",
     )
     fields = compare_capture_fields(inspected, replay.headers, **replay_operation_args)
+    expected = native_replay_reference(inspected)
     tls = compare_tls_captures(
-        inspected,
+        expected,
         tls_hellos((root / "replay.pdml").read_bytes(), protocols),
         replay.headers,
     )
@@ -605,7 +607,7 @@ def verify_tls_replay(
         "replay changed per-flow protocol",
     )
     connection_fields = compare_native_connections(
-        inspected,
+        expected,
         data,
         port,
         replay.headers,

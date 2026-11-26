@@ -107,7 +107,7 @@ use std::{
 use tokio::{net::UdpSocket, task::JoinHandle, time::timeout};
 
 mod matrix;
-mod transparent;
+pub(crate) mod transparent;
 mod tunnel_resilience;
 
 const DEADLINE: Duration = Duration::from_secs(30);
@@ -173,7 +173,7 @@ impl QuicTls {
 }
 
 /// A fixture's tasks, stopped when dropped, and the requests it served.
-struct Tasks {
+pub(crate) struct Tasks {
     tasks: Vec<JoinHandle<()>>,
     endpoint: Option<Endpoint>,
     requests: Arc<AtomicUsize>,

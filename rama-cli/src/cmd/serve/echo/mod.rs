@@ -11,6 +11,7 @@ use rama::{
     combinators::Either,
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt as _},
     graceful::WeakScope,
+    http::headers::{AltSvc, AlternativeService},
     layer::{
         ConsumeErrLayer, LimitLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
@@ -113,6 +114,11 @@ pub struct CliCommandEcho {
     #[arg(long)]
     /// enable ws support (only in http(s) mode)
     ws: bool,
+
+    #[arg(long, value_name = "ADDRESS")]
+    /// (https mode) also serve on this address, with the same certificate, and advertise
+    /// it as an `h2` Alt-Svc alternative of the origin
+    alt_svc_h2_bind: Option<SocketAddress>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
@@ -227,6 +233,36 @@ async fn bind_echo_http_service(
     .await
     .context("bind http(s) echo service")?;
 
+    // The same certificate authenticates the origin on the alternative port.
+    let alt_h2_listener = match cfg.alt_svc_h2_bind {
+        Some(_) if maybe_tls_config.is_none() => {
+            return Err(BoxError::from_static_str(
+                "an h2 Alt-Svc alternative is only possible in https mode",
+            ));
+        }
+        Some(address) => Some(
+            TcpListener::bind_address(address, scope.clone())
+                .await
+                .context("bind h2 Alt-Svc alternative")?,
+        ),
+        None => None,
+    };
+    let mut alt_svc = listeners.alt_svc()?;
+    if let Some(listener) = &alt_h2_listener {
+        let port = listener
+            .local_addr()
+            .context("h2 Alt-Svc alternative address")?
+            .port();
+        let h2 = AlternativeService::new(ApplicationProtocol::HTTP_2, port)?;
+        alt_svc = Some(match alt_svc {
+            Some(AltSvc::Alternatives(mut services)) => {
+                services.push(h2);
+                AltSvc::Alternatives(services)
+            }
+            _ => AltSvc::new(h2),
+        });
+    }
+
     let (tcp_service, http3_service) = EchoServiceBuilder::new()
         .with_store_outer_client_hello(store_outer_client_hello)
         .with_http2_observation(true)
@@ -240,7 +276,7 @@ async fn bind_echo_http_service(
         .maybe_with_http_version(cfg.http_version.tcp().and_then(Into::into))
         .maybe_with_forward(cfg.forward)
         .maybe_with_tls_server_config(maybe_tls_config)
-        .maybe_with_alt_svc(listeners.alt_svc()?)
+        .maybe_with_alt_svc(alt_svc)
         .with_user_agent_database(ua_db)
         .maybe_with_geo_db(geo_db)
         .build_with_http3(scope.clone())
@@ -248,6 +284,14 @@ async fn bind_echo_http_service(
 
     if let Some(endpoint) = listeners.http3 {
         http3_endpoints.serve(&scope, "echo", endpoint, Arc::new(http3_service))?;
+    }
+
+    let tcp_service = Arc::new(tcp_service);
+    if let Some(listener) = alt_h2_listener {
+        let service = tcp_service.clone();
+        scope
+            .try_hold()?
+            .into_spawn_task(async move { listener.serve(service).await });
     }
 
     let Some(tcp_listener) = listeners.tcp else {
@@ -267,10 +311,7 @@ async fn bind_echo_http_service(
             "http(s) echo service ready: bind interface = {}", cfg.bind,
         );
 
-        tcp_listener
-            .serve(Arc::new(tcp_service))
-            .instrument(span)
-            .await;
+        tcp_listener.serve(tcp_service).instrument(span).await;
     });
 
     Ok(())
@@ -286,7 +327,10 @@ async fn bind_echo_tcp_service(
             "websocket support is only possible in http(s) mode",
         ));
     }
-    if cfg.http_version != HttpVersions::AUTO || cfg.http3.requested() {
+    if cfg.http_version != HttpVersions::AUTO
+        || cfg.http3.requested()
+        || cfg.alt_svc_h2_bind.is_some()
+    {
         return Err(BoxError::from_static_str(
             "http version selection is only possible in http(s) mode",
         ));
@@ -370,7 +414,10 @@ async fn bind_echo_udp_service(
             "websocket support is only possible in http(s) mode",
         ));
     }
-    if cfg.http_version != HttpVersions::AUTO || cfg.http3.requested() {
+    if cfg.http_version != HttpVersions::AUTO
+        || cfg.http3.requested()
+        || cfg.alt_svc_h2_bind.is_some()
+    {
         return Err(BoxError::from_static_str(
             "http version selection is only possible in http(s) mode",
         ));

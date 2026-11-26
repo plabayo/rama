@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from capture_fields import matching_fields
 from flows import drawn_wire_tuple
-from read_form import tls_read_form
+from read_form import native_replay_reference, tls_read_form
 from tls_wire import TlsHello, compare_tls_captures
 from wire import Request
 
@@ -183,6 +183,29 @@ class NetworkHintTests(unittest.TestCase):
             drawn_wire_tuple(Request("GET", "/", ("RTT:50",), b"", {}, "h1")),
             drawn_wire_tuple(Request("GET", "/", ("RTT:300",), b"", {}, "h1")),
         )
+
+
+class ReplayAlpnTest(unittest.TestCase):
+    def test_native_replay_narrows_only_a_single_tcp_version(self):
+        both = [list(b"h2"), list(b"http/1.1")]
+        tls = {"transport": "Tcp", "extensions": [{"id": 16, "value": {"Protocols": both}}]}
+        tls["extensions"].append({"id": 17613, "value": {"Protocols": [list(b"h2")]}})
+        reference = {"profiles": [{"scopes": [
+            {"flow": {"Http": {"version": "HTTP/1.1"}}, "variants": [{"capture": tls}]}
+        ]}]}
+
+        def offer(archive):
+            scope = archive["profiles"][0]["scopes"][0]
+            return scope["variants"][0]["capture"]["extensions"][0]["value"]["Protocols"]
+
+        self.assertEqual(offer(native_replay_reference(reference)), [list(b"http/1.1")])
+        narrowed = native_replay_reference(reference)["profiles"][0]["scopes"][0]["variants"][0]["capture"]
+        self.assertEqual([ext["id"] for ext in narrowed["extensions"]], [16])
+        self.assertEqual(offer(reference), both)
+        reference["profiles"][0]["scopes"].append(
+            {"flow": {"Http": {"version": "HTTP/2.0"}}, "variants": []}
+        )
+        self.assertEqual(offer(native_replay_reference(reference)), both)
 
 
 if __name__ == "__main__":

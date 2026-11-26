@@ -25,7 +25,7 @@ use crate::{
     extensions::ExtensionsRef,
     graceful::WeakScope,
     http::{
-        BodyLimitLayer, Request, Response, Version,
+        BodyLimitLayer, HeaderValue, Request, Response, Version,
         body::util::BodyExt,
         convert::curl,
         core::h2::frame::EarlyFrameCapture,
@@ -58,6 +58,7 @@ use crate::{
         },
     },
     proxy::haproxy::server::HaProxyLayer,
+    service::service_fn,
     tcp::TcpStream,
     telemetry::tracing,
     ua::{
@@ -87,10 +88,13 @@ core::cfg_select! {
 }
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::tls::{
-    client::{ClientHelloExtension, ECHClientHello},
-    fingerprint::{Ja3, Ja4, PeetPrint},
-    server::{ServerClientHellos, TlsServerConfig},
+use crate::{
+    tls::{
+        client::{ClientHelloExtension, ECHClientHello},
+        fingerprint::{Ja3, Ja4, PeetPrint},
+        server::{ServerClientHellos, TlsServerConfig},
+    },
+    ua::profile::analysis::fingerprint::RecordedTlsFingerprint,
 };
 
 #[derive(Debug, Clone)]
@@ -507,6 +511,13 @@ where
     ) -> impl Service<Request, Output: IntoResponse, Error = Infallible> + use<H> {
         let http_forwarded_layer = super::http_forwarded_layer(self.forward.as_ref());
 
+        let profiles = self.uadb.clone().map(|database| {
+            Arc::new(EchoProfiles {
+                fingerprints: RecordedFingerprintCache::new(&database),
+                database,
+            })
+        });
+
         // Attribution header, derived from the loaded databases' notices.
         let geo_attribution = self.geo_db.as_ref().and_then(|db| {
             let notices: Vec<_> = db.attributions().collect();
@@ -530,36 +541,35 @@ where
             ConsumeErrLayer::default(),
             http_forwarded_layer,
             self.ws_support.then(|| {
+                let acceptor = WebSocketAcceptor::default()
+                    .with_protocols_flex(true)
+                    .with_echo_protocols();
+                #[cfg(feature = "compression")]
+                let acceptor = acceptor.with_per_message_deflate_overwrite_extensions();
+                let profiles = profiles.clone();
                 UpgradeLayer::new_with_services(
                     scope,
                     WebSocketMatcher::default(),
-                    {
-                        let acceptor = WebSocketAcceptor::default()
-                            .with_protocols_flex(true)
-                            .with_echo_protocols();
-
-                        #[cfg(feature = "compression")]
-                        {
-                            acceptor.with_per_message_deflate_overwrite_extensions()
+                    // The handshake answers instead of the report, so it carries the report.
+                    service_fn(move |req: Request| {
+                        let acceptor = acceptor.clone();
+                        let report = fingerprint_headers(profiles.as_deref(), &req);
+                        async move {
+                            let mut accepted = acceptor.serve(req).await?;
+                            let headers = accepted.response.headers_mut();
+                            for (name, value) in report {
+                                headers.insert(name, value);
+                            }
+                            Ok(accepted)
                         }
-
-                        #[cfg(not(feature = "compression"))]
-                        {
-                            acceptor
-                        }
-                    },
+                    }),
                     ConsumeErrLayer::trace_as(tracing::Level::DEBUG)
                         .into_layer(WebSocketEchoService::default()),
                 )
             }),
         )
             .into_layer(self.http_service_builder.layer(EchoService {
-                profiles: self.uadb.clone().map(|database| {
-                    Arc::new(EchoProfiles {
-                        fingerprints: RecordedFingerprintCache::new(&database),
-                        database,
-                    })
-                }),
+                profiles,
                 geo_db: self.geo_db.clone(),
             }))
     }
@@ -642,23 +652,168 @@ fn profile_fingerprint<'a, T: 'a>(
     })
 }
 
+/// The recorded fingerprints of the profile the request's `User-Agent` names.
+fn recorded_fingerprints<'a>(
+    profiles: Option<&'a EchoProfiles>,
+    req: &Request,
+) -> Option<&'a RecordedFingerprints> {
+    let ua = req.headers().get(USER_AGENT)?.to_str().ok()?;
+    profiles?.recorded(ua)
+}
+
+fn user_agent_view(req: &Request) -> serde_json::Value {
+    req.extensions()
+        .get_ref()
+        .map(|ua: &UserAgent| {
+            json!({
+                "user_agent": ua.header_str().to_owned(),
+                "kind": ua.info().map(|info| info.kind.to_string()),
+                "version": ua.info().and_then(|info| info.version),
+                "platform": ua.platform().map(|v| v.to_string()),
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn ja4h_view(recorded: Option<&RecordedFingerprints>, req: &Request) -> Option<serde_json::Value> {
+    let ja4h = Ja4H::compute(req)
+        .inspect_err(|err| tracing::error!("ja4h compute failure: {err:?}"))
+        .ok()?;
+    let profile = recorded.and_then(|recorded| {
+        profile_fingerprint(
+            recorded.http.iter(),
+            |tgt| tgt.matches_client_shape(&ja4h),
+            |tgt| format!("{tgt}"),
+            |tgt| format!("{tgt:?}"),
+        )
+    });
+    Some(json!({
+        "hash": format!("{ja4h}"),
+        "verbose": format!("{ja4h:?}"),
+        "profile": profile,
+    }))
+}
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+fn recorded_tls(
+    recorded: Option<&RecordedFingerprints>,
+    version: Version,
+) -> &[RecordedTlsFingerprint] {
+    recorded.map_or(&[][..], |recorded| match version {
+        Version::HTTP_3 => &recorded.tls_quic[..],
+        _ => &recorded.tls[..],
+    })
+}
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+fn ja4_view(
+    hello: &crate::tls::client::ClientHello,
+    recorded_tls: &[RecordedTlsFingerprint],
+) -> Option<serde_json::Value> {
+    let ja4 = Ja4::compute_from_client_hello(hello)
+        .inspect_err(|err| tracing::trace!("ja4 computation: {err:?}"))
+        .ok()?;
+    let profile = profile_fingerprint(
+        recorded_tls.iter().filter_map(|tgt| tgt.ja4.as_ref()),
+        |tgt| tgt == &ja4,
+        |tgt| format!("{tgt}"),
+        |tgt| format!("{tgt:?}"),
+    );
+    Some(json!({
+        "hash": format!("{ja4}"),
+        "verbose": format!("{ja4:?}"),
+        "profile": profile,
+    }))
+}
+
+/// Fingerprint report headers on a WebSocket handshake response, one fact each.
+const FINGERPRINT_UA: &str = "x-rama-fingerprint-ua";
+const FINGERPRINT_HTTP_VERSION: &str = "x-rama-fingerprint-http-version";
+const FINGERPRINT_HTTP_METHOD: &str = "x-rama-fingerprint-http-method";
+const FINGERPRINT_JA4H: &str = "x-rama-fingerprint-ja4h";
+const FINGERPRINT_JA4H_VERBOSE: &str = "x-rama-fingerprint-ja4h-verbose";
+const FINGERPRINT_JA4H_PROFILE: &str = "x-rama-fingerprint-ja4h-profile";
+const FINGERPRINT_JA4H_MATCHED: &str = "x-rama-fingerprint-ja4h-matched";
+#[cfg(any(feature = "rustls", feature = "boring"))]
+const FINGERPRINT_JA4: &str = "x-rama-fingerprint-ja4";
+#[cfg(any(feature = "rustls", feature = "boring"))]
+const FINGERPRINT_JA4_PROFILE: &str = "x-rama-fingerprint-ja4-profile";
+#[cfg(any(feature = "rustls", feature = "boring"))]
+const FINGERPRINT_JA4_MATCHED: &str = "x-rama-fingerprint-ja4-matched";
+
+/// Header values are bounded by servers and clients alike; a larger one is left out.
+const MAX_FINGERPRINT_VALUE: usize = 4 * 1024;
+
+/// The facts a fingerprint test judges, as they appear in the JSON report, for a
+/// handshake whose response replaces that report.
+fn fingerprint_headers(
+    profiles: Option<&EchoProfiles>,
+    req: &Request,
+) -> Vec<(&'static str, HeaderValue)> {
+    let mut headers = Vec::new();
+    let mut push = |name: &'static str, value: Option<String>| {
+        let Some(value) = value else {
+            return;
+        };
+        if value.len() > MAX_FINGERPRINT_VALUE {
+            tracing::debug!(
+                header = name,
+                size = value.len(),
+                "fingerprint header left out: too large"
+            );
+            return;
+        }
+        match HeaderValue::try_from(value) {
+            Ok(value) => headers.push((name, value)),
+            Err(err) => tracing::debug!(header = name, %err, "fingerprint header left out"),
+        }
+    };
+    let text = |value: &serde_json::Value| value.as_str().map(ToOwned::to_owned);
+    let matched = |value: &serde_json::Value| value.as_bool().map(|matched| matched.to_string());
+
+    push(
+        FINGERPRINT_UA,
+        req.headers()
+            .get(USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned),
+    );
+    push(
+        FINGERPRINT_HTTP_VERSION,
+        Some(format!("{:?}", req.version())),
+    );
+    push(
+        FINGERPRINT_HTTP_METHOD,
+        Some(req.method().as_str().to_owned()),
+    );
+    let recorded = recorded_fingerprints(profiles, req);
+    if let Some(ja4h) = ja4h_view(recorded, req) {
+        push(FINGERPRINT_JA4H, text(&ja4h["hash"]));
+        push(FINGERPRINT_JA4H_VERBOSE, text(&ja4h["verbose"]));
+        push(FINGERPRINT_JA4H_PROFILE, text(&ja4h["profile"]["hash"]));
+        push(
+            FINGERPRINT_JA4H_MATCHED,
+            matched(&ja4h["profile"]["matched"]),
+        );
+    }
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    if let Some(ja4) = ServerClientHellos::from_extensions(req.extensions())
+        .wire()
+        .and_then(|hello| ja4_view(hello, recorded_tls(recorded, req.version())))
+    {
+        push(FINGERPRINT_JA4, text(&ja4["hash"]));
+        push(FINGERPRINT_JA4_PROFILE, text(&ja4["profile"]["hash"]));
+        push(FINGERPRINT_JA4_MATCHED, matched(&ja4["profile"]["matched"]));
+    }
+    headers
+}
+
 impl Service<Request> for EchoService {
     type Output = Response;
     type Error = BoxError;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let user_agent_info = req
-            .extensions()
-            .get_ref()
-            .map(|ua: &UserAgent| {
-                json!({
-                    "user_agent": ua.header_str().to_owned(),
-                    "kind": ua.info().map(|info| info.kind.to_string()),
-                    "version": ua.info().and_then(|info| info.version),
-                    "platform": ua.platform().map(|v| v.to_string()),
-                })
-            })
-            .unwrap_or_default();
+        let user_agent_info = user_agent_view(&req);
 
         let authority = req
             .authority()
@@ -676,31 +831,8 @@ impl Service<Request> for EchoService {
             "echo request received from ua with ua header",
         );
 
-        let recorded = self
-            .profiles
-            .as_deref()
-            .zip(ua_str.as_deref())
-            .and_then(|(profiles, ua)| profiles.recorded(ua));
-
-        let ja4h = Ja4H::compute(&req)
-            .inspect_err(|err| tracing::error!("ja4h compute failure: {err:?}"))
-            .ok()
-            .map(|ja4h| {
-                let profile_ja4h = recorded.and_then(|recorded| {
-                    profile_fingerprint(
-                        recorded.http.iter(),
-                        |tgt| tgt.matches_client_shape(&ja4h),
-                        |tgt| format!("{tgt}"),
-                        |tgt| format!("{tgt:?}"),
-                    )
-                });
-
-                json!({
-                    "hash": format!("{ja4h}"),
-                    "verbose": format!("{ja4h:?}"),
-                    "profile": profile_ja4h,
-                })
-            });
+        let recorded = recorded_fingerprints(self.profiles.as_deref(), &req);
+        let ja4h = ja4h_view(recorded, &req);
 
         let (parts, body) = req.into_parts();
 
@@ -740,30 +872,8 @@ impl Service<Request> for EchoService {
         let tls_view = |hello: &crate::tls::client::ClientHello, compare_profiles: bool| {
             let recorded = if compare_profiles { recorded } else { None };
 
-            let recorded_tls = recorded.map_or(&[][..], |recorded| match parts.version {
-                Version::HTTP_3 => &recorded.tls_quic[..],
-                _ => &recorded.tls[..],
-            });
-            let ja4 = Ja4::compute_from_client_hello(hello)
-                .inspect_err(|err| tracing::trace!("ja4 computation: {err:?}"))
-                .ok();
-
-            let profile_ja4 = ja4.as_ref().and_then(|src| {
-                profile_fingerprint(
-                    recorded_tls.iter().filter_map(|tgt| tgt.ja4.as_ref()),
-                    |tgt| tgt == src,
-                    |tgt| format!("{tgt}"),
-                    |tgt| format!("{tgt:?}"),
-                )
-            });
-
-            let ja4 = ja4.map(|ja4| {
-                json!({
-                    "hash": format!("{ja4}"),
-                    "verbose": format!("{ja4:?}"),
-                    "profile": profile_ja4,
-                })
-            });
+            let recorded_tls = recorded_tls(recorded, parts.version);
+            let ja4 = ja4_view(hello, recorded_tls);
 
             let ja3 = Ja3::compute_from_client_hello(hello)
                 .inspect_err(|err| tracing::trace!("ja3 computation: {err:?}"))

@@ -27,7 +27,7 @@ use rama_http::headers::{
     HeaderMapExt, HttpRequestBuilderExt as _, SecWebSocketExtensions, SecWebSocketKey,
     SecWebSocketProtocol,
 };
-use rama_http::proto::ext::Protocol;
+use rama_http::proto::{RequestHeaders, ext::Protocol};
 use rama_http::service::client::blocking::Client as BlockingHttpClient;
 use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
@@ -100,6 +100,7 @@ pub struct WithService<'a, S, Body, Mode = websocket_builder_mode::Async> {
     builder: RequestBuilder<'a, S, Response<Body>>,
     config: Option<WebSocketConfig>,
     version: Version,
+    target_version: Option<Version>,
     mode: Mode,
 }
 
@@ -109,6 +110,7 @@ impl<S: fmt::Debug, Body, Mode: fmt::Debug> fmt::Debug for WithService<'_, S, Bo
             .field("builder", &self.builder)
             .field("config", &self.config)
             .field("version", &self.version)
+            .field("target_version", &self.target_version)
             .field("mode", &self.mode)
             .finish()
     }
@@ -142,6 +144,15 @@ pub type BlockingWebSocketRequestBuilder<'a, S, Body> =
 /// HTTP/2 and HTTP/3 bootstrap WebSockets with Extended CONNECT instead of an upgrade.
 fn is_extended_connect(version: Version) -> bool {
     matches!(version, Version::HTTP_2 | Version::HTTP_3)
+}
+
+/// The version a handshake form pins: an upgrade is HTTP/1.1.
+fn target_version(version: Version) -> Version {
+    if is_extended_connect(version) {
+        version
+    } else {
+        Version::HTTP_11
+    }
 }
 
 fn new_ws_request_builder_from_uri<T>(uri: T, version: Version) -> request::Builder
@@ -542,11 +553,20 @@ pub fn validate_http_server_response<Body>(
 
 impl WebSocketRequestBuilder<request::Builder> {
     /// Create a new `http/1.1` WebSocket [`Request`] builder.
-    pub fn new<T>(uri: T) -> Self
+    pub fn new_h1<T>(uri: T) -> Self
     where
         T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
     {
         Self::new_with_version(uri, Version::HTTP_11)
+    }
+
+    /// Create a new WebSocket [`Request`] builder for the HTTP version the client stack
+    /// selects: an `http/1.1` upgrade, sent as Extended CONNECT over `h2` or `h3`.
+    pub fn new_auto<T>(uri: T) -> Self
+    where
+        T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
+    {
+        Self::new_with_builder(new_ws_request_builder_from_uri(uri, Version::HTTP_11))
     }
 
     /// Create a new `h2` WebSocket [`Request`] builder.
@@ -569,8 +589,15 @@ impl WebSocketRequestBuilder<request::Builder> {
     where
         T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
     {
+        Self::new_with_builder(
+            new_ws_request_builder_from_uri(uri, version)
+                .extension(TargetHttpVersion(target_version(version))),
+        )
+    }
+
+    fn new_with_builder(inner: request::Builder) -> Self {
         Self {
-            inner: new_ws_request_builder_from_uri(uri, version),
+            inner,
             protocols: Default::default(),
             extensions: Default::default(),
             key: Default::default(),
@@ -646,7 +673,7 @@ where
     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
     /// Create a new `http/1.1` WebSocket [`Request`] builder.
-    pub fn new_with_service<T>(service: &'a S, uri: T) -> Self
+    pub fn new_h1_with_service<T>(service: &'a S, uri: T) -> Self
     where
         T: IntoUrl,
     {
@@ -656,6 +683,15 @@ where
             uri,
             websocket_builder_mode::Async,
         )
+    }
+
+    /// Create a new WebSocket [`Request`] builder for the HTTP version the client stack
+    /// selects: an `http/1.1` upgrade, sent as Extended CONNECT over `h2` or `h3`.
+    pub fn new_auto_with_service<T>(service: &'a S, uri: T) -> Self
+    where
+        T: IntoUrl,
+    {
+        Self::new_auto_with_service_and_mode(service, uri, websocket_builder_mode::Async)
     }
 
     /// Create a new `h2` WebSocket [`Request`] builder.
@@ -684,7 +720,8 @@ where
         )
     }
 
-    /// Create a new WebSocket [`Request`] builder for the given [`Request`]
+    /// Create a new WebSocket [`Request`] builder for the given [`Request`],
+    /// whose own version and extensions decide the HTTP version.
     pub fn new_with_service_and_request<RequestBody>(
         service: &'a S,
         request: Request<RequestBody>,
@@ -715,12 +752,23 @@ where
                 builder: new_ws_request_builder_from_uri_with_service(service, uri, version),
                 config: Default::default(),
                 version,
+                target_version: Some(target_version(version)),
                 mode,
             },
             protocols: Default::default(),
             extensions: Default::default(),
             key: Default::default(),
         }
+    }
+
+    fn new_auto_with_service_and_mode<T>(service: &'a S, uri: T, mode: Mode) -> Self
+    where
+        T: IntoUrl,
+    {
+        let mut builder =
+            Self::new_with_service_and_version_and_mode(service, Version::HTTP_11, uri, mode);
+        builder.inner.target_version = None;
+        builder
     }
 
     fn new_with_service_request_and_mode<RequestBody>(
@@ -742,6 +790,7 @@ where
                 builder: new_ws_request_builder_from_request(service, request),
                 config: Default::default(),
                 version,
+                target_version: is_extended_connect(version).then_some(version),
                 mode,
             },
             protocols,
@@ -926,21 +975,21 @@ where
             None => builder,
         };
 
+        if let Some(version) = self.inner.target_version {
+            extensions.insert(TargetHttpVersion(version));
+        }
+
         let mut key = None;
         let builder = if is_extended_connect(self.inner.version) {
-            extensions.insert(TargetHttpVersion(self.inner.version));
-
             builder
         } else {
-            extensions.insert(TargetHttpVersion(Version::HTTP_11));
-
             let k = self.key.unwrap_or_else(headers::SecWebSocketKey::random);
             let builder = builder.overwrite_typed_header(&k);
             key = Some(k);
             builder
         };
 
-        // only required in h1, but because of layers such as tls we might anyway turn from h1 into h2
+        // Lets the version adapter send this upgrade as an Extended CONNECT.
         let builder = builder.extension(Protocol::from_static("websocket"));
 
         if let Some(ext) = builder.extensions() {
@@ -1009,13 +1058,19 @@ where
     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
     Body: Send + 'static,
 {
-    fn new_blocking_with_service<T>(client: &'a BlockingHttpClient<S>, uri: T) -> Self
+    fn new_blocking_h1_with_service<T>(client: &'a BlockingHttpClient<S>, uri: T) -> Self
     where
         T: IntoUrl,
     {
-        Self::new_with_service_and_version_and_mode(
+        Self::new_blocking_with_service_and_version(client, Version::HTTP_11, uri)
+    }
+
+    fn new_blocking_auto_with_service<T>(client: &'a BlockingHttpClient<S>, uri: T) -> Self
+    where
+        T: IntoUrl,
+    {
+        Self::new_auto_with_service_and_mode(
             client.get_ref(),
-            Version::HTTP_11,
             uri,
             websocket_builder_mode::Blocking {
                 runtime: client.runtime().clone(),
@@ -1242,13 +1297,19 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
     where
         Body: Send + 'static,
     {
-        let accepted_data = validate_http_server_response(
-            &self.response,
-            self.key,
-            self.protocols,
-            self.extensions,
-        )
-        .map_err(HandshakeError::ValidationError)?;
+        // A layer below this builder, such as emulation, may rewrite the offer on the wire.
+        let (key, protocols, extensions) =
+            match self.response.extensions().get_ref::<RequestHeaders>() {
+                Some(sent) => (
+                    self.key.map(|key| sent.typed_get().unwrap_or(key)),
+                    sent.typed_get(),
+                    sent.typed_get(),
+                ),
+                None => (self.key, self.protocols, self.extensions),
+            };
+        let accepted_data =
+            validate_http_server_response(&self.response, key, protocols, extensions)
+                .map_err(HandshakeError::ValidationError)?;
 
         tracing::trace!(
             websocket.protocol = ?accepted_data.protocol,
@@ -1490,6 +1551,13 @@ pub trait HttpClientWebSocketExt<Body>:
     /// Create a new [`WebSocketRequestBuilder`]] to be used to establish a WebSocket connection over http/1.1.
     fn websocket(&self, url: impl IntoUrl) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
 
+    /// Create a new [`WebSocketRequestBuilder`] to be used to establish a WebSocket connection
+    /// over the HTTP version the client stack selects.
+    fn websocket_auto(
+        &self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
+
     /// Create a new [`WebSocketRequestBuilder`] to be used to establish a WebSocket connection over h2.
     fn websocket_h2(
         &self,
@@ -1517,7 +1585,14 @@ where
     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
     fn websocket(&self, url: impl IntoUrl) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
-        WebSocketRequestBuilder::new_with_service(self, url)
+        WebSocketRequestBuilder::new_h1_with_service(self, url)
+    }
+
+    fn websocket_auto(
+        &self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
+        WebSocketRequestBuilder::new_auto_with_service(self, url)
     }
 
     fn websocket_h2(
@@ -1586,6 +1661,12 @@ pub trait BlockingHttpClientWebSocketExt<Body>:
         url: impl IntoUrl,
     ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body>;
 
+    /// Create a WebSocket request builder for the HTTP version the client stack selects.
+    fn websocket_auto(
+        &self,
+        url: impl IntoUrl,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body>;
+
     /// Create a WebSocket request builder for HTTP/2 Extended CONNECT.
     fn websocket_h2(
         &self,
@@ -1616,7 +1697,14 @@ where
         &self,
         url: impl IntoUrl,
     ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body> {
-        BlockingWebSocketRequestBuilder::new_blocking_with_service(self, url)
+        BlockingWebSocketRequestBuilder::new_blocking_h1_with_service(self, url)
+    }
+
+    fn websocket_auto(
+        &self,
+        url: impl IntoUrl,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body> {
+        BlockingWebSocketRequestBuilder::new_blocking_auto_with_service(self, url)
     }
 
     fn websocket_h2(
@@ -1964,6 +2052,85 @@ mod tests {
         }
     }
 
+    /// The response is validated for the version it arrived on: an HTTP/1 upgrade needs a
+    /// 101 with `Upgrade`, `Connection` and the accept of the key; Extended CONNECT a 2xx.
+    #[test]
+    fn validation_follows_the_response_version() {
+        let key = headers::SecWebSocketKey::random();
+        let accept = headers::SecWebSocketAccept::try_from(key.clone()).unwrap();
+        let wrong =
+            headers::SecWebSocketAccept::try_from(headers::SecWebSocketKey::random()).unwrap();
+        // (version, status, upgrade + connection, accept, valid)
+        let cases = [
+            (
+                Version::HTTP_11,
+                StatusCode::SWITCHING_PROTOCOLS,
+                true,
+                Some(&accept),
+                true,
+            ),
+            (Version::HTTP_11, StatusCode::OK, true, Some(&accept), false),
+            (
+                Version::HTTP_11,
+                StatusCode::SWITCHING_PROTOCOLS,
+                true,
+                Some(&wrong),
+                false,
+            ),
+            (
+                Version::HTTP_11,
+                StatusCode::SWITCHING_PROTOCOLS,
+                true,
+                None,
+                false,
+            ),
+            (
+                Version::HTTP_11,
+                StatusCode::SWITCHING_PROTOCOLS,
+                false,
+                Some(&accept),
+                false,
+            ),
+            (Version::HTTP_2, StatusCode::OK, false, None, true),
+            (Version::HTTP_2, StatusCode::NO_CONTENT, false, None, true),
+            (
+                Version::HTTP_2,
+                StatusCode::SWITCHING_PROTOCOLS,
+                true,
+                Some(&accept),
+                false,
+            ),
+            (Version::HTTP_2, StatusCode::BAD_REQUEST, false, None, false),
+            (Version::HTTP_3, StatusCode::OK, false, None, true),
+            (Version::HTTP_3, StatusCode::FORBIDDEN, false, None, false),
+        ];
+        for (version, status, upgrade, accept, valid) in cases {
+            let mut response = Response::builder()
+                .version(version)
+                .status(status)
+                .body(())
+                .unwrap();
+            if upgrade {
+                response
+                    .headers_mut()
+                    .typed_insert(headers::Upgrade::websocket());
+                response
+                    .headers_mut()
+                    .typed_insert(headers::Connection::upgrade());
+            }
+            if let Some(accept) = accept {
+                response.headers_mut().typed_insert(accept.clone());
+            }
+            let key = (version == Version::HTTP_11).then(|| key.clone());
+            let result = validate_http_server_response(&response, key, None, None);
+            assert_eq!(
+                result.is_ok(),
+                valid,
+                "{version:?} {status} upgrade={upgrade}: {result:?}"
+            );
+        }
+    }
+
     /// RFC 6455 §4.1 and RFC 7692 §5, on every version: the server selects at most one
     /// subprotocol and one extension, each among those offered, and every line counts.
     #[test]
@@ -2211,6 +2378,129 @@ mod tests {
         match accepted.extension {
             Some(Extension::PerMessageDeflate(cfg)) => Ok(cfg.client_max_window_bits),
             other => panic!("expected per-message-deflate extension, got {other:?}"),
+        }
+    }
+
+    /// RFC 7692 §7.1, per offer form: the response parameters each offer permits, and the
+    /// configuration the client then uses (server/client no context takeover, server/client
+    /// window bits).
+    #[test]
+    fn pmd_responses_follow_the_offer() {
+        type Negotiated = (bool, bool, Option<u8>, Option<u8>);
+        let none: Negotiated = (false, false, None, None);
+        let cases: &[(&str, &str, Option<Negotiated>)] = &[
+            ("permessage-deflate", "permessage-deflate", Some(none)),
+            // a server may add its own window limit and context takeover choices
+            (
+                "permessage-deflate",
+                "permessage-deflate; server_max_window_bits=10",
+                Some((false, false, Some(10), None)),
+            ),
+            (
+                "permessage-deflate",
+                "permessage-deflate; server_no_context_takeover",
+                Some((true, false, None, None)),
+            ),
+            (
+                "permessage-deflate",
+                "permessage-deflate; client_no_context_takeover",
+                Some((false, true, None, None)),
+            ),
+            // client_max_window_bits answers only an offer naming it
+            (
+                "permessage-deflate",
+                "permessage-deflate; client_max_window_bits=15",
+                None,
+            ),
+            (
+                "permessage-deflate; client_max_window_bits",
+                "permessage-deflate; client_max_window_bits=15",
+                Some((false, false, None, Some(15))),
+            ),
+            (
+                "permessage-deflate; client_max_window_bits",
+                "permessage-deflate; client_max_window_bits=9",
+                Some((false, false, None, Some(9))),
+            ),
+            (
+                "permessage-deflate; client_max_window_bits",
+                "permessage-deflate",
+                Some(none),
+            ),
+            (
+                "permessage-deflate; client_max_window_bits=10",
+                "permessage-deflate; client_max_window_bits=12",
+                Some((false, false, None, Some(12))),
+            ),
+            (
+                "permessage-deflate; client_max_window_bits",
+                "permessage-deflate; client_max_window_bits",
+                None,
+            ),
+            (
+                "permessage-deflate; client_max_window_bits",
+                "permessage-deflate; client_max_window_bits=16",
+                None,
+            ),
+            // an offered server limit must be answered, at most as large
+            (
+                "permessage-deflate; server_max_window_bits=10",
+                "permessage-deflate; server_max_window_bits=10",
+                Some((false, false, Some(10), None)),
+            ),
+            (
+                "permessage-deflate; server_max_window_bits=10",
+                "permessage-deflate; server_max_window_bits=9",
+                Some((false, false, Some(9), None)),
+            ),
+            (
+                "permessage-deflate; server_max_window_bits=10",
+                "permessage-deflate; server_max_window_bits=11",
+                None,
+            ),
+            (
+                "permessage-deflate; server_max_window_bits=10",
+                "permessage-deflate",
+                None,
+            ),
+            // a requested server_no_context_takeover must be echoed
+            (
+                "permessage-deflate; server_no_context_takeover",
+                "permessage-deflate; server_no_context_takeover",
+                Some((true, false, None, None)),
+            ),
+            (
+                "permessage-deflate; server_no_context_takeover",
+                "permessage-deflate",
+                None,
+            ),
+            // client_no_context_takeover offered holds whether or not it is echoed
+            (
+                "permessage-deflate; client_no_context_takeover",
+                "permessage-deflate",
+                Some((false, true, None, None)),
+            ),
+            // unknown and duplicate parameters fail
+            ("permessage-deflate", "permessage-deflate; x-unknown", None),
+            (
+                "permessage-deflate",
+                "permessage-deflate; server_no_context_takeover; server_no_context_takeover",
+                None,
+            ),
+        ];
+        for (offer, answer, expected) in cases {
+            let response = h2_response_with_pmd(answer);
+            let result = validate_http_server_response(&response, None, None, offered_pmd(offer));
+            let negotiated = result.ok().and_then(|accepted| match accepted.extension {
+                Some(Extension::PerMessageDeflate(cfg)) => Some((
+                    cfg.server_no_context_takeover,
+                    cfg.client_no_context_takeover,
+                    cfg.server_max_window_bits,
+                    cfg.client_max_window_bits,
+                )),
+                _ => None,
+            });
+            assert_eq!(negotiated, *expected, "offer {offer:?} answer {answer:?}");
         }
     }
 

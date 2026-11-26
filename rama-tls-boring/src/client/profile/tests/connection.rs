@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use rama_boring::ssl::SslCipher;
 use rama_core::{Service, ServiceInput, service::service_fn};
 use rama_net::{
     address::Domain,
@@ -18,16 +19,17 @@ use rama_net::{
 use rama_tls::ExtensionId;
 use rama_tls::{
     client::{
-        NegotiatedTlsParameters, ServerVerifyMode, TargetEchResolution, TlsClientSni,
+        ClientHello, NegotiatedTlsParameters, ServerVerifyMode, TargetEchResolution, TlsClientSni,
         TlsEncryptedClientHello, TlsProfilePreparation, TlsServerAuthentication,
     },
+    is_grease_u16,
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData,
         TlsServerConfig, peek_client_hello_from_input,
     },
 };
 use rama_ua::profile::{
-    capture::joint::CapturedSlot,
+    capture::{joint::CapturedSlot, tls::TlsCapturedExtension},
     model::identity::{ConnectionContext, ConnectionIpFamily, ResumptionContext},
     replay::connection::{
         compiler::ConnectionProfileCompiler as _, preparation::ConnectionPreparation,
@@ -61,9 +63,10 @@ async fn incompatible_caller_policy_is_retained_and_reported_before_dial() {
             .cloned()
             .unwrap_or_default();
         async move {
+            // A TLS 1.2 maximum also changes what the TLS 1.3-only capture can offer.
             assert_eq!(
-                lowered(&report),
-                [LoweredProfileItem::CallerTlsVersionBounds]
+                lowered(&report).first(),
+                Some(&LoweredProfileItem::CallerTlsVersionBounds)
             );
             Err::<
                 EstablishedClientConnection<ServiceInput<tokio::io::DuplexStream>, ConnectRequest>,
@@ -286,7 +289,14 @@ async fn established_with_store(
         .unwrap_or(&default_selection)
         .prepare_components()
         .unwrap();
-    let expected = components.tls_outer.or(components.tls).unwrap();
+    let mut expected = components.tls_outer.or(components.tls).unwrap();
+    // Suites the backend cannot negotiate are filtered from the offer.
+    expected.ciphers = expected
+        .ciphers
+        .iter()
+        .copied()
+        .filter(|&cipher| is_grease_u16(cipher) || SslCipher::from_value(cipher).is_some())
+        .collect();
     #[cfg(feature = "http")]
     let expected = {
         let mut expected = expected;
@@ -631,6 +641,96 @@ async fn final_profile_ech_intent_is_enforced_after_transport_discovery() {
     assert_eq!(remote.await.unwrap(), 0);
 }
 
+/// The ClientHello a captured hello with this ALPN and ALPS `[h2]` emits for an HTTP/1.1 target.
+async fn http1_target_hello(alpn: &[&[u8]]) -> (ClientHello, ProfilePreservationReport) {
+    let mut captured = capture();
+    let mut extensions: Vec<_> = captured
+        .extensions
+        .into_vec()
+        .into_iter()
+        .filter(|extension| {
+            !matches!(
+                ExtensionId::from(extension.id),
+                ExtensionId::OLD_APPLICATION_SETTINGS | ExtensionId::APPLICATION_SETTINGS
+            )
+        })
+        .collect();
+    for extension in &mut extensions {
+        if extension.id == u16::from(ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION) {
+            extension.value = TlsCapturedExtensionValue::Protocols(
+                alpn.iter()
+                    .map(|protocol| protocol.to_vec().into())
+                    .collect(),
+            );
+        }
+    }
+    extensions.push(TlsCapturedExtension {
+        id: ExtensionId::APPLICATION_SETTINGS.into(),
+        value: TlsCapturedExtensionValue::Protocols(vec![b"h2".to_vec().into()].into()),
+    });
+    captured.extensions = extensions.into();
+    let request = input();
+    request
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_11));
+    let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
+    let (compiled, report) = prepare(&compiler, &request, &captured).unwrap();
+    InstalledConnectionProfile::<ConnectRequest>::apply(compiled, request.extensions());
+    let (client_io, server_io) = duplex(kib(32));
+    let io = Arc::new(Mutex::new(Some(client_io)));
+    let inner = service_fn(move |input: ConnectRequest| {
+        let io = io.lock().take().unwrap();
+        async move {
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(io),
+            })
+        }
+    });
+    let connector = TlsConnector::auto(inner).with_base_config(TlsClientConfig::new());
+    let peer = async {
+        let (_io, hello) = peek_client_hello_from_input(ServiceInput::new(server_io))
+            .await
+            .unwrap();
+        hello.unwrap()
+    };
+    // Only the ClientHello is observed; the handshake is abandoned once it is read.
+    let (_client, hello) = timeout(Duration::from_secs(10), async {
+        tokio::join!(connector.serve(request), peer)
+    })
+    .await
+    .unwrap();
+    (hello, report)
+}
+
+#[tokio::test]
+async fn captured_alps_outside_an_http1_alpn_offer_is_sent_as_captured() {
+    let (hello, report) = http1_target_hello(&[b"http/1.1"]).await;
+    assert!(
+        !lowered(&report).contains(&LoweredProfileItem::TlsAlps),
+        "{report:?}"
+    );
+    assert_eq!(
+        hello.ext_alpn(),
+        Some([ApplicationProtocol::HTTP_11].as_slice())
+    );
+    assert_eq!(
+        hello.ext_alps(),
+        Some([ApplicationProtocol::HTTP_2].as_slice())
+    );
+}
+
+#[tokio::test]
+async fn narrowing_a_captured_offer_to_http1_drops_alps_outside_it() {
+    let (hello, report) = http1_target_hello(&[b"h2", b"http/1.1"]).await;
+    assert!(lowered(&report).contains(&LoweredProfileItem::TlsAlpnTargetVersion));
+    assert_eq!(
+        hello.ext_alpn(),
+        Some([ApplicationProtocol::HTTP_11].as_slice())
+    );
+    assert_eq!(hello.ext_alps(), None);
+}
+
 #[tokio::test]
 async fn profile_replay_to_an_ip_preserves_explicit_and_captured_sni_policy() {
     timeout(Duration::from_secs(10), async {
@@ -825,7 +925,7 @@ async fn final_profile_preservation_differences_are_published_once() {
     );
     let connection = Box::pin(established(Some((&context, &selection)))).await;
     let report = connection.get_ref::<ProfilePreservationReport>().unwrap();
-    assert!(!report.is_exact());
+    assert!(lowered(report).contains(&LoweredProfileItem::TlsCipherSuites));
     for (index, difference) in report.differences.iter().enumerate() {
         assert!(
             !report.differences[..index].contains(difference),

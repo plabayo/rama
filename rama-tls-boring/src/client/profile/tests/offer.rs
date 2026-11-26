@@ -53,13 +53,14 @@ fn compiled_settings_reproduce_retained_tls_fields_with_fresh_crypto() {
 }
 
 #[test]
-fn unsupported_safari_ciphers_are_preserved_in_the_native_client_hello() {
-    let mut captured = capture();
+fn unsupported_legacy_ciphers_are_filtered_from_the_native_client_hello() {
+    let original = capture();
+    let mut captured = original.clone();
     let mut ciphers = captured.ciphers.to_vec();
-    ciphers.extend([0xc008, 0xc012, 0xffff]);
+    ciphers.extend([0xfe00, 0xfe01, 0xffff]);
     captured.ciphers = ciphers.into();
     let (config, report) = compile_tcp(&captured, None).unwrap();
-    assert_eq!(lowered(&report), [LoweredProfileItem::TlsCipherNegotiation]);
+    assert_eq!(lowered(&report), [LoweredProfileItem::TlsCipherSuites]);
     let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
     let actual = TlsCapture::capture(
         ProfileCaptureCompleteness::Complete,
@@ -71,7 +72,7 @@ fn unsupported_safari_ciphers_are_preserved_in_the_native_client_hello() {
     // GREASE cipher slots stay in place with values drawn for the connection.
     assert_eq!(
         actual.with_grease_placeholders().unwrap().ciphers,
-        captured.with_grease_placeholders().unwrap().ciphers
+        original.with_grease_placeholders().unwrap().ciphers
     );
 }
 
@@ -149,7 +150,8 @@ fn caller_version_and_cipher_restrictions_are_retained_and_reported() {
     ] {
         let compiler = ConnectionProfileCompiler::new(policy);
         let (_, report) = prepare(&compiler, &input(), &capture).unwrap();
-        assert_eq!(lowered(&report), [item]);
+        // A TLS 1.2 maximum also changes what the TLS 1.3-only capture can offer.
+        assert_eq!(lowered(&report).first(), Some(&item), "{report:?}");
     }
 }
 
@@ -400,7 +402,9 @@ fn native_required_fields_and_alps_membership_are_reported() {
     let mut extensions = captured.extensions.into_vec();
     extensions.push(TlsCapturedExtension {
         id: ExtensionId::APPLICATION_SETTINGS.into(),
-        value: TlsCapturedExtensionValue::Protocols(vec![b"not-offered".to_vec().into()].into()),
+        value: TlsCapturedExtensionValue::Protocols(
+            vec![b"h2".to_vec().into(), b"h2".to_vec().into()].into(),
+        ),
     });
     captured.extensions = extensions.into();
     let (_, report) = compile_tcp(&captured, None).unwrap();
@@ -649,9 +653,13 @@ fn caller_version_floor_cannot_silently_change_the_selected_first_flight() {
         TlsClientConfig::new().with_min_version(ProtocolVersion::TLSv1_3),
     );
     let (_, report) = prepare(&compiler, &input(), &mixed_version_capture()).unwrap();
+    // The TLS 1.2 session ticket is not offered at a TLS 1.3 floor.
     assert_eq!(
         lowered(&report),
-        [LoweredProfileItem::CallerTlsVersionBounds]
+        [
+            LoweredProfileItem::CallerTlsVersionBounds,
+            LoweredProfileItem::TlsSessionTicket
+        ]
     );
 }
 
@@ -776,7 +784,7 @@ fn counted_server_padding_rejects_malformed_retained_bodies() {
 #[test]
 fn entirely_unsupported_cipher_offer_keeps_native_negotiable_list() {
     let mut captured = capture();
-    captured.ciphers = vec![0xc008, 0xc012, 0xffff].into();
+    captured.ciphers = vec![0xfe00, 0xfe01, 0xffff].into();
     let (config, report) = compile_tcp(&captured, None).unwrap();
     assert_eq!(lowered(&report), [LoweredProfileItem::TlsCipherSuites]);
     let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
@@ -829,6 +837,10 @@ fn captured_trailing_padding_replays_with_the_native_length_rule() {
 
 fn legacy_tls12_capture() -> TlsCapture {
     let source = wire_variant()
+        .with_cipher_suites(vec![
+            CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        ])
         .with_supported_versions(vec![ProtocolVersion::TLSv1_2])
         .with_max_version(ProtocolVersion::TLSv1_2)
         .with_extension_order(Default::default());
@@ -856,9 +868,14 @@ fn legacy_tls12_offer_never_broadens_caller_version_bounds() {
     ] {
         let caller = BoringTlsConnectorConfig::from_extensions(policy.as_extensions());
         let mut report = ProfilePreservationReport::default();
-        let settings =
-            wire::compile_for_policy(wire::TransportShape::Tcp, &capture, &caller, &mut report)
-                .unwrap();
+        let settings = wire::compile_for_policy(
+            wire::TransportShape::Tcp,
+            &capture,
+            &caller,
+            wire::NonNegotiableValues::new(),
+            &mut report,
+        )
+        .unwrap();
         assert_eq!(
             lowered(&report).contains(&LoweredProfileItem::CallerTlsVersionBounds),
             conflict,
@@ -1021,6 +1038,7 @@ fn caller_ech_policy_survives_profile_compilation() {
                     wire::TransportShape::Tcp,
                     &capture,
                     &BoringTlsConnectorConfig::from_extensions(caller.as_extensions()),
+                    wire::NonNegotiableValues::new(),
                     &mut report,
                 );
                 if requirement == EchRequirement::Required && intent == Some(false) {

@@ -52,13 +52,15 @@
 //! scope permits use of a verified connection but never shares policy failures.
 //!
 //! Discovery and use are separate: HTTP advertisements can be cached, but this
-//! selector currently uses alternatives only for HTTPS. It verifies the origin's
-//! authenticated identity ([RFC 7838 §2.1]), protocol policy and established HTTP
-//! version even on pool hits. HTTPS records select a transport, leaving stream
+//! selector uses alternatives only for HTTPS, including `wss` handshakes. It
+//! verifies the origin's authenticated identity ([RFC 7838 §2.1]), protocol
+//! policy and established HTTP version even on pool hits. Connections with
+//! verification disabled therefore neither learn nor use alternatives; a custom TLS
+//! stack must publish `TlsServerAuthentication` and its `ConnectionPolicyScope` to
+//! take part. HTTPS records select a transport, leaving stream
 //! ALPN negotiation open (RFC 9460 §7.1.2); Alt-Svc remains protocol-specific.
 //! Serving `http` origins over TLS additionally needs
-//! the opt-in checks of [RFC 8164 §2], which are not implemented here. WebSocket
-//! handshakes can learn hints but do not select alternative endpoints here.
+//! the opt-in checks of [RFC 8164 §2], which are not implemented here.
 //!
 //! Separately composed [`crate::layer::alt_svc::AltSvc`] handles response
 //! headers ([RFC 7838 §3]), `Alt-Used` (§5) and 421
@@ -85,7 +87,7 @@ use rama_http_types::{
         EstablishedHttpService, FallbackHttpVersion, HttpOrigin, HttpServiceCandidate,
         HttpServiceCandidates, HttpServiceSelection, HttpServiceSource, SelectedHttpService,
     },
-    proto::h2::alt_svc::AltSvcObserverExtension,
+    proto::{ext::Protocol as ConnectProtocol, h2::alt_svc::AltSvcObserverExtension},
 };
 #[cfg(feature = "tls")]
 use rama_net::address::HostRef;
@@ -129,15 +131,16 @@ pub use rama_net::client::ConnectionAttempt as HttpServiceAttempt;
 
 /// HTTP service discovery and bounded connection-selection policy.
 #[derive(Clone, Debug)]
-pub struct HttpServiceLayer {
+pub struct HttpServiceConnectorLayer {
     cache: Option<AltSvcCache>,
     attempt_timeout: Duration,
     timeout: Option<Duration>,
     max_attempts: usize,
     max_candidates: usize,
+    http3_upgrades: bool,
 }
 
-impl Default for HttpServiceLayer {
+impl Default for HttpServiceConnectorLayer {
     fn default() -> Self {
         Self {
             cache: None,
@@ -145,11 +148,12 @@ impl Default for HttpServiceLayer {
             timeout: None,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
             max_candidates: DEFAULT_MAX_CANDIDATES,
+            http3_upgrades: false,
         }
     }
 }
 
-impl HttpServiceLayer {
+impl HttpServiceConnectorLayer {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -204,9 +208,18 @@ impl HttpServiceLayer {
             self
         }
     }
+
+    generate_set_and_with! {
+        /// Let an upgrade or Extended CONNECT follow an HTTP/3 alternative, whose
+        /// advertisement does not promise Extended CONNECT. Disabled by default.
+        pub fn http3_upgrades(mut self, allow: bool) -> Self {
+            self.http3_upgrades = allow;
+            self
+        }
+    }
 }
 
-impl<S> Layer<S> for HttpServiceLayer {
+impl<S> Layer<S> for HttpServiceConnectorLayer {
     type Service = HttpServiceConnector<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
@@ -226,7 +239,7 @@ impl<S> Layer<S> for HttpServiceLayer {
 #[derive(Clone, Debug, ExtensionsRef)]
 pub struct HttpServiceConnector<S> {
     inner: S,
-    policy: HttpServiceLayer,
+    policy: HttpServiceConnectorLayer,
 }
 
 impl<S> HttpServiceConnector<S> {
@@ -234,7 +247,7 @@ impl<S> HttpServiceConnector<S> {
     pub fn new(inner: S) -> Self {
         Self {
             inner,
-            policy: HttpServiceLayer::default(),
+            policy: HttpServiceConnectorLayer::default(),
         }
     }
 
@@ -288,6 +301,15 @@ impl<S> HttpServiceConnector<S> {
             self
         }
     }
+
+    generate_set_and_with! {
+        /// Let an upgrade or Extended CONNECT follow an HTTP/3 alternative, whose
+        /// advertisement does not promise Extended CONNECT. Disabled by default.
+        pub fn http3_upgrades(mut self, allow: bool) -> Self {
+            self.policy.http3_upgrades = allow;
+            self
+        }
+    }
 }
 
 fn invalid(message: &'static str) -> ConnectionError {
@@ -305,8 +327,6 @@ fn availability(error: &ConnectionError) -> bool {
         )
 }
 
-/// WebSocket handshakes use HTTP: map WS/WSS to HTTP/HTTPS for learning,
-/// preserving the original security scheme.
 /// Whether a [`ConnectorTarget`] sends `input` to an endpoint other than its own authority,
 /// which rules out alternatives and discovery.
 pub(crate) fn dials_another_endpoint(input: &ConnectRequest) -> bool {
@@ -316,6 +336,8 @@ pub(crate) fn dials_another_endpoint(input: &ConnectRequest) -> bool {
         .is_some_and(|target| target.0 != input.authority)
 }
 
+/// WebSocket handshakes use HTTP: map WS/WSS to HTTP/HTTPS for learning and selection,
+/// preserving the original security scheme.
 fn origin(input: &ConnectRequest) -> Option<HttpOrigin> {
     let protocol = match input.application_protocol.as_ref()? {
         protocol if protocol == &Protocol::HTTP || protocol == &Protocol::HTTPS => protocol.clone(),
@@ -483,17 +505,19 @@ where
 {
     /// Prefer caller-supplied discovery; otherwise consult the shared cache.
     /// The boolean marks cache-owned candidates whose backoff we must check.
-    /// Explicit dial targets win; plaintext and WebSocket routing stay unchanged.
+    /// Explicit dial targets win; plaintext origins are never moved to an alternative.
     fn candidates(
         &self,
         input: &ConnectRequest,
         origin: Option<&HttpOrigin>,
         proxy_context: bool,
     ) -> (Option<Arc<HttpServiceCandidates>>, bool) {
-        if !cfg!(feature = "tls")
-            || input.application_protocol.as_ref() != Some(&Protocol::HTTPS)
-            || dials_another_endpoint(input)
-        {
+        // A `wss` URI names the server of its `https` origin (RFC 9460 section 9.6).
+        let discoverable = input
+            .application_protocol
+            .as_ref()
+            .is_some_and(|protocol| protocol == &Protocol::HTTPS || protocol == &Protocol::WSS);
+        if !cfg!(feature = "tls") || !discoverable || dials_another_endpoint(input) {
             return (None, false);
         }
 
@@ -643,6 +667,10 @@ where
             })
             .transpose()?;
         let required = required_version(&input);
+        // An upgrade needs Extended CONNECT, which an HTTP/3 advertisement does not promise.
+        let avoid_http3 = !self.policy.http3_upgrades
+            && required.is_none()
+            && input.extensions().contains::<ConnectProtocol>();
         // No discovery: move the input directly, avoiding a fork or origin
         // allocation unless a pooled alternative needs Alt-Used bookkeeping.
         if self.policy.cache.is_none() && !input.extensions().contains::<HttpServiceCandidates>() {
@@ -685,6 +713,9 @@ where
                 let Some(version) = Self::candidate_version(candidate, required) else {
                     continue;
                 };
+                if avoid_http3 && version == Version::HTTP_3 {
+                    continue;
+                }
 
                 let advertisement = snapshot
                     .candidate_extensions(index)

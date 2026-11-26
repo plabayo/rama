@@ -70,7 +70,9 @@ mod endpoints;
 mod sites;
 mod state;
 mod storage;
-pub(crate) use storage::{CountedProfileSource, compact_profile_archive, export_counted_profiles};
+pub(crate) use storage::{
+    CountedProfileSource, ReadBudget, compact_profile_archive, export_counted_profiles,
+};
 
 use sites::{SiteTokens, Sites, site_cors_layer};
 #[doc(inline)]

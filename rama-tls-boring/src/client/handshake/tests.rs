@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use rama_core::{ServiceInput, bytes::Bytes};
 use rama_net::address::{Domain, Host};
 use rama_tls::{
-    ExtensionId,
+    ExtensionId, ProtocolVersion,
     client::{ServerVerifyMode, TlsClientConfig, TlsClientSni},
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData,
@@ -188,4 +188,38 @@ async fn failed_handshakes_retain_the_effective_outgoing_sni() {
         };
         assert_eq!(outgoing_sni, expected);
     }
+}
+
+#[tokio::test]
+async fn a_version_outside_the_offered_list_fails_the_handshake() {
+    let auth = server_auth();
+    let config = TlsClientConfig::new()
+        .with_server_name(Domain::from_static("prepared.test"))
+        .try_with_server_trust_anchors([auth.cert_chain.last().unwrap().clone()])
+        .unwrap();
+    let mut data = TlsConnectorData::try_from(&config).unwrap();
+    // As a server that ignores supported_versions could: the native range allows TLS 1.2.
+    data.offered_versions = Some(Arc::from([0x0304, 0x0302]));
+    let prepared = PreparedClient::try_from(data).unwrap();
+    let server = TlsAcceptorData::try_from(
+        &TlsServerConfig::new()
+            .with_single_cert(auth)
+            .with_supported_versions(vec![ProtocolVersion::TLSv1_2]),
+    )
+    .unwrap()
+    .into_static_acceptor_builder()
+    .unwrap()
+    .build();
+    let (client_io, server_io) = tokio::io::duplex(kib(16));
+    let (client, _server) =
+        tokio::join!(prepared.connect(ServiceInput::new(client_io)), async move {
+            let ssl = Ssl::new(server.context()).unwrap();
+            rama_boring_tokio::SslStreamBuilder::new(ssl, server_io)
+                .accept()
+                .await
+        },);
+    let Err(error) = client else {
+        panic!("TLS 1.2 was never offered")
+    };
+    assert!(error.to_string().contains("did not list"), "{error}");
 }
