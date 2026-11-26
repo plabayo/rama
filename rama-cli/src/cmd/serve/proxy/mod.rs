@@ -949,7 +949,6 @@ macro_rules! build_mitm_service {
         };
         // a flow starting while the proxy shuts down fails instead of passing uninspected
         let maybe_http = HttpPeekRouter::new(http_mitm_relay)
-            .with_known_non_http_protocol_methods()
             .with_peek_policy(PeekPolicy::FAIL_CLOSED)
             .with_fallback(ObservePassthroughService {
                 inner: MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())),

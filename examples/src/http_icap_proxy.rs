@@ -192,11 +192,9 @@ async fn main() -> Result<(), BoxError> {
         adaptation,
         ArcLayer::new(),
     ));
-    let maybe_http = HttpPeekRouter::new(http_relay)
-        .with_known_non_http_protocol_methods()
-        .with_fallback(
-            MapOutputLayer::new(drop).into_layer(IoForwardService::new(weak_scope.clone())),
-        );
+    let maybe_http = HttpPeekRouter::new(http_relay).with_fallback(
+        MapOutputLayer::new(drop).into_layer(IoForwardService::new(weak_scope.clone())),
+    );
     let tls_relay = TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {
         subject: CertificateSubject {
             organisation_name: Some("Rama ICAP Proxy Example".to_owned()),

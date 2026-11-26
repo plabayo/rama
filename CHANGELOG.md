@@ -385,6 +385,15 @@ stays at 1.96 and the edition at 2024.
   and use `idle_timeout(..)` to change how long an unused connection may stay
   open between requests. Open requests, streamed responses, WebSockets and
   tunnels pause the idle clock (#1241, #1297).
+* **HTTP/1 method detection**: `HttpPeekRouter` now defaults to
+  `HttpMethodMode::Standard`. Mixed-protocol listeners fall back on the first
+  byte that rules out a common HTTP method. For WebDAV and other registered
+  extensions, select `Extended`. To inspect private methods, use
+  `with_http_method_mode(HttpMethodMode::Any)` for the previous default.
+  Replace `with_skipped_http1_methods(list)` with
+  `with_http_method_mode(HttpMethodMode::ExceptMethod(list))`, and
+  `with_known_non_http_protocol_methods()` with
+  `with_http_method_mode(HttpMethodMode::except_known_non_http())`.
 * **Peeking without timeouts**: `PeekTimeoutPolicy`, `with_peek_timeout` and
   `with_peek_timeout_policy` were removed from `PeekRouter`, `TlsPeekRouter`,
   `PeekTlsClientHelloService`, `SniRouter`, `Socks5PeekRouter` and
