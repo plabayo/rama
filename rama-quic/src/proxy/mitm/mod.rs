@@ -698,11 +698,19 @@ where
                 None => offered.iter().cloned().collect(),
             };
             tls.set_alpn(allowed);
-            tls.set_sni_policy(match self.peeked.client_hello.ext_server_name() {
-                Some(name) if name.as_ip().is_some() => TlsClientSni::IncludeIp,
-                Some(_) => TlsClientSni::Auto,
-                None => TlsClientSni::Disabled,
-            });
+            // The client's form of the name, unless the egress configuration names one.
+            let configured = self
+                .relay
+                .egress_tls
+                .as_extensions()
+                .get_ref::<TlsClientSni>();
+            tls.set_sni_policy(configured.copied().unwrap_or_else(|| {
+                match self.peeked.client_hello.ext_server_name() {
+                    Some(name) if name.as_ip().is_some() => TlsClientSni::IncludeIp,
+                    Some(_) => TlsClientSni::Auto,
+                    None => TlsClientSni::Disabled,
+                }
+            }));
             // The mirrored certificate is built from the origin's leaf.
             tls.set_store_server_cert_chain(true);
             tls.insert(initializer.clone());
