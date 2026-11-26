@@ -720,7 +720,9 @@ async fn echo_phase<T>(
     phase: &str,
     future: impl std::future::IntoFuture<Output = T>,
 ) -> T {
-    tokio::time::timeout(Duration::from_secs(15), future)
+    // A 37 byte window takes thousands of round trips per stream, which a loaded
+    // runner spreads over tens of seconds; the limit only has to catch a stall.
+    tokio::time::timeout(Duration::from_secs(60), future)
         .await
         .unwrap_or_else(|_| panic!("echo timed out during {phase}: {args:?}"))
 }

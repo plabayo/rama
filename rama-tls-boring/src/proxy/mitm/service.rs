@@ -103,13 +103,13 @@ fn connector_target(input: &impl ExtensionsRef) -> Option<rama_net::address::Hos
 
 fn config_sni(config: &TlsClientConfig) -> Option<ServerName> {
     let server_name = config.as_extensions().get_ref::<ServerName>()?;
-    config
+    let policy = config
         .as_extensions()
         .get_ref::<TlsClientSni>()
         .copied()
-        .unwrap_or_default()
-        .sends(server_name)
-        .then(|| server_name.clone())
+        .unwrap_or_default();
+    // The name as it is sent, which can lack the identity's trailing dot.
+    policy.wire_name(server_name)?.parse().ok()
 }
 
 #[derive(Debug, Clone, ExtensionsRef)]
@@ -850,6 +850,80 @@ mod tests {
             !relay_to_ip_target(v4, vec![CertificateIdentity::Dns(Domain::tld_localhost())]).await
         );
         assert!(!relay_to_ip_target(v6, vec![CertificateIdentity::Ip(v4)]).await);
+    }
+
+    #[tokio::test]
+    async fn relay_names_the_origin_with_or_without_the_root_dot_as_the_client_did() {
+        let target = Domain::from_static("localhost.").into_host();
+        for (policy, relayed) in [
+            (TlsClientSni::Auto, "localhost"),
+            (TlsClientSni::Verbatim, "localhost."),
+        ] {
+            let upstream_ca =
+                CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+            let auth = ServerAuthData::new_issued_by(
+                &upstream_ca,
+                LeafCertRequest {
+                    identities: vec![CertificateIdentity::Dns(Domain::tld_localhost())],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let upstream = TlsAcceptorLayer::new(TlsServerConfig::new().with_server_auth(auth))
+                .with_store_client_hello(true)
+                .into_layer(CaptureHello);
+            let (ca_cert, ca_key) =
+                generate_certificate_authority_x509(&SelfSignedCaConfig::default()).unwrap();
+            let anchor = CertificateDer::from(ca_cert.to_der().unwrap());
+            let relay = TlsMitmRelay::new_in_memory(ca_cert, ca_key).with_egress_server_auth(
+                TlsMitmEgressServerAuth::new()
+                    .with_server_verify(ServerVerifyMode::Auto)
+                    .try_with_server_trust_anchors([upstream_ca.certificate_chain()[0].clone()])
+                    .unwrap(),
+            );
+            let service = TlsMitmRelayService::new(
+                relay,
+                service_fn(|_input| async { Ok::<_, BoxError>(()) }),
+            );
+            let (client_io, ingress_io) = duplex(64 * 1024);
+            let (egress_io, upstream_io) = duplex(64 * 1024);
+            let upstream =
+                tokio::spawn(async move { upstream.serve(ServiceInput::new(upstream_io)).await });
+            let client = TlsConnectorData::try_from(
+                &TlsClientConfig::new()
+                    .with_server_name(ServerName::try_from(target.clone()).unwrap())
+                    .with_sni_policy(policy)
+                    .try_with_server_trust_anchors([anchor])
+                    .unwrap(),
+            )
+            .unwrap();
+            let relaying = async {
+                let (ingress, hello) = peek_client_hello_from_input(ServiceInput::new(ingress_io))
+                    .await
+                    .unwrap();
+                ingress
+                    .extensions()
+                    .insert(ConnectorTarget(HostWithPort::new(target.clone(), 443)));
+                service
+                    .serve(InputWithClientHello {
+                        input: BridgeIo(ingress, ServiceInput::new(egress_io)),
+                        client_hello: hello.unwrap(),
+                    })
+                    .await
+                    .unwrap();
+            };
+            let (_, connected) = tokio::join!(
+                relaying,
+                tls_connect(ServiceInput::new(client_io), Some(client))
+            );
+            connected.unwrap();
+            let hello = upstream.await.unwrap().unwrap();
+            assert_eq!(
+                hello.ext_server_domain().map(Domain::as_str),
+                Some(relayed),
+                "{policy:?}"
+            );
+        }
     }
 
     #[tokio::test]

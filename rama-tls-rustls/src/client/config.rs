@@ -388,6 +388,7 @@ mod pool_tests {
         for sni_policy in [
             TlsClientSni::Auto,
             TlsClientSni::IncludeIp,
+            TlsClientSni::Verbatim,
             TlsClientSni::Disabled,
         ] {
             let config = TlsClientConfig::new().with_sni_policy(sni_policy);
@@ -397,6 +398,7 @@ mod pool_tests {
             for other in [
                 TlsClientSni::Auto,
                 TlsClientSni::IncludeIp,
+                TlsClientSni::Verbatim,
                 TlsClientSni::Disabled,
             ] {
                 let config = TlsClientConfig::new().with_sni_policy(other);

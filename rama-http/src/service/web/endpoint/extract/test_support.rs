@@ -1,6 +1,6 @@
 //! Helpers shared by the extractor unit tests.
 
-use std::convert::Infallible;
+use std::fmt::Debug;
 
 use rama_core::Service;
 use rama_core::bytes::Bytes;
@@ -10,7 +10,7 @@ use crate::{Body, HeaderName, Request, Response, StatusCode};
 
 /// Serve a GET request for `uri` with `headers`, returning the status and the collected body.
 pub(super) async fn serve_get(
-    svc: &impl Service<Request, Output = Response, Error = Infallible>,
+    svc: &impl Service<Request, Output = Response, Error: Debug>,
     uri: &str,
     headers: &[(&HeaderName, &str)],
 ) -> (StatusCode, Bytes) {

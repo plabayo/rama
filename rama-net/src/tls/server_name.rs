@@ -12,7 +12,7 @@ use rama_core::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
-    address::{Domain, Host, HostRef},
+    address::{Domain, DomainRef, Host, HostRef},
     std::boxed::Box,
 };
 
@@ -55,6 +55,16 @@ impl ServerName {
             Repr::Name(_) => None,
             Repr::Address(ip) => Some(ip),
         }
+    }
+
+    /// The DNS host name as certificates and SNI spell it, without a trailing dot.
+    ///
+    /// `None` for an address, and for a name that only its trailing dot keeps from
+    /// spelling one, such as `192.0.2.1.`.
+    #[must_use]
+    pub fn as_dns_host(&self) -> Option<DomainRef<'_>> {
+        let host = self.as_domain()?.as_non_fqdn();
+        host.as_str().parse::<IpAddr>().is_err().then_some(host)
     }
 
     /// Consume this name and return its DNS identity, if present.
@@ -244,6 +254,16 @@ mod tests {
         let dotted = ServerName::from(Domain::from_static("192.0.2.1."));
         assert!(dotted.as_domain().is_some());
         assert_ne!(dotted, name);
+        // Neither spells a DNS host once the trailing dot is gone.
+        assert!(name.as_dns_host().is_none());
+        assert!(dotted.as_dns_host().is_none());
+        for text in ["example.test", "example.test."] {
+            let name = ServerName::from(Domain::from_static(text));
+            assert_eq!(
+                name.as_dns_host().map(|host| host.as_str()),
+                Some("example.test")
+            );
+        }
     }
 
     #[test]

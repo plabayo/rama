@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     hash::{Hash, Hasher},
     sync::Arc,
 };
@@ -9,7 +10,10 @@ use rama_core::{
     extensions::{Extension, Extensions},
 };
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
-use rama_net::tls::{AlpnPolicy, ApplicationProtocol, ServerName, TlsAlpn};
+use rama_net::{
+    address::Domain,
+    tls::{AlpnPolicy, ApplicationProtocol, ServerName, TlsAlpn},
+};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
 use super::{
@@ -376,23 +380,50 @@ impl Clone for TlsClientConfig {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls), scope(connection))]
 pub enum TlsClientSni {
-    /// Send DNS identities only, as required by RFC 6066 section 3.
+    /// Send DNS identities only and without a trailing dot, as RFC 6066 section 3 describes.
     #[default]
     Auto,
     /// Also send IP identities as dotted IPv4 or bare IPv6 literals; unsupported by rustls.
     IncludeIp,
+    /// Send the identity exactly as configured, a trailing dot and IP literals included;
+    /// unsupported by rustls. A name with and without its trailing dot is one server
+    /// identity, so a pooled connection or cached session may stem from the other spelling.
+    Verbatim,
     /// Omit SNI, including for DNS identities.
     Disabled,
 }
 
 impl TlsClientSni {
+    /// The policy that names a server the way a peer's ClientHello did.
+    #[must_use]
+    pub fn mirroring(name: Option<&ServerName>) -> Self {
+        match name {
+            None => Self::Disabled,
+            Some(name) if name.as_ip().is_some() => Self::IncludeIp,
+            Some(name) if name.as_domain().is_some_and(Domain::is_fqdn) => Self::Verbatim,
+            Some(_) => Self::Auto,
+        }
+    }
+
+    /// The text this policy sends as SNI for the configured server identity, if any.
+    #[must_use]
+    pub fn wire_name(self, name: &ServerName) -> Option<Cow<'_, str>> {
+        match (self, name.as_domain()) {
+            (Self::Disabled, _) => None,
+            (Self::Auto, _) => name.as_dns_host().map(|host| Cow::Borrowed(host.as_str())),
+            (Self::IncludeIp, Some(domain)) => Some(Cow::Borrowed(domain.as_non_fqdn().as_str())),
+            (Self::Verbatim, Some(domain)) => Some(Cow::Borrowed(domain.as_str())),
+            (Self::IncludeIp | Self::Verbatim, None) => Some(Cow::Owned(name.to_string())),
+        }
+    }
+
     /// Whether this policy sends the canonical identity as SNI.
     #[must_use]
     pub fn sends(self, name: &ServerName) -> bool {
         match self {
             Self::Disabled => false,
-            Self::IncludeIp => true,
-            Self::Auto => name.as_domain().is_some(),
+            Self::Auto => name.as_dns_host().is_some(),
+            Self::IncludeIp | Self::Verbatim => true,
         }
     }
 }
@@ -769,6 +800,66 @@ mod tests {
             extensions.get_ref::<TlsClientSni>(),
             Some(&TlsClientSni::IncludeIp)
         );
+    }
+
+    #[test]
+    fn sni_wire_name_follows_the_policy_for_every_identity_spelling() {
+        use TlsClientSni::{Auto, Disabled, IncludeIp, Verbatim};
+        for (identity, policy, wire) in [
+            ("example.test", Auto, Some("example.test")),
+            ("example.test.", Auto, Some("example.test")),
+            ("192.0.2.1", Auto, None),
+            ("192.0.2.1.", Auto, None),
+            ("2001:db8::1", Auto, None),
+            ("example.test.", IncludeIp, Some("example.test")),
+            ("192.0.2.1", IncludeIp, Some("192.0.2.1")),
+            ("192.0.2.1.", IncludeIp, Some("192.0.2.1")),
+            ("example.test", Verbatim, Some("example.test")),
+            ("example.test.", Verbatim, Some("example.test.")),
+            ("192.0.2.1.", Verbatim, Some("192.0.2.1.")),
+            ("2001:db8::1", Verbatim, Some("2001:db8::1")),
+            ("example.test.", Disabled, None),
+        ] {
+            let name: ServerName = match identity.parse::<IpAddr>() {
+                Ok(ip) => ip.into(),
+                Err(_) => Domain::try_from(identity).unwrap().into(),
+            };
+            let sent = policy.wire_name(&name);
+            assert_eq!(sent.as_deref(), wire, "{identity} {policy:?}");
+            assert_eq!(policy.sends(&name), wire.is_some(), "{identity} {policy:?}");
+        }
+    }
+
+    #[test]
+    fn sni_mirroring_keeps_the_form_a_peer_named_the_server_in() {
+        let name = |text: &str| ServerName::from(Domain::try_from(text).unwrap());
+        for (hello, policy, wire) in [
+            (
+                Some(name("example.test")),
+                TlsClientSni::Auto,
+                Some("example.test"),
+            ),
+            (
+                Some(name("example.test.")),
+                TlsClientSni::Verbatim,
+                Some("example.test."),
+            ),
+            (
+                Some(name("192.0.2.1")),
+                TlsClientSni::IncludeIp,
+                Some("192.0.2.1"),
+            ),
+            (
+                Some(name("192.0.2.1.")),
+                TlsClientSni::Verbatim,
+                Some("192.0.2.1."),
+            ),
+            (None, TlsClientSni::Disabled, None),
+        ] {
+            assert_eq!(TlsClientSni::mirroring(hello.as_ref()), policy);
+            let sent = hello.as_ref().and_then(|name| policy.wire_name(name));
+            assert_eq!(sent.as_deref(), wire);
+        }
     }
 
     #[test]

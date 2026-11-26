@@ -136,7 +136,7 @@ where
 mod test {
     use super::*;
     use crate::StatusCode;
-    use crate::service::web::WebService;
+    use crate::service::web::Router;
     use rama_core::Service;
 
     #[tokio::test]
@@ -148,7 +148,7 @@ mod test {
             alive: Option<bool>,
         }
 
-        let service = WebService::default().with_post("/", async |Json(body): Json<Input>| {
+        let service = Router::default().with_post("/", async |Json(body): Json<Input>| {
             assert_eq!(body.name, "glen");
             assert_eq!(body.age, 42);
             assert_eq!(body.alive, None);
@@ -170,7 +170,7 @@ mod test {
     /// send cross-site without preflight is never JSON.
     #[tokio::test]
     async fn test_json_content_type_is_the_whole_value() {
-        let service = WebService::default()
+        let service = Router::default()
             .with_post("/", async |Json(_): Json<serde_json::Value>| StatusCode::OK);
         for (lines, status) in [
             (&["application/json; charset=utf-8"][..], StatusCode::OK),
@@ -207,8 +207,7 @@ mod test {
             _alive: Option<bool>,
         }
 
-        let service =
-            WebService::default().with_post("/", async |Json(_): Json<Input>| StatusCode::OK);
+        let service = Router::default().with_post("/", async |Json(_): Json<Input>| StatusCode::OK);
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
@@ -228,8 +227,7 @@ mod test {
             _alive: Option<bool>,
         }
 
-        let service =
-            WebService::default().with_post("/", async |Json(_): Json<Input>| StatusCode::OK);
+        let service = Router::default().with_post("/", async |Json(_): Json<Input>| StatusCode::OK);
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)

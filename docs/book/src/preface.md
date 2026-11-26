@@ -119,7 +119,7 @@ The CLI is documented in the [`rama` binary chapter](./deploy/rama-cli.md), incl
 
 You can get help, share ideas and follow development in several places:
 
-* Public `#rama` channel on the community Discord: [invite link](https://discord.gg/29EetaSYCD)
+* Public `#rama` channel on the community Discord: [invite link](https://discord.ramaproxy.org)
 * The Rama channel on [the official Tokio Discord](https://discord.com/channels/500028886025895936/1349098858831024209)
 * GitHub issues for bugs, questions and feature requests:
   <https://github.com/plabayo/rama/issues>

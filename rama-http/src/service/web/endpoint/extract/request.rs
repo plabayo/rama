@@ -27,7 +27,7 @@ mod tests {
         Body, Method, StatusCode,
         body::util::BodyExt,
         header,
-        service::web::{WebService, extract::Json, response},
+        service::web::{Router, extract::Json, response},
     };
     use rama_core::Service;
 
@@ -38,7 +38,7 @@ mod tests {
             value: String,
         }
 
-        let service = WebService::default().with_post(
+        let service = Router::default().with_post(
             "/items",
             async |parts: Parts, Json(input): Json<Input>| -> response::Result<String> {
                 assert_eq!(parts.method, Method::POST);

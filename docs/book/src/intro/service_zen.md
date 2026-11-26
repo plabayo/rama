@@ -88,4 +88,4 @@ Speaking about `Connectors`, those are a nice example of a type of [`Service`][s
 
 [email]: mailto:glen@plabayo.tech
 [gh-issue]: https://github.com/plabayo/rama/issues/new
-[discord]: https://discord.gg/29EetaSYCD
+[discord]: https://discord.ramaproxy.org

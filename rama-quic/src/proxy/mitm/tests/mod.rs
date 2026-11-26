@@ -1479,3 +1479,161 @@ async fn relay_preserves_ip_literal_sni_and_absence_in_both_egress_forms() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn relay_keeps_the_sni_policy_its_egress_configuration_names() {
+    timeout(LIMIT, async {
+        for mirror in [false, true] {
+            let mitm_identity = identity();
+            let origin_identity = untrusted_identity();
+            let Sockets {
+                client,
+                ingress,
+                ingress_address,
+                egress,
+                origin,
+            } = sockets(&origin_identity, 24790);
+            ingress
+                .extensions()
+                .insert(ConnectorTarget("fallback.example:443".parse().unwrap()));
+            let policy = TlsClientConfig::new()
+                .with_alpn([ApplicationProtocol::from(ALPN)].into_iter().collect())
+                .with_server_verify(ServerVerifyMode::Disable);
+            let mut relay = QuicMitmRelay::new(
+                issuer(&mitm_identity),
+                WeakScope::detached(),
+                policy.clone().with_sni_policy(TlsClientSni::Disabled),
+                VarInt::from_u32(0x0101),
+            );
+            relay.set_mirror_client(mirror);
+            let service = PeekQuicClientHelloService::new(
+                BoringTlsProvider::new(),
+                relay.into_layer(QuicRelay::new(VarInt::from_u32(0x0101))),
+            );
+            let relaying =
+                tokio::spawn(async move { service.serve(BridgeIo(ingress, egress)).await });
+            let (sent, received) = channel();
+            let upstream = tokio::spawn(async move {
+                let connection = origin.accept().await.unwrap().await.unwrap();
+                sent.send(
+                    connection
+                        .extensions()
+                        .get_ref::<NegotiatedTlsParameters>()
+                        .unwrap()
+                        .server_name
+                        .clone(),
+                )
+                .unwrap();
+                connection.closed().await;
+                origin
+            });
+            let config = ClientConfig::try_from_rama_tls_with_provider(
+                &policy,
+                TlsOptions::default(),
+                &BoringTlsProvider::new(),
+            )
+            .unwrap();
+            // The client names the origin; the relay must not pass that name on.
+            let connection = client
+                .connect_with(config, ingress_address, "fallback.example")
+                .unwrap()
+                .await
+                .unwrap();
+            assert_eq!(received.await.unwrap(), None, "mirror={mirror}");
+            connection.close(0u32, b"done");
+            relaying.await.unwrap().unwrap();
+            drop(upstream.await.unwrap());
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn relay_names_the_origin_with_or_without_the_root_dot_as_the_client_did() {
+    timeout(LIMIT, async {
+        for mirror in [false, true] {
+            for (client_policy, relayed) in [
+                (TlsClientSni::Auto, "fallback.example"),
+                (TlsClientSni::Verbatim, "fallback.example."),
+            ] {
+                let mitm_identity = identity();
+                let origin_identity = untrusted_identity();
+                let Sockets {
+                    client,
+                    ingress,
+                    ingress_address,
+                    egress,
+                    origin,
+                } = sockets(&origin_identity, 24800);
+                // This engine reports the name as it arrived, root dot included.
+                origin.set_server_config(Some(
+                    ServerConfig::try_from_rama_tls_with_provider(
+                        &rama_tls::server::TlsServerConfig::new()
+                            .with_alpn([ALPN.into()].into_iter().collect())
+                            .with_server_auth(origin_identity.clone()),
+                        TlsOptions::default(),
+                        &BoringTlsProvider::new(),
+                    )
+                    .unwrap(),
+                ));
+                ingress
+                    .extensions()
+                    .insert(ConnectorTarget("fallback.example:443".parse().unwrap()));
+                let policy = TlsClientConfig::new()
+                    .with_alpn([ApplicationProtocol::from(ALPN)].into_iter().collect())
+                    .with_server_verify(ServerVerifyMode::Disable);
+                let mut relay = QuicMitmRelay::new(
+                    issuer(&mitm_identity),
+                    WeakScope::detached(),
+                    policy.clone(),
+                    VarInt::from_u32(0x0101),
+                );
+                relay.set_mirror_client(mirror);
+                let service = PeekQuicClientHelloService::new(
+                    BoringTlsProvider::new(),
+                    relay.into_layer(QuicRelay::new(VarInt::from_u32(0x0101))),
+                );
+                let relaying =
+                    tokio::spawn(async move { service.serve(BridgeIo(ingress, egress)).await });
+                let (sent, received) = channel();
+                let upstream = tokio::spawn(async move {
+                    let connection = origin.accept().await.unwrap().await.unwrap();
+                    sent.send(
+                        connection
+                            .extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
+                            .unwrap()
+                            .server_name
+                            .as_ref()
+                            .map(ToString::to_string),
+                    )
+                    .unwrap();
+                    connection.closed().await;
+                    origin
+                });
+                let config = ClientConfig::try_from_rama_tls_with_provider(
+                    &policy.with_sni_policy(client_policy),
+                    TlsOptions::default(),
+                    &BoringTlsProvider::new(),
+                )
+                .unwrap();
+                let connection = client
+                    .connect_with(config, ingress_address, "fallback.example.")
+                    .unwrap()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    received.await.unwrap().as_deref(),
+                    Some(relayed),
+                    "mirror={mirror} {client_policy:?}"
+                );
+                connection.close(0u32, b"done");
+                relaying.await.unwrap().unwrap();
+                drop(upstream.await.unwrap());
+            }
+        }
+    })
+    .await
+    .unwrap();
+}

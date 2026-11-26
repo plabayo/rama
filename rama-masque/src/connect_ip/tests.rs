@@ -447,6 +447,32 @@ async fn receive_idles_out_one_timeout_after_the_last_activity() {
     assert_eq!(last.elapsed(), idle);
 }
 
+#[tokio::test(start_paused = true)]
+async fn receives_that_wait_for_activity_idle_out_from_the_last_one() {
+    let (a, b) = duplex(65536);
+    let idle = Duration::from_secs(10);
+    let cfg = config().try_with_idle_timeout(idle).unwrap();
+    let mut raw = HttpDatagramSession::with_config(ServiceInput::new(a), cfg.http_config());
+    let mut session =
+        ConnectIpSession::new(ServiceInput::new(b), ConnectIpRole::Client, cfg).unwrap();
+    for _ in 0..3 {
+        // Each receive waits on the idle timer before the activity arrives.
+        let (received, ()) = tokio::join!(session.recv(), async {
+            sleep(Duration::from_secs(6)).await;
+            raw.send_capsule(ROUTE_ADVERTISEMENT, Bytes::new())
+                .await
+                .unwrap();
+        });
+        assert!(matches!(
+            received.unwrap(),
+            Some(ConnectIpEvent::Control(_))
+        ));
+    }
+    let last = Instant::now();
+    assert!(matches!(session.recv().await, Err(ConnectIpError::Timeout)));
+    assert_eq!(last.elapsed(), idle);
+}
+
 /// A reader that spends the task's whole cooperative budget on every read and never yields data.
 struct BudgetSpender;
 

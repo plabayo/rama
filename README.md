@@ -24,7 +24,7 @@
 [loc-url]: https://github.com/plabayo/rama
 
 [discord-badge]: https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white
-[discord-url]: https://discord.gg/29EetaSYCD
+[discord-url]: https://discord.ramaproxy.org
 [bmac-badge]: https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black
 [bmac-url]: https://www.buymeacoffee.com/plabayo
 [ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA
@@ -314,7 +314,7 @@ Available at <https://ramaproxy.org/book/faq.html>.
 [TLS fingerprinting]: https://ramaproxy.org/docs/rama/tls/fingerprint/index.html
 [SNI routing guide]: https://ramaproxy.org/book/proxies/sni.html
 [SNI router example]: ./examples/src/tls_sni_router.rs
-[Typed handlers and routing]: https://ramaproxy.org/docs/rama/http/service/web/struct.WebService.html
+[Typed handlers and routing]: https://ramaproxy.org/docs/rama/http/service/web/struct.Router.html
 [static files]: https://ramaproxy.org/docs/rama/http/service/fs/index.html
 [authentication]: https://ramaproxy.org/docs/rama/http/layer/auth/index.html
 [limits]: https://ramaproxy.org/docs/rama/layer/limit/index.html

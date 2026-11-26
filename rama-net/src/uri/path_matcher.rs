@@ -23,7 +23,9 @@ use crate::std::{
 };
 
 use super::component_input::IntoUriComponent;
-use super::path::{PathMatchOptions, PathRef, byte_starts_with, maybe_decode, strip_leading_slash};
+use super::path::{
+    PathMatchOptions, PathRef, PathSegments, byte_starts_with, maybe_decode, strip_leading_slash,
+};
 use crate::byte_sets::is_pattern_name_byte;
 use crate::input_ext::PathInputExt;
 
@@ -397,15 +399,168 @@ fn pattern_segment_capture_free(segment: &PatternSegment) -> bool {
     }
 }
 
-/// A typed prefix router for URI paths.
+/// A typed router for URI paths, holding prefix routes and full-path routes.
 ///
-/// Routes are compiled as [`PathPattern`] prefix matchers and looked up directly
-/// against [`PathRef`], so matching does not require callers to lower-case,
-/// trim, split, or allocate string lookup keys on the request path.
+/// Routes are compiled [`PathPattern`]s looked up directly against [`PathRef`],
+/// so matching does not require callers to lower-case, trim, split, or allocate
+/// string lookup keys on the request path. Prefix routes answer
+/// [`match_prefix`](Self::match_prefix) and [`match_exact`](Self::match_exact),
+/// full-path routes [`match_full`](Self::match_full); the two sets are independent.
 #[derive(Debug, Clone)]
 pub struct PathRouter<T> {
     root: PathRouteNode<T>,
+    /// Full-path routes, most specific first; equally specific ones in insertion order.
+    full: Vec<PathRoute<T>>,
+    full_index: LiteralIndexNode,
     len: usize,
+}
+
+/// Full-path routes grouped by their leading literal segments, so a lookup only
+/// tries the routes whose literal start the path can match.
+#[derive(Debug, Clone, Default)]
+struct LiteralIndexNode {
+    /// Positions of the routes whose leading literal segments end here, ascending.
+    routes: Vec<usize>,
+    /// Sorted by key.
+    children: Vec<LiteralIndexEdge>,
+}
+
+#[derive(Debug, Clone)]
+struct LiteralIndexEdge {
+    /// The literal's bytes, lower-cased when `opts` ignores ASCII case.
+    key: Box<[u8]>,
+    elems: SmallVec<[Element; 2]>,
+    opts: PathMatchOptions,
+    child: LiteralIndexNode,
+}
+
+/// Below this many children a scan beats the two key probes.
+const LITERAL_INDEX_SCAN_LIMIT: usize = 8;
+
+/// Up to this many full-path routes trying each in order beats walking the index.
+const FULL_ROUTE_SCAN_LIMIT: usize = 4;
+const _: () = assert!(
+    FULL_ROUTE_SCAN_LIMIT == 4,
+    "match_full spells the scan positions out"
+);
+
+/// Leading literal segments indexed per route, which bounds how deep a walk recurses.
+const LITERAL_INDEX_DEPTH: usize = 16;
+
+impl LiteralIndexNode {
+    /// Make room for a route inserted at `position`.
+    fn shift_from(&mut self, position: usize) {
+        for route in &mut self.routes {
+            if *route >= position {
+                *route += 1;
+            }
+        }
+        for edge in &mut self.children {
+            edge.child.shift_from(position);
+        }
+    }
+
+    fn insert(&mut self, pattern: &PathPattern, position: usize) {
+        let mut node = self;
+        for segment in pattern.segments.iter().take(LITERAL_INDEX_DEPTH) {
+            let PatternSegment::Normal {
+                elems,
+                ambiguity: 0,
+            } = segment
+            else {
+                break;
+            };
+            // Partial matching is not positional per segment.
+            if pattern.opts.partial {
+                break;
+            }
+            let mut key = Vec::new();
+            for element in elems {
+                if let ElementKind::Literal(literal) = &element.kind {
+                    key.extend_from_slice(literal);
+                }
+            }
+            if pattern.opts.ignore_ascii_case {
+                key.make_ascii_lowercase();
+            }
+            let start = node
+                .children
+                .partition_point(|edge| edge.key.as_ref() < key.as_slice());
+            let found = node.children[start..]
+                .iter()
+                .take_while(|edge| edge.key.as_ref() == key.as_slice())
+                .position(|edge| edge.opts == pattern.opts);
+            let index = if let Some(offset) = found {
+                start + offset
+            } else {
+                node.children.insert(
+                    start,
+                    LiteralIndexEdge {
+                        key: key.into_boxed_slice(),
+                        elems: elems.clone(),
+                        opts: pattern.opts,
+                        child: Self::default(),
+                    },
+                );
+                start
+            };
+            node = &mut node.children[index].child;
+        }
+        let slot = node.routes.partition_point(|route| *route < position);
+        node.routes.insert(slot, position);
+    }
+
+    /// Collect the position lists of every route whose leading literal segments match.
+    fn collect<'a>(
+        &'a self,
+        mut segments: PathSegments<'_>,
+        found: &mut SmallVec<[&'a [usize]; 8]>,
+    ) {
+        if !self.routes.is_empty() {
+            found.push(&self.routes);
+        }
+        if self.children.is_empty() {
+            return;
+        }
+        let Some(segment) = segments.next() else {
+            return;
+        };
+        let segment = segment.as_encoded_str();
+        let bytes = segment.as_ref().as_bytes();
+        // An escaped byte is compared decoded, which no key spells.
+        if self.children.len() <= LITERAL_INDEX_SCAN_LIMIT || bytes.contains(&b'%') {
+            for edge in &self.children {
+                if match_segment(&edge.elems, 0, bytes, edge.opts, &mut Sink::Ignore) {
+                    edge.child.collect(segments.clone(), found);
+                }
+            }
+            return;
+        }
+        // Without escapes a literal matches exactly when its key spells the segment.
+        for edge in self.keyed(bytes) {
+            edge.child.collect(segments.clone(), found);
+        }
+        if bytes.iter().any(u8::is_ascii_uppercase) {
+            let folded: SmallVec<[u8; 64]> = bytes.iter().map(u8::to_ascii_lowercase).collect();
+            for edge in self.keyed(&folded) {
+                if edge.opts.ignore_ascii_case {
+                    edge.child.collect(segments.clone(), found);
+                }
+            }
+        }
+    }
+
+    fn keyed<'a, 'k>(
+        &'a self,
+        key: &'k [u8],
+    ) -> impl Iterator<Item = &'a LiteralIndexEdge> + use<'a, 'k> {
+        let start = self
+            .children
+            .partition_point(|edge| edge.key.as_ref() < key);
+        self.children[start..]
+            .iter()
+            .take_while(move |edge| edge.key.as_ref() == key)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -500,6 +655,8 @@ impl<T> PathRouter<T> {
     pub fn new() -> Self {
         Self {
             root: PathRouteNode::default(),
+            full: Vec::new(),
+            full_index: LiteralIndexNode::default(),
             len: 0,
         }
     }
@@ -598,16 +755,50 @@ impl<T> PathRouter<T> {
     /// Match `path` against the most specific registered prefix.
     #[must_use]
     pub fn match_prefix<'a, 'p>(&'a self, path: PathRef<'p>) -> Option<PathRouteMatch<'a, 'p, T>> {
+        self.match_prefix_within(path, usize::MAX)
+    }
+
+    /// Match `path` against the most specific registered prefix that covers at
+    /// most its first `max_segments` segments.
+    #[must_use]
+    pub fn match_prefix_within<'a, 'p>(
+        &'a self,
+        path: PathRef<'p>,
+        max_segments: usize,
+    ) -> Option<PathRouteMatch<'a, 'p, T>> {
         let segments: SmallVec<[EncodedSegment<'p>; 8]> = path
             .segments()
             .map(|segment| segment.as_encoded_str())
             .collect();
-        let segments = prefix_content_segments(&segments);
+        let content = prefix_content_segments(&segments);
+        let segments = &content[..content.len().min(max_segments)];
         let matched = self.root.match_prefix(segments, 0)?;
-        let captures = if matched.route.has_captures {
+        let captures = if !matched.route.has_captures {
+            PathCaptures::empty(&matched.route.pattern.names)
+        } else if segments.len() == content.len() {
             matched.route.pattern.captures(path)?
         } else {
-            PathCaptures::empty(&matched.route.pattern.names)
+            // Captures come from the segments this lookup may cover, not from the whole path.
+            let mut covered = String::new();
+            for segment in segments {
+                covered.push('/');
+                covered.push_str(segment.as_ref());
+            }
+            let captures = matched
+                .route
+                .pattern
+                .captures(PathRef::from_raw_str(&covered))?;
+            PathCaptures {
+                names: captures.names,
+                bindings: captures
+                    .bindings
+                    .into_iter()
+                    .map(|binding| Binding {
+                        value: Cow::Owned(binding.value.into_owned()),
+                        ..binding
+                    })
+                    .collect(),
+            }
         };
         Some(PathRouteMatch {
             value: &matched.route.value,
@@ -632,6 +823,81 @@ impl<T> PathRouter<T> {
             matched_segment_count: matched.consumed,
             captures,
         })
+    }
+
+    /// The value of the full-path route for `pattern`, inserted from `make` when
+    /// no equal pattern is registered yet.
+    ///
+    /// Literal segments rank above dynamic ones and those above a catch-all,
+    /// compared segment by segment from the start of the pattern. A pattern
+    /// compiled as a prefix still has to cover the complete path here.
+    pub fn get_or_insert_full_with(
+        &mut self,
+        pattern: PathPattern,
+        make: impl FnOnce() -> T,
+    ) -> &mut T {
+        if let Some(position) = self.full.iter().position(|route| route.pattern == pattern) {
+            return &mut self.full[position].value;
+        }
+        // Made first: a panic in `make` must leave the index and the routes in step.
+        let value = make();
+        let specificity = path_router_specificity(&pattern).into_boxed_slice();
+        let position = self
+            .full
+            .partition_point(|route| route.specificity.as_ref() >= specificity.as_ref());
+        self.full_index.shift_from(position);
+        self.full_index.insert(&pattern, position);
+        self.full.insert(
+            position,
+            PathRoute {
+                has_captures: !pattern.capture_free,
+                pattern,
+                specificity,
+                value,
+            },
+        );
+        self.len += 1;
+        &mut self.full[position].value
+    }
+
+    /// Match `path` against the most specific full-path route its pattern
+    /// matches; equally specific routes are tried in insertion order.
+    #[must_use]
+    pub fn match_full<'a, 'p>(&'a self, path: PathRef<'p>) -> Option<PathRouteMatch<'a, 'p, T>> {
+        let every;
+        let mut lists: SmallVec<[&[usize]; 8]> = SmallVec::new();
+        if self.full.len() <= FULL_ROUTE_SCAN_LIMIT {
+            every = [0, 1, 2, 3];
+            lists.push(&every[..self.full.len()]);
+        } else {
+            self.full_index.collect(path.segments(), &mut lists);
+        }
+        // Each list is ascending; the smallest head across them is the next route in order.
+        loop {
+            let next = lists
+                .iter()
+                .enumerate()
+                .filter_map(|(list, positions)| Some((*positions.first()?, list)))
+                .min()?;
+            let (position, list) = next;
+            lists[list] = &lists[list][1..];
+            let route = &self.full[position];
+            let Some(captures) = route.pattern.captures_exact(path) else {
+                continue;
+            };
+            // The root slash and a trailing one end in a segment without content.
+            let mut segments = 0;
+            let mut trailing = false;
+            for segment in path.segments() {
+                segments += 1;
+                trailing = segment.is_empty();
+            }
+            return Some(PathRouteMatch {
+                value: &route.value,
+                matched_segment_count: segments - usize::from(trailing),
+                captures,
+            });
+        }
     }
 }
 
@@ -1186,6 +1452,13 @@ impl PathPattern {
         pat_iter.next().is_none() && self.trailing.accepts(trailing)
     }
 
+    /// Whether this pattern matches a leading run of the path's segments
+    /// instead of the complete path.
+    #[must_use]
+    pub fn is_prefix(&self) -> bool {
+        self.prefix
+    }
+
     /// Match and return captured values, or `None` when `path` doesn't
     /// match. Uses inline storage for the common small number of bindings.
     ///
@@ -1210,6 +1483,34 @@ impl PathPattern {
         path: PathRef<'p>,
         prefix: bool,
     ) -> Option<PathCaptures<'_, 'p>> {
+        // A capture-free pattern binds nothing, so the allocation-free match decides it.
+        if self.capture_free && !self.prefix && !prefix {
+            return self
+                .is_match_fast(path)
+                .then(|| PathCaptures::empty(&self.names));
+        }
+        // Leading literal segments match positionally, so a miss on one settles
+        // the pattern before the path is split and collected.
+        let mut leading = path.segments();
+        for segment in &self.segments {
+            let PatternSegment::Normal {
+                elems,
+                ambiguity: 0,
+            } = segment
+            else {
+                break;
+            };
+            let candidate = leading.next()?.as_encoded_str();
+            if !match_segment(
+                elems,
+                0,
+                candidate.as_ref().as_bytes(),
+                self.opts,
+                &mut Sink::Ignore,
+            ) {
+                return None;
+            }
+        }
         // Inline the segment list: most paths have a handful of segments, so
         // this keeps the capturing path off the allocator in the common case.
         let all: SmallVec<[EncodedSegment<'p>; 8]> =
@@ -1972,6 +2273,8 @@ fn decoded_owned<'p>(bytes: &[u8]) -> Cow<'p, str> {
 
 #[cfg(test)]
 mod path_router_candidate_tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     use super::*;
 
     fn test_route(pattern: &str, value: &'static str) -> PathRoute<&'static str> {
@@ -2027,5 +2330,157 @@ mod path_router_candidate_tests {
         .unwrap();
 
         assert_eq!(best.route.value, "literal");
+    }
+
+    #[test]
+    fn specificity_reflects_segment_kinds() {
+        let kinds = |pattern: &str| {
+            path_router_specificity(&PathPattern::new(pattern))
+                .into_iter()
+                .map(|rank| rank.kind)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(kinds("/a/b/c"), [2, 2, 2]);
+        assert_eq!(kinds("/users/{id}"), [2, 1]);
+        assert_eq!(kinds("/files/{}.json"), [2, 1]);
+        assert_eq!(kinds("/assets/{*path}"), [2, 0]);
+        // An invalid catch-all body is a literal to the matcher, so it ranks as one.
+        assert_eq!(kinds("/api/{*bad name}"), [2, 2]);
+    }
+
+    #[test]
+    fn specificity_breaks_dynamic_ties_with_literal_weight() {
+        let rank = |pattern: &str| path_router_specificity(&PathPattern::new(pattern));
+        assert!(rank("/files/{name}.json") > rank("/files/{name}"));
+        assert!(rank("/files/{}.json") > rank("/files/{name}"));
+    }
+
+    #[test]
+    fn full_routes_cover_the_whole_path_and_survive_a_failed_insert() {
+        let mut router = PathRouter::new();
+        for (id, pattern) in ["/a/{x}", "/b", "/c", "/d", "/e"].into_iter().enumerate() {
+            _ = router.get_or_insert_full_with(PathPattern::new(pattern), || id);
+        }
+        // A prefix pattern covers the complete path here, so every segment counts.
+        _ = router.get_or_insert_full_with(PathPattern::new_prefix("/api"), || 9);
+        let path = |text| PathRef::from_raw_str(text);
+        assert_eq!(
+            router
+                .match_full(path("/api"))
+                .unwrap()
+                .matched_segment_count(),
+            1
+        );
+        assert!(router.match_full(path("/api/users/42")).is_none());
+
+        // The value is made before anything is inserted.
+        let failed = catch_unwind(AssertUnwindSafe(|| {
+            _ = router.get_or_insert_full_with(PathPattern::new("/a/b/c"), || panic!("no value"));
+        }));
+        assert!(failed.is_err());
+        assert_eq!(router.len(), 6);
+        assert_eq!(*router.match_full(path("/a/1")).unwrap().value(), 0);
+        assert_eq!(*router.match_full(path("/e")).unwrap().value(), 4);
+        assert!(router.match_full(path("/a/b/c")).is_none());
+
+        // Literal segments past the indexed depth still decide the match.
+        let deep = "/s".repeat(LITERAL_INDEX_DEPTH + 3);
+        _ = router.get_or_insert_full_with(PathPattern::new(deep.as_str()), || 7);
+        assert_eq!(*router.match_full(path(&deep)).unwrap().value(), 7);
+        assert!(router.match_full(path(&deep[..deep.len() - 2])).is_none());
+    }
+
+    #[test]
+    fn full_routes_match_like_a_most_specific_first_scan() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        let pattern_segments = [
+            "a", "b", "A", "ab", "api", "v1", "users", "%61", "a%2Fb", "", "{x}", "{x}?", "{}",
+            "{}?", "{*}", "{*rest}", "{y}.json", "a{x}",
+        ];
+        let path_segments = [
+            "a", "b", "A", "ab", "AB", "api", "API", "v1", "users", "%61", "%41", "a%2fb", "a%2Fb",
+            "%zz", "", "c", "x.json", "aa",
+        ];
+        let bound = |captures: &PathCaptures<'_, '_>| -> Vec<(usize, usize, String, bool)> {
+            captures
+                .bindings
+                .iter()
+                .map(|binding| {
+                    (
+                        binding.name_start,
+                        binding.name_len,
+                        binding.value.as_ref().to_owned(),
+                        binding.is_glob,
+                    )
+                })
+                .collect()
+        };
+        let mut hits = 0usize;
+        for _ in 0..1500 {
+            let mut router = PathRouter::new();
+            // The scan this router must agree with: most specific first, then insertion order.
+            let mut scan: Vec<(Vec<PathRouterSegmentRank>, PathPattern, usize)> = Vec::new();
+            // Wide tables take the key probes, narrow ones the child scan.
+            let routes = if next(4) == 0 { 40 } else { 1 + next(10) };
+            for id in 0..routes {
+                let mut text = String::new();
+                for _ in 0..next(5) {
+                    text.push('/');
+                    text.push_str(pattern_segments[next(pattern_segments.len())]);
+                }
+                if next(5) == 0 {
+                    text.push('/');
+                }
+                let opts = PathMatchOptions {
+                    ignore_ascii_case: next(2) == 0,
+                    percent_decode: next(2) == 0,
+                    ..PathMatchOptions::default()
+                };
+                let pattern = if next(8) == 0 {
+                    PathPattern::new_prefix_with_opts(text.as_str(), opts)
+                } else {
+                    PathPattern::new_with_opts(text.as_str(), opts)
+                };
+                let specificity = path_router_specificity(&pattern);
+                if !scan.iter().any(|(_, known, _)| *known == pattern) {
+                    let position = scan.partition_point(|(rank, _, _)| *rank >= specificity);
+                    scan.insert(position, (specificity, pattern.clone(), id));
+                }
+                _ = router.get_or_insert_full_with(pattern, || id);
+            }
+            assert_eq!(router.len(), scan.len());
+            for _ in 0..40 {
+                let mut text = String::new();
+                for _ in 0..next(6) {
+                    text.push('/');
+                    text.push_str(path_segments[next(path_segments.len())]);
+                }
+                if next(4) == 0 {
+                    text.push('/');
+                }
+                let path = PathRef::from_raw_str(&text);
+                let expected = scan.iter().find_map(|(_, pattern, id)| {
+                    let captures = pattern.captures_exact(path)?;
+                    Some((*id, bound(&captures)))
+                });
+                let content: Vec<_> = path.segments().map(|s| s.as_encoded_str()).collect();
+                let matched = router.match_full(path).map(|matched| {
+                    assert_eq!(
+                        matched.matched_segment_count(),
+                        prefix_content_segments(&content).len()
+                    );
+                    (*matched.value(), bound(matched.captures()))
+                });
+                assert_eq!(matched, expected, "path={text:?}");
+                hits += usize::from(expected.is_some());
+            }
+        }
+        assert!(hits > 5_000, "{hits}");
     }
 }

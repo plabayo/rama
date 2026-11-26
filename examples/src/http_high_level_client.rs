@@ -28,15 +28,17 @@ use rama::{
             auth::AddAuthorizationLayer,
             compression::CompressionLayer,
             decompression::DecompressionLayer,
+            error_handling::ErrorHandlerLayer,
             retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
             validate_request::ValidateRequestHeaderLayer,
         },
         server::HttpServer,
         service::client::HttpClientExt,
-        service::web::WebService,
+        service::web::Router,
         service::web::response::Json,
     },
+    layer::ArcLayer,
     net::address::SocketAddress,
     net::user::credentials::basic,
     telemetry::tracing::{
@@ -191,9 +193,11 @@ async fn run_server(addr: SocketAddress) {
                 TraceLayer::new_for_http(),
                 CompressionLayer::new(),
                 ValidateRequestHeaderLayer::auth(basic!("john", "123")),
+                ArcLayer::new(),
+                ErrorHandlerLayer::new(),
             )
                 .into_layer(
-                    WebService::default()
+                    Router::new()
                         .with_get("/", "Hello, World!")
                         .with_get(
                             "/info",

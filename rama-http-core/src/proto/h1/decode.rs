@@ -74,6 +74,8 @@ enum ChunkedState {
     Size,
     SizeLws,
     Extension,
+    ExtensionQuoted,
+    ExtensionQuotedPair,
     SizeLf,
     Body,
     BodyCr,
@@ -333,6 +335,8 @@ impl ChunkedState {
             Self::Size => Self::read_size(cx, body, chunk_size),
             Self::SizeLws => Self::read_size_lws(cx, body),
             Self::Extension => Self::read_extension(cx, body, extensions_cnt),
+            Self::ExtensionQuoted => Self::read_extension_quoted(cx, body, extensions_cnt),
+            Self::ExtensionQuotedPair => Self::read_extension_quoted_pair(cx, body, extensions_cnt),
             Self::SizeLf => Self::read_size_lf(cx, body, *chunk_size),
             Self::Body => Self::read_body(cx, body, chunk_size, chunk_buf),
             Self::BodyCr => Self::read_body_cr(cx, body),
@@ -445,17 +449,55 @@ impl ChunkedState {
                 io::ErrorKind::InvalidData,
                 "invalid chunk extension contains newline",
             ))),
-            _ => {
-                *extensions_cnt += 1;
-                if *extensions_cnt >= CHUNKED_EXTENSIONS_LIMIT {
-                    Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "chunk extensions over limit",
-                    )))
-                } else {
-                    Poll::Ready(Ok(Self::Extension))
-                }
-            } // no supported extensions
+            b'"' => Self::count_extension_byte(extensions_cnt, Self::ExtensionQuoted),
+            // no supported extensions
+            _ => Self::count_extension_byte(extensions_cnt, Self::Extension),
+        }
+    }
+    // A peer reading a quoted value to its closing quote takes a CRLF inside it as
+    // extension text, so ending the size line there would desync framing.
+    fn read_extension_quoted<R: MemRead>(
+        cx: &mut Context<'_>,
+        rdr: &mut R,
+        extensions_cnt: &mut u64,
+    ) -> Poll<Result<Self, io::Error>> {
+        match byte!(rdr, cx) {
+            b'"' => Self::count_extension_byte(extensions_cnt, Self::Extension),
+            b'\\' => Self::count_extension_byte(extensions_cnt, Self::ExtensionQuotedPair),
+            // qdtext (RFC 9110 section 5.6.4)
+            b'\t' | b' '..=b'~' | 0x80..=0xff => {
+                Self::count_extension_byte(extensions_cnt, Self::ExtensionQuoted)
+            }
+            _ => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid chunk extension: control byte in quoted string",
+            ))),
+        }
+    }
+    fn read_extension_quoted_pair<R: MemRead>(
+        cx: &mut Context<'_>,
+        rdr: &mut R,
+        extensions_cnt: &mut u64,
+    ) -> Poll<Result<Self, io::Error>> {
+        match byte!(rdr, cx) {
+            b'\t' | b' '..=b'~' | 0x80..=0xff => {
+                Self::count_extension_byte(extensions_cnt, Self::ExtensionQuoted)
+            }
+            _ => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid chunk extension: control byte in quoted pair",
+            ))),
+        }
+    }
+    fn count_extension_byte(extensions_cnt: &mut u64, next: Self) -> Poll<Result<Self, io::Error>> {
+        *extensions_cnt += 1;
+        if *extensions_cnt >= CHUNKED_EXTENSIONS_LIMIT {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "chunk extensions over limit",
+            )))
+        } else {
+            Poll::Ready(Ok(next))
         }
     }
     fn read_size_lf<R: MemRead>(
@@ -903,6 +945,17 @@ mod tests {
         read_err("1 invalid extension\r\n", InvalidInput).await;
         read_err("1 A\r\n", InvalidInput).await;
         read_err("1;no CRLF", UnexpectedEof).await;
+        // Quoted extension values may hold separators and escaped quotes
+        assert_eq!(1, read("1;a=\"b;c\"\r\n").await);
+        assert_eq!(1, read("1;a=\"b\\\"c\\\\\";d\r\n").await);
+        assert_eq!(1, read("1;a=\"\té\"\r\n").await);
+        // A line ending inside a quoted value does not end the size line
+        read_err("1;a=\"\r\nX\r\n0\r\n\r\n", InvalidData).await;
+        read_err("1;a=\"b\nc\"\r\n", InvalidData).await;
+        read_err("1;a=\"b\\\r\nc\"\r\n", InvalidData).await;
+        read_err("1;a=\"b\0c\"\r\n", InvalidData).await;
+        read_err("1;a=\"b\x7fc\"\r\n", InvalidData).await;
+        read_err("1;a=\"unterminated", UnexpectedEof).await;
         read_err("1;reject\nnewlines\r\n", InvalidData).await;
         // Overflow
         read_err("f0000000000000003\r\n", InvalidData).await;

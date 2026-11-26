@@ -1,7 +1,7 @@
 //! An example key-value store service that stores bytes data.
-//! It is meant to demonstrate the [`WebService`] and [`HttpServer`] capabilities in Rama at a high level.
+//! It is meant to demonstrate the [`Router`] and [`HttpServer`] capabilities in Rama at a high level.
 //!
-//! [`WebService`]: rama::http::service::web::WebService
+//! [`Router`]: rama::http::service::web::Router
 //! [`HttpServer`]: rama::http::server::HttpServer
 //!
 //! This example demonstrates how to use rama to create a key-value store web service.
@@ -62,17 +62,18 @@ use rama::{
     http::{
         Method, StatusCode,
         layer::{
-            compression::CompressionLayer, trace::TraceLayer,
+            compression::CompressionLayer, error_handling::ErrorHandlerLayer, trace::TraceLayer,
             validate_request::ValidateRequestHeaderLayer,
         },
         matcher::HttpMatcher,
         server::HttpServer,
         service::web::{
-            IntoEndpointServiceWithState, WebService,
+            IntoEndpointServiceWithState, Router,
             extract::{Bytes, Path, State},
             response::{IntoResponse, Json},
         },
     },
+    layer::ArcLayer,
     net::{address::SocketAddress, user::credentials::bearer},
     telemetry::tracing::{
         self,
@@ -131,9 +132,9 @@ async fn main() {
     HttpServer::default()
         .listen(
             addr,
-            (TraceLayer::new_for_http())
+            (TraceLayer::new_for_http(), ArcLayer::new(), ErrorHandlerLayer::new())
                 .into_layer(
-                    WebService::new_with_state(state.clone())
+                    Router::new_with_state(state.clone())
                         .with_get("/", Json(json!({
                                 "GET /": "show this API documentation in Json Format",
                                 "GET /keys": "list all keys for which (bytes) data is stored",
@@ -146,8 +147,8 @@ async fn main() {
                                 }
                             })))
                         .with_get("/keys", list_keys)
-                        .with_nest_service("/admin", ValidateRequestHeaderLayer::auth(bearer!("secret-token"))
-                            .into_layer(WebService::new_with_state(state.clone())
+                        .with_sub_service("/admin", ValidateRequestHeaderLayer::auth(bearer!("secret-token"))
+                            .into_layer(Router::new_with_state(state.clone())
                                 .with_delete("/keys", async |State(db): State<Db>| {
                                     db.write().await.clear();
                                 })

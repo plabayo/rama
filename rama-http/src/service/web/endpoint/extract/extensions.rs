@@ -20,7 +20,7 @@ mod tests {
         Body, Method, Request, StatusCode,
         body::util::BodyExt,
         header,
-        service::web::{WebService, extract::Text},
+        service::web::{Router, extract::Text},
     };
     use rama_core::Service;
     use rama_core::extensions::Extension;
@@ -30,13 +30,11 @@ mod tests {
 
     #[tokio::test]
     async fn owned_extensions_compose_with_text_body_extractor() {
-        let service = WebService::default().with_post(
-            "/",
-            async |extensions: Extensions, Text(body): Text| {
+        let service =
+            Router::default().with_post("/", async |extensions: Extensions, Text(body): Text| {
                 let label = extensions.get_ref::<RequestLabel>().unwrap();
                 format!("{}: {body}", label.0)
-            },
-        );
+            });
         let request = Request::builder()
             .method(Method::POST)
             .header(header::CONTENT_TYPE, "text/plain")

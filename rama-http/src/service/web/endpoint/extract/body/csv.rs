@@ -100,7 +100,7 @@ fn extract_csv_bytes(
 mod test {
     use super::*;
     use crate::StatusCode;
-    use crate::service::web::WebService;
+    use crate::service::web::Router;
     use rama_core::Service;
 
     #[tokio::test]
@@ -112,7 +112,7 @@ mod test {
             alive: Option<bool>,
         }
 
-        let service = WebService::default().with_post("/", async |Csv(body): Csv<Vec<Input>>| {
+        let service = Router::default().with_post("/", async |Csv(body): Csv<Vec<Input>>| {
             assert_eq!(body.len(), 2);
 
             assert_eq!(body[0].name, "glen");
@@ -147,7 +147,7 @@ mod test {
         }
 
         let service =
-            WebService::default().with_post("/", async |Csv(_): Csv<Vec<Input>>| StatusCode::OK);
+            Router::default().with_post("/", async |Csv(_): Csv<Vec<Input>>| StatusCode::OK);
 
         // The second is `text/plain` to the CORS safelist.
         for content_type in ["text/plain", "text/plain;,text/csv"] {
@@ -175,7 +175,7 @@ mod test {
         }
 
         let service =
-            WebService::default().with_post("/", async |Csv(_): Csv<Vec<Input>>| StatusCode::OK);
+            Router::default().with_post("/", async |Csv(_): Csv<Vec<Input>>| StatusCode::OK);
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)

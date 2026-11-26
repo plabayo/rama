@@ -12,6 +12,7 @@ use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::telemetry::tracing;
+use rama_http_types::OriginalRouterUri;
 use rama_net::uri::util::percent_encoding::percent_decode;
 use rama_utils::include_dir::Dir;
 use rama_utils::octets::kib;
@@ -481,10 +482,20 @@ impl<F> ServeDir<F> {
             self.enforce_not_acceptable,
         );
 
+        // Under a router mount the client's URI still carries the stripped prefix.
+        let effective = parts.uri.path_or_root();
+        let public_uri = parts
+            .extensions
+            .get_ref::<OriginalRouterUri>()
+            .filter(|original| {
+                // Only a URI this one is the rest of; a rewritten path stands on its own.
+                effective == "/" || original.0.path_or_root().ends_with(&*effective)
+            })
+            .map_or_else(|| parts.uri.clone(), |original| original.0.clone());
         let open_file_result = open_file::open_file(
             self.variant.clone(),
             path_to_file,
-            parts.uri.clone(),
+            public_uri,
             file_request,
             &self.base,
             open_file::PathAccess {

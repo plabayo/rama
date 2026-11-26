@@ -1,6 +1,6 @@
 use std::{
+    borrow::Cow,
     fmt,
-    net::IpAddr,
     sync::{Arc, LazyLock},
 };
 
@@ -493,22 +493,29 @@ impl TlsConnectorData {
             },
             self.server_name.as_ref(),
         );
-        let identity = self.server_name.as_ref().map(ToString::to_string);
-        if self.sni_policy != TlsClientSni::Auto {
-            self.config
-                .set_use_server_name_indication(self.sni_policy != TlsClientSni::Disabled);
+        let sni = self
+            .server_name
+            .as_ref()
+            .and_then(|name| self.sni_policy.wire_name(name));
+        // The engine compares names exactly, so a DNS name is verified without its trailing dot.
+        let verified = self.server_name.as_ref().map(|name| {
+            name.as_dns_host().map_or_else(
+                || Cow::Owned(name.to_string()),
+                |host| Cow::Borrowed(host.as_str()),
+            )
+        });
+        // Under `Auto` the engine names a DNS identity itself from the name it verifies,
+        // which leaves its own SNI switch in charge; every other name is set here.
+        let engine_names = self.sni_policy == TlsClientSni::Auto && sni.is_some();
+        if !engine_names {
+            self.config.set_use_server_name_indication(false);
         }
         let mut ssl = self
             .config
-            .into_ssl(identity.as_deref())
+            .into_ssl(verified.as_deref())
             .context("prepare boring client TLS session")?;
-        if self.sni_policy == TlsClientSni::IncludeIp
-            && identity
-                .as_deref()
-                .is_some_and(|name| name.parse::<IpAddr>().is_ok())
-        {
-            ssl.set_hostname(identity.as_deref().context("IP identity missing")?)
-                .context("set IP literal SNI")?;
+        if !engine_names && let Some(sni) = sni.as_deref() {
+            ssl.set_hostname(sni).context("set SNI")?;
         }
         ssl.set_reject_unusable_ech_config(self.ech_required);
         super::ech::bind_retry_authentication(
@@ -1551,6 +1558,48 @@ mod tests {
             second.servername(rama_boring::ssl::NameType::HOST_NAME),
             Some("one.example")
         );
+    }
+
+    #[test]
+    fn outgoing_sni_follows_the_policy_for_dotted_and_address_identities() {
+        use TlsClientSni::{Auto, Disabled, IncludeIp, Verbatim};
+        for (identity, policy, sni) in [
+            ("example.test", Auto, Some("example.test")),
+            ("example.test.", Auto, Some("example.test")),
+            ("192.0.2.1", Auto, None),
+            ("192.0.2.1.", Auto, None),
+            ("example.test.", IncludeIp, Some("example.test")),
+            ("192.0.2.1", IncludeIp, Some("192.0.2.1")),
+            ("example.test.", Verbatim, Some("example.test.")),
+            ("192.0.2.1.", Verbatim, Some("192.0.2.1.")),
+            ("example.test", Disabled, None),
+        ] {
+            let config = TlsClientConfig::new()
+                .with_server_name(Domain::from_static(identity))
+                .with_sni_policy(policy);
+            let ssl = TlsConnectorContextBuilder::try_from(&config)
+                .unwrap()
+                .build()
+                .configure()
+                .unwrap()
+                .into_ssl()
+                .unwrap();
+            assert_eq!(
+                ssl.servername(rama_boring::ssl::NameType::HOST_NAME),
+                sni,
+                "{identity} {policy:?}"
+            );
+        }
+        // The engine's own switch still turns the automatic name off.
+        let config = TlsClientConfig::new().with_server_name(Domain::from_static("example.test."));
+        let mut data = TlsConnectorContextBuilder::try_from(&config)
+            .unwrap()
+            .build()
+            .configure()
+            .unwrap();
+        data.config.set_use_server_name_indication(false);
+        let ssl = data.into_ssl().unwrap();
+        assert_eq!(ssl.servername(rama_boring::ssl::NameType::HOST_NAME), None);
     }
 
     #[test]

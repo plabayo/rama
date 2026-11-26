@@ -535,6 +535,8 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use tokio::time::sleep;
 
+    #[cfg(any(feature = "boring", feature = "socks5"))]
+    use rama_core::layer::MapInputLayer;
     #[cfg(feature = "boring")]
     use {
         crate::{
@@ -546,7 +548,7 @@ mod tests {
                 server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
             },
         },
-        rama_core::{extensions::ExtensionsRef as _, layer::MapInputLayer},
+        rama_core::extensions::ExtensionsRef as _,
         rama_http::header::CONNECTION,
     };
 
@@ -1842,6 +1844,78 @@ mod tests {
                 origin_authority(),
             ],
         );
+    }
+
+    #[cfg(feature = "socks5")]
+    #[tokio::test]
+    async fn a_stream_layer_before_the_http_stage_reaches_every_proxy_method() {
+        let socks_proxy = HostWithPort::try_from("socks.example:1080").unwrap();
+        let transport = service_fn({
+            let server = dummy_server();
+            let socks_proxy = socks_proxy.clone();
+            move |input: ConnectRequest| {
+                let server = server.clone();
+                let refused = input.authority == socks_proxy;
+                async move {
+                    if refused {
+                        Err(ConnectionError::transport(
+                            BoxError::from_static_str("proxy unavailable"),
+                            ConnectionErrorKind::Unavailable,
+                        ))
+                    } else {
+                        server.connect(input).await
+                    }
+                }
+            }
+        });
+        let dials = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let proxies = ProxyConnector::builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport.clone())
+            .without_dns_connector()
+            .with_custom_connector(MapInputLayer::new({
+                let dials = dials.clone();
+                move |input: ConnectRequest| {
+                    dials.lock().push(input.authority.clone());
+                    input
+                }
+            }))
+            .without_tls_support()
+            .with_default_http_connector::<Body>()
+            .without_connection_pool()
+            .with_socks5()
+            .with_http_forward()
+            .build();
+        let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+            .with_custom_tcp_connector(transport)
+            .without_dns_connector()
+            .with_proxy_support(proxies)
+            .without_tls_support()
+            .with_default_http_connector()
+            .without_connection_pool()
+            .build_client();
+        let request_over = |proxy: &str| {
+            let request = Request::builder()
+                .uri("http://example.com/")
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions()
+                .insert(ProxyRoute::Proxy(proxy.parse().unwrap()));
+            request
+        };
+
+        client
+            .serve(request_over("http://proxy.example:8080"))
+            .await
+            .unwrap();
+        assert_eq!(dials.lock().as_slice(), [proxy_authority()]);
+
+        // The refused dial still passed through the layer on the SOCKS5 leg.
+        client
+            .serve(request_over("socks5://socks.example:1080"))
+            .await
+            .unwrap_err();
+        assert_eq!(dials.lock().as_slice(), [proxy_authority(), socks_proxy]);
     }
 
     #[tokio::test]

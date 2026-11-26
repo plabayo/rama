@@ -23,22 +23,27 @@
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
 )]
 
-use rama::http::layer::trace::TraceLayer;
-use rama::http::service::web::WebService;
+use rama::http::layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer};
+use rama::http::service::web::Router;
 use rama::http::service::web::response::{IntoResponse, OctetStream};
 use rama::stream::io::ReaderStream;
-use rama::{Layer, http::server::HttpServer};
+use rama::{Layer, http::server::HttpServer, layer::ArcLayer};
 
 #[tokio::main]
 async fn main() {
     HttpServer::default()
         .listen(
             "127.0.0.1:12056",
-            TraceLayer::new_for_http().layer(
-                WebService::default()
-                    .with_get("/data", serve_binary_data)
-                    .with_get("/download", serve_download),
-            ),
+            (
+                TraceLayer::new_for_http(),
+                ArcLayer::new(),
+                ErrorHandlerLayer::new(),
+            )
+                .into_layer(
+                    Router::new()
+                        .with_get("/data", serve_binary_data)
+                        .with_get("/download", serve_download),
+                ),
         )
         .await
         .expect("failed to run service");

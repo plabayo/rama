@@ -12,7 +12,7 @@
 //! [`service::Matcher`]: rama_core::matcher::Matcher
 //! [`rama_http_types::Request`]: crate::Request
 //! [`service::matcher` module]: rama_core
-use crate::{Request, proto::ext::Protocol};
+use crate::{Method, Request, proto::ext::Protocol};
 use rama_core::{extensions::Extensions, matcher::IteratorMatcherExt};
 use rama_net::{
     address::{AsDomainRef, Domain},
@@ -929,6 +929,125 @@ impl<Body> HttpMatcher<Body> {
         Self::method_query().and_path(path)
     }
 
+    /// Whether the method terms alone settle a match for `method`: `None` when
+    /// another term decides.
+    pub(crate) fn method_verdict(&self, method: &Method) -> Option<bool> {
+        let verdict = match &self.kind {
+            HttpMatcherKind::Method(methods) => {
+                Some(MethodMatcher::try_from(method).is_ok_and(|method| methods.contains(method)))
+            }
+            HttpMatcherKind::All(matchers) => matchers
+                .iter()
+                .try_fold(Some(true), |all, matcher| {
+                    match matcher.method_verdict(method) {
+                        Some(false) => None,
+                        Some(true) => Some(all),
+                        None => Some(None),
+                    }
+                })
+                .unwrap_or(Some(false)),
+            HttpMatcherKind::Any(matchers) => matchers
+                .iter()
+                .try_fold(Some(false), |any, matcher| {
+                    match matcher.method_verdict(method) {
+                        Some(true) => None,
+                        Some(false) => Some(any),
+                        None => Some(None),
+                    }
+                })
+                .unwrap_or(Some(true)),
+            _ => None,
+        };
+        verdict.map(|matches| matches != self.negate)
+    }
+
+    /// The known methods the method terms do not rule out.
+    pub(crate) fn methods_not_ruled_out(&self) -> MethodMatcher {
+        MethodMatcher::ALL_KNOWN
+            .iter()
+            .filter(|method| self.method_verdict(method) != Some(false))
+            .filter_map(|method| MethodMatcher::try_from(&method).ok())
+            .fold(MethodMatcher::NONE, MethodMatcher::or_method)
+    }
+
+    fn reads_path_or_captures(&self) -> bool {
+        match &self.kind {
+            HttpMatcherKind::Path(_) | HttpMatcherKind::Uri(_) | HttpMatcherKind::Custom(_) => true,
+            HttpMatcherKind::All(matchers) | HttpMatcherKind::Any(matchers) => {
+                matchers.iter().any(Self::reads_path_or_captures)
+            }
+            _ => false,
+        }
+    }
+
+    /// Split off the path this matcher requires, when it requires exactly one:
+    /// the path pattern and what else has to match.
+    pub(crate) fn into_path_and_rest(self) -> Result<(PathPattern, Self), Self> {
+        // A prefix pattern is no route path, and a custom term may read what the
+        // path matcher captured from the matcher's own extensions.
+        let route_path = |m: &Self| match &m.kind {
+            HttpMatcherKind::Path(pattern) => !m.negate && !pattern.is_prefix(),
+            _ => false,
+        };
+        let splits = match &self.kind {
+            HttpMatcherKind::Path(_) => route_path(&self),
+            // The one path term is a route path; no other term looks at the path.
+            HttpMatcherKind::All(matchers) => {
+                !self.negate
+                    && matchers.iter().filter(|m| route_path(m)).count() == 1
+                    && matchers
+                        .iter()
+                        .all(|m| route_path(m) || !m.reads_path_or_captures())
+            }
+            _ => false,
+        };
+        if !splits {
+            return Err(self);
+        }
+        match (self.negate, self.kind) {
+            (false, HttpMatcherKind::Path(pattern)) => Ok((
+                pattern,
+                Self {
+                    kind: HttpMatcherKind::All(Vec::new()),
+                    negate: false,
+                },
+            )),
+            (false, HttpMatcherKind::All(mut matchers)) => {
+                let is_path = |m: &Self| !m.negate && matches!(m.kind, HttpMatcherKind::Path(_));
+                if matchers.iter().filter(|m| is_path(m)).count() != 1 {
+                    return Err(Self {
+                        kind: HttpMatcherKind::All(matchers),
+                        negate: false,
+                    });
+                }
+                let index = matchers.iter().position(is_path).unwrap_or_default();
+                let pattern = match matchers.remove(index) {
+                    Self {
+                        kind: HttpMatcherKind::Path(pattern),
+                        ..
+                    } => pattern,
+                    other => {
+                        matchers.insert(index, other);
+                        return Err(Self {
+                            kind: HttpMatcherKind::All(matchers),
+                            negate: false,
+                        });
+                    }
+                };
+                let rest = if matchers.len() == 1 {
+                    matchers.remove(0)
+                } else {
+                    Self {
+                        kind: HttpMatcherKind::All(matchers),
+                        negate: false,
+                    }
+                };
+                Ok((pattern, rest))
+            }
+            (negate, kind) => Err(Self { kind, negate }),
+        }
+    }
+
     /// Add a [`HttpMatcher`] to match on top of the existing set of [`HttpMatcher`] matchers.
     #[must_use]
     pub fn and(mut self, matcher: Self) -> Self {
@@ -974,15 +1093,14 @@ impl<Body> HttpMatcher<Body> {
     /// Returns `None` when the matcher imposes no method restriction
     /// (e.g. a Path, Domain, or Custom matcher).
     ///
-    /// Negation is applied uniformly: if `self` is negated the raw method set is
-    /// complemented, so `NOT GET` yields every known method except GET.
+    /// A negated matcher allows every known method its method terms do not rule
+    /// out, so `NOT GET` yields every known method except GET.
     pub fn allowed_methods(&self) -> Option<MethodMatcher> {
-        let m = self.kind.allowed_methods();
-        if self.negate {
-            m.map(|m| m.complement())
-        } else {
-            m
+        if !self.negate {
+            return self.kind.allowed_methods();
         }
+        let methods = self.methods_not_ruled_out();
+        (methods != MethodMatcher::ALL_KNOWN).then_some(methods)
     }
 }
 
@@ -1228,5 +1346,55 @@ mod test {
                 "({matcher:#?}).matches({req:#?})",
             );
         }
+    }
+
+    #[test]
+    fn method_verdict_settles_only_what_the_method_terms_decide() {
+        type M = HttpMatcher<()>;
+        let propfind = Method::from_bytes(b"PROPFIND").unwrap();
+        let header = || M::header_exists(crate::header::AUTHORIZATION);
+        let cases: [(M, &Method, Option<bool>); 12] = [
+            (M::method_get(), &Method::GET, Some(true)),
+            (M::method_get(), &Method::POST, Some(false)),
+            (M::method_get(), &propfind, Some(false)),
+            (M::method_get().negate(), &propfind, Some(true)),
+            (M::method_get().negate(), &Method::GET, Some(false)),
+            (header(), &Method::GET, None),
+            (M::method_get().and(header()), &Method::GET, None),
+            (M::method_get().and(header()), &Method::POST, Some(false)),
+            (M::method_get().or(header()), &Method::GET, Some(true)),
+            (M::method_get().or(header()), &Method::POST, None),
+            (
+                M::method_get().and(header()).negate(),
+                &Method::POST,
+                Some(true),
+            ),
+            (M::method_get().or_method_post(), &Method::POST, Some(true)),
+        ];
+        for (matcher, method, verdict) in cases {
+            assert_eq!(
+                matcher.method_verdict(method),
+                verdict,
+                "{matcher:?} {method}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_negated_matcher_allows_what_its_method_terms_leave_open() {
+        type M = HttpMatcher<()>;
+        let header = || M::header_exists(crate::header::AUTHORIZATION);
+        let all_but = |methods: MethodMatcher| Some(methods.complement());
+        let post = MethodMatcher::POST;
+        assert_eq!(M::method_post().negate().allowed_methods(), all_but(post));
+        let post_either_way = M::method_post().or(M::method_post().and(header()));
+        assert_eq!(post_either_way.negate().allowed_methods(), all_but(post));
+        // POST still passes when the header is missing.
+        assert_eq!(
+            M::method_post().and(header()).negate().allowed_methods(),
+            None
+        );
+        let only_post = M::method_post().negate().or(header()).negate();
+        assert_eq!(only_post.allowed_methods(), Some(post));
     }
 }

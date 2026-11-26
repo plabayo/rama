@@ -2,7 +2,7 @@
 
 mod service;
 #[doc(inline)]
-pub use service::{WebService, match_service};
+pub use service::match_service;
 
 mod endpoint;
 #[doc(inline)]

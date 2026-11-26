@@ -1,14 +1,22 @@
-//! This example demonstrates how to use the `WebService` to serve static files and an API.
+//! This example demonstrates how a single `Router` serves static files next to an API.
 //!
-//! The service has the following endpoints:
-//! - `GET /`: show the dummy homepage
-//! - `GET /coin`: show the coin clicker page
-//! - `POST /coin`: increment the coin counter
+//! The router combines:
+//! - routes: `GET /coin` shows the coin clicker page and `POST /coin` increments the counter;
+//! - a path-bound matcher: `GET /home` answers loopback clients only;
+//! - a nested router: `GET /api/coins` returns the counter as JSON;
+//! - a directory mount at `/` serving `test-files/examples/webservice`;
+//! - a path-less matcher: requests accepting `application/json` that nothing else
+//!   answered get a JSON 404;
+//! - a not-found service redirecting everything else to `/error.html`.
+//!
+//! Routes win over the directory mount, so `/coin` never reaches it, while a file
+//! the directory does not hold falls through to the path-less matcher and then
+//! to the not-found service.
 //!
 //! # Run the example
 //!
 //! ```sh
-//! cargo run -p rama-examples --bin http_web_service_dir_and_api --features=compression,http-full
+//! cargo run -p rama-examples --bin http_router_dir_and_api --features=compression,http-full
 //! ```
 //!
 //! # Expected output
@@ -17,11 +25,13 @@
 //!
 //! ```sh
 //! open http://127.0.0.1:12013
+//! curl -v http://127.0.0.1:12013/api/coins
+//! curl -v -H 'accept: application/json' http://127.0.0.1:12013/missing
 //! ```
 //!
-//! You should see a the homepage in your browser.
+//! You should see the homepage in your browser.
 //! You can also click on the coin to increment the counter.
-//! please also try go to the legal page and some other non-existing pages.
+//! Please also try the legal page and some other non-existing pages.
 
 // rama provides everything out of the box to build a complete web service.
 #![expect(
@@ -33,18 +43,23 @@ use rama::{
     Layer,
     extensions::Extensions,
     http::{
-        layer::{compression::CompressionLayer, trace::TraceLayer},
+        HeaderValue, StatusCode,
+        header::ACCEPT,
+        layer::{
+            compression::CompressionLayer, error_handling::ErrorHandlerLayer, trace::TraceLayer,
+        },
         matcher::HttpMatcher,
         protocols::html::{
             PreEscaped, a, body, button, footer, form, h1, h2, head, html, link, p, style, title,
         },
         server::HttpServer,
         service::web::{
-            WebService,
+            Router,
             extract::State,
-            response::{Html, IntoResponse, Redirect},
+            response::{Html, IntoResponse, Json, Redirect},
         },
     },
+    layer::ArcLayer,
     net::stream::{SocketInfo, matcher::SocketMatcher},
     telemetry::tracing::{
         self,
@@ -54,6 +69,7 @@ use rama::{
 };
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
+use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -82,23 +98,43 @@ async fn main() {
     HttpServer::default()
         .listen(
             addr,
-            (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
-                WebService::new_with_state(state)
-                    .with_not_found(Redirect::temporary("/error.html"))
-                    .with_get("/coin", coin_page)
-                    .with_post(
-                        "/coin",
-                        async |state: State<Arc<AppState>>, ext: Extensions| {
-                            state.0.counter.fetch_add(1, Ordering::AcqRel);
-                            coin_page(state, ext).await
-                        },
-                    )
-                    .with_matcher(
-                        HttpMatcher::get("/home").and_socket(SocketMatcher::loopback()),
-                        Html("Home Sweet Home!".to_owned()),
-                    )
-                    .with_dir("/", "test-files/examples/webservice"),
-            ),
+            (
+                TraceLayer::new_for_http(),
+                CompressionLayer::new(),
+                ArcLayer::new(),
+                ErrorHandlerLayer::new(),
+            )
+                .into_layer(
+                    Router::new_with_state(state)
+                        .with_not_found(Redirect::temporary("/error.html"))
+                        .with_get("/coin", coin_page)
+                        .with_post(
+                            "/coin",
+                            async |state: State<Arc<AppState>>, ext: Extensions| {
+                                state.0.counter.fetch_add(1, Ordering::AcqRel);
+                                coin_page(state, ext).await
+                            },
+                        )
+                        .with_matcher(
+                            HttpMatcher::get("/home").and_socket(SocketMatcher::loopback()),
+                            Html("Home Sweet Home!".to_owned()),
+                        )
+                        .with_sub_router_make_fn("/api", |api| {
+                            api.with_get("/coins", async |State(state): State<Arc<AppState>>| {
+                                Json(json!({
+                                    "coins": state.counter.load(Ordering::Acquire),
+                                }))
+                            })
+                        })
+                        .with_dir("/", "test-files/examples/webservice")
+                        .with_matcher(
+                            HttpMatcher::header_contains(
+                                ACCEPT,
+                                HeaderValue::from_static("application/json"),
+                            ),
+                            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))),
+                        ),
+                ),
         )
         .await
         .unwrap();

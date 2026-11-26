@@ -79,13 +79,13 @@ impl FromRequestBody for Text {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::service::web::WebService;
+    use crate::service::web::Router;
     use crate::{Method, Request, StatusCode, header};
     use rama_core::Service;
 
     #[tokio::test]
     async fn test_text() {
-        let service = WebService::default().with_post("/", async |Text(body): Text| {
+        let service = Router::default().with_post("/", async |Text(body): Text| {
             assert_eq!(body, "test");
         });
 
@@ -100,7 +100,7 @@ mod test {
 
     #[tokio::test]
     async fn test_text_missing_content_type() {
-        let service = WebService::default().with_post("/", async |Text(_): Text| StatusCode::OK);
+        let service = Router::default().with_post("/", async |Text(_): Text| StatusCode::OK);
 
         let req = Request::builder()
             .method(Method::POST)
@@ -112,7 +112,7 @@ mod test {
 
     #[tokio::test]
     async fn test_text_incorrect_content_type() {
-        let service = WebService::default().with_post("/", async |Text(_): Text| StatusCode::OK);
+        let service = Router::default().with_post("/", async |Text(_): Text| StatusCode::OK);
 
         let req = Request::builder()
             .method(Method::POST)
@@ -125,7 +125,7 @@ mod test {
 
     #[tokio::test]
     async fn test_text_invalid_utf8() {
-        let service = WebService::default().with_post("/", async |Text(_): Text| StatusCode::OK);
+        let service = Router::default().with_post("/", async |Text(_): Text| StatusCode::OK);
 
         let req = Request::builder()
             .method(Method::POST)

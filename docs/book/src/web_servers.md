@@ -8,8 +8,7 @@ If your service surface is RPC-oriented rather than REST-oriented, also see the 
 
 A Rama web service is a regular `Service` in the same stack as the transport and TLS layers below it:
 
-- Routing: [`Router`](https://ramaproxy.org/docs/rama/http/service/web/struct.Router.html),
-  [`WebService`](https://ramaproxy.org/docs/rama/http/service/web/struct.WebService.html)
+- Routing: [`Router`](https://ramaproxy.org/docs/rama/http/service/web/struct.Router.html)
   and the `match_service!` macro map requests to endpoints
 - Extraction: endpoint functions take typed extractors (path, query, headers, body, ...)
   and return anything that implements `IntoResponse`
@@ -82,7 +81,7 @@ accepted.
 For runnable examples see:
 
 - [/examples/src/http_form.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_form.rs)
-- [/examples/src/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_web_service_dir_and_api.rs)
+- [/examples/src/http_router_dir_and_api.rs](https://github.com/plabayo/rama/blob/main/examples/src/http_router_dir_and_api.rs)
 
 [web components]: https://developer.mozilla.org/en-US/docs/Web/API/Web_components
 
@@ -154,7 +153,7 @@ See the [SSE chapter](./http/sse.md).
 ### Production-Ready Examples
 - [/examples/src/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_k8s_health.rs): A production-ready Kubernetes health service
 - [/examples/src/http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_key_value_store.rs): A key-value store API
-- [/examples/src/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_web_service_dir_and_api.rs): A full web application with API
+- [/examples/src/http_router_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_router_dir_and_api.rs): A full web application with API
 
 ### ACME to get server certificates
 The following examples show how you can integrate ACME into you webservices (ACME support in Rama is currently still under heavy development)

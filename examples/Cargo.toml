@@ -260,8 +260,8 @@ path = "src/http_anti_bot_zip_bomb.rs"
 required-features = ["http-full"]
 
 [[bin]]
-name = "http_web_service_dir_and_api"
-path = "src/http_web_service_dir_and_api.rs"
+name = "http_router_dir_and_api"
+path = "src/http_router_dir_and_api.rs"
 required-features = ["http-full"]
 
 [[bin]]

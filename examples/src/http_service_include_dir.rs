@@ -26,10 +26,11 @@ use rama::{
     Layer,
     graceful::WeakScope,
     http::{
+        layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
-        service::{fs::DirectoryServeMode, web::WebService},
+        service::{fs::DirectoryServeMode, web::Router},
     },
-    layer::TraceErrLayer,
+    layer::{ArcLayer, TraceErrLayer},
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -57,10 +58,12 @@ async fn main() {
         .expect("bind TCP Listener");
 
     let http_fs_server =
-        HttpServer::default().service(WebService::default().with_dir_embed_with_serve_mode(
-            "",
-            ASSETS,
-            DirectoryServeMode::AppendIndexHtml,
+        HttpServer::default().service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
+            Router::new().with_dir_embed_with_serve_mode(
+                "",
+                ASSETS,
+                DirectoryServeMode::AppendIndexHtml,
+            ),
         ));
 
     // Serve the HTTP server over TCP,

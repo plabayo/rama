@@ -64,12 +64,14 @@ use rama::{
     http::{
         client::EasyHttpWebClient,
         headers::ContentType,
-        layer::{compression::CompressionLayer, trace::TraceLayer},
+        layer::{
+            compression::CompressionLayer, error_handling::ErrorHandlerLayer, trace::TraceLayer,
+        },
         server::HttpServer,
-        service::web::WebService,
+        service::web::Router,
         service::web::response::{Headers, IntoResponse},
     },
-    layer::ConsumeErrLayer,
+    layer::{ArcLayer, ConsumeErrLayer},
     net::address::Domain,
     service::service_fn,
     tcp::server::TcpListener,
@@ -194,15 +196,19 @@ async fn main() {
         HttpServer::auto(weak_scope)
             .listen(
                 ADDR,
-                (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
-                    WebService::default().with_get(&path, move || {
+                (
+                    TraceLayer::new_for_http(),
+                    CompressionLayer::new(),
+                    ArcLayer::new(),
+                    ErrorHandlerLayer::new(),
+                )
+                    .into_layer(Router::new().with_get(&path, move || {
                         let state = state.clone();
                         std::future::ready((
                             Headers::single(ContentType::octet_stream()),
                             state.key_authorization.as_str().to_owned(),
                         ))
-                    }),
-                ),
+                    })),
             )
             .await
             .expect("http server");

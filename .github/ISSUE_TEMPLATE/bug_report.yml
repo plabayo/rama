@@ -8,7 +8,7 @@ body:
         Thanks for taking the time to file a bug report!
 
         If you are not sure whether this is a bug, feel free to ask first on
-        [Discord](https://discord.gg/29EetaSYCD).
+        [Discord](https://discord.ramaproxy.org).
   - type: textarea
     id: what-happened
     attributes:

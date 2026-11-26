@@ -1,7 +1,7 @@
 //! This example demonstrates how to create a web router,
 //! without the need of service boxing, as is the case with
-//! the use of `WebService` as demonstrated in
-//! the `http_web_service_dir_and_api` example.
+//! the use of `Router` as demonstrated in
+//! the `http_router_dir_and_api` example.
 //!
 //! ```sh
 //! cargo run -p rama-examples --bin http_service_match --features=http-full
