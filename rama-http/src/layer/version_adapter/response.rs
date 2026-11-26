@@ -9,7 +9,7 @@ use rama_utils::macros::define_inner_service_accessors;
 
 use super::request::DowngradeWebSocketKey;
 use crate::layer::remove_header::remove_illegal_h2_response_headers;
-use crate::utils::{is_websocket_protocol, request_connect_protocol};
+use crate::utils::{is_websocket_protocol, request_adaptable_upgrade};
 
 #[derive(Clone, Debug, ExtensionsRef)]
 /// [`Service`] which will adapt the response version to the original request version.
@@ -89,8 +89,8 @@ pub struct ResponseVersionAdaptCtx {
     ///  Original version the request had
     pub version: Version,
     /// The Extended CONNECT / `Upgrade` application protocol the request asked for
-    /// (e.g. `websocket`), if any. Captured from the request's `:protocol` extension
-    /// (HTTP/2/3 CONNECT) or `Upgrade` header (HTTP/1).
+    /// (e.g. `websocket`, `connect-udp`), if it can change HTTP version. Captured from the
+    /// request's `:protocol` extension (HTTP/2/3 CONNECT) or `Upgrade` header (HTTP/1 GET).
     pub connect_protocol: Option<Protocol>,
     /// The request's `Sec-WebSocket-Key`, needed to recompute `Sec-WebSocket-Accept`
     /// when reconstructing an HTTP/1 WebSocket handshake response.
@@ -102,7 +102,7 @@ impl ResponseVersionAdaptCtx {
     pub fn from_request<Body>(request: &Request<Body>) -> Self {
         Self {
             version: request.version(),
-            connect_protocol: request_connect_protocol(request),
+            connect_protocol: request_adaptable_upgrade(request),
             websocket_key: request.headers().typed_get::<SecWebSocketKey>(),
         }
     }
@@ -154,44 +154,50 @@ pub fn adapt_response_version<Body>(
 
 /// Translate an HTTP/1.x response up to HTTP/2 or HTTP/3.
 ///
-/// For a WebSocket handshake (known from the captured request context) the HTTP/1
-/// `101 Switching Protocols` accept becomes the `200 OK` form (RFC 8441 §5.1).
-/// An HTTP/1 `2xx` WebSocket rejection is an error because forwarding it would
-/// falsely accept the downstream Extended CONNECT handshake.
+/// For an upgrade handshake (known from the captured request context) the HTTP/1
+/// `101 Switching Protocols` accept becomes the `200 OK` form (RFC 8441 §5.1). For
+/// WebSocket the accept must also answer the request's key. An HTTP/1 `2xx` means the
+/// upgrade was refused, which is an error because forwarding it would falsely accept
+/// the downstream Extended CONNECT handshake.
 /// Otherwise removes the connection-specific headers that are *illegal* in HTTP/2 and
 /// HTTP/3 (RFC 9113 §8.2.2 / RFC 9114 §4.2) so an ordinary response can be
 /// (re)serialized over the binary-framed protocol.
 ///
-/// A `101` whose captured request protocol is NOT websocket (h2c, WebTransport, …) has
-/// no supported modern translation and is rejected with an error rather than silently
-/// mishandled. (The actual byte-stream bridging of an upgrade across versions is always
-/// the upgrade/relay layer's job — the adapter only translates the handshake status.)
+/// A `101` without a captured translatable protocol (e.g. `h2c`) has no modern
+/// translation and is rejected with an error rather than silently mishandled. (The actual
+/// byte-stream bridging of an upgrade across versions is always the upgrade/relay layer's
+/// job — the adapter only translates the handshake status.)
 fn upgrade_response_to_h2_or_h3<Body>(
     response: &mut Response<Body>,
     request_ctx: &ResponseVersionAdaptCtx,
 ) -> Result<(), BoxError> {
-    if request_ctx.is_websocket() && response.status().is_success() {
-        // RFC 6455 requires 101 for HTTP/1 WebSocket acceptance, while any 2xx
-        // accepts Extended CONNECT. Preserve rejection across that transition.
+    if let Some(protocol) = request_ctx.connect_protocol.as_ref()
+        && response.status().is_success()
+    {
+        // An HTTP/1 upgrade is accepted only by a 101, while any 2xx accepts
+        // Extended CONNECT. Preserve rejection across that transition.
         return Err(BoxError::from_static_str(
-            "cannot translate HTTP/1 WebSocket rejection to HTTP/2+: a 2xx response would accept Extended CONNECT",
+            "cannot translate HTTP/1 upgrade rejection to HTTP/2+: a 2xx response would accept Extended CONNECT",
         )
-        .context_field("status", response.status()));
+        .context_field("status", response.status())
+        .context_str_field("protocol", protocol.as_str()));
     }
 
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
-        if request_ctx.is_websocket() {
-            // RFC 6455 §4.1: a client fails the handshake unless the response upgrades to
-            // websocket over a `Connection: Upgrade`, and its accept answers the key. These
-            // fields are gone once translated, so they are checked here, as a client would.
+        if let Some(protocol) = request_ctx.connect_protocol.as_ref() {
+            // A client fails the handshake unless the response upgrades to the requested
+            // protocol over a `Connection: Upgrade` (RFC 6455 §4.1, RFC 9298 §3.3), and for
+            // WebSocket its accept answers the key. These fields are gone once translated,
+            // so they are checked here, as a client would.
             if !response
                 .headers()
                 .typed_get::<Upgrade>()
-                .is_some_and(|upgrade| upgrade.is_websocket())
+                .is_some_and(|upgrade| upgrade.is_protocol(protocol))
             {
                 return Err(BoxError::from_static_str(
-                    "the HTTP/1 WebSocket accept does not upgrade to websocket",
-                ));
+                    "the HTTP/1 upgrade accept does not upgrade to the requested protocol",
+                )
+                .context_str_field("protocol", protocol.as_str()));
             }
             if !response
                 .headers()
@@ -199,10 +205,13 @@ fn upgrade_response_to_h2_or_h3<Body>(
                 .is_some_and(|connection| connection.contains_upgrade())
             {
                 return Err(BoxError::from_static_str(
-                    "the HTTP/1 WebSocket accept does not name Upgrade in Connection",
-                ));
+                    "the HTTP/1 upgrade accept does not name Upgrade in Connection",
+                )
+                .context_str_field("protocol", protocol.as_str()));
             }
-            if let Some(key) = request_ctx.websocket_key.clone() {
+            if request_ctx.is_websocket()
+                && let Some(key) = request_ctx.websocket_key.clone()
+            {
                 let expected = SecWebSocketAccept::try_from(key)
                     .context("derive the expected Sec-WebSocket-Accept")?;
                 if response.headers().typed_get::<SecWebSocketAccept>() != Some(expected) {
@@ -211,7 +220,10 @@ fn upgrade_response_to_h2_or_h3<Body>(
                     ));
                 }
             }
-            tracing::trace!("translating h1 websocket 101 response into h2/h3 200 OK");
+            tracing::trace!(
+                protocol = protocol.as_str(),
+                "translating h1 101 upgrade response into h2/h3 200 OK"
+            );
             *response.status_mut() = StatusCode::OK;
             // Successful CONNECT responses switch to tunnel framing. A
             // Content-Length on the handshake never describes that tunnel.
@@ -221,14 +233,7 @@ fn upgrade_response_to_h2_or_h3<Body>(
             response.headers_mut().remove(SEC_WEBSOCKET_ACCEPT);
         } else {
             return Err(BoxError::from_static_str(
-                "cannot translate a `101 Switching Protocols` response to HTTP/2+: only websocket is supported",
-            )
-            .context_str_field(
-                "protocol",
-                request_ctx
-                    .connect_protocol
-                    .as_ref()
-                    .map_or("<unknown upgrade>", Protocol::as_str),
+                "cannot translate a `101 Switching Protocols` response to HTTP/2+: the request has no Extended CONNECT protocol",
             ));
         }
     }
@@ -242,11 +247,11 @@ fn upgrade_response_to_h2_or_h3<Body>(
 
 /// Translate an HTTP/2 or HTTP/3 response down to HTTP/1.x.
 ///
-/// For a WebSocket handshake (known from the captured request context) the Extended
-/// CONNECT successful `2xx` becomes the HTTP/1 `101 Switching Protocols` accept, re-deriving
-/// `Sec-WebSocket-Accept` from the request's `Sec-WebSocket-Key`. Ordinary responses
-/// (no captured Extended CONNECT protocol) carry no connection-specific headers and
-/// need only the version swap. A non-WebSocket Extended CONNECT is rejected.
+/// For an upgrade handshake (known from the captured request context) the Extended
+/// CONNECT successful `2xx` becomes the HTTP/1 `101 Switching Protocols` accept. For
+/// WebSocket, `Sec-WebSocket-Accept` is re-derived from the request's `Sec-WebSocket-Key`.
+/// Ordinary responses (no captured Extended CONNECT protocol) carry no connection-specific
+/// headers and need only the version swap.
 fn downgrade_response_to_h1<Body>(
     response: &mut Response<Body>,
     request_ctx: &ResponseVersionAdaptCtx,
@@ -255,33 +260,31 @@ fn downgrade_response_to_h1<Body>(
         // Not an Extended CONNECT request: an ordinary response needs only the version swap.
         return Ok(());
     };
-    if !is_websocket_protocol(protocol) {
-        return Err(BoxError::from_static_str(
-            "cannot translate an Extended CONNECT response to HTTP/1: only websocket is supported",
-        )
-        .context_str_field("protocol", protocol.as_str()));
-    }
-
-    // A WebSocket success (`2xx`) becomes the HTTP/1 `101` accept; a non-success
+    // A success (`2xx`) becomes the HTTP/1 `101` accept; a non-success
     // response (handshake rejected upstream) passes through apart from the version.
     if response.status().is_success() {
-        tracing::trace!("translating h2/h3 websocket 2xx response into h1 101 Switching Protocols");
+        tracing::trace!(
+            protocol = protocol.as_str(),
+            "translating h2/h3 extended CONNECT 2xx response into h1 101 Switching Protocols"
+        );
         *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
 
         let headers = response.headers_mut();
         // A 1xx response cannot carry a payload. H2/H3 CONNECT peers may send
         // a misleading Content-Length which the tunnel path correctly ignores.
         headers.remove(CONTENT_LENGTH);
-        headers.typed_insert(Upgrade::websocket());
+        headers.typed_insert(Upgrade::from_protocol(protocol.clone()));
         headers.typed_insert(Connection::upgrade());
-        if let Some(key) = request_ctx.websocket_key.clone() {
-            let accept = SecWebSocketAccept::try_from(key)
-                .context("derive Sec-WebSocket-Accept for h1 websocket handshake response")?;
-            headers.typed_insert(accept);
-        } else {
-            tracing::debug!(
-                "no Sec-WebSocket-Key captured; emitting h1 websocket 101 without Sec-WebSocket-Accept",
-            );
+        if request_ctx.is_websocket() {
+            if let Some(key) = request_ctx.websocket_key.clone() {
+                let accept = SecWebSocketAccept::try_from(key)
+                    .context("derive Sec-WebSocket-Accept for h1 websocket handshake response")?;
+                headers.typed_insert(accept);
+            } else {
+                tracing::debug!(
+                    "no Sec-WebSocket-Key captured; emitting h1 websocket 101 without Sec-WebSocket-Accept",
+                );
+            }
         }
     }
     Ok(())
@@ -308,26 +311,40 @@ mod tests {
     }
 
     fn websocket_ctx(version: Version) -> ResponseVersionAdaptCtx {
-        let req = Request::builder()
+        let builder = Request::builder()
             .version(version)
             .uri("https://example.com/chat")
-            .header(UPGRADE, "websocket")
-            .header(CONNECTION, "Upgrade")
-            .header(SEC_WEBSOCKET_KEY, SAMPLE_KEY)
-            .body(())
-            .unwrap();
+            .header(SEC_WEBSOCKET_KEY, SAMPLE_KEY);
+        let req = if version <= Version::HTTP_11 {
+            builder
+                .header(UPGRADE, "websocket")
+                .header(CONNECTION, "Upgrade")
+                .body(())
+                .unwrap()
+        } else {
+            let req = builder.method(Method::CONNECT).body(()).unwrap();
+            req.extensions().insert(Protocol::WEBSOCKET);
+            req
+        };
         ResponseVersionAdaptCtx::from_request(&req)
     }
 
     fn connect_udp_ctx(version: Version) -> ResponseVersionAdaptCtx {
-        let req = Request::builder()
+        let builder = Request::builder()
             .version(version)
-            .method(Method::CONNECT)
-            .uri("https://example.com/.well-known/masque/udp/1.2.3.4/443/")
-            .body(())
-            .unwrap();
-        req.extensions()
-            .insert(Protocol::from_static("connect-udp"));
+            .uri("https://example.com/.well-known/masque/udp/1.2.3.4/443/");
+        let req = if version <= Version::HTTP_11 {
+            builder
+                .method(Method::GET)
+                .header(UPGRADE, "connect-udp")
+                .header(CONNECTION, "Upgrade")
+                .body(())
+                .unwrap()
+        } else {
+            let req = builder.method(Method::CONNECT).body(()).unwrap();
+            req.extensions().insert(Protocol::CONNECT_UDP);
+            req
+        };
         ResponseVersionAdaptCtx::from_request(&req)
     }
 
@@ -374,32 +391,87 @@ mod tests {
         let err =
             adapt_response_version(&mut resp, &ctx_with_version(Version::HTTP_2)).unwrap_err();
         assert!(
-            err.to_string().contains("only websocket is supported"),
+            err.to_string()
+                .contains("the request has no Extended CONNECT protocol"),
             "{err}"
         );
     }
 
     #[test]
-    fn test_h2_to_h1_unsupported_extended_connect_errors() {
-        let mut resp = Response::builder()
-            .version(Version::HTTP_2)
-            .status(StatusCode::OK)
-            .body(())
-            .unwrap();
-
-        // a non-websocket Extended CONNECT (e.g. connect-udp) cannot be downgraded to
-        // an HTTP/1 handshake -> explicit error.
-        let err =
-            adapt_response_version(&mut resp, &connect_udp_ctx(Version::HTTP_11)).unwrap_err();
-        assert!(
-            err.to_string().contains("only websocket is supported"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn test_h1_to_h2_or_h3_websocket_2xx_rejection_errors() {
+    fn test_h2_or_h3_to_h1_connect_udp_success_becomes_101() {
         for version in [Version::HTTP_2, Version::HTTP_3] {
+            let mut resp = Response::builder()
+                .version(version)
+                .status(StatusCode::OK)
+                .header(CONTENT_LENGTH, "0")
+                .header("capsule-protocol", "?1")
+                .body(())
+                .unwrap();
+
+            adapt_response_version(&mut resp, &connect_udp_ctx(Version::HTTP_11)).unwrap();
+
+            assert_eq!(resp.version(), Version::HTTP_11);
+            assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+            assert!(
+                resp.headers()
+                    .typed_get::<Upgrade>()
+                    .is_some_and(|u| u.is_protocol(&Protocol::CONNECT_UDP))
+            );
+            assert!(
+                resp.headers()
+                    .typed_get::<Connection>()
+                    .is_some_and(|c| c.contains_upgrade())
+            );
+            assert!(!resp.headers().contains_key(SEC_WEBSOCKET_ACCEPT));
+            assert!(!resp.headers().contains_key(CONTENT_LENGTH));
+            assert_eq!(resp.headers()["capsule-protocol"], "?1");
+        }
+    }
+
+    #[test]
+    fn test_h1_to_h2_or_h3_connect_udp_101_becomes_200() {
+        for version in [Version::HTTP_2, Version::HTTP_3] {
+            let mut resp = Response::builder()
+                .version(Version::HTTP_11)
+                .status(StatusCode::SWITCHING_PROTOCOLS)
+                .header(UPGRADE, "connect-udp")
+                .header(CONNECTION, "Upgrade")
+                .header("capsule-protocol", "?1")
+                .body(())
+                .unwrap();
+
+            adapt_response_version(&mut resp, &connect_udp_ctx(version)).unwrap();
+
+            assert_eq!(resp.version(), version);
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(!resp.headers().contains_key(UPGRADE));
+            assert!(!resp.headers().contains_key(CONNECTION));
+            assert_eq!(resp.headers()["capsule-protocol"], "?1");
+        }
+    }
+
+    #[test]
+    fn test_h1_to_h2_connect_udp_101_must_upgrade_to_connect_udp() {
+        for (upgrade, connection) in [("websocket", "Upgrade"), ("connect-udp", "keep-alive")] {
+            let mut resp = Response::builder()
+                .version(Version::HTTP_11)
+                .status(StatusCode::SWITCHING_PROTOCOLS)
+                .header(UPGRADE, upgrade)
+                .header(CONNECTION, connection)
+                .body(())
+                .unwrap();
+            adapt_response_version(&mut resp, &connect_udp_ctx(Version::HTTP_2)).unwrap_err();
+        }
+    }
+
+    #[test]
+    fn test_h1_to_h2_or_h3_upgrade_2xx_rejection_errors() {
+        for (version, ctx) in [Version::HTTP_2, Version::HTTP_3]
+            .into_iter()
+            .flat_map(|version| {
+                [websocket_ctx(version), connect_udp_ctx(version)].map(|ctx| (version, ctx))
+            })
+        {
             for status in [
                 StatusCode::OK,
                 StatusCode::NO_CONTENT,
@@ -411,11 +483,12 @@ mod tests {
                     .body(())
                     .unwrap();
 
-                // HTTP/1 WebSocket acceptance requires 101. Passing a 2xx through
+                // HTTP/1 upgrade acceptance requires 101. Passing a 2xx through
                 // would falsely accept the downstream Extended CONNECT handshake.
                 assert!(
-                    adapt_response_version(&mut resp, &websocket_ctx(version)).is_err(),
-                    "HTTP/1 WebSocket rejection {status} must not become a successful {version:?} CONNECT",
+                    adapt_response_version(&mut resp, &ctx).is_err(),
+                    "HTTP/1 upgrade rejection {status} must not become a successful {version:?} CONNECT ({:?})",
+                    ctx.connect_protocol,
                 );
             }
         }

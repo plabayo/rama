@@ -1469,7 +1469,7 @@ async fn advertised_http3_moves_an_upgrade_only_when_allowed() {
             let request = Request::builder()
                 .uri(format!("https://{origin}/"))
                 .header("connection", "Upgrade")
-                .header("upgrade", "test")
+                .header("upgrade", "h2c")
                 .body(Body::empty())
                 .unwrap();
             let response = web.serve(request).await.unwrap();
@@ -1499,8 +1499,8 @@ async fn untranslatable_upgrades_stay_on_their_version() {
         let web = websocket_client();
         let cases: [(&str, &[(&str, &str)], &str); 5] = [
             (
-                "other",
-                &[("connection", "Upgrade"), ("upgrade", "test")],
+                "h2c",
+                &[("connection", "Upgrade"), ("upgrade", "h2c")],
                 "HTTP/1.1",
             ),
             (

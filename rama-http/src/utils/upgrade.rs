@@ -43,7 +43,7 @@ pub fn request_signals_upgrade<Body>(request: &Request<Body>) -> bool {
 }
 
 /// Application protocol of an upgrade or Extended CONNECT that can be translated to another
-/// HTTP version, which only WebSocket can (RFC 8441, RFC 9220).
+/// HTTP version (RFC 8441, RFC 9220, RFC 9298, RFC 9484).
 ///
 /// The request version adapter translates exactly these and rejects any other
 /// [`request_connect_protocol`].
@@ -53,14 +53,15 @@ pub fn request_adaptable_upgrade<Body>(request: &Request<Body>) -> Option<Protoc
 }
 
 /// Whether `protocol`, as [`request_connect_protocol`] derived it, can change HTTP version:
-/// a WebSocket opening handshake is a `GET` on HTTP/1.x and Extended CONNECT otherwise.
+/// the handshake is a `GET` on HTTP/1.x and Extended CONNECT otherwise.
 pub(crate) fn is_adaptable_upgrade(method: &Method, version: Version, protocol: &Protocol) -> bool {
     let method_fits = if version <= Version::HTTP_11 {
         method == Method::GET
     } else {
         method == Method::CONNECT
     };
-    method_fits && is_websocket_protocol(protocol)
+    // `h2c` switches to HTTP/2 itself and has no Extended CONNECT form.
+    method_fits && !protocol.as_str().eq_ignore_ascii_case("h2c")
 }
 
 /// Whether a [`Protocol`] is the WebSocket Extended CONNECT / `Upgrade` protocol.

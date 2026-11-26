@@ -420,6 +420,10 @@ impl BytesStr {
         Self(Bytes::copy_from_slice(self.0.as_ref()))
     }
 
+    pub(crate) fn into_bytes(self) -> Bytes {
+        self.0
+    }
+
     pub(crate) fn as_str(&self) -> &str {
         // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8, which the
         // `BytesStr` safety invariant gives.
