@@ -186,7 +186,6 @@ where
         ArcLayer::new(),
     ));
     let maybe_http_relay = HttpPeekRouter::new(http_mitm_relay)
-        .with_known_non_http_protocol_methods()
         .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())));
 
     let tls_mitm_relay =

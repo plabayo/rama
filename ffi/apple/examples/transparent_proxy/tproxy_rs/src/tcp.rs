@@ -175,11 +175,9 @@ impl DemoTcpMitmService {
         let promote_passthrough = PromoteLayer::new().into_layer(plain_passthrough.clone());
 
         let inner_http_router = HttpPeekRouter::new(http_mitm_svc.clone())
-            .with_known_non_http_protocol_methods()
             .with_peek_policy(peek_policy)
             .with_fallback(plain_passthrough);
         let outer_http_router = HttpPeekRouter::new(http_mitm_svc)
-            .with_known_non_http_protocol_methods()
             .with_peek_policy(peek_policy)
             .with_fallback(promote_passthrough.clone());
 

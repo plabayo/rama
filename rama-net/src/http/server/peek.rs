@@ -44,6 +44,38 @@ pub const DEFAULT_HTTP_PEEK_READ_BUFFER_SIZE: usize = 512;
 pub const KNOWN_NON_HTTP_PROTOCOL_METHODS: &[&str] =
     &["PING", "EHLO", "HELO", "USER", "NICK", "SSH", "PROXY"];
 
+/// Case-sensitive HTTP method tokens for the exclusion list.
+pub type MethodList = &'static [&'static str];
+
+/// Controls which HTTP/1 methods keep the request-line peeker reading.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum HttpMethodMode {
+    /// Recognize GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH
+    /// and QUERY. Matching is case-sensitive in every mode.
+    #[default]
+    Standard,
+    /// Also recognize the remaining [registered methods](https://www.iana.org/assignments/http-methods/),
+    /// including WebDAV, plus PURGE (cache invalidation) and M-SEARCH, NOTIFY,
+    /// SUBSCRIBE and UNSUBSCRIBE (UPnP).
+    Extended,
+    /// Accept private methods too, but fall back as soon as a listed token is
+    /// reached. For example, excluding PING also excludes PINGX. Applying
+    /// the mode to a router or peek options prepares a shared index once.
+    /// Each connection tracks only its own matching progress.
+    ExceptMethod(MethodList),
+    /// Accept any syntactically valid method, including private extensions.
+    Any,
+}
+
+mod methods;
+
+impl HttpMethodMode {
+    /// Inspect private methods while rejecting Rama's known non-HTTP prefixes.
+    pub const fn except_known_non_http() -> Self {
+        Self::ExceptMethod(KNOWN_NON_HTTP_PROTOCOL_METHODS)
+    }
+}
+
 /// Initial HTTP peek read size.
 ///
 /// This covers the overwhelming majority of HTTP/1 request lines in one
@@ -58,11 +90,8 @@ pub struct HttpPeekConfig {
     pub max_http1_request_line_size: usize,
     /// maximum number of bytes requested per transport read
     pub read_buffer_size: usize,
-    /// HTTP/1 method prefixes routed to the fallback before a delimiter.
-    ///
-    /// Matching is case-sensitive and fail-fast, so `PING` also skips `PINGX`.
-    /// Empty or invalid method tokens cannot match.
-    pub skipped_http1_methods: &'static [&'static str],
+    /// HTTP/1 method detection policy.
+    pub http_method_mode: HttpMethodMode,
 }
 
 impl Default for HttpPeekConfig {
@@ -70,7 +99,7 @@ impl Default for HttpPeekConfig {
         Self {
             max_http1_request_line_size: DEFAULT_HTTP1_REQUEST_LINE_MAX_SIZE,
             read_buffer_size: DEFAULT_HTTP_PEEK_READ_BUFFER_SIZE,
-            skipped_http1_methods: &[],
+            http_method_mode: HttpMethodMode::default(),
         }
     }
 }
@@ -83,21 +112,29 @@ impl HttpPeekConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Use [`KNOWN_NON_HTTP_PROTOCOL_METHODS`] as the skipped method list.
-        pub fn known_non_http_protocol_methods(mut self) -> Self {
-            self.skipped_http1_methods = KNOWN_NON_HTTP_PROTOCOL_METHODS;
+        /// Set the method detection policy for HTTP/1 request lines.
+        pub fn http_method_mode(mut self, mode: HttpMethodMode) -> Self {
+            self.http_method_mode = mode;
             self
         }
     }
+}
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set [`HttpPeekConfig::skipped_http1_methods`].
-        pub fn skipped_http1_methods(
-            mut self,
-            skipped_http1_methods: &'static [&'static str],
-        ) -> Self {
-            self.skipped_http1_methods = skipped_http1_methods;
-            self
+// Build the method index when configuration is applied. Cloning these
+// options for a connection shares the index and copies its initial cursor.
+#[derive(Debug, Clone)]
+struct PreparedPeekConfig {
+    max_http1_request_line_size: usize,
+    read_buffer_size: usize,
+    methods: methods::MethodMatcher,
+}
+
+impl From<HttpPeekConfig> for PreparedPeekConfig {
+    fn from(config: HttpPeekConfig) -> Self {
+        Self {
+            max_http1_request_line_size: config.max_http1_request_line_size,
+            read_buffer_size: config.read_buffer_size,
+            methods: config.http_method_mode.into(),
         }
     }
 }
@@ -119,7 +156,7 @@ impl HttpPeekConfig {
 pub struct HttpPeekRouter<T, F = RejectService<(), NoHttpRejectError>, Pol = PeekPolicy> {
     http_acceptor: T,
     fallback: F,
-    peek_config: HttpPeekConfig,
+    peek_config: PreparedPeekConfig,
     peek_policy: Pol,
     max_egress_peek_size: NonZeroUsize,
 }
@@ -159,7 +196,7 @@ impl<T> HttpPeekRouter<HttpAutoAcceptor<T>> {
         Self {
             http_acceptor: HttpAutoAcceptor(auto_acceptor),
             fallback: RejectService::new(NoHttpRejectError),
-            peek_config: HttpPeekConfig::default(),
+            peek_config: HttpPeekConfig::default().into(),
             peek_policy: PeekPolicy::FAIL_OPEN,
             max_egress_peek_size: DEFAULT_EGRESS_PEEK_MAX_SIZE,
         }
@@ -173,7 +210,7 @@ impl<T> HttpPeekRouter<Http1Acceptor<T>> {
         Self {
             http_acceptor: Http1Acceptor(http1_acceptor),
             fallback: RejectService::new(NoHttpRejectError),
-            peek_config: HttpPeekConfig::default(),
+            peek_config: HttpPeekConfig::default().into(),
             peek_policy: PeekPolicy::FAIL_OPEN,
             max_egress_peek_size: DEFAULT_EGRESS_PEEK_MAX_SIZE,
         }
@@ -187,7 +224,7 @@ impl<T> HttpPeekRouter<H2Acceptor<T>> {
         Self {
             http_acceptor: H2Acceptor(h2_acceptor),
             fallback: RejectService::new(NoHttpRejectError),
-            peek_config: HttpPeekConfig::default(),
+            peek_config: HttpPeekConfig::default().into(),
             peek_policy: PeekPolicy::FAIL_OPEN,
             max_egress_peek_size: DEFAULT_EGRESS_PEEK_MAX_SIZE,
         }
@@ -208,14 +245,6 @@ impl<T, Pol> HttpPeekRouter<T, RejectService<(), NoHttpRejectError>, Pol> {
 }
 
 impl<T, F, Pol> HttpPeekRouter<T, F, Pol> {
-    rama_utils::macros::generate_set_and_with! {
-        /// Use [`KNOWN_NON_HTTP_PROTOCOL_METHODS`] as the skipped method list.
-        pub fn known_non_http_protocol_methods(mut self) -> Self {
-            self.peek_config = self.peek_config.with_known_non_http_protocol_methods();
-            self
-        }
-    }
-
     rama_utils::macros::generate_set_and_with! {
         /// Set the byte limit for peeking the egress.
         pub fn max_egress_peek_size(mut self, max_egress_peek_size: NonZeroUsize) -> Self {
@@ -242,18 +271,15 @@ impl<T, F, Pol> HttpPeekRouter<T, F, Pol> {
     rama_utils::macros::generate_set_and_with! {
         /// Set the configuration used while peeking for HTTP.
         pub fn peek_config(mut self, peek_config: HttpPeekConfig) -> Self {
-            self.peek_config = peek_config;
+            self.peek_config = peek_config.into();
             self
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set [`HttpPeekConfig::skipped_http1_methods`].
-        pub fn skipped_http1_methods(
-            mut self,
-            skipped_http1_methods: &'static [&'static str],
-        ) -> Self {
-            self.peek_config.skipped_http1_methods = skipped_http1_methods;
+        /// Set the method detection policy for HTTP/1 request lines.
+        pub fn http_method_mode(mut self, mode: HttpMethodMode) -> Self {
+            self.peek_config.methods = mode.into();
             self
         }
     }
@@ -264,7 +290,7 @@ impl<T, F, Pol> HttpPeekRouter<T, F, Pol> {
         Pol: PeekPolicyProvider<Input>,
     {
         HttpPeekOptions {
-            config: self.peek_config,
+            config: self.peek_config.clone(),
             peek: PeekOptions::from_input(input, &self.peek_policy, self.max_egress_peek_size),
             egress,
         }
@@ -281,7 +307,7 @@ impl<T, U> HttpPeekRouter<HttpDualAcceptor<T, U>> {
                 h2: h2_acceptor,
             },
             fallback: RejectService::new(NoHttpRejectError),
-            peek_config: HttpPeekConfig::default(),
+            peek_config: HttpPeekConfig::default().into(),
             peek_policy: PeekPolicy::FAIL_OPEN,
             max_egress_peek_size: DEFAULT_EGRESS_PEEK_MAX_SIZE,
         }
@@ -494,7 +520,7 @@ struct HttpPeekState {
     http1: Http1PeekState,
     h2_offset: Option<usize>,
     max_http1_request_line_size: usize,
-    skipped_http1_methods: &'static [&'static str],
+    methods: methods::MethodMatcher,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -539,10 +565,7 @@ impl HttpRequestTargetState {
 }
 
 impl HttpPeekState {
-    fn new(
-        max_http1_request_line_size: usize,
-        skipped_http1_methods: &'static [&'static str],
-    ) -> Self {
+    fn new(max_http1_request_line_size: usize, methods: methods::MethodMatcher) -> Self {
         Self {
             http1: if max_http1_request_line_size == 0 {
                 Http1PeekState::Invalid
@@ -551,7 +574,7 @@ impl HttpPeekState {
             },
             h2_offset: Some(0),
             max_http1_request_line_size,
-            skipped_http1_methods,
+            methods,
         }
     }
 
@@ -607,22 +630,19 @@ impl HttpPeekState {
         self.http1 = match state {
             Http1PeekState::Method { start, len } => {
                 if is_http_tchar(byte) {
-                    let len = len + 1;
-                    let method = &buffer[start..start + len];
-                    if self
-                        .skipped_http1_methods
-                        .iter()
-                        .any(|skipped| method == skipped.as_bytes())
-                    {
+                    if !self.methods.accepts_byte(len, byte) {
                         tracing::trace!(
-                            method = ?core::str::from_utf8(method).ok(),
+                            method = ?core::str::from_utf8(&buffer[start..total_len]).ok(),
                             "HTTP/1 peek rejected configured method"
                         );
                         Http1PeekState::Invalid
                     } else {
-                        Http1PeekState::Method { start, len }
+                        Http1PeekState::Method {
+                            start,
+                            len: len + 1,
+                        }
                     }
-                } else if byte == b' ' && len > 0 {
+                } else if byte == b' ' && len > 0 && self.methods.accepts_byte(len, byte) {
                     Http1PeekState::Target {
                         method_start: start,
                         method_end: start + len,
@@ -831,7 +851,7 @@ fn is_http_request_target_prefix_byte(byte: u8) -> bool {
 /// Options of [`peek_http_input_with_options`].
 #[derive(Debug, Clone)]
 pub struct HttpPeekOptions {
-    config: HttpPeekConfig,
+    config: PreparedPeekConfig,
     peek: PeekOptions,
     egress: HttpEgressPredicate,
 }
@@ -839,7 +859,7 @@ pub struct HttpPeekOptions {
 impl Default for HttpPeekOptions {
     fn default() -> Self {
         Self {
-            config: HttpPeekConfig::default(),
+            config: HttpPeekConfig::default().into(),
             peek: PeekOptions::default(),
             egress: HttpEgressPredicate::ANY,
         }
@@ -856,7 +876,7 @@ impl HttpPeekOptions {
     rama_utils::macros::generate_set_and_with! {
         /// Set the resource limits of the ingress peek.
         pub fn config(mut self, config: HttpPeekConfig) -> Self {
-            self.config = config;
+            self.config = config.into();
             self
         }
     }
@@ -918,7 +938,7 @@ where
 /// replays every byte consumed during detection, on both sides.
 ///
 /// HTTP/1.0 and HTTP/1.1 are accepted only after a complete request-line
-/// containing a valid method token, request target, `HTTP/1.<digit>` version, and
+/// containing a method accepted by [`HttpPeekConfig::http_method_mode`], a valid request target, `HTTP/1.<digit>` version, and
 /// line terminator has been read. An HTTP/0.9 simple-request is accepted as
 /// HTTP/1x after `GET`, a valid request target, and a line terminator.
 /// Matching lenient HTTP/1 parsers such as httparse, a bare LF is accepted
@@ -952,10 +972,7 @@ where
     } = options;
     let (ingress, egress_io) = input.peek_ios_mut();
     let mut waiter = peek.waiter(egress_io, &egress);
-    let mut state = HttpPeekState::new(
-        config.max_http1_request_line_size,
-        config.skipped_http1_methods,
-    );
+    let mut state = HttpPeekState::new(config.max_http1_request_line_size, config.methods);
     let max_peek_len = state.max_peek_len();
     let read_buffer_size = config.read_buffer_size.max(1);
     let mut next_read_buffer_size = read_buffer_size
@@ -1227,37 +1244,32 @@ mod test {
         (version, replayed)
     }
 
-    async fn peek_fragmented_bytes(content: &'static [u8]) -> (Option<HttpPeekVersion>, Vec<u8>) {
+    async fn peek_fragmented_bytes(
+        content: &'static [u8],
+        mode: HttpMethodMode,
+    ) -> (Option<HttpPeekVersion>, Vec<u8>) {
         let reader = StreamReader::new(rama_core::futures::stream::iter(
             content
                 .iter()
                 .map(|&byte| Ok::<_, std::io::Error>(Bytes::copy_from_slice(&[byte]))),
         ));
         let io = Box::pin(tokio::io::join(reader, tokio::io::sink()));
-        let (version, mut io) = peek_http_input(io).await.unwrap();
+        let config = HttpPeekConfig::default().with_http_method_mode(mode);
+        let (version, mut io) =
+            peek_http_input_with_options(io, HttpPeekOptions::new().with_config(config))
+                .await
+                .unwrap();
         let mut replayed = Vec::new();
         io.read_to_end(&mut replayed).await.unwrap();
         (version, replayed)
     }
 
     fn state_decision(content: &[u8]) -> HttpPeekDecision {
-        let mut state = HttpPeekState::new(DEFAULT_HTTP1_REQUEST_LINE_MAX_SIZE, &[]);
-        let mut decision = HttpPeekDecision::Continue;
-        for (index, &byte) in content.iter().enumerate() {
-            decision = state.push_byte(byte, index + 1, &content[..=index]);
-            if decision != HttpPeekDecision::Continue {
-                break;
-            }
-        }
-        decision
+        state_decision_with_mode(content, HttpMethodMode::Standard)
     }
 
-    fn state_decision_with_skipped_methods(
-        content: &[u8],
-        skipped_http1_methods: &'static [&'static str],
-    ) -> HttpPeekDecision {
-        let mut state =
-            HttpPeekState::new(DEFAULT_HTTP1_REQUEST_LINE_MAX_SIZE, skipped_http1_methods);
+    fn state_decision_with_mode(content: &[u8], mode: HttpMethodMode) -> HttpPeekDecision {
+        let mut state = HttpPeekState::new(DEFAULT_HTTP1_REQUEST_LINE_MAX_SIZE, mode.into());
         let mut decision = HttpPeekDecision::Continue;
         for (index, &byte) in content.iter().enumerate() {
             decision = state.push_byte(byte, index + 1, &content[..=index]);
@@ -1307,76 +1319,125 @@ mod test {
 
     #[test]
     fn test_http1_state_rejects_configured_methods_immediately() {
-        assert_eq!(HttpPeekDecision::Continue, state_decision(b"PING"));
-
-        assert_eq!(
-            KNOWN_NON_HTTP_PROTOCOL_METHODS,
-            HttpPeekConfig::new()
-                .with_known_non_http_protocol_methods()
-                .skipped_http1_methods,
-        );
-
+        let except = HttpMethodMode::except_known_non_http();
         for method in KNOWN_NON_HTTP_PROTOCOL_METHODS {
             assert_eq!(
                 HttpPeekDecision::Reject,
-                state_decision_with_skipped_methods(
-                    method.as_bytes(),
-                    KNOWN_NON_HTTP_PROTOCOL_METHODS,
-                ),
-                "known non-HTTP method {method:?} was not rejected",
+                state_decision_with_mode(method.as_bytes(), except)
             );
         }
         assert_eq!(
-            HttpPeekDecision::Reject,
-            state_decision_with_skipped_methods(
-                b"PINGX / HTTP/1.1\r\n",
-                KNOWN_NON_HTTP_PROTOCOL_METHODS,
-            )
-        );
-        assert_eq!(
             HttpPeekDecision::Continue,
-            state_decision_with_skipped_methods(b"PIN", KNOWN_NON_HTTP_PROTOCOL_METHODS)
-        );
-        assert_eq!(
-            HttpPeekDecision::Matched(HttpPeekVersion::Http1x),
-            state_decision_with_skipped_methods(
-                b"GET / HTTP/1.1\r\n",
-                KNOWN_NON_HTTP_PROTOCOL_METHODS,
-            )
+            state_decision_with_mode(b"PIN", except)
         );
         assert_eq!(
             HttpPeekDecision::Reject,
-            state_decision_with_skipped_methods(b"CUSTOM", &["CUSTOM"])
+            state_decision_with_mode(b"PINGX", except)
         );
         assert_eq!(
             HttpPeekDecision::Matched(HttpPeekVersion::H2),
-            state_decision_with_skipped_methods(H2_MAGIC_PREFIX, &["PRI"])
+            state_decision_with_mode(H2_MAGIC_PREFIX, HttpMethodMode::ExceptMethod(&["PRI"]))
         );
         assert_eq!(
             HttpPeekDecision::Continue,
-            state_decision_with_skipped_methods(b"PING", &["", "PI NG", "PÉNG"])
+            state_decision_with_mode(
+                b"PING",
+                HttpMethodMode::ExceptMethod(&["", "PI NG", "PÉNG"])
+            )
         );
     }
 
     #[test]
-    fn test_http1_skipped_method_configuration_is_last_call_wins() {
-        let config = HttpPeekConfig::new()
-            .with_known_non_http_protocol_methods()
-            .with_skipped_http1_methods(&["CUSTOM"]);
-        assert_eq!(&["CUSTOM"], config.skipped_http1_methods);
+    fn exclusions_are_case_sensitive_and_work_across_word_boundaries() {
+        const METHODS: [&str; 130] = {
+            let mut entries = [""; 130];
+            entries[0] = "X-private-long";
+            entries[63] = "X-private";
+            entries[64] = "!tail";
+            entries[129] = "last-entry";
+            entries
+        };
 
-        let config = HttpPeekConfig::new()
-            .with_skipped_http1_methods(&["CUSTOM"])
-            .with_known_non_http_protocol_methods();
-        assert_eq!(
-            KNOWN_NON_HTTP_PROTOCOL_METHODS,
-            config.skipped_http1_methods
-        );
+        for size in [0, 1, 63, 64, 65, 130] {
+            let list = &METHODS[..size];
+            let mode = HttpMethodMode::ExceptMethod(list);
+            for token in [
+                "X-privat",
+                "X-private",
+                "X-private-long",
+                "X-PRIVATE",
+                "!tail",
+                "last-entry",
+                "last-entry-plus",
+            ] {
+                let line = format!("{token} / HTTP/1.1\r\n");
+                let expected = if list
+                    .iter()
+                    .any(|name| !name.is_empty() && token.starts_with(name))
+                {
+                    HttpPeekDecision::Reject
+                } else {
+                    HttpPeekDecision::Matched(HttpPeekVersion::Http1x)
+                };
+                assert_eq!(
+                    state_decision_with_mode(line.as_bytes(), mode),
+                    expected,
+                    "{size}: {token}"
+                );
+            }
+        }
+    }
 
-        let router = HttpPeekRouter::new(service_fn(async || Ok::<_, Infallible>("http")))
-            .with_known_non_http_protocol_methods()
-            .with_skipped_http1_methods(&["CUSTOM"]);
-        assert_eq!(&["CUSTOM"], router.peek_config.skipped_http1_methods);
+    #[test]
+    fn standard_methods_require_an_exact_case_sensitive_token() {
+        use methods::{EXTENSIONS, STANDARD};
+        for method in STANDARD.iter().chain(EXTENSIONS) {
+            let target = if *method == "CONNECT" {
+                "example.org:443"
+            } else {
+                "/"
+            };
+            let line = format!("{method} {target} HTTP/1.1\r\n");
+            let matched = HttpPeekDecision::Matched(HttpPeekVersion::Http1x);
+            assert_eq!(
+                state_decision_with_mode(line.as_bytes(), HttpMethodMode::Extended),
+                matched
+            );
+            assert_eq!(
+                state_decision(line.as_bytes()),
+                if STANDARD.contains(method) {
+                    matched
+                } else {
+                    HttpPeekDecision::Reject
+                },
+                "{method}"
+            );
+        }
+        for prefix in [b"a".as_slice(), b"GE ", b"get", b"GETX", b"*"] {
+            assert_eq!(state_decision(prefix), HttpPeekDecision::Reject);
+        }
+        for mode in [
+            HttpMethodMode::Any,
+            HttpMethodMode::ExceptMethod(&["BLOCK"]),
+        ] {
+            for method in ["X-private", "!#$%&'*+-.^_~"] {
+                let line = format!("{method} / HTTP/1.1\r\n");
+                assert_eq!(
+                    state_decision_with_mode(line.as_bytes(), mode),
+                    HttpPeekDecision::Matched(HttpPeekVersion::Http1x)
+                );
+                for restricted in [HttpMethodMode::Standard, HttpMethodMode::Extended] {
+                    assert_eq!(
+                        state_decision_with_mode(line.as_bytes(), restricted),
+                        HttpPeekDecision::Reject
+                    );
+                }
+            }
+            assert_eq!(
+                state_decision_with_mode(b"X( / HTTP/1.1\r\n", mode),
+                HttpPeekDecision::Reject
+            );
+        }
     }
 
     #[tokio::test]
@@ -1482,10 +1543,7 @@ mod test {
             b"GET urn:opaque HTTP/1.1\r\n",
             b"GET http:/single-slash HTTP/1.1\r\n",
             b"CONNECT example.com:443 HTTP/1.1\r\n",
-            b"PROPFIND /collection HTTP/1.1\r\n",
             b"QUERY /search HTTP/1.1\r\n",
-            b"M-SEARCH /discovery HTTP/1.1\r\n",
-            b"!#$%&'*+-.^_`|~ /extension HTTP/1.1\r\n",
             "GET /café HTTP/1.1\r\n".as_bytes(),
             b"GET / HTTP/1.1\n",
             b"GET /legacy HTTP/1.0\n",
@@ -1542,27 +1600,28 @@ mod test {
     #[tokio::test]
     async fn test_peek_handles_single_byte_fragmentation() {
         const HTTP1: &[u8] = b"PROPFIND /collection HTTP/1.1\r\nbody";
-        let (version, replayed) = peek_fragmented_bytes(HTTP1).await;
+        let (version, replayed) = peek_fragmented_bytes(HTTP1, HttpMethodMode::Extended).await;
         assert_eq!(Some(HttpPeekVersion::Http1x), version);
         assert_eq!(HTTP1, replayed);
 
         const HTTP09: &[u8] = b"GET /legacy\r\n";
-        let (version, replayed) = peek_fragmented_bytes(HTTP09).await;
+        let (version, replayed) = peek_fragmented_bytes(HTTP09, HttpMethodMode::Standard).await;
         assert_eq!(Some(HttpPeekVersion::Http1x), version);
         assert_eq!(HTTP09, replayed);
 
         const HTTP1_LENIENT: &[u8] = b"\r\n\nGET /lenient HTTP/1.1\nbody";
-        let (version, replayed) = peek_fragmented_bytes(HTTP1_LENIENT).await;
+        let (version, replayed) =
+            peek_fragmented_bytes(HTTP1_LENIENT, HttpMethodMode::Standard).await;
         assert_eq!(Some(HttpPeekVersion::Http1x), version);
         assert_eq!(HTTP1_LENIENT, replayed);
 
         const H2: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nframes";
-        let (version, replayed) = peek_fragmented_bytes(H2).await;
+        let (version, replayed) = peek_fragmented_bytes(H2, HttpMethodMode::Standard).await;
         assert_eq!(Some(HttpPeekVersion::H2), version);
         assert_eq!(H2, replayed);
 
         const ICAP: &[u8] = b"OPTIONS icap://icap.example.net/service ICAP/1.0\r\n";
-        let (version, replayed) = peek_fragmented_bytes(ICAP).await;
+        let (version, replayed) = peek_fragmented_bytes(ICAP, HttpMethodMode::Standard).await;
         assert_eq!(None, version);
         assert_eq!(ICAP, replayed);
     }
@@ -1615,7 +1674,7 @@ mod test {
 
     #[tokio::test]
     async fn test_peek_http1_starts_reasonably_and_grows_reads_on_demand() {
-        let mut content = b"PROPFIND /".to_vec();
+        let mut content = b"GET /".to_vec();
         content.extend(std::iter::repeat_n(
             b'a',
             INITIAL_HTTP_PEEK_READ_BUFFER_SIZE * 3,
@@ -1652,7 +1711,7 @@ mod test {
 
     #[tokio::test]
     async fn test_peek_http1_does_not_grow_after_short_reads() {
-        const CONTENT: &[u8] = b"PROPFIND /fragmented HTTP/1.1\r\n";
+        const CONTENT: &[u8] = b"GET /fragmented HTTP/1.1\r\n";
         let read_sizes = Arc::new(Mutex::new(Vec::new()));
         let reader = RecordingReader {
             inner: std::io::Cursor::new(CONTENT.to_vec()),
@@ -1675,6 +1734,40 @@ mod test {
     }
 
     #[tokio::test]
+    async fn ibm_i_signon_falls_back_on_first_byte_and_can_reply() {
+        use tokio::io::AsyncWriteExt as _;
+
+        async fn upstream(mut stream: impl Io + Unpin) -> io::Result<()> {
+            let mut request = [0; 11];
+            stream.read_exact(&mut request[..1]).await?;
+            assert_eq!(request[0], b'a');
+            stream.write_all(b"ready").await?;
+            stream.read_exact(&mut request[1..]).await?;
+            assert_eq!(&request, b"as-signon-s");
+            stream.write_all(b"ok").await
+        }
+        let router = HttpPeekRouter::new(service_fn(async || Ok::<_, Infallible>(())))
+            .with_fallback(service_fn(upstream));
+        let (mut client, server) = tokio::io::duplex(64);
+        let exchange = async {
+            client.write_all(b"a").await.unwrap();
+            let mut ready = [0; 5];
+            client.read_exact(&mut ready).await.unwrap();
+            assert_eq!(&ready, b"ready");
+            client.write_all(b"s-signon-s").await.unwrap();
+            let mut reply = [0; 2];
+            client.read_exact(&mut reply).await.unwrap();
+            assert_eq!(&reply, b"ok");
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let (outcome, ()) = tokio::join!(router.serve(ServiceInput::new(server)), exchange);
+            outcome.unwrap();
+        })
+        .await
+        .expect("fallback must run while the client write side is open");
+    }
+
+    #[tokio::test]
     async fn test_peek_router_skips_configured_idle_method() {
         async fn fallback_service_fn(
             mut stream: impl Io + Unpin,
@@ -1687,7 +1780,7 @@ mod test {
 
         let http_service = service_fn(async || Ok::<_, Infallible>("http"));
         let router = HttpPeekRouter::new(http_service)
-            .with_known_non_http_protocol_methods()
+            .with_http_method_mode(HttpMethodMode::except_known_non_http())
             .with_fallback(service_fn(fallback_service_fn));
         let input = scoped(ServiceInput::new(tokio::io::join(
             IdleAfterPrefix::new(b"PING"),
