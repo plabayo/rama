@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "Job IDs or exact browser and QUIC job names, space separated. Empty runs all jobs."
+        description: "Job IDs or exact job names from scripts/ci/daily_job_matrices.py, space separated. Empty runs all jobs."
         type: string
         default: ""
 
@@ -30,15 +30,39 @@ concurrency:
 
 # Use the same repository-wide runner slots as regular CI and releases.
 jobs:
-  precheck-rust:
+  # Only selects matrix rows, so no job waits for a build.
+  matrices:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       test-browser-profiles: ${{ steps.matrices.outputs.test-browser-profiles }}
       test-safari-desktop: ${{ steps.matrices.outputs.test-safari-desktop }}
+      test-rust-base: ${{ steps.matrices.outputs.test-rust-base }}
       test-quic-interop-qa: ${{ steps.matrices.outputs.test-quic-interop-qa }}
+      test-native-relay-contract: ${{ steps.matrices.outputs.test-native-relay-contract }}
+      test-android-on-device: ${{ steps.matrices.outputs.test-android-on-device }}
       only: ${{ steps.matrices.outputs.only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+      - name: Select daily matrix entries
+        id: matrices
+        env:
+          ONLY: ${{ inputs.only }}
+        run: python3 scripts/ci/daily_job_matrices.py
+
+  # Runs beside the platform jobs; a manual run on a branch has no regular CI behind it.
+  precheck-rust:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' precheck-rust ') }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       RUSTUP_TOOLCHAIN: stable
       RUSTFLAGS: -D warnings
@@ -46,11 +70,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Select daily matrix entries
-        id: matrices
-        env:
-          ONLY: ${{ inputs.only }}
-        run: python3 scripts/ci/daily_job_matrices.py
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -89,8 +108,6 @@ jobs:
       group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
-    needs:
-      - precheck-rust
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings
@@ -144,38 +161,25 @@ jobs:
             sccache --show-stats || true
           fi
 
+  # One job per independent build, so a rerun or a manual run repeats only its own.
   test-rust-base:
     # A manual run may name the jobs it wants; any other run takes them all.
-    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-rust-base ') }}
+    if: ${{ needs.matrices.outputs.test-rust-base != '[]' }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        toolchain:
-          - stable
-        os:
-          - macos-15
-          - macos-15-intel
-          - windows-11-arm
-          - windows-latest
-          - ubuntu-24.04-arm
-          - ubuntu-latest
-        include:
-          # The slowest host runs only the all-features suite; macos-15 covers the rest.
-          - os: macos-15-intel
-            slim: true
-    name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
+        include: ${{ fromJSON(needs.matrices.outputs.test-rust-base) }}
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-3' || 'rama-macos-slot-2') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-5') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ matrix.slot || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
-    # Cold builds plus successive feature, crypto and integration suites exceed
-    # four hours on Windows and macOS. Keep Linux at four hours and allow the
-    # hosted-runner maximum for both Windows architectures and both Macs.
-    timeout-minutes: ${{ startsWith(matrix.os, 'windows') && 360 || startsWith(matrix.os, 'macos') && 360 || 240 }}
-    needs: precheck-rust
+    # A cold all-features build takes over three hours on the slowest hosts.
+    timeout-minutes: ${{ matrix.timeout }}
+    needs: matrices
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -195,14 +199,15 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-
           env-vars: RUST_TOOLCHAIN
-          # Per-OS shared family so repeated test-base runs restore a warm target
-          # instead of a cold per-job cache.
-          shared-key: ${{ format('{0}-{1}-testbase-v1', matrix.os, matrix.toolchain) }}
+          # Per-OS and per-suite shared family so repeated test-base runs restore a
+          # warm target instead of a cold per-job cache.
+          shared-key: ${{ format('{0}-{1}-testbase-{2}-v1', matrix.os, matrix.toolchain, matrix.suite) }}
           # sccache is a net loss on Windows (mozilla/sccache#2789: ~0% hits, every
           # write bounces) and its failed entries evict useful macOS/Linux ones.
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - name: Build run tests (cargo test)
         id: build_tests_all
+        if: matrix.suite == 'all-features'
         run: cargo nextest run --profile ci --all-features --workspace --no-run
       - name: Run tests (cargo test)
         if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
@@ -212,13 +217,13 @@ jobs:
         run: cargo nextest run --profile ci --all-features --package rama-cli --stress-count 100 --retries 0 export_publishes_complete_json_and_does_not_clobber_without_replace
       - name: Build run tests (--no-default--features)
         id: build_tests_minimal
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
+        if: matrix.suite == 'minimal'
         run: cargo nextest run --profile ci --no-default-features --workspace --no-run
       - name: Run tests (--no-default--features)
         if: ${{ !cancelled() && steps.build_tests_minimal.outcome == 'success' }}
         run: cargo nextest run --profile ci --no-default-features --workspace
       - name: Run crypto backend tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
+        if: matrix.suite == 'crypto'
         shell: bash
         run: bash scripts/test-crypto.sh all --profile ci
       - name: Run doc tests (cargo test)
@@ -273,27 +278,27 @@ jobs:
             sccache --show-stats || true
           fi
 
+  # One job per backend: each is an isolated build.
   test-quic-interop-qa:
     # A manual run may name the jobs it wants; any other run takes them all.
-    if: ${{ needs.precheck-rust.outputs.test-quic-interop-qa != '[]' }}
+    if: ${{ needs.matrices.outputs.test-quic-interop-qa != '[]' }}
     permissions:
       contents: read
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-4' || 'rama-macos-slot-5') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ matrix.slot || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
-    # Scarce hosts run three isolated backends sequentially, including examples.
-    timeout-minutes: ${{ matrix.backends == 'all' && (startsWith(matrix.os, 'windows') && 300 || 240) || 120 }}
+    timeout-minutes: ${{ matrix.timeout }}
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings
-    needs: precheck-rust
+    needs: matrices
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.precheck-rust.outputs.test-quic-interop-qa) }}
+        include: ${{ fromJSON(needs.matrices.outputs.test-quic-interop-qa) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -356,7 +361,7 @@ jobs:
         id: setup
         run: echo "setup complete"
       - name: Custom TLS provider without built-in backends
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: just rama-quic/qa-custom-provider
       # A `cargo tree --locked` dependency-graph assertion, so its result cannot differ by
       # host or toolchain: one Linux cell covers it. Keeping it off the scarce macOS/Windows
@@ -373,36 +378,36 @@ jobs:
           done
       # Independent steps keep collecting failures without combining backend features.
       - name: Isolated QUIC library tests and lints (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: just rama-quic/qa-backend boring
       - name: Isolated crypto tests (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: cargo test -p rama-crypto --no-default-features --features boring --locked
       - name: QUIC examples (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: cargo test -p rama-examples --no-default-features --features quic,boring --test integration quic_ --locked -- --include-ignored
       - name: HTTP/3 streaming and pool integration (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: >-
           cargo test -p rama-examples --no-default-features --features http-full,boring --test integration http3_client_server:: --locked -- --include-ignored
       - name: HTTP/3 engine and WebSocket suites (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: |
           cargo test -p rama-http-core --features quic,rama-quic/boring --lib h3:: --locked
           cargo test -p rama-ws --features rama-quic/boring,compression --test h3 --locked
       - name: HTTP client protocol and TLS reuse behavior (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: >-
           cargo test -p rama --no-default-features --features http-full,boring --test http-core http_service:: --locked
       - name: Concurrent QUIC transfers (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: cargo test -p rama-quic --no-default-features --features boring --test many_connections --locked -- --include-ignored
       - name: QUIC receive-window stress (boring)
         timeout-minutes: 15
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         run: just rama-quic/qa-stress-backend boring
       - name: QUIC benchmark (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: cargo check --bench quic_transport --no-default-features --features quic,boring --locked
       - name: QUIC dial9 (boring)
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
@@ -412,53 +417,53 @@ jobs:
           cargo test -p rama-quic --no-default-features --features dial9,boring --lib dial9 --locked
           cargo test -p rama-quic --no-default-features --features dial9,boring --test dial9_runtime --locked
       - name: Shared scenario library (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: just rama-quic/qa-interop-common boring
       - name: Quinn interoperability (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: just rama-quic/qa-interop-quinn boring
       - name: quiche interoperability (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: just rama-quic/qa-interop-quiche boring
       - name: aioquic interoperability (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         run: just rama-quic/qa-interop-aioquic boring
       - name: Runner endpoint and result gates (boring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' }}
         env:
           PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
         run: just rama-quic/qa-interop-runner boring
       - name: Isolated QUIC library tests and lints (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: just rama-quic/qa-backend rustls,ring
       - name: Isolated crypto tests (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: cargo test -p rama-crypto --no-default-features --features ring --locked
       - name: QUIC examples (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: cargo test -p rama-examples --no-default-features --features quic,rustls,ring --test integration quic_ --locked -- --include-ignored
       - name: HTTP/3 streaming and pool integration (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: >-
           cargo test -p rama-examples --no-default-features --features http-full,rustls,ring --test integration http3_client_server:: --locked -- --include-ignored
       - name: HTTP/3 engine and WebSocket suites (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: |
           cargo test -p rama-http-core --features quic --lib h3:: --locked
           cargo test -p rama-ws --features compression --test h3 --locked
       - name: HTTP client protocol and TLS reuse behavior (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: >-
           cargo test -p rama --no-default-features --features http-full,rustls,ring --test http-core http_service:: --locked
       - name: Concurrent QUIC transfers (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: cargo test -p rama-quic --no-default-features --features rustls,ring --test many_connections --locked -- --include-ignored
       - name: QUIC receive-window stress (rustls-ring)
         timeout-minutes: 15
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         run: just rama-quic/qa-stress-backend rustls,ring
       - name: QUIC benchmark (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: cargo check --bench quic_transport --no-default-features --features quic,rustls,ring --locked
       - name: QUIC dial9 (rustls-ring)
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
@@ -468,48 +473,48 @@ jobs:
           cargo test -p rama-quic --no-default-features --features dial9,rustls,ring --lib dial9 --locked
           cargo test -p rama-quic --no-default-features --features dial9,rustls,ring --test dial9_runtime --locked
       - name: Shared scenario library (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: just rama-quic/qa-interop-common rustls-ring
       - name: Quinn interoperability (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: just rama-quic/qa-interop-quinn rustls-ring
       - name: quiche interoperability (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: just rama-quic/qa-interop-quiche rustls-ring
       - name: aioquic interoperability (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         run: just rama-quic/qa-interop-aioquic rustls-ring
       - name: Runner endpoint and result gates (rustls-ring)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-ring' }}
         env:
           PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
         run: just rama-quic/qa-interop-runner rustls-ring
       - name: Isolated QUIC library tests and lints (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         run: just rama-quic/qa-backend rustls,aws-lc
       - name: Isolated crypto tests (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         run: cargo test -p rama-crypto --no-default-features --features aws-lc --locked
       - name: QUIC examples (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         run: cargo test -p rama-examples --no-default-features --features quic,rustls,aws-lc --test integration quic_ --locked -- --include-ignored
       - name: HTTP/3 streaming and pool integration (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         run: >-
           cargo test -p rama-examples --no-default-features --features http-full,rustls,aws-lc --test integration http3_client_server:: --locked -- --include-ignored
       - name: HTTP client protocol and TLS reuse behavior (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         run: >-
           cargo test -p rama --no-default-features --features http-full,rustls,aws-lc --test http-core http_service:: --locked
       - name: Concurrent QUIC transfers (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         run: cargo test -p rama-quic --no-default-features --features rustls,aws-lc --test many_connections --locked -- --include-ignored
       - name: QUIC receive-window stress (rustls-aws-lc)
         timeout-minutes: 15
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         run: just rama-quic/qa-stress-backend rustls,aws-lc
       - name: QUIC benchmark (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         run: cargo check --bench quic_transport --no-default-features --features quic,rustls,aws-lc --locked
       - name: QUIC dial9 (rustls-aws-lc)
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
@@ -519,19 +524,19 @@ jobs:
           cargo test -p rama-quic --no-default-features --features dial9,rustls,aws-lc --lib dial9 --locked
           cargo test -p rama-quic --no-default-features --features dial9,rustls,aws-lc --test dial9_runtime --locked
       - name: Shared scenario library (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         run: just rama-quic/qa-interop-common rustls-aws-lc
       - name: Quinn interoperability (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         run: just rama-quic/qa-interop-quinn rustls-aws-lc
       - name: quiche interoperability (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         run: just rama-quic/qa-interop-quiche rustls-aws-lc
       - name: aioquic interoperability (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         run: just rama-quic/qa-interop-aioquic rustls-aws-lc
       - name: Runner endpoint and result gates (rustls-aws-lc)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'rustls-aws-lc' }}
         env:
           PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
         run: just rama-quic/qa-interop-runner rustls-aws-lc
@@ -550,7 +555,6 @@ jobs:
             rust: stable
             custom_env:
               IPHONEOS_DEPLOYMENT_TARGET: 17.5
-    needs: precheck-rust
     runs-on: ${{ matrix.os }}
     concurrency:
       group: ${{ startsWith(matrix.os, 'macos') && 'rama-macos-slot-6' || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
@@ -622,7 +626,6 @@ jobs:
       cancel-in-progress: false
       queue: max
     timeout-minutes: 360
-    needs: precheck-rust
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
@@ -676,7 +679,6 @@ jobs:
       cancel-in-progress: false
       queue: max
     timeout-minutes: 240
-    needs: precheck-rust
     env:
       RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
     steps:
@@ -735,8 +737,6 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    needs:
-      - precheck-rust
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -761,7 +761,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Cold builds and ignored tests exceeded 110m; allow 150m plus 10m for setup and cleanup.
     timeout-minutes: 160
-    needs: precheck-rust
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -800,7 +799,6 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    needs: precheck-rust
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -823,6 +821,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ !cancelled() }}
     needs:
+      - matrices
       - precheck-rust
       - check-rust
       - test-rust-base
@@ -844,7 +843,7 @@ jobs:
       - name: Require every daily check to succeed
         env:
           RESULTS: ${{ toJSON(needs) }}
-          ONLY: ${{ needs.precheck-rust.outputs.only }}
+          ONLY: ${{ needs.matrices.outputs.only }}
         run: |
           if [ -z "$ONLY" ]; then
             # The experimental curl peer is optional for a full daily run.
@@ -861,8 +860,8 @@ jobs:
 
   test-browser-profiles:
     # A manual run may name the jobs it wants; any other run takes them all.
-    if: ${{ needs.precheck-rust.outputs.test-browser-profiles != '[]' }}
-    needs: precheck-rust
+    if: ${{ needs.matrices.outputs.test-browser-profiles != '[]' }}
+    needs: matrices
     name: ${{ matrix.name }}
     permissions:
       contents: read
@@ -872,7 +871,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.precheck-rust.outputs.test-browser-profiles) }}
+        include: ${{ fromJSON(needs.matrices.outputs.test-browser-profiles) }}
     env:
       BROWSER: ${{ matrix.browser }}
       PROTOCOL: ${{ matrix.protocol }}
@@ -1007,8 +1006,8 @@ jobs:
 
   test-safari-desktop:
     # A manual run may name the jobs it wants; any other run takes them all.
-    if: ${{ needs.precheck-rust.outputs.test-safari-desktop != '[]' }}
-    needs: precheck-rust
+    if: ${{ needs.matrices.outputs.test-safari-desktop != '[]' }}
+    needs: matrices
     name: ${{ matrix.name }}
     permissions:
       contents: read
@@ -1018,7 +1017,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        include: ${{ fromJSON(needs.precheck-rust.outputs.test-safari-desktop) }}
+        include: ${{ fromJSON(needs.matrices.outputs.test-safari-desktop) }}
     # Reuse a scarce macOS slot; Safari owns one desktop automation session.
     concurrency:
       group: rama-macos-slot-8
@@ -1110,7 +1109,6 @@ jobs:
   test-embedded-profiles:
     # A manual run may name the jobs it wants; any other run takes them all.
     if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-embedded-profiles ') }}
-    needs: precheck-rust
     name: embedded-profiles-emulation
     permissions:
       contents: read
@@ -1159,9 +1157,9 @@ jobs:
 
   test-native-relay-contract:
     # A manual run may name the jobs it wants; any other run takes them all.
-    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-native-relay-contract ') }}
-    needs: precheck-rust
-    name: native-relay-${{ matrix.scenario.label }}-${{ matrix.mode }}
+    if: ${{ needs.matrices.outputs.test-native-relay-contract != '[]' }}
+    needs: matrices
+    name: ${{ matrix.name }}
     permissions:
       contents: read
     # H3 PDML needs tshark 4.6 per-frame stream identities.
@@ -1170,12 +1168,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario:
-          - { label: h1, protocol: h1, quic_version: 1 }
-          - { label: h2, protocol: h2, quic_version: 1 }
-          - { label: h3-v1, protocol: h3, quic_version: 1 }
-          - { label: h3-v2, protocol: h3, quic_version: 2 }
-        mode: [debug, release]
+        include: ${{ fromJSON(needs.matrices.outputs.test-native-relay-contract) }}
     env:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -1259,9 +1252,9 @@ jobs:
 
   test-android-on-device:
     # A manual run may name the jobs it wants; any other run takes them all.
-    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-android-on-device ') }}
-    needs: precheck-rust
-    name: android-on-device-api-${{ matrix.api }}
+    if: ${{ needs.matrices.outputs.test-android-on-device != '[]' }}
+    needs: matrices
+    name: ${{ matrix.name }}
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -1269,8 +1262,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 23: the last release without PKIXRevocationChecker; 34: a current one.
-        api: [23, 34]
+        include: ${{ fromJSON(needs.matrices.outputs.test-android-on-device) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1312,7 +1304,6 @@ jobs:
       contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    needs: [precheck-rust]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

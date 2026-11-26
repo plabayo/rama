@@ -48,8 +48,8 @@ def verify_rebinding_packets(client_trace, server_trace, *, address_rebinding=Fa
             trace_handshake.append(cids)
         handshakes.append(trace_handshake)
         for p in trace:
-            require(bool(p["challenges"]) == (0x1a in p["frames"])
-                    and bool(p["responses"]) == (0x1b in p["frames"]),
+            require(len(p["challenges"]) == p["frames"].count(0x1a)
+                    and len(p["responses"]) == p["frames"].count(0x1b),
                     "incomplete path frame decoding")
             require(all(re.fullmatch(r"[0-9a-f]{16}", token)
                         for token in (*p["challenges"], *p["responses"])), "invalid path token")
@@ -78,23 +78,27 @@ def verify_rebinding_packets(client_trace, server_trace, *, address_rebinding=Fa
                 if (p["src"] if p["dst"] == SERVER else p["dst"]) != local),
             "new path contains another handshake")
 
-    # Every token identifies a single server path, even if retransmitted.
+    # The pinned peer draws fresh data for every probe. A repeated token would
+    # leave open which send a capture delivered, so it is not evidence.
     sent = {}
     for p in server_trace:
         for token in p["challenges"]:
-            require(token not in sent or sent[token]["dst"] == p["dst"],
-                    "challenge token reused across paths")
-            sent.setdefault(token, p)
+            require(token not in sent, "challenge token sent more than once")
+            sent[token] = p
     received = {}
     answers = {}
     for p in client_trace:
         for token in p["challenges"]:
-            received.setdefault(token, p)
+            require(token not in received, "challenge token delivered more than once")
+            received[token] = p
         for token in p["responses"]:
             require(token in received and received[token]["number"] < p["number"],
                     "client responded before receiving the challenge")
             answers.setdefault(token, p)
     require(set(received) <= set(sent), "client challenge absent from server capture")
+    # A datagram arrives whole, so its probes are all delivered or all lost.
+    require(all(set(p["challenges"]).isdisjoint(received) or set(p["challenges"]) <= set(received)
+                for p in server_trace), "datagram challenges only partly delivered")
     require(set(answers) == set(received), "delivered challenge was not answered")
     validated = {}
     for p in incoming:
@@ -123,13 +127,29 @@ def verify_rebinding_packets(client_trace, server_trace, *, address_rebinding=Fa
         replaced.append({"token": token, "path": probe["dst"], "sent_at": probe["number"],
                          "replacement": replacement, "validated_at": validated[replacement]})
 
+    # The pinned checker reads only the first server packet of each new path and
+    # stops at an ACK-first report, so it cannot name any other undelivered probe.
+    nameable = set() if ack_first_reported else {
+        token for path in paths[1:]
+        for token in next(p for p in server_trace if p["src"] == SERVER and p["dst"] == path)["challenges"]}
     dropped = []
-    for token in set(sent) - set(received) - lost_challenges:
+    redundant = []
+    for token in sorted(set(sent) - set(received) - lost_challenges):
         p = sent[token]
         index = paths.index(p["dst"])
-        require(index + 1 < len(paths) and p["number"] > starts[paths[index + 1]],
+        end = starts[paths[index + 1]] if index + 1 < len(paths) else float("inf")
+        if p["number"] > end:
+            dropped.append({"token": token, "path": p["dst"], "sent_at": p["number"]})
+            continue
+        # RFC 9000 section 8.2.1 lets a server send several probes against loss;
+        # one answered on the same path after this one was sent validates it.
+        answered = [t for t in validated
+                    if sent[t]["dst"] == p["dst"] and p["number"] < validated[t] < end]
+        require(index > 0 and token not in nameable and bool(answered),
                 "unanswered challenge on a current path")
-        dropped.append({"token": token, "path": p["dst"], "sent_at": p["number"]})
+        validator = min(answered, key=lambda t: validated[t])
+        redundant.append({"token": token, "path": p["dst"], "sent_at": p["number"],
+                          "validated_by": validator, "validated_at": validated[validator]})
 
     proofs = []
     ack_first = False
@@ -164,7 +184,8 @@ def verify_rebinding_packets(client_trace, server_trace, *, address_rebinding=Fa
     require(ack_first or replaced, "capture does not exhibit a reviewed ACK-first or lost-probe limitation")
     return {"classification": "checker-incompatible", "paths": proofs,
             "server_challenges_answered": len(validated),
-            "undelivered_obsolete_path_probes": sorted(dropped, key=lambda p: p["token"]),
+            "undelivered_obsolete_path_probes": dropped,
+            "undelivered_redundant_path_probes": redundant,
             "undelivered_replaced_path_probes": replaced}
 
 

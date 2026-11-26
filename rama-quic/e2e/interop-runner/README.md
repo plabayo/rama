@@ -88,8 +88,10 @@ Its output directory must be new.
   wrong-path responses fail. Longer prefixes require investigation, and address
   rebinding must also demonstrate multiple client IPs.
   Probes to obsolete NAT mappings are recorded separately only when the client
-  capture proves they were not delivered. This deterministic verification needs
-  no retry and retains the raw failure as a separate checker incompatibility.
+  capture proves they were not delivered. So is an undelivered probe the checker
+  could not have named, once another probe validates that path afterwards.
+  This deterministic verification needs no retry and retains the raw failure
+  as a separate checker incompatibility.
   A response that crosses another NAT change and arrives on a different tuple
   remains a failure requiring investigation, even if that timing is benign.
 - Both roles use the unmerged [upstream #509 counter fix](https://github.com/quic-interop/quic-interop-runner/pull/509), pinned by commit:

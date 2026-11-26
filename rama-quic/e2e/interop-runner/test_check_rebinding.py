@@ -142,6 +142,48 @@ class RebindingEvidenceTests(unittest.TestCase):
             with patch("check_rebinding.read_packets", side_effect=lost_probe_traces()), self.assertRaises(InvalidResults):
                 verify_rebinding(root, "client", "ngtcp2", EXITS, peer_image=PINNED_PEERS["ngtcp2"])
 
+    def test_undelivered_redundant_probe_needs_same_path_validation(self):
+        extra = "4123456789abcdef"
+        client, server = traces()
+        # The second probe of a pair is lost between captures; its sibling validates NAT2.
+        server.append(packet(92, SERVER, NAT2, challenges=(extra,), frames=(0x1a,)))
+        server.sort(key=lambda p: p["number"])
+        for reported in (False, True):
+            proof = verify_rebinding_packets(client, server, ack_first_reported=reported)
+            self.assertEqual(proof["undelivered_redundant_path_probes"], [
+                dict(token=extra, path=NAT2, sent_at=92, validated_by=B, validated_at=100)])
+        self.assertEqual([p["token"] for p in proof["undelivered_obsolete_path_probes"]], [OLD])
+        next(p for p in server if p["number"] == 92)["number"] = 102
+        server.sort(key=lambda p: p["number"])
+        with self.assertRaisesRegex(InvalidResults, "unanswered challenge on a current path"):
+            verify_rebinding_packets(client, server, ack_first_reported=True)
+        # A repeated token leaves open which send a capture delivered.
+        client, server = traces()
+        server.extend(packet(n, SERVER, NAT2, challenges=(extra,), frames=(0x1a,)) for n in (92, 98))
+        server.sort(key=lambda p: p["number"])
+        with self.assertRaisesRegex(InvalidResults, "sent more than once"):
+            verify_rebinding_packets(client, server, ack_first_reported=True)
+        client, server = traces()
+        client.append(packet(98, SERVER, CLIENT, challenges=(B,), frames=(0x1a,)))
+        client.sort(key=lambda p: p["number"])
+        with self.assertRaisesRegex(InvalidResults, "delivered more than once"):
+            verify_rebinding_packets(client, server, ack_first_reported=True)
+        # A packet's probes arrive together: a token missing from a delivered one is not lost.
+        client, server = traces()
+        at(server, 8).update(challenges=(B, extra), frames=(0x1a, 0x1a))
+        at(client, 8).update(frames=(0x1a, 0x1a))
+        with self.assertRaisesRegex(InvalidResults, "incomplete path frame decoding"):
+            verify_rebinding_packets(client, server, ack_first_reported=True)
+        at(client, 8).update(frames=(0x1a,))
+        with self.assertRaisesRegex(InvalidResults, "only partly delivered"):
+            verify_rebinding_packets(client, server, ack_first_reported=True)
+        # The checker names a lost first probe unless an ACK-first report stopped it earlier.
+        client, server = lost_probe_traces()
+        with self.assertRaisesRegex(InvalidResults, "unanswered challenge on a current path"):
+            verify_rebinding_packets(client, server)
+        proof = verify_rebinding_packets(client, server, ack_first_reported=True)
+        self.assertEqual([p["token"] for p in proof["undelivered_redundant_path_probes"]], [B])
+
     def test_validation_may_follow_multiple_ack_datagrams(self):
         client, server = traces()
         for trace in (client, server):
