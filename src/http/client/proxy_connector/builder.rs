@@ -138,8 +138,8 @@ impl ProxyConnectorBuilder {
 impl<C, S, D> ProxyConnectorBuilder<C, S, D> {
     /// Add a custom connector around the connector built so far, keeping the stage.
     ///
-    /// Before the HTTP stage, that is the stream connector towards proxies, which every
-    /// proxy method uses, SOCKS5 included.
+    /// Before the HTTP stage, that is the stream connector of the TCP-based proxy
+    /// connections, SOCKS5 included. HTTP/3 proxies use the separate QUIC connector.
     ///
     /// After the HTTP stage, the layer wraps the HTTP connector towards proxies.
     /// A pool added later sits above it, so the layer only runs when the pool
