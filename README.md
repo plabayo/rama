@@ -24,7 +24,7 @@
 [loc-url]: https://github.com/plabayo/rama
 
 [discord-badge]: https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white
-[discord-url]: https://discord.gg/29EetaSYCD
+[discord-url]: https://discord.ramaproxy.org
 [bmac-badge]: https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black
 [bmac-url]: https://www.buymeacoffee.com/plabayo
 [ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA

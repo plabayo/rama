@@ -66,7 +66,7 @@ Yes you can, there are even some examples:
   built-in web service that can be used as a k8s health service for proxies deploying as a k8s deployment;
 - [http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_key_value_store.rs):
   a web service example showcasing how one might do a key value store web service using `Rama`;
-- [http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_web_service_dir_and_api.rs):
+- [http_router_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_router_dir_and_api.rs):
   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
 - [/examples/src/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_web_router.rs):
   a web service example showcasing demonstrating how to create a web router,
@@ -110,7 +110,7 @@ The cause is usually one of these:
 
 The full rules are documented at [`EndpointServiceFn`](https://ramaproxy.org/docs/rama/http/service/web/trait.EndpointServiceFn.html).
 
-There are other possibilities to get long wielded compiler errors as well. It is not feasible to list all possible reasons here, but know most likely it is among the lines of the examples above. If not, and you continue to be stuck, to feel free to join our discord at <https://discord.gg/29EetaSYCD> and reach out for help. We're here for you.
+There are other possibilities to get long wielded compiler errors as well. It is not feasible to list all possible reasons here, but know most likely it is among the lines of the examples above. If not, and you continue to be stuck, to feel free to join our discord at <https://discord.ramaproxy.org> and reach out for help. We're here for you.
 
 ## my cargo check/build/... commands take forever
 

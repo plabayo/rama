@@ -22,7 +22,7 @@ When making a contribution you agree to the following terms:
 
 You can join in our chat platforms to discuss development, issues or ask questions.
 
-### [Discord](https://discord.gg/29EetaSYCD)
+### [Discord](https://discord.ramaproxy.org)
 
 We have a Discord server, feel free to join it
 if you wish to char with us, ask questions or discuss
