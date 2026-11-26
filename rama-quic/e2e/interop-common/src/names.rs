@@ -451,7 +451,9 @@ pub async fn rama_server_side(run: &CaseRun<NameScenario>) -> (Endpoint, SocketA
                 .expect("the handshake settled something");
             assert_eq!(
                 settled.server_name,
-                run.scenario.asked.map(Domain::from_static),
+                run.scenario
+                    .asked
+                    .map(|name| Domain::from_static(name).into()),
                 "{}: the name rama's server says the client asked for",
                 run.what
             );

@@ -6,14 +6,15 @@ use rama_crypto::{
 use rama_net::{
     Protocol,
     address::{Domain, Host, HostWithPort},
-    client::{ConnectRequest, ConnectionError, EstablishedClientConnection},
+    client::{ConnectRequest, ConnectionError, ConnectionErrorKind, EstablishedClientConnection},
 };
 #[cfg(not(target_os = "android"))]
 use rama_tls::client::PlatformTrustPolicy;
 use rama_tls::{
     client::{
         ChannelReloadTrigger, ClientHandshake, NativeTrustPolicy, NativeTrustStoreChanges,
-        NegotiatedTlsParameters, TlsClientConfig, TlsServerTrust, parse_client_hello_handshake,
+        NegotiatedTlsParameters, TlsClientConfig, TlsServerCertPinSet, TlsServerCertPins,
+        TlsServerTrust, parse_client_hello_handshake,
     },
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData,
@@ -150,6 +151,15 @@ async fn run(dir: PathBuf, trust: impl FnOnce(ChannelReloadTrigger) -> TlsServer
             .with_base_config(TlsClientConfig::new().with_server_trust(policy.clone()))
             .with_session_store(Arc::new(TlsClientSessionCache::default())),
     );
+    // Pins for another name select the pin-aware verifiers without rejecting this peer.
+    let pinned = TlsClientConfig::new()
+        .with_server_trust(policy.clone())
+        .with_server_cert_pins(TlsServerCertPins::new(
+            TlsServerCertPinSet::new(anchor_b.clone())
+                .with_server_name(Domain::from_static("pinned.test")),
+        ));
+    let pinned_boring = BoringConnector::secure(dial.clone()).with_base_config(pinned.clone());
+    let pinned_rustls = RustlsConnector::secure(dial.clone()).with_base_config(pinned);
     let rustls = Arc::new(
         RustlsConnector::secure(dial.clone())
             .with_base_config(TlsClientConfig::new().with_server_trust(policy)),
@@ -173,6 +183,8 @@ async fn run(dir: PathBuf, trust: impl FnOnce(ChannelReloadTrigger) -> TlsServer
     read_server_byte(&mut auto_rustls.serve(request()).await.unwrap().conn).await;
     read_server_byte(&mut boring_snapshot.serve(request()).await.unwrap().conn).await;
     read_server_byte(&mut rustls_snapshot.serve(request()).await.unwrap().conn).await;
+    read_server_byte(&mut pinned_boring.serve(request()).await.unwrap().conn).await;
+    read_server_byte(&mut pinned_rustls.serve(request()).await.unwrap().conn).await;
 
     let mut first = boring.serve(request()).await.unwrap().conn;
     read_server_byte(&mut first).await;
@@ -198,7 +210,11 @@ async fn run(dir: PathBuf, trust: impl FnOnce(ChannelReloadTrigger) -> TlsServer
     let (rustls_hello, rustls_resume) = dial.pause_next_handshake();
     let rustls_pending = tokio::spawn({
         let rustls = rustls.clone();
-        async move { rustls.serve(request()).await }
+        async move {
+            let request = request();
+            request.extensions().insert(ClientHandshake::Full);
+            rustls.serve(request).await
+        }
     });
     rustls_hello.await.unwrap();
 
@@ -226,9 +242,16 @@ async fn run(dir: PathBuf, trust: impl FnOnce(ChannelReloadTrigger) -> TlsServer
     reload.request_reload().unwrap();
     drop(rustls.serve(request()).await.unwrap_err());
     drop(boring.serve(request()).await.unwrap_err()); // A's tickets cannot bypass distrust
+    // Both backends reject at the handshake, not while building their configuration.
+    let boring_error = pinned_boring.serve(request()).await.unwrap_err();
+    let rustls_error = pinned_rustls.serve(request()).await.unwrap_err();
+    assert_ne!(rustls_error.kind(), ConnectionErrorKind::InvalidInput);
+    assert_eq!(rustls_error.kind(), boring_error.kind());
     rustls_resume.send(()).unwrap();
     boring_resume.send(()).unwrap();
-    read_server_byte(&mut rustls_pending.await.unwrap().unwrap().conn).await;
+    let mut held_rustls = rustls_pending.await.unwrap().unwrap().conn;
+    read_server_byte(&mut held_rustls).await;
+    assert!(!resumed(&held_rustls));
     let mut pinned_boring = boring_pending.await.unwrap().unwrap().conn;
     read_server_byte(&mut pinned_boring).await;
     assert!(!resumed(&pinned_boring));
@@ -312,6 +335,12 @@ async fn run_platform_extras(dir: PathBuf) {
     let mut repeat = boring.serve(request()).await.unwrap().conn;
     read_server_byte(&mut repeat).await;
     assert!(resumed(&repeat));
+
+    // A trigger event can report a system trust change that the extra roots do not show.
+    reload.request_reload().unwrap();
+    let mut after_event = boring.serve(request()).await.unwrap().conn;
+    read_server_byte(&mut after_event).await;
+    assert!(!resumed(&after_event));
     read_server_byte(&mut strict.serve(request()).await.unwrap().conn).await;
 
     // A malformed extra file keeps the last good verifier until its age limit.

@@ -1,14 +1,9 @@
-use crate::certificate_compression::{
-    NativeCertificateCompression, SUPPORTED_CERTIFICATE_COMPRESSION, add_certificate_compressors,
-    native_certificate_compression,
+use std::{
+    fmt,
+    net::IpAddr,
+    sync::{Arc, LazyLock},
 };
-use crate::client::config::{BoringExtensionPresence, BoringTlsConnectorConfig};
-use crate::client::server_answer::ServerAnswerRecorder;
-use crate::client::session::{
-    self, SessionStore, TlsClientSession, TlsClientSessionKey, TlsClientSessionStore,
-};
-use crate::client::{BoringServerTrustCache, BoringServerVerification};
-use crate::type_conversion::native_unique;
+
 use moka::sync::Cache;
 use rama_boring::{
     asn1::Asn1Time,
@@ -29,31 +24,45 @@ use rama_boring::{
         store::X509Store,
     },
 };
-use rama_core::bytes::Bytes;
-use rama_core::error::BoxErrorExt as _;
-use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
+    bytes::Bytes,
+    combinators::Either,
     conversion::RamaTryInto,
-    error::{BoxError, ErrorContext, ErrorExt},
+    error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt},
+    telemetry::tracing::{debug, trace},
 };
-use rama_crypto::dep::x509_parser::nom::AsBytes;
-use rama_crypto::platform_verifier::PlatformVerifier;
+use rama_crypto::{dep::x509_parser::nom::AsBytes, platform_verifier::PlatformVerifier};
 use rama_net::{
-    address::Host,
-    tls::{ApplicationProtocol, TargetEchConfig},
+    address::HostWithPort,
+    tls::{ApplicationProtocol, ServerName, TargetEchConfig},
 };
-use rama_tls::client::{
-    ClientAuth, ClientHandshake, DynTlsServerCertChainPolicy, ServerVerifyMode, TlsClientConfig,
-    TlsPoolId, TlsServerCertPins, TlsServerTrust, resolve_target_ech,
+use rama_tls::{
+    ExtensionId, KeyLogIntent, ProtocolVersion, SignatureScheme, SupportedGroup,
+    client::{
+        ClientAuth, ClientHandshake, DynTlsServerCertChainPolicy, ServerVerificationScope,
+        ServerVerifyMode, TargetEchResolution, TlsClientConfig, TlsClientSni, TlsPoolId,
+        TlsServerCertPins, TlsServerTrust, resolve_target_ech,
+    },
+    keylog::{KeyLogSink, open_intent_sink},
 };
-use rama_tls::{ExtensionId, KeyLogIntent, SignatureScheme, SupportedGroup};
 use rama_utils::macros::generate_set_and_with;
-use std::{
-    fmt,
-    sync::{Arc, LazyLock},
-};
 
-use rama_tls::keylog::{KeyLogSink, open_intent_sink};
+use crate::{
+    certificate_compression::{
+        NativeCertificateCompression, SUPPORTED_CERTIFICATE_COMPRESSION,
+        add_certificate_compressors, native_certificate_compression,
+    },
+    client::{
+        BoringServerTrustCache, BoringServerVerification,
+        config::{BoringExtensionPresence, BoringTlsConnectorConfig},
+        negotiable::version_supported,
+        server_answer::ServerAnswerRecorder,
+        session::{
+            self, SessionStore, TlsClientSession, TlsClientSessionKey, TlsClientSessionStore,
+        },
+    },
+    type_conversion::native_unique,
+};
 
 /// The resolved native BoringSSL config consumed by [`super::TlsConnector`].
 pub struct TlsConnectorData {
@@ -62,9 +71,9 @@ pub struct TlsConnectorData {
     pub(crate) ech_intent: Option<bool>,
     ech_configured: Option<TargetEchConfig>,
     pub store_server_certificate_chain: bool,
-    /// Record the ServerHello for the connection's negotiated parameters.
     pub store_server_hello: bool,
-    pub server_name: Option<Host>,
+    pub server_name: Option<ServerName>,
+    sni_policy: TlsClientSni,
     pub server_verify_mode: ServerVerifyMode,
     pub server_cert_pins: Option<TlsServerCertPins>,
     pub server_cert_chain_policy: Option<DynTlsServerCertChainPolicy>,
@@ -72,6 +81,7 @@ pub struct TlsConnectorData {
     pub(super) client_handshake: ClientHandshake,
     remembers_sessions: bool,
     session_store: Option<SessionStore>,
+    pub(crate) offered_versions: Option<Arc<[u16]>>,
 }
 
 /// Shared client configuration, including native context callbacks and session state.
@@ -104,7 +114,8 @@ struct ConnectorOptions {
     ech_intent: Option<bool>,
     store_server_certificate_chain: bool,
     store_server_hello: bool,
-    server_name: Option<Host>,
+    server_name: Option<ServerName>,
+    sni_policy: TlsClientSni,
     server_verify_mode: ServerVerifyMode,
     server_cert_pins: Option<TlsServerCertPins>,
     server_cert_chain_policy: Option<DynTlsServerCertChainPolicy>,
@@ -123,7 +134,7 @@ struct WirePlan {
     alpn_protos: Option<Bytes>,
     curves: Option<ListPlan<SslCurve>>,
     key_shares: Option<ListPlan<SslCurve>>,
-    versions: Option<Vec<u16>>,
+    versions: Option<Arc<[u16]>>,
     verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
     signature_algorithms: Option<Vec<u16>>,
     min_version: Option<SslVersion>,
@@ -184,6 +195,7 @@ impl WirePlan {
             .set_legacy_extensions(self.legacy_extensions)
             .set_ec_point_formats(self.extension_presence.ec_point_formats)
             .set_omit_psk_key_exchange_modes(self.extension_presence.omit_psk_key_exchange_modes)
+            .set_omit_renegotiation_info(self.extension_presence.omit_renegotiation_info)
             .set_ech_grease(self.ech_grease);
         for (id, body) in self
             .extension_bodies
@@ -343,7 +355,7 @@ impl TlsConnectorContext {
 
     /// Expected key for sessions established with `server` by this context.
     /// Security policy and domain are captured when the native context is built.
-    pub fn session_key(&self, server: &Host) -> Option<TlsClientSessionKey> {
+    pub fn session_key(&self, server: &ServerName) -> Option<TlsClientSessionKey> {
         session::context_key(
             self.connector.context(),
             self.options.server_name.as_ref().unwrap_or(server),
@@ -382,6 +394,7 @@ impl TlsConnectorContext {
             store_server_certificate_chain: self.options.store_server_certificate_chain,
             store_server_hello: self.options.store_server_hello,
             server_name: self.options.server_name.clone(),
+            sni_policy: self.options.sni_policy,
             server_verify_mode: self.options.server_verify_mode,
             server_cert_pins: self.options.server_cert_pins.clone(),
             server_cert_chain_policy: self.options.server_cert_chain_policy.clone(),
@@ -389,11 +402,19 @@ impl TlsConnectorContext {
             client_handshake: self.options.client_handshake,
             remembers_sessions: self.options.remembers_sessions,
             session_store: self.options.session_store.clone(),
+            offered_versions: self.options.wire.versions.clone(),
         })
     }
 }
 
 impl TlsConnectorData {
+    /// The supported_versions list sent as set, when it is not the native range.
+    #[must_use]
+    pub fn offered_versions(&self) -> Option<&[u16]> {
+        self.offered_versions.as_deref()
+    }
+
+    /// Whether this session has endpoint ECH configuration.
     pub(crate) fn has_target_ech(&self) -> bool {
         self.ech_configured.is_some()
     }
@@ -416,6 +437,15 @@ impl TlsConnectorData {
             extensions
         };
         let resolution = resolve_target_ech(effective, target, true)?;
+        self.configure_resolved_target_ech(target, resolution)
+    }
+
+    /// Apply the same endpoint resolution used to prepare this session's profile.
+    pub fn configure_resolved_target_ech(
+        &mut self,
+        target: &HostWithPort,
+        resolution: TargetEchResolution,
+    ) -> Result<(), BoxError> {
         let config = resolution.config;
         self.ech_required = resolution.required;
         if config.is_none() && self.ech_configured.is_some() {
@@ -440,6 +470,8 @@ impl TlsConnectorData {
     /// Prepare one TLS session, including peer identity verification and certificate pins.
     /// The caller selects its transport and starts the handshake. A transport
     /// requiring a stored session must supply it before emitting handshake output.
+    /// The engine negotiates its min..max range, so a caller must reject a negotiated
+    /// version missing from [`Self::offered_versions`].
     pub fn into_ssl(mut self) -> Result<rama_boring::ssl::Ssl, BoxError> {
         if self.ech_required && self.ech_configured.is_none() {
             return Err(BoxError::from_static_str(
@@ -461,15 +493,23 @@ impl TlsConnectorData {
             },
             self.server_name.as_ref(),
         );
-        let identity = self
-            .server_name
-            .as_ref()
-            .map(super::connector::server_identity_for)
-            .transpose()?;
+        let identity = self.server_name.as_ref().map(ToString::to_string);
+        if self.sni_policy != TlsClientSni::Auto {
+            self.config
+                .set_use_server_name_indication(self.sni_policy != TlsClientSni::Disabled);
+        }
         let mut ssl = self
             .config
             .into_ssl(identity.as_deref())
             .context("prepare boring client TLS session")?;
+        if self.sni_policy == TlsClientSni::IncludeIp
+            && identity
+                .as_deref()
+                .is_some_and(|name| name.parse::<IpAddr>().is_ok())
+        {
+            ssl.set_hostname(identity.as_deref().context("IP identity missing")?)
+                .context("set IP literal SNI")?;
+        }
         ssl.set_reject_unusable_ech_config(self.ech_required);
         super::ech::bind_retry_authentication(
             &mut ssl,
@@ -577,6 +617,16 @@ fn shared_security_context(
     const MAX_SHARED_CONTEXTS: u64 = 64;
     static CONTEXTS: LazyLock<Cache<TlsPoolId, SslConnector>> =
         LazyLock::new(|| Cache::new(MAX_SHARED_CONTEXTS));
+    shared_security_context_in(&CONTEXTS, value, prepared, owner)
+}
+
+// The cache is a parameter so tests can observe sharing without the process-wide one.
+pub(super) fn shared_security_context_in(
+    shared: &Cache<TlsPoolId, SslConnector>,
+    value: &BoringTlsConnectorConfig<'_>,
+    prepared: Option<&BoringServerVerification>,
+    owner: Option<&BoringServerTrustCache>,
+) -> Result<SslConnector, BoxError> {
     let uses_derived_store = prepared.is_some()
         && value
             .server_trust
@@ -588,7 +638,7 @@ fn shared_security_context(
         };
         owner.stateless_contexts()
     } else {
-        &CONTEXTS
+        shared
     };
     let Some(scope) = value
         .context_scope_with_verification(prepared)
@@ -639,10 +689,13 @@ impl TlsConnectorContextBuilder {
         prepared: Option<&BoringServerVerification>,
     ) -> Result<Self, BoxError> {
         let verification = value.acquire_verification(prepared)?;
-        Ok(Self {
-            config: security_context(value, verification.as_ref())?,
-            options: ConnectorOptions::from_config(value, verification.as_ref())?,
-        })
+        let mut config = security_context(value, verification.as_ref())?;
+        let options = ConnectorOptions::from_config(value, verification.as_ref())?;
+        // A caller-retained context cannot see later trust events, so a stored chain is rechecked.
+        if options.platform_verifier.is_some() {
+            config.set_reverify_on_resume(true);
+        }
+        Ok(Self { config, options })
     }
 }
 
@@ -734,10 +787,6 @@ impl ConnectorOptions {
                 (_, _) => ListPlan::Raw(p.0.iter().map(|g| u16::from(*g)).collect()),
             }
         });
-        let versions: Option<Vec<u16>> = value
-            .versions
-            .filter(|p| p.0.iter().any(|v| v.is_grease()))
-            .map(|p| p.0.iter().map(|v| u16::from(*v)).collect());
         let delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>> =
             value.delegated_credentials.map(|p| {
                 p.0.iter()
@@ -746,17 +795,21 @@ impl ConnectorOptions {
             });
 
         // Versions: min/max derived from the offered list, explicit overrides win.
-        // (The max override also doubles as the mitm egress safety clamp.)
+        // (The max override also caps a mirrored hello without supported_versions.)
         let mut min_version: Option<SslVersion> = None;
         let mut max_version: Option<SslVersion> = None;
         if let Some(versions) = value.versions {
-            if let Some(min) = versions.0.iter().filter(|v| !v.is_grease()).min() {
+            if value.min_version.is_none()
+                && let Some(min) = versions.0.iter().filter(|v| !v.is_grease()).min()
+            {
                 min_version = Some((*min).rama_try_into().map_err(|v| {
                     BoxError::from_static_str("boring connector: cast min proto version")
                         .context_field("protocol_version", v)
                 })?);
             }
-            if let Some(max) = versions.0.iter().filter(|v| !v.is_grease()).max() {
+            if value.max_version.is_none()
+                && let Some(max) = versions.0.iter().filter(|v| !v.is_grease()).max()
+            {
                 max_version = Some((*max).rama_try_into().map_err(|v| {
                     BoxError::from_static_str("boring connector: cast max proto version")
                         .context_field("protocol_version", v)
@@ -776,15 +829,7 @@ impl ConnectorOptions {
             })?);
         }
 
-        // A TLS 1.3-only `supported_versions` offer derives min == max == TLS 1.3
-        // from the list. If an egress max-version clamp (mitm safety, see
-        // `BoringMaxVersion` / `TlsClientConfig::rama_from(&ClientHello)`) then lowered
-        // max to TLS 1.2, min would exceed max, which boring rejects. TLS 1.3 is
-        // the only version above TLS 1.2, so lower exactly that floor to keep the
-        // connector internally consistent (a lower legitimate floor is untouched).
-        if min_version == Some(SslVersion::TLS1_3) && max_version == Some(SslVersion::TLS1_2) {
-            min_version = Some(SslVersion::TLS1_2);
-        }
+        let versions = value.versions.and_then(|p| raw_versions(&p.0, value));
 
         let requested_trust_anchors = value
             .requested_trust_anchors
@@ -872,7 +917,8 @@ impl ConnectorOptions {
                 == Some(&rama_tls::client::EchRequirement::Required),
             store_server_certificate_chain: value.store_chain.map(|p| p.0).unwrap_or_default(),
             store_server_hello: value.store_server_hello.map(|p| p.0).unwrap_or_default(),
-            server_name: value.server_name.map(|s| s.0.clone()),
+            server_name: value.server_name.cloned(),
+            sni_policy: value.sni_policy.copied().unwrap_or_default(),
             server_verify_mode: value.verify.map(|v| v.0).unwrap_or_default(),
             server_cert_pins: value.server_cert_pins.cloned(),
             server_cert_chain_policy: value.server_cert_chain_policy.cloned(),
@@ -938,6 +984,15 @@ fn security_context(
         }
     }
     let server_trust_store = resolve_verification(value, prepared)?;
+    let reverify_platform = match &server_trust_store {
+        Some(ResolvedServerTrustStore::Platform(platform)) => {
+            !ServerVerificationScope::allows_resumption::<()>(
+                value.server_trust,
+                &Either::B(platform.clone()),
+            )
+        }
+        _ => false,
+    };
     let client_auth = value
         .client_auth
         .map(|c| ConnectorConfigClientAuth::try_from(c.0.clone()))
@@ -996,9 +1051,11 @@ fn security_context(
     add_certificate_compressors(&mut cfg_builder, SUPPORTED_CERTIFICATE_COMPRESSION)
         .context("build (boring) ssl connector: certificate compression")?;
 
-    // A resumed session skips verification; with pins or a chain policy, verify
-    // its stored chain again.
-    if value.server_cert_pins.is_some() || value.server_cert_chain_policy.is_some() {
+    // Recheck stored chains when policy or unobservable platform trust can reject them.
+    if value.server_cert_pins.is_some()
+        || value.server_cert_chain_policy.is_some()
+        || reverify_platform
+    {
         cfg_builder.set_reverify_on_resume(true);
     }
 
@@ -1066,6 +1123,30 @@ fn client_credential_scope(
 enum NativeGrease {
     First,
     FirstAndLast,
+}
+
+/// The supported_versions list to send as set, when a native min..max range would
+/// differ from it by more than order: GREASE, a version outside explicit bounds the
+/// engine cannot negotiate, or a version inside the range the list skips.
+fn raw_versions(
+    listed: &[ProtocolVersion],
+    value: &BoringTlsConnectorConfig<'_>,
+) -> Option<Arc<[u16]>> {
+    let real = || listed.iter().copied().filter(|v| !v.is_grease());
+    let min = value.min_version.map(|p| p.0).or_else(|| real().min())?;
+    let max = value.max_version.map(|p| p.0).or_else(|| real().max())?;
+    let outside = |v: ProtocolVersion| v < min || v > max;
+    let raw = listed.iter().any(ProtocolVersion::is_grease)
+        || real().any(|v| !version_supported(u16::from(v)) && outside(v))
+        || [
+            ProtocolVersion::TLSv1_0,
+            ProtocolVersion::TLSv1_1,
+            ProtocolVersion::TLSv1_2,
+            ProtocolVersion::TLSv1_3,
+        ]
+        .into_iter()
+        .any(|v| !outside(v) && !listed.contains(&v));
+    raw.then(|| listed.iter().map(|v| u16::from(*v)).collect())
 }
 
 /// `list` as set, or with GREASE slots where the native list has them when it names none.
@@ -1264,20 +1345,182 @@ fn self_signed_client_auth() -> Result<(Vec<X509>, PKey<Private>), BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::client::{BoringMaxVersion, BoringSignatureSchemes};
-    use rama_core::extensions::Extensions;
-    use rama_crypto::pki_types::CertificateDer;
-    use rama_net::tls::TlsAlpn;
-    use rama_tls::client::{
-        ClientHello, ClientHelloExtension, TlsServerCertPins, TlsServerTrust,
-        TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain,
+    use std::time::Duration;
+    #[cfg(any(target_vendor = "apple", windows))]
+    use std::time::Instant;
+
+    #[cfg(any(target_vendor = "apple", windows))]
+    use rama_boring::ssl::{SslAlert, SslVerifyError};
+    use rama_boring::x509::store::X509StoreBuilder;
+    #[cfg(any(target_vendor = "apple", windows))]
+    use rama_boring_tokio::SslStreamBuilder;
+    #[cfg(any(target_vendor = "apple", windows))]
+    use rama_core::ServiceInput;
+    use rama_core::{combinators::Either, extensions::Extensions};
+    use rama_crypto::{
+        cert::{GeneratedServerAuthConfig, generate_server_auth},
+        pki_types::CertificateDer,
     };
-    use rama_tls::{CipherSuite, ProtocolVersion, SignatureScheme};
+    use rama_net::{address::Domain, tls::TlsAlpn};
+    use rama_tls::{
+        CipherSuite, ProtocolVersion, SignatureScheme,
+        client::{
+            ClientHello, ClientHelloExtension, NativeTrustPolicy, TlsServerCertPins,
+            TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain,
+        },
+    };
+    #[cfg(any(target_vendor = "apple", windows))]
+    use rama_tls::{
+        client::{ChannelReloadTrigger, PlatformTrustPolicy},
+        server::{ServerAuthData, TlsServerConfig},
+    };
+    #[cfg(any(target_vendor = "apple", windows))]
+    use rama_utils::octets::kib;
+    #[cfg(any(target_vendor = "apple", windows))]
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _, duplex},
+        time::timeout,
+    };
+
+    use super::*;
+    use crate::client::{
+        BoringClientConfigExt as _, BoringMaxVersion, BoringServerTrustCache,
+        BoringSignatureSchemes, verification,
+    };
+    #[cfg(any(target_vendor = "apple", windows))]
+    use crate::{client::session::TlsClientSessionCache, server::TlsAcceptorData};
+
+    #[cfg(any(target_vendor = "apple", windows))]
+    #[tokio::test]
+    async fn platform_sessions_reverify_stored_chains_without_a_live_signal() {
+        check_platform_sessions(true, false).await;
+    }
+
+    #[cfg(any(target_vendor = "apple", windows))]
+    #[tokio::test]
+    async fn platform_session_callbacks_recheck_resumed_chains_without_a_live_signal() {
+        check_platform_sessions(false, false).await;
+    }
+
+    #[cfg(any(target_vendor = "apple", windows))]
+    #[tokio::test]
+    async fn retained_platform_context_rechecks_tickets_with_a_live_signal() {
+        check_platform_sessions(false, true).await;
+    }
+
+    #[cfg(any(target_vendor = "apple", windows))]
+    async fn check_platform_sessions(verify_native: bool, live: bool) {
+        let (chain, key) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
+        let (_sender, trigger) = ChannelReloadTrigger::new();
+        let policy = if live {
+            PlatformTrustPolicy::new().with_reload_trigger(trigger)
+        } else {
+            PlatformTrustPolicy::new()
+        };
+        let trust = TlsServerTrust::from(policy)
+            .try_with_additional_anchors([chain.last().unwrap().clone()])
+            .unwrap();
+        let config = TlsClientConfig::new()
+            .with_server_name(Domain::tld_localhost())
+            .with_server_trust(trust);
+        for version in [SslVersion::TLS1_2, SslVersion::TLS1_3] {
+            let auth = ServerAuthData {
+                cert_chain: chain.clone(),
+                private_key: key.clone_key(),
+                ocsp: None,
+            };
+            let mut server =
+                TlsAcceptorData::try_from(&TlsServerConfig::new().with_server_auth(auth))
+                    .unwrap()
+                    .into_static_acceptor_builder()
+                    .unwrap();
+            server.set_min_proto_version(Some(version)).unwrap();
+            server.set_max_proto_version(Some(version)).unwrap();
+            let server = server.build();
+            let context = TlsConnectorContextBuilder::try_from(&config)
+                .unwrap()
+                .with_session_store(Arc::new(TlsClientSessionCache::default()))
+                .build();
+            for (attempt, distrust) in [false, false, true].into_iter().enumerate() {
+                let mut data = context.configure().unwrap();
+                if distrust {
+                    data.platform_verifier = Some(Arc::new(PlatformVerifier::new()));
+                }
+                let mut ssl = data.into_ssl().unwrap();
+                if !verify_native {
+                    ssl.set_custom_verify_callback(SslVerifyMode::PEER, move |_| {
+                        if distrust {
+                            Err(SslVerifyError::Invalid(SslAlert::UNKNOWN_CA))
+                        } else {
+                            Ok(())
+                        }
+                    });
+                }
+                let (client_io, server_io) = duplex(kib(16));
+                let accept = async {
+                    if let Ok(mut stream) = rama_boring_tokio::accept(&server, server_io).await {
+                        _ = stream.write_u8(b'x').await;
+                    }
+                };
+                let started = Instant::now();
+                let connect = async {
+                    let mut stream = SslStreamBuilder::new(ssl, ServiceInput::new(client_io))
+                        .connect()
+                        .await
+                        .context("complete session handshake")?;
+                    stream.read_u8().await.context("receive session ticket")?;
+                    Ok::<_, BoxError>(stream.ssl().session_reused())
+                };
+                let result = timeout(Duration::from_secs(5), async {
+                    tokio::join!(accept, connect).1
+                })
+                .await
+                .unwrap();
+                if distrust {
+                    assert!(
+                        result.is_err(),
+                        "a stored chain must be checked against current platform trust"
+                    );
+                } else {
+                    assert_eq!(result.unwrap(), attempt != 0);
+                    if attempt != 0 && verify_native {
+                        eprintln!(
+                            "resumed handshake with platform reverification {version:?}: {:?}",
+                            started.elapsed()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sni_policy_separates_stateless_native_contexts() {
+        // A local cache: the process-wide one is shared with concurrently running tests.
+        let contexts = Cache::new(8);
+        let context = |config: &TlsClientConfig| {
+            let view = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
+            shared_security_context_in(&contexts, &view, None, None).unwrap()
+        };
+        // Connectors stay alive while compared, so a freed context cannot reuse an address.
+        let same = |a: &SslConnector, b: &SslConnector| {
+            std::ptr::eq(
+                a.configure().unwrap().ssl_context(),
+                b.configure().unwrap().ssl_context(),
+            )
+        };
+        let config = TlsClientConfig::new().with_server_name(Domain::from_static("127.0.0.1"));
+        let baseline = context(&config);
+        assert!(same(&baseline, &context(&config)));
+        let opted = config.with_sni_policy(TlsClientSni::IncludeIp);
+        let first = context(&opted);
+        assert!(!same(&baseline, &first));
+        assert!(same(&first, &context(&opted)));
+    }
 
     #[test]
     fn shared_context_keeps_connection_configuration_independent() {
-        let config = TlsClientConfig::new().with_server_name(Host::from_static("one.example"));
+        let config = TlsClientConfig::new().with_server_name(Domain::from_static("one.example"));
         let mut builder = TlsConnectorContextBuilder::try_from(&config).unwrap();
         builder
             .config
@@ -1290,7 +1533,7 @@ mod tests {
             .config
             .set_max_proto_version(Some(SslVersion::TLS1_2))
             .unwrap();
-        first.server_name = Some(Host::from_static("two.example"));
+        first.server_name = Some(ServerName::from(Domain::from_static("two.example")));
         let second = shared.configure().unwrap();
         assert!(std::ptr::eq(
             first.config.ssl_context(),
@@ -1317,7 +1560,7 @@ mod tests {
             .build();
         context.configure().unwrap().into_ssl().unwrap_err();
         let mut named = context.configure().unwrap();
-        named.server_name = Some(Host::from_static("example.com"));
+        named.server_name = Some(ServerName::from(Domain::example()));
         named.into_ssl().unwrap();
         context.configure().unwrap().into_ssl().unwrap_err();
     }
@@ -1372,8 +1615,6 @@ mod tests {
 
     #[test]
     fn custom_server_trust_anchors_build_default_verifier() {
-        use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
-
         let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
         let config = TlsClientConfig::new()
             .try_with_server_trust_anchors([chain[1].clone()])
@@ -1384,11 +1625,6 @@ mod tests {
 
     #[test]
     fn cached_context_changes_with_reloadable_verification() -> Result<(), BoxError> {
-        use rama_boring::x509::store::X509StoreBuilder;
-        use rama_core::combinators::Either;
-        use rama_tls::client::NativeTrustPolicy;
-        use std::time::Duration;
-
         let config = TlsClientConfig::new()
             .with_server_trust(NativeTrustPolicy::new().with_max_age(Duration::from_secs(60)));
         let view = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
@@ -1418,13 +1654,10 @@ mod tests {
             TlsServerTrust::native_roots(),
             TlsServerTrust::webpki_roots(),
         ] {
-            let first = crate::client::verification::acquire(&trust).unwrap();
-            let second = crate::client::verification::acquire(&trust).unwrap();
+            let first = verification::acquire(&trust).unwrap();
+            let second = verification::acquire(&trust).unwrap();
             match (first, second) {
-                (
-                    rama_core::combinators::Either::A(first),
-                    rama_core::combinators::Either::A(second),
-                ) => assert!(Arc::ptr_eq(&first, &second)),
+                (Either::A(first), Either::A(second)) => assert!(Arc::ptr_eq(&first, &second)),
                 _ => return Err(BoxError::from_static_str("expected BoringSSL root stores")),
             }
         }
@@ -1433,10 +1666,6 @@ mod tests {
 
     #[test]
     fn additional_trust_anchors_extend_native_and_webpki_roots() {
-        use crate::client::BoringServerTrustCache;
-        use rama_core::combinators::Either;
-        use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
-
         let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
         let anchor = chain[1].clone();
         let cache = BoringServerTrustCache::default();
@@ -1483,16 +1712,12 @@ mod tests {
 
     #[test]
     fn custom_cert_store_takes_precedence_over_trust_anchors() {
-        use crate::client::BoringClientConfigExt as _;
-
-        let store = rama_boring::x509::store::X509StoreBuilder::new()
-            .unwrap()
-            .build();
+        let store = X509StoreBuilder::new().unwrap().build();
         // the unparsable anchor proves the anchors are ignored
         let config = TlsClientConfig::new()
             .try_with_server_trust_anchors([CertificateDer::from(vec![1, 2, 3])])
             .unwrap()
-            .with_server_verify_cert_store(std::sync::Arc::new(store));
+            .with_server_verify_cert_store(Arc::new(store));
 
         TlsConnectorData::try_from(&config).unwrap();
     }
@@ -1522,22 +1747,21 @@ mod tests {
     }
 
     /// Build connector data straight from a captured ClientHello, through the
-    /// full pieces pipeline (clamp decision in `config.rs` + min/max derivation
-    /// here), so these tests exercise the real `tls13` egress safeguard.
+    /// full pieces pipeline (mirror in `config.rs` + min/max derivation
+    /// here).
     fn connector_data_from_hello(hello: &ClientHello) -> TlsConnectorData {
-        use crate::client::BoringClientConfigExt as _;
         let config = TlsClientConfig::new_from_client_hello(hello);
         TlsConnectorData::try_from(&config).expect("build connector data from client hello")
     }
 
     #[test]
-    fn tls13_only_but_not_viable_clamps_and_keeps_min_le_max() {
-        // TLS 1.3 advertised, but no TLS 1.3 cipher suites: not viable.
+    fn tls13_only_but_not_viable_hello_stays_tls13_only() {
+        // TLS 1.3 advertised, but no TLS 1.3 cipher suites: not viable, yet the only
+        // version listed, so the mirror offers no other.
         let hello = hello_from(vec![ProtocolVersion::TLSv1_3], Vec::new(), Vec::new());
         let mut data = connector_data_from_hello(&hello);
-        // Regression guard for the min>max inversion: both ends pinned to TLS 1.2.
-        assert_eq!(data.config.max_proto_version(), Some(SslVersion::TLS1_2));
-        assert_eq!(data.config.min_proto_version(), Some(SslVersion::TLS1_2));
+        assert_eq!(data.config.max_proto_version(), Some(SslVersion::TLS1_3));
+        assert_eq!(data.config.min_proto_version(), Some(SslVersion::TLS1_3));
     }
 
     #[test]
@@ -1556,11 +1780,10 @@ mod tests {
     }
 
     #[test]
-    fn tls13_viability_clamp_truth_table_never_inverts_min_max() {
+    fn tls13_viability_never_inverts_min_max_or_caps_the_offer() {
         // Drive the whole pipeline for every TLS 1.3 viability combination: the
         // connector must always be internally consistent (boring never sees
-        // min > max), and the clamp must fire exactly when TLS 1.3 is offered
-        // without being coherently viable.
+        // min > max), and a listed TLS 1.3 is never capped.
         for supported in [false, true] {
             for ciphers in [false, true] {
                 for sigalgs in [false, true] {
@@ -1586,18 +1809,17 @@ mod tests {
                     let min = data.config.min_proto_version();
                     let max = data.config.max_proto_version();
 
-                    // The only inversion the clamp could introduce is min=1.3, max=1.2.
                     assert!(
                         !(min == Some(SslVersion::TLS1_3) && max == Some(SslVersion::TLS1_2)),
                         "inverted min>max (supported={supported} ciphers={ciphers} sigalgs={sigalgs}): min={min:?} max={max:?}"
                     );
 
-                    // Clamp fires iff TLS 1.3 is offered but not viable.
-                    if supported && (!ciphers || !sigalgs) {
+                    // A listed TLS 1.3 is offered as listed, viable or not.
+                    if supported {
                         assert_eq!(
                             max,
-                            Some(SslVersion::TLS1_2),
-                            "expected TLS 1.2 clamp (supported={supported} ciphers={ciphers} sigalgs={sigalgs})"
+                            Some(SslVersion::TLS1_3),
+                            "(ciphers={ciphers} sigalgs={sigalgs})"
                         );
                     }
                 }

@@ -10,18 +10,21 @@ use rama_boring::{
     },
 };
 use rama_core::{
-    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
+    error::{ArcError, BoxError, BoxErrorExt as _, ErrorContext as _},
     telemetry::tracing::{debug, trace},
 };
 use rama_crypto::pki_types::CertificateDer;
+use tokio::runtime::Handle;
 
 use super::StoreRoots;
 use rama_tls::client::TlsServerTrustAnchors;
 
-static NATIVE: LazyLock<Result<Arc<X509Store>, BoxError>> =
-    LazyLock::new(build_os_default_verify_store);
-static WEBPKI: LazyLock<Result<Arc<X509Store>, BoxError>> =
-    LazyLock::new(build_webpki_verify_store);
+type SharedStore = Result<Arc<X509Store>, ArcError>;
+
+static NATIVE: LazyLock<SharedStore> =
+    LazyLock::new(|| build_os_default_verify_store().map_err(ArcError::from));
+static WEBPKI: LazyLock<SharedStore> =
+    LazyLock::new(|| build_webpki_verify_store().map_err(ArcError::from));
 
 const NATIVE_CONTEXT: &str = "shared default verify store";
 const WEBPKI_CONTEXT: &str = "shared WebPKI verify store";
@@ -30,26 +33,41 @@ pub(in crate::client) fn native() -> Result<Arc<X509Store>, BoxError> {
     shared_store(&NATIVE, NATIVE_CONTEXT)
 }
 
-pub(super) fn native_ready() -> Option<Result<Arc<X509Store>, BoxError>> {
-    LazyLock::get(&NATIVE).map(|store| shared_store(store, NATIVE_CONTEXT))
+pub(super) async fn native_async() -> Result<Arc<X509Store>, BoxError> {
+    shared_async(&NATIVE, NATIVE_CONTEXT).await
 }
 
 pub(super) fn webpki() -> Result<Arc<X509Store>, BoxError> {
     shared_store(&WEBPKI, WEBPKI_CONTEXT)
 }
 
-pub(super) fn webpki_ready() -> Option<Result<Arc<X509Store>, BoxError>> {
-    LazyLock::get(&WEBPKI).map(|store| shared_store(store, WEBPKI_CONTEXT))
+pub(super) async fn webpki_async() -> Result<Arc<X509Store>, BoxError> {
+    shared_async(&WEBPKI, WEBPKI_CONTEXT).await
 }
 
-fn shared_store(
-    store: &Result<Arc<X509Store>, BoxError>,
+/// A built store without leaving the task; a first build runs off the async worker.
+async fn shared_async(
+    store: &'static LazyLock<SharedStore>,
     context: &'static str,
 ) -> Result<Arc<X509Store>, BoxError> {
+    if let Some(store) = LazyLock::get(store) {
+        return shared_store(store, context);
+    }
+    match Handle::try_current() {
+        Ok(runtime) => {
+            runtime
+                .spawn_blocking(move || shared_store(store, context))
+                .await?
+        }
+        Err(_no_runtime) => shared_store(store, context),
+    }
+}
+
+fn shared_store(store: &SharedStore, context: &'static str) -> Result<Arc<X509Store>, BoxError> {
     store
         .as_ref()
         .cloned()
-        .map_err(|error| error.to_string().context(context).into_box_error())
+        .map_err(|error| error.clone().context(context).into())
 }
 
 pub(super) fn derived(
@@ -184,4 +202,22 @@ fn build_builtin_verify_store(
     }
 
     Ok(Arc::new(builder.build()))
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_core::error::{CauseExt as _, TimeoutError};
+
+    use super::{ArcError, BoxError, SharedStore, shared_store};
+
+    #[test]
+    fn shared_store_errors_keep_their_source() {
+        let store: SharedStore = Err(ArcError::from(BoxError::from(TimeoutError::new())));
+        for _ in 0..2 {
+            let Err(error) = shared_store(&store, "shared test store") else {
+                panic!("expected the shared store error");
+            };
+            assert!(error.find_cause::<TimeoutError>().is_some());
+        }
+    }
 }

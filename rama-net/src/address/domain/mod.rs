@@ -1,4 +1,4 @@
-use core::{cmp::Ordering, fmt};
+use core::{cmp::Ordering, fmt, net::IpAddr};
 
 use rama_core::bytes::Bytes;
 
@@ -119,6 +119,13 @@ impl Domain {
     #[must_use]
     pub const fn into_host(self) -> Host {
         Host::Name(self)
+    }
+
+    /// Return the address when this domain's text is a strict IP literal.
+    /// A trailing dot retains its DNS identity.
+    #[must_use]
+    pub fn as_ip(&self) -> Option<IpAddr> {
+        self.as_str().parse().ok()
     }
 
     /// Return the RFC 3986 canonical presentation of this domain.
@@ -1277,8 +1284,9 @@ pub(super) mod seal {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use core::hash::{Hash, Hasher};
+
+    use super::*;
 
     #[test]
     fn canonicalize_lowercases_the_presentation() {

@@ -18,7 +18,7 @@ fn normalize_grease(value: &mut u16, is_grease: impl Fn(u16) -> bool) {
 }
 
 /// A trust anchor list in identifier byte order, as some clients shuffle it per handshake.
-fn sorted_trust_anchors(value: &[u8]) -> Option<Box<[u8]>> {
+pub(in crate::profile) fn sorted_trust_anchors(value: &[u8]) -> Option<Box<[u8]>> {
     let mut rest = trust_anchors_identifier_list(value)?;
     let mut identifiers = Vec::new();
     while let Some((&length, tail)) = rest.split_first() {

@@ -144,7 +144,7 @@ impl DynamicCertIssuer for DynamicIssuer {
         &self,
         context: CertificateIssuanceContext,
     ) -> Result<ServerAuthData, BoxError> {
-        match context.client_hello.ext_server_name() {
+        match context.client_hello.ext_server_domain() {
             Some(domain) => {
                 if domain == "example" {
                     return Ok(self.example_data.clone());

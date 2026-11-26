@@ -31,13 +31,12 @@
 //! assert_eq!(ext.get_ref::<MyExt>(), Some(&MyExt(5)));
 //! ```
 
-use core::any::TypeId;
-use core::fmt;
-
-use crate::std::{boxed::Box, sync::Arc, vec::Vec};
+use core::{any::TypeId, fmt};
 
 pub use rama_macros::{Extension, ExtensionsRef, FromExtensions};
 use rama_utils::collections::AppendOnlyVec;
+
+use crate::std::{boxed::Box, sync::Arc, vec::Vec};
 
 mod extension;
 mod get_many;
@@ -52,9 +51,8 @@ pub use extension::{
 };
 pub use get_many::{FromExtensionsGroup, GetManyArc, GetManyRef, Target, TargetPlan, Targets};
 pub use refs::{ExtensionsMut, ExtensionsRef};
-pub use wrappers::{Egress, Ingress};
-
 use store::{Node, Store, type_bit};
+pub use wrappers::{Egress, Ingress};
 
 #[derive(Clone)]
 /// A type map of protocol extensions.
@@ -101,6 +99,7 @@ impl Extensions {
     }
 
     #[inline(always)]
+    /// Create an extension level with its parent and connection boundary.
     fn with_parent(parent: Option<Self>, connection_boundary: bool) -> Self {
         // Built in place: the inline entries are most of a node and stay
         // uninitialized, so there is nothing to move into the allocation.
@@ -151,6 +150,18 @@ impl Extensions {
     /// The handle of the level that owns the entries of this one.
     fn owner(&self) -> &Self {
         self.node.view_of.as_ref().unwrap_or(self)
+    }
+
+    /// Snapshot the current entries and connection boundaries, sharing stored values.
+    /// Later inserts into the source chain do not change this snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> Self {
+        let snapshot = Self::with_parent(
+            self.parent().map(Self::snapshot),
+            self.node.connection_boundary,
+        );
+        snapshot.extend(self);
+        snapshot
     }
 
     /// Create a fresh child [`Extensions`] whose parent is this [`Extensions`] store.
@@ -661,6 +672,7 @@ impl Extensions {
     }
 
     // TODO replace this later with a custom Iterator to avoid boxing
+    /// Walk borrowed values through the active extension scopes.
     fn iter_ref_inner<T: Extension>(&self) -> Box<dyn Iterator<Item = &T> + '_> {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
@@ -695,6 +707,7 @@ impl Extensions {
     }
 
     // TODO replace this later with a custom Iterator to avoid boxing
+    /// Walk shared values through the active extension scopes.
     fn iter_arc_inner<T: Extension>(&self) -> Box<dyn Iterator<Item = Arc<T>> + '_> {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
@@ -804,9 +817,12 @@ impl fmt::Debug for Extensions {
 
 #[cfg(test)]
 mod tests {
+    use core::{
+        any::TypeId,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
-    use core::any::TypeId;
-    use core::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug, Clone, PartialEq, Eq, Extension)]
     pub(super) struct TraceNote(pub(super) String);
@@ -844,6 +860,30 @@ mod tests {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
     #[extension(tags(net), scope(connection))]
     pub(super) struct Reuse(pub(super) bool);
+
+    #[test]
+    fn snapshots_keep_entries_and_connection_boundaries() {
+        let outer = Extensions::new();
+        let note = outer.insert_arc(Arc::new(RetryBudget(2)));
+        outer.insert(NegotiatedAlpn(1));
+        let inner = outer.fork_connection(&NoExtensionsTransfer::new());
+        let snapshot = inner.snapshot();
+        outer.insert(RetryBudget(3));
+        inner.insert(NegotiatedAlpn(2));
+        assert_eq!(snapshot.get_ref::<RetryBudget>(), Some(&RetryBudget(2)));
+        assert!(snapshot.get_ref::<NegotiatedAlpn>().is_none());
+        assert!(Arc::ptr_eq(
+            &note,
+            &snapshot.get_arc::<RetryBudget>().unwrap()
+        ));
+        assert_eq!(
+            snapshot
+                .parent_connection()
+                .unwrap()
+                .get_ref::<NegotiatedAlpn>(),
+            Some(&NegotiatedAlpn(1))
+        );
+    }
 
     #[test]
     fn get_ref_returns_last_inserted() {

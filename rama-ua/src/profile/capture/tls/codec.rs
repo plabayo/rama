@@ -24,6 +24,7 @@ impl TlsCapturedExtension {
                 2 + values.iter().map(|value| value.len() + 1).sum::<usize>()
             }
             // Only a minimum shape remains for destination-owned SNI.
+            TlsCapturedExtensionValue::IpServerName => 6,
             TlsCapturedExtensionValue::ServerName { present } => {
                 if *present {
                     6
@@ -155,7 +156,8 @@ impl TlsCapturedExtension {
                             | ExtensionId::APPLICATION_SETTINGS
                     )
             }
-            TlsCapturedExtensionValue::ServerName { .. } => {
+            TlsCapturedExtensionValue::ServerName { .. }
+            | TlsCapturedExtensionValue::IpServerName => {
                 ExtensionId::from(self.id) == ExtensionId::SERVER_NAME
             }
             TlsCapturedExtensionValue::KeyShares(shapes) => {
@@ -406,6 +408,7 @@ fn write_value(
             writer.u16(*payload)?;
         }
         TlsCapturedExtensionValue::EchInner => writer.u8(8)?,
+        TlsCapturedExtensionValue::IpServerName => writer.u8(10)?,
         TlsCapturedExtensionValue::ConnectionLength(size) => {
             writer.u8(9)?;
             writer.u16(*size)?;
@@ -429,6 +432,7 @@ fn read_value(
             }
             TlsCapturedExtensionValue::Protocols(values.into())
         }
+        10 => TlsCapturedExtensionValue::IpServerName,
         4 => TlsCapturedExtensionValue::ServerName {
             present: match reader.u8()? {
                 0 => false,

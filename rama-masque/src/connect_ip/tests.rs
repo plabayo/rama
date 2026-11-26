@@ -1,6 +1,15 @@
-use super::{policy::PolicyIndex, *};
-use crate::budget::{DatagramRate, TunnelBudget};
-use crate::limits::TunnelLimits;
+use std::{
+    convert::Infallible,
+    net::Ipv4Addr,
+    pin::{Pin, pin},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Context, Poll},
+    time::Duration,
+};
+
 use rama_core::{
     Layer as _, Service, ServiceInput,
     bytes::Bytes,
@@ -33,17 +42,18 @@ use rama_net::{
     user::UserId,
 };
 use rama_utils::rate::Rate;
-use std::{
-    convert::Infallible,
-    net::Ipv4Addr,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    task::{Context, Poll},
-    time::Duration,
+use tokio::{
+    io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf, duplex},
+    runtime::{Builder, Runtime},
+    task::consume_budget,
+    time::{Instant, advance, sleep, timeout},
 };
-use tokio::{io::DuplexStream, time::timeout};
+
+use super::{policy::PolicyIndex, *};
+use crate::{
+    budget::{DatagramRate, TunnelBudget},
+    limits::TunnelLimits,
+};
 
 fn prefix(s: &str) -> IpNet {
     s.parse().unwrap()
@@ -414,6 +424,119 @@ async fn invalid_packets_drop_without_killing_control() {
             ConnectIpProtocolError::EmptyRequest
         ))
     ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn receive_idles_out_one_timeout_after_the_last_activity() {
+    let (a, b) = duplex(65536);
+    let idle = Duration::from_secs(10);
+    let cfg = config().try_with_idle_timeout(idle).unwrap();
+    let mut raw = HttpDatagramSession::with_config(ServiceInput::new(a), cfg.http_config());
+    let mut session =
+        ConnectIpSession::new(ServiceInput::new(b), ConnectIpRole::Client, cfg).unwrap();
+    sleep(Duration::from_secs(6)).await;
+    raw.send_capsule(ROUTE_ADVERTISEMENT, Bytes::new())
+        .await
+        .unwrap();
+    assert!(matches!(
+        session.recv().await.unwrap(),
+        Some(ConnectIpEvent::Control(_))
+    ));
+    let last = Instant::now();
+    assert!(matches!(session.recv().await, Err(ConnectIpError::Timeout)));
+    assert_eq!(last.elapsed(), idle);
+}
+
+/// A reader that spends the task's whole cooperative budget on every read and never yields data.
+struct BudgetSpender;
+
+impl AsyncRead for BudgetSpender {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        _buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        loop {
+            if pin!(consume_budget()).poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+        }
+    }
+}
+
+impl AsyncWrite for BudgetSpender {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reader_spending_the_budget_does_not_starve_the_idle_deadline() {
+    let idle = Duration::from_secs(10);
+    let cfg = config().try_with_idle_timeout(idle).unwrap();
+    let mut session =
+        ConnectIpSession::new(ServiceInput::new(BudgetSpender), ConnectIpRole::Client, cfg)
+            .unwrap();
+    // The busy receiver keeps the runtime from advancing its paused clock by itself.
+    let clock = tokio::spawn(async {
+        for _ in 0..40 {
+            advance(Duration::from_secs(1)).await;
+        }
+    });
+    let received = timeout(Duration::from_secs(30), session.recv()).await;
+    assert!(matches!(received, Ok(Err(ConnectIpError::Timeout))));
+    clock.abort();
+}
+
+fn paused_runtime() -> Runtime {
+    Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap()
+}
+
+#[test]
+fn a_receive_resumed_on_another_runtime_still_idles_out() {
+    let (first, second) = (paused_runtime(), paused_runtime());
+    let (_peer, io) = duplex(65536);
+    let idle = Duration::from_secs(10);
+    let cfg = config().try_with_idle_timeout(idle).unwrap();
+    let mut session = first.block_on(async {
+        ConnectIpSession::new(ServiceInput::new(io), ConnectIpRole::Client, cfg).unwrap()
+    });
+    first.block_on(async {
+        timeout(Duration::from_secs(1), session.recv())
+            .await
+            .unwrap_err();
+    });
+    let received = second.block_on(async { timeout(Duration::from_mins(1), session.recv()).await });
+    assert!(matches!(received, Ok(Err(ConnectIpError::Timeout))));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_late_first_receive_keeps_the_idle_deadline_of_the_session() {
+    let (_peer, b) = duplex(65536);
+    let idle = Duration::from_secs(10);
+    let cfg = config().try_with_idle_timeout(idle).unwrap();
+    let mut session =
+        ConnectIpSession::new(ServiceInput::new(b), ConnectIpRole::Client, cfg).unwrap();
+    let start = Instant::now();
+    advance(Duration::from_secs(6)).await;
+    assert!(matches!(session.recv().await, Err(ConnectIpError::Timeout)));
+    assert_eq!(start.elapsed(), idle);
 }
 
 #[tokio::test(start_paused = true)]

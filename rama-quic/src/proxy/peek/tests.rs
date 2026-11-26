@@ -12,7 +12,12 @@ use rama_net::{
     client::ConnectorTarget,
     stream::Socket as _,
 };
-use rama_quic_proto::capture::{CaptureLimits, KeyProvider};
+use rama_quic_proto::{
+    ConnectionId, Side, Version,
+    capture::{CaptureLimits, KeyProvider},
+    coding::BufMutExt as _,
+    packet::{Header, InitialHeader, PacketNumber},
+};
 use rama_udp::{
     DatagramMetadata, DatagramSenderExt as _, PrefixedDatagramSocket, SendDatagram,
     UdpPacketSocket, proxy::DatagramToProxyBridge, test_utils::MemoryDatagramSocket,
@@ -82,7 +87,7 @@ async fn a_complete_client_hello_reaches_the_inner_service_with_the_flight_repla
                 >| {
                     let sni = peeked
                         .client_hello
-                        .ext_server_name()
+                        .ext_server_domain()
                         .map(|name| name.to_string());
                     Ok::<_, BoxError>((sni, drain(&mut input).await))
                 },
@@ -100,6 +105,41 @@ async fn a_complete_client_hello_reaches_the_inner_service_with_the_flight_repla
             client.recv(&mut buffer).await,
             Err(rama_udp::DatagramError::Closed)
         ));
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ip_literal_server_name_is_a_complete_quic_client_hello() {
+    timeout(Duration::from_secs(20), async {
+        let (client, ingress) = association();
+        let flight = initial_flight(Some("10.20.30.40"), 0);
+        for bytes in &flight {
+            deliver(&ingress, &client, bytes);
+        }
+        let peek = PeekQuicClientHelloService::new(
+            keys(),
+            service_fn(
+                async |InputWithQuicClientHello { mut input, peeked }: InputWithQuicClientHello<
+                    PrefixedDatagramSocket<MemoryDatagramSocket>,
+                >| {
+                    let hello = &peeked.client_hello;
+                    Ok::<_, BoxError>((
+                        hello.ext_server_domain().is_some(),
+                        hello.ext_server_name().and_then(|name| name.as_ip()),
+                        drain(&mut input).await,
+                    ))
+                },
+            ),
+        )
+        .with_fallback(service_fn(async |_: PrefixedDatagramSocket<_>| {
+            Err::<_, BoxError>(BoxError::from_static_str("unexpected fallback"))
+        }));
+        let (dns_name, ip, replayed) = peek.serve(ingress).await.unwrap();
+        assert!(!dns_name);
+        assert_eq!(ip, Some([10, 20, 30, 40].into()));
+        assert_eq!(replayed, flight);
     })
     .await
     .unwrap();
@@ -484,7 +524,7 @@ async fn a_peeked_association_is_bridged_with_its_client_hello() {
                     BridgeIo<PrefixedDatagramSocket<MemoryDatagramSocket>, UdpPacketSocket>,
                 >| {
                     Ok::<_, BoxError>((
-                        peeked.client_hello.ext_server_name().is_some(),
+                        peeked.client_hello.ext_server_domain().is_some(),
                         egress.peer_addr().unwrap(),
                         drain(&mut ingress).await,
                     ))
@@ -615,16 +655,30 @@ async fn shared_status_shadows_stale_failure_on_quic_and_non_quic_bridges() {
 
 /// Encrypt a large hello across Initial packets to exercise the real CRYPTO assembler.
 fn large_initial_flight() -> Vec<Vec<u8>> {
-    use rama_quic_proto::{
-        ConnectionId, Side, Version,
-        coding::BufMutExt as _,
-        packet::{Header, InitialHeader, PacketNumber},
-    };
+    initial_flight(None, kib(60))
+}
+
+/// Encrypt a hello, naming `server_name` when given, across Initial packets.
+fn initial_flight(server_name: Option<&str>, padding: usize) -> Vec<Vec<u8>> {
     let mut body = vec![3, 3]; // TLS legacy_version 0x0303.
     body.extend_from_slice(&[0; 32]); // Random.
     body.extend_from_slice(&[0, 0, 2, 0x13, 1, 1, 0]); // No session ID, TLS_AES_128_GCM_SHA256, null compression.
-    let padding = kib(60);
-    body.extend_from_slice(&u16::try_from(padding + 18).unwrap().to_be_bytes());
+    let mut sni = Vec::new();
+    if let Some(name) = server_name {
+        let name_len = u16::try_from(name.len()).unwrap();
+        sni.extend_from_slice(&[0, 0]); // TLS server_name extension.
+        sni.extend_from_slice(&(name_len + 5).to_be_bytes());
+        sni.extend_from_slice(&(name_len + 3).to_be_bytes());
+        sni.push(0); // host_name.
+        sni.extend_from_slice(&name_len.to_be_bytes());
+        sni.extend_from_slice(name.as_bytes());
+    }
+    body.extend_from_slice(
+        &u16::try_from(sni.len() + padding + 18)
+            .unwrap()
+            .to_be_bytes(),
+    );
+    body.extend_from_slice(&sni);
     body.extend_from_slice(&[0, 21]); // TLS padding extension.
     body.extend_from_slice(&u16::try_from(padding).unwrap().to_be_bytes());
     body.resize(body.len() + padding, 0);

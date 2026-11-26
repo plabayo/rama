@@ -428,6 +428,11 @@ impl StreamingRecorder for HarController {
 
 #[cfg(test)]
 mod tests {
+    use rama::{
+        Layer as _, Service as _,
+        http::{Body, Request, Response, layer::har::layer::HARExportLayer},
+        service::service_fn,
+    };
     use tokio::io::AsyncReadExt as _;
 
     use super::*;
@@ -606,11 +611,6 @@ mod tests {
 
     #[tokio::test]
     async fn paused_har_stays_frozen_and_downloadable_while_traffic_continues() {
-        use rama::{
-            Layer as _, Service as _,
-            http::{Body, Request, Response, layer::har::layer::HARExportLayer},
-            service::service_fn,
-        };
         let controller = HarController::default();
         controller.start_browser("paused.har".into()).await.unwrap();
         let service = HARExportLayer::new(controller.clone(), controller.clone()).into_layer(

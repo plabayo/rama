@@ -1,7 +1,17 @@
 use super::*;
+use CanonicalDomain::{Headers, Joint, LegacyField, Tls};
 use rama::ua::profile::{
-    evidence::ProfileEvidence, format::compiled::try_load_compiled_profiles,
-    model::identity::ProfileKey,
+    analysis::profile::ProfileAnalysisLimits,
+    capture::{
+        CAPTURE_REVISION,
+        completeness::ProfileCaptureCompleteness,
+        joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
+        observation::ProfileCapture,
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+    },
+    evidence::{ProfileEvidence, collector::ProfileEvidenceCollector, transaction::CaptureRunId},
+    format::compiled::try_load_compiled_profiles,
+    model::identity::{ConnectionContext, ProfileKey},
 };
 
 #[test]
@@ -216,18 +226,6 @@ fn compact_recompiles_a_compiled_set_without_excluded_user_agents() {
 
 #[test]
 fn export_orders_selected_scopes_canonically() {
-    use rama::ua::profile::{
-        analysis::profile::ProfileAnalysisLimits,
-        capture::{
-            CAPTURE_REVISION,
-            completeness::ProfileCaptureCompleteness,
-            joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
-            observation::ProfileCapture,
-            order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
-        },
-        evidence::{collector::ProfileEvidenceCollector, transaction::CaptureRunId},
-        model::identity::ConnectionContext,
-    };
     let profile = ProfileKey::new("export-order");
     let mut collector = ProfileEvidenceCollector::new(
         &profile,
@@ -309,10 +307,136 @@ fn export_orders_selected_scopes_canonically() {
 
 #[test]
 fn only_profiles_without_captured_flows_count_as_legacy_only() {
-    use CanonicalDomain::{Headers, Joint, LegacyField, Tls};
     assert!(legacy_only([LegacyField, LegacyField]));
     assert!(legacy_only([LegacyField, Tls]));
     assert!(!legacy_only([LegacyField, Joint]));
     assert!(!legacy_only([Joint, Headers]));
     assert!(!legacy_only([]));
+}
+
+fn export_command(verbose: bool) -> ExportProfilesCommand {
+    ExportProfilesCommand {
+        output: PathBuf::from("profiles.bin"),
+        days: 30,
+        authorized: true,
+        import_legacy: false,
+        replace: false,
+        include_legacy: false,
+        embed: true,
+        exclude_user_agents: vec!["excluded/1".into(), "absent/1".into()],
+        max_profiles: 8,
+        max_output_bytes: kib(64),
+        verbose,
+    }
+}
+
+fn report(command: &ExportProfilesCommand, read: &ReadTally, left_out: &ExportLeftOut) -> String {
+    let mut out = Vec::new();
+    report_export(&mut out, command, read, left_out).unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+fn every_reason() -> (ReadTally, ExportLeftOut) {
+    let read = ReadTally {
+        listed: 8,
+        over_count: true,
+        read: 4,
+        over_work_bound: vec!["unread/1".into()],
+        over_profile_bound: vec![
+            ("export days", "days/1".into()),
+            ("export days", "days/2".into()),
+        ],
+        left_window: vec!["gone/1\u{1b}[31m".into()],
+        superseded_scopes: 3,
+        superseded_profiles: 1,
+        ..ReadTally::default()
+    };
+    let left_out = ExportLeftOut {
+        legacy_only: vec!["legacy/1".into()],
+        excluded: vec!["excluded/1".into()],
+    };
+    (read, left_out)
+}
+
+#[test]
+fn export_report_accounts_for_every_listed_profile() {
+    let (read, left_out) = every_reason();
+    let text = report(&export_command(false), &read, &left_out);
+    let lines: Vec<_> = text.lines().collect();
+    // Two of four read profiles were left out by the export itself.
+    assert!(lines[0].contains("8+ profiles"));
+    assert!(lines[0].contains("2 exported, 6+ left out"));
+    // Each bound names the flag that changes it.
+    assert!(text.lines().any(|line| line.contains("--max-profiles 8")));
+    // The work bound line names the bound this export read under.
+    let unread = |command: &ExportProfilesCommand| {
+        report(command, &read, &left_out)
+            .lines()
+            .find(|line| line.starts_with("Profile export: 1 left out unread"))
+            .map(Box::<str>::from)
+            .unwrap()
+    };
+    for (embed, budget) in [(true, ReadBudget::Embedded), (false, ReadBudget::Archive)] {
+        let command = ExportProfilesCommand {
+            embed,
+            ..export_command(false)
+        };
+        let bound = format!("{} MiB", budget.maximum_work().unwrap() / mib(1));
+        assert!(unread(&command).contains(&bound));
+    }
+    assert!(text.lines().any(|line| line.contains("export days (2)")));
+    assert!(text.lines().any(|line| line.contains("--include-legacy")));
+    assert!(text.lines().any(|line| line.contains("1 of 2 excluded")));
+    assert!(
+        text.lines()
+            .any(|line| line.contains("3 stored scopes of 1 profiles"))
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| line.starts_with("Profile export: "))
+    );
+}
+
+#[test]
+fn verbose_export_report_lists_left_out_profiles_as_terminal_safe_text() {
+    let (read, left_out) = every_reason();
+    let quiet = report(&export_command(false), &read, &left_out);
+    let verbose = report(&export_command(true), &read, &left_out);
+    let listed: Vec<_> = verbose
+        .lines()
+        .filter_map(|line| line.strip_prefix("  "))
+        .collect();
+    assert_eq!(listed.len(), 6);
+    for label in ["unread/1", "days/1", "days/2", "legacy/1", "excluded/1"] {
+        assert!(listed.contains(&label));
+        assert!(!quiet.contains(label));
+    }
+    assert!(!verbose.contains('\u{1b}'));
+    assert_eq!(
+        verbose
+            .lines()
+            .filter(|line| line.starts_with("Profile export: "))
+            .count(),
+        quiet.lines().count()
+    );
+}
+
+#[test]
+fn a_complete_export_reports_only_its_count() {
+    let read = ReadTally {
+        listed: 3,
+        read: 3,
+        ..ReadTally::default()
+    };
+    let text = report(
+        &ExportProfilesCommand {
+            exclude_user_agents: Vec::new(),
+            ..export_command(true)
+        },
+        &read,
+        &ExportLeftOut::default(),
+    );
+    assert_eq!(text.lines().count(), 1);
+    assert!(text.contains("3 exported, 0 left out"));
 }

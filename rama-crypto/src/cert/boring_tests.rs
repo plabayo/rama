@@ -1,15 +1,18 @@
 use super::*;
 use rama_net::address::Domain;
 
-use crate::dep::boring::{
-    asn1::Asn1Time,
-    ec::{EcGroup, EcKey},
-    hash::MessageDigest,
-    nid::Nid,
-    pkey::Id,
-    x509::{
-        X509Extension, X509NameBuilder,
-        extension::{BasicConstraints, KeyUsage, SubjectAlternativeName},
+use crate::{
+    cert::CertificateIdentity,
+    dep::boring::{
+        asn1::Asn1Time,
+        ec::{EcGroup, EcKey},
+        hash::MessageDigest,
+        nid::Nid,
+        pkey::Id,
+        x509::{
+            X509Extension, X509NameBuilder,
+            extension::{BasicConstraints, KeyUsage, SubjectAlternativeName},
+        },
     },
 };
 
@@ -56,7 +59,7 @@ fn leaf_request(data: &TestCertData) -> LeafCertRequest {
             .map(CertificateIdentity::Ip),
     );
     if identities.is_empty() {
-        identities.push(CertificateIdentity::Dns(Domain::from_static("localhost")));
+        identities.push(CertificateIdentity::Dns(Domain::tld_localhost()));
     }
     LeafCertRequest {
         config: crate::cert::LeafCertConfig {
@@ -877,26 +880,24 @@ fn build_ed25519_ca(common_name: &str) -> Result<(X509, PKey<Private>), BoxError
         .context("ca ski")?;
     b.append_extension(ski.as_ref()).context("append ca ski")?;
 
-    b.sign(&privkey, signing_digest_for(&privkey))
-        .context("sign ed25519 ca")?;
+    sign_x509(&mut b, &privkey).context("sign ed25519 ca")?;
 
     Ok((b.build(), privkey))
 }
 
 #[test]
-fn signing_digest_is_null_for_eddsa_and_sha256_otherwise() {
+fn signing_digest_is_none_for_eddsa_and_sha256_otherwise() {
     let mut seed = [0_u8; 32];
     crate::dep::boring::rand::rand_bytes(&mut seed).expect("seed");
     let ed = PKey::from_ed25519_private_key(&seed).expect("ed25519 key");
     assert!(
-        signing_digest_for(&ed).as_ptr().is_null(),
-        "EdDSA must sign with a NULL digest"
+        signing_digest_for(&ed).is_none(),
+        "EdDSA must sign without a digest"
     );
 
     let rsa = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("rsa pkey");
-    assert_eq!(
-        signing_digest_for(&rsa).as_ptr(),
-        MessageDigest::sha256().as_ptr(),
+    assert!(
+        signing_digest_for(&rsa) == Some(MessageDigest::sha256()),
         "non-EdDSA keys sign over SHA-256"
     );
 }
@@ -943,19 +944,16 @@ fn signing_digest_pairs_to_ec_curve() {
         PKey::from_ec_key(EcKey::generate(&group).expect("ec key")).expect("ec pkey")
     };
 
-    assert_eq!(
-        signing_digest_for(&ec(Nid::X9_62_PRIME256V1)).as_ptr(),
-        MessageDigest::sha256().as_ptr(),
+    assert!(
+        signing_digest_for(&ec(Nid::X9_62_PRIME256V1)) == Some(MessageDigest::sha256()),
         "P-256 must sign over SHA-256"
     );
-    assert_eq!(
-        signing_digest_for(&ec(Nid::SECP384R1)).as_ptr(),
-        MessageDigest::sha384().as_ptr(),
+    assert!(
+        signing_digest_for(&ec(Nid::SECP384R1)) == Some(MessageDigest::sha384()),
         "P-384 must sign over SHA-384"
     );
-    assert_eq!(
-        signing_digest_for(&ec(Nid::SECP521R1)).as_ptr(),
-        MessageDigest::sha512().as_ptr(),
+    assert!(
+        signing_digest_for(&ec(Nid::SECP521R1)) == Some(MessageDigest::sha512()),
         "P-521 must sign over SHA-512"
     );
 }
@@ -1034,8 +1032,7 @@ fn build_source_cert_with_pubkey(
     b.set_not_before(&nb).context("set nb")?;
     let na = Asn1Time::days_from_now(30).context("na")?;
     b.set_not_after(&na).context("set na")?;
-    b.sign(issuer_key, signing_digest_for(issuer_key))
-        .context("sign source")?;
+    sign_x509(&mut b, issuer_key).context("sign source")?;
     Ok(b.build())
 }
 

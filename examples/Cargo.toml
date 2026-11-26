@@ -12,9 +12,10 @@ publish = false
 [package.metadata.cargo-public-api-crates]
 allowed = []
 
-# used by build.rs behind the `grpc`/`ttrpc` features, which cargo-machete cannot see
+# used by build.rs behind the `grpc`/`ttrpc` features, which cargo-machete cannot see;
+# `dial9` is the crate the `TraceEvent` derive of `dial9_local` resolves its paths through
 [package.metadata.cargo-machete]
-ignored = ["rama-grpc-build", "rama-ttrpc-build"]
+ignored = ["dial9", "rama-grpc-build", "rama-ttrpc-build"]
 
 [[bin]]
 name = "http_https_discovery_custom_resolver"

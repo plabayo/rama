@@ -1,7 +1,4 @@
-use std::marker::PhantomData;
-
-#[cfg(feature = "http")]
-use rama_net::tls::AlpnPolicy;
+use std::{fmt, marker::PhantomData, num::NonZeroUsize, sync::Arc};
 
 use rama_boring_tokio::{HandshakeError, SslStream};
 use rama_core::{
@@ -12,6 +9,8 @@ use rama_core::{
     io::Io,
     telemetry::tracing,
 };
+#[cfg(all(test, feature = "http"))]
+use rama_net::http::Version;
 use rama_net::{
     AuthorityInputExt, ConnectorTargetInputExt, Protocol, ProtocolInputExt,
     address::{Host, HostWithPort},
@@ -20,15 +19,25 @@ use rama_net::{
         ConnectorService, ConnectorTarget, EstablishedClientConnection,
     },
     extensions::StreamTransformed,
-    tls::{ApplicationProtocol, TlsAlpn, TlsRequired, default_tls_alpn},
+    tls::{ApplicationProtocol, ServerName, TlsAlpn, TlsRequired, default_tls_alpn},
+};
+#[cfg(feature = "http")]
+use rama_net::{
+    http::{FallbackHttpVersion, HttpRequestVersion, TargetHttpVersion},
+    tls::AlpnPolicy,
 };
 use rama_tls::client::{
-    EchRequirement, EchRetryConfig, NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig,
-    TlsConnectionReuse, TlsServerAuthentication, TlsServerIdentity, publish_tls_required,
-    resolve_target_ech,
+    EchDiscoveryComplete, EchRequirement, EchRetryConfig, NegotiatedTlsParameters,
+    ServerVerifyMode, TlsClientConfig, TlsConnectionReuse, TlsProfilePreparation,
+    TlsServerAuthentication, publish_tls_required, resolve_target_ech,
+    resolve_target_ech_for_preparation,
+};
+#[cfg(feature = "http")]
+use rama_tls::{
+    alpn::required_alpn_override,
+    client::{http_alpn_override, negotiated_http_version},
 };
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
-use std::{fmt, num::NonZeroUsize, sync::Arc};
 
 #[cfg(feature = "http")]
 use super::set_alpn_with_coupled_alps;
@@ -39,17 +48,9 @@ use super::{
     set_alpn_list_with_coupled_alps,
     verification::DEFAULT_CACHE_CAPACITY,
 };
-
+#[cfg(feature = "dial9")]
+use crate::dial9::tls_handshake_error_kind as kind;
 use crate::{TlsStream, type_conversion::peer_certificate_chain};
-#[cfg(all(test, feature = "http"))]
-use rama_net::http::Version;
-#[cfg(feature = "http")]
-use rama_net::http::{FallbackHttpVersion, HttpRequestVersion, TargetHttpVersion};
-#[cfg(feature = "http")]
-use rama_tls::{
-    alpn::required_alpn_override,
-    client::{http_alpn_override, negotiated_http_version},
-};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
@@ -419,15 +420,6 @@ where
     }
 }
 
-pub(super) fn server_identity_for(host: &Host) -> Result<String, BoxError> {
-    match TlsServerIdentity::try_from(host)
-        .context("server identity is not a DNS name or IP address")?
-    {
-        TlsServerIdentity::Dns(domain) => Ok(domain.as_str().to_owned()),
-        TlsServerIdentity::Ip(ip) => Ok(ip.to_string()),
-    }
-}
-
 #[cfg(feature = "http")]
 fn set_target_http_version(
     application_protocol: Option<&Protocol>,
@@ -492,37 +484,32 @@ impl<S, K> TlsConnector<S, K> {
                         ConnectionErrorKind::InvalidInput,
                     )
                 })?;
-                let mut data = self
-                    .connector_data(
+                let data = self
+                    .connector_data_for_target(
                         input.extensions(),
                         input.target_protocol(),
                         Some(&authority.host),
+                        target.as_ref(),
+                        retry_config.as_ref(),
                     )
                     .await
                     .map_err(|error| {
                         ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     })?;
-                if let Some(target) = &target {
-                    let effective = self.effective_extensions(input.extensions());
-                    if let Some(retry) = &retry_config {
-                        retry.apply(&effective, target.clone());
-                    }
-                    data.configure_target_ech(&effective, target)
-                        .map_err(|error| {
-                            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                        })?;
-                }
                 let scope = Self::check_connection_identity(
                     &input,
                     data.server_verify_mode,
                     data.server_name.as_ref(),
-                    &authority.host,
                 )?;
                 (data, scope)
             };
             let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
             match handshake(data, conn).await {
                 Ok((stream, negotiated_params)) => {
+                    TlsProfilePreparation::publish(
+                        input.extensions(),
+                        stream.get_ref().extensions(),
+                    );
                     return Ok(OriginHandshake {
                         input,
                         stream,
@@ -604,13 +591,24 @@ impl<S, K> TlsConnector<S, K> {
                     ConnectionErrorKind::InvalidInput,
                 )
             })?;
-            resolve_target_ech(&effective, &target, true).map_err(|error| {
+            EchDiscoveryComplete::check_required(&effective, &target).map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
             })?;
         }
         if secure && let Some(target) = input.connector_target() {
-            resolve_target_ech(&effective, &target, true)
+            let resolution = resolve_target_ech_for_preparation(&effective, &target, true)
                 .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::Unavailable))?;
+            if resolution.required
+                && effective.contains::<EchDiscoveryComplete>()
+                && resolution.config.is_none()
+            {
+                return Err(ConnectionError::local(
+                    BoxError::from_static_str(
+                        "required ECH discovery has no matching configuration",
+                    ),
+                    ConnectionErrorKind::Unavailable,
+                ));
+            }
         }
         let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() else {
             return Ok(());
@@ -625,16 +623,14 @@ impl<S, K> TlsConnector<S, K> {
         if !config.authenticates_server() {
             return attempt.check_policy(scope, None);
         }
-        let authority = config
+        // A target that is not a server name cannot be authenticated.
+        let fallback = config
             .server_name
             .is_none()
             .then(|| input.target_authority())
-            .flatten();
-        let peer = config
-            .server_name
-            .map(|name| &name.0)
-            .or_else(|| authority.as_ref().map(|authority| &authority.host));
-        attempt.check_policy(scope, peer)
+            .flatten()
+            .and_then(|authority| ServerName::try_from(&authority.host).ok());
+        attempt.check_policy(scope, config.server_name.or(fallback.as_ref()))
     }
 
     /// Classify the request after inner connectors have added their extensions,
@@ -642,25 +638,44 @@ impl<S, K> TlsConnector<S, K> {
     fn check_connection_identity(
         input: &impl ExtensionsRef,
         verify_mode: ServerVerifyMode,
-        server_name: Option<&Host>,
-        server_host: &Host,
+        server_name: Option<&ServerName>,
     ) -> Result<ConnectionPolicyScope, ConnectionError> {
         let scope = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions())
             .policy_scope();
         if let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() {
             let peer = (verify_mode != ServerVerifyMode::Disable)
-                .then_some(server_name.unwrap_or(server_host));
+                .then_some(server_name)
+                .flatten();
             attempt.check_policy(scope, peer)?;
             return Ok(attempt.policy_scope());
         }
         Ok(scope)
     }
 
+    #[cfg(test)]
     async fn connector_data(
         &self,
         request_extensions: &Extensions,
         application_protocol: Option<&Protocol>,
         maybe_server_host: Option<&Host>,
+    ) -> Result<TlsConnectorData, BoxError> {
+        self.connector_data_for_target(
+            request_extensions,
+            application_protocol,
+            maybe_server_host,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn connector_data_for_target(
+        &self,
+        request_extensions: &Extensions,
+        application_protocol: Option<&Protocol>,
+        maybe_server_host: Option<&Host>,
+        target: Option<&HostWithPort>,
+        retry: Option<&EchRetryConfig>,
     ) -> Result<TlsConnectorData, BoxError> {
         let extensions = self.effective_extensions(request_extensions);
 
@@ -675,11 +690,28 @@ impl<S, K> TlsConnector<S, K> {
             request_extensions.get_ref::<TlsAlpn>(),
         )?;
 
+        let resolution = target
+            .map(|target| {
+                if let Some(retry) = retry {
+                    retry.apply(&extensions, target.clone());
+                }
+                resolve_target_ech(&extensions, target, true)
+            })
+            .transpose()?;
+        if let Some(resolution) = &resolution {
+            TlsProfilePreparation::apply(resolution, &extensions, request_extensions)?;
+        }
         let mut data = self.build_connector_data(&extensions).await?;
+        if let Some((target, resolution)) = target.zip(resolution) {
+            data.configure_resolved_target_ech(target, resolution)?;
+        }
 
         // A configured server identity overrides the transport host.
         if data.server_name.is_none() {
-            data.server_name = maybe_server_host.cloned();
+            data.server_name = maybe_server_host
+                .map(ServerName::try_from)
+                .transpose()
+                .context("server identity is not a DNS name or IP address")?;
         }
 
         Ok(data)
@@ -738,7 +770,8 @@ fn resolve_http_alpn(
 pub enum TlsConnectError<S> {
     Builder(BoxError),
     Handshake {
-        server_name: Option<Host>,
+        server_name: Option<ServerName>,
+        outgoing_sni: Option<ServerName>,
         error: HandshakeError<S>,
     },
 }
@@ -747,7 +780,9 @@ impl<S> fmt::Display for TlsConnectError<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Builder(error) => write!(f, "Builder: {error}"),
-            Self::Handshake { error, server_name } => {
+            Self::Handshake {
+                error, server_name, ..
+            } => {
                 write!(
                     f,
                     "Handshake: {error} (server identity = '{}')",
@@ -768,6 +803,7 @@ impl<S: std::fmt::Debug> std::error::Error for TlsConnectError<S> {
             Self::Handshake {
                 error,
                 server_name: _,
+                outgoing_sni: _,
             } => error.source(),
         }
     }
@@ -799,7 +835,7 @@ where
 
 #[derive(Debug)]
 struct HandshakeMetadata {
-    server_name: Option<Host>,
+    server_name: Option<ServerName>,
     server_verify_mode: ServerVerifyMode,
     store_server_certificate_chain: bool,
     store_server_hello: bool,
@@ -849,7 +885,6 @@ where
             Err(err) => {
                 #[cfg(feature = "dial9")]
                 {
-                    use crate::dial9::tls_handshake_error_kind as kind;
                     let (error_kind, io_error_kind) = match &err {
                         TlsConnectError::Builder(_) => (kind::BUILDER, None),
                         TlsConnectError::Handshake { error, .. } => {
@@ -885,7 +920,9 @@ where
                 }
                 return Err(match err {
                     TlsConnectError::Builder(error) => error.context("tls connect builder error"),
-                    TlsConnectError::Handshake { error, server_name } => {
+                    TlsConnectError::Handshake {
+                        error, server_name, ..
+                    } => {
                         let maybe_ssl_code = error.code();
                         if let Some(io_err) = error.as_io_error() {
                             BoxError::from(format!(
@@ -1006,11 +1043,51 @@ pub struct ConnectorKindSecure;
 
 #[cfg(test)]
 mod tests {
+
+    use std::{sync::Arc, time::Duration};
+
+    use rama_core::{
+        ServiceInput, combinators::Either, extensions::NoExtensionsTransfer, service::service_fn,
+    };
+    use rama_crypto::{
+        cert::generate_server_auth,
+        pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+    };
+    #[cfg(feature = "http")]
+    use rama_net::tls::TlsAlpn;
+    use rama_net::{
+        address::{Domain, HostWithPort},
+        client::{
+            ConnectRequest, ConnectionErrorDomain, EstablishedClientConnection,
+            ProxyConnectionExtensions, pool::ConnectionReuse, proxy_request,
+        },
+        stream::{DefaultExtensionsTransfer, service::EchoService},
+        tls::{ServerName, TargetEchConfig, TargetEchServiceBinding},
+    };
+    use rama_tls::{
+        KeyLogIntent, ProtocolVersion,
+        client::{
+            ClientAuth, ClientAuthData, ClientHelloExtension, ECHClientHello,
+            NegotiatedTlsParameters, ServerVerifyMode, TlsServerCertPinCheck, TlsServerCertPins,
+            TlsServerTrust, TlsServerVerify, TlsStoreServerHello,
+        },
+        server::{
+            CertificateAuthorityData, ClientVerifyMode, GeneratedServerAuthConfig, LeafCertRequest,
+            SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+        },
+    };
+    use rama_utils::octets::kib;
+    use tokio::io::DuplexStream;
+
+    use super::*;
+    use crate::{
+        client::{BoringAlps, BoringClientConfigExt as _, ech::EchGrease, tests::hello_from_data},
+        server::TlsAcceptorLayer,
+    };
+
     #[tokio::test]
     async fn derived_server_verification_is_shared_only_by_connector_clones() -> Result<(), BoxError>
     {
-        use rama_core::combinators::Either;
-
         let config = TlsClientConfig::new().try_with_server_trust_anchors(
             rama_crypto::native_certs::bundled_root_certs()[..1]
                 .iter()
@@ -1047,55 +1124,83 @@ mod tests {
         Ok(())
     }
 
-    use super::*;
-    use rama_core::extensions::NoExtensionsTransfer;
-    #[cfg(feature = "http")]
-    use rama_tls::ProtocolVersion;
-
-    use rama_net::client::pool::ConnectionReuse;
-    #[cfg(feature = "http")]
-    use rama_net::tls::TlsAlpn;
-
-    use rama_core::{ServiceInput, service::service_fn};
-    use rama_net::{
-        address::HostWithPort,
-        client::{ConnectRequest, ConnectionErrorDomain},
-    };
-    use rama_tls::client::{
-        ClientHelloExtension, ECHClientHello, NegotiatedTlsParameters, ServerVerifyMode,
-        TlsServerName, TlsServerVerify, TlsStoreServerHello,
-    };
-
-    use crate::{
-        client::{BoringClientConfigExt as _, ech::EchGrease, tests::hello_from_data},
-        server::TlsAcceptorLayer,
-    };
-    use rama_crypto::cert::generate_server_auth;
-    use rama_net::stream::service::EchoService;
-    use rama_tls::client::{ClientAuth, ClientAuthData};
-    use rama_tls::server::{
-        CertificateAuthorityData, ClientVerifyMode, GeneratedServerAuthConfig, LeafCertRequest,
-        SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
-    };
-    use rama_utils::octets::kib;
-    use std::{sync::Arc, time::Duration};
-    use tokio::io::DuplexStream;
-
     fn origin_attempt() -> ConnectRequest {
         let input =
             ConnectRequest::new(HostWithPort::new(Host::from_static("origin.example"), 443))
                 .with_application_protocol(Protocol::HTTPS);
         input.extensions().insert(
-            ConnectionAttempt::new().with_authenticated_peer(Host::from_static("origin.example")),
+            ConnectionAttempt::new().with_authenticated_peer(Domain::from_static("origin.example")),
         );
         input
+    }
+
+    #[tokio::test]
+    async fn completed_discovery_rejects_a_reliant_candidate_without_dialing() {
+        for mismatched in [false, true] {
+            let transport = service_fn(
+                async |_input: ConnectRequest| -> Result<
+                    EstablishedClientConnection<ServiceInput<DuplexStream>, ConnectRequest>,
+                    ConnectionError,
+                > {
+                    panic!("unusable candidate must be rejected before dialing");
+                },
+            );
+            let connector = TlsConnector::secure(transport);
+            let input = ConnectRequest::new("192.0.2.1:443".parse().unwrap());
+            input.extensions().insert(EchDiscoveryComplete);
+            input.extensions().insert(TargetEchServiceBinding {
+                target: input.authority.clone(),
+                reliant: true,
+                mandatory: false,
+            });
+            if mismatched {
+                input.extensions().insert(TargetEchConfig::new(
+                    HostWithPort::new(Host::from_static("192.0.2.1."), 443),
+                    vec![0u8, 0],
+                ));
+            }
+            let error = connector.serve(input).await.unwrap_err();
+            assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+        }
+    }
+
+    #[tokio::test]
+    async fn final_preparation_selects_the_verification_policy() {
+        let (chain, key) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
+        let config = TlsClientConfig::new()
+            .try_with_server_trust_anchors([chain.last().unwrap().clone()])
+            .unwrap();
+        let request = Extensions::new();
+        request.insert(TlsProfilePreparation::new(|_, effective, _| {
+            effective.insert(TlsServerTrust::webpki_roots());
+            Ok(Extensions::new())
+        }));
+        let connector = TlsConnector::secure(()).with_base_config(config);
+        let target: HostWithPort = "localhost:443".parse().unwrap();
+        let data = connector
+            .connector_data_for_target(&request, None, Some(&target.host), Some(&target), None)
+            .await
+            .unwrap();
+        let server =
+            TlsAcceptorLayer::new(TlsServerConfig::new().with_server_auth(ServerAuthData {
+                cert_chain: chain,
+                private_key: key,
+                ocsp: None,
+            }))
+            .into_layer(service_fn(async |_| Ok::<_, BoxError>(())));
+        let (client_io, server_io) = tokio::io::duplex(kib(16));
+        let (client, _) = tokio::join!(
+            handshake(data, ServiceInput::new(client_io)),
+            server.serve(ServiceInput::new(server_io))
+        );
+        assert!(client.is_err(), "the final trust policy rejects the origin");
     }
 
     #[tokio::test]
     async fn discovery_rejects_incompatible_defaults_before_dial() {
         for base in [
             TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
-            TlsClientConfig::new().with_server_name(Host::from_static("other.example")),
+            TlsClientConfig::new().with_server_name(Domain::from_static("other.example")),
         ] {
             let transport = service_fn(
                 async |_input: ConnectRequest| -> Result<
@@ -1177,8 +1282,7 @@ mod tests {
                 TlsConnector::<(), ConnectorKindSecure>::check_connection_identity(
                     &input,
                     ServerVerifyMode::Auto,
-                    None,
-                    &Host::from_static("origin.example"),
+                    Some(&ServerName::from(Domain::from_static("origin.example"))),
                 )
                 .unwrap(),
                 expected
@@ -1206,7 +1310,7 @@ mod tests {
         let connector = TlsConnector::secure(()).with_base_config(
             TlsClientConfig::new()
                 .with_server_verify(ServerVerifyMode::Disable)
-                .with_server_name(Host::from_static("other.example")),
+                .with_server_name(Domain::from_static("other.example")),
         );
         let input = origin_attempt();
         input
@@ -1214,7 +1318,7 @@ mod tests {
             .insert(TlsServerVerify(ServerVerifyMode::Auto));
         input
             .extensions()
-            .insert(TlsServerName(Host::from_static("origin.example")));
+            .insert(ServerName::from(Domain::from_static("origin.example")));
         connector
             .check_attempt_policy(&input, true)
             .expect("request restores authentication");
@@ -1239,7 +1343,7 @@ mod tests {
                 } else {
                     input
                         .extensions()
-                        .insert(TlsServerName(Host::from_static("other.example")));
+                        .insert(ServerName::from(Domain::from_static("other.example")));
                 }
                 let (io, peer) = tokio::io::duplex(64);
                 drop(peer);
@@ -1270,43 +1374,51 @@ mod tests {
 
     #[test]
     fn assert_send() {
-        use rama_utils::test_helpers::assert_send;
-
-        assert_send::<TlsConnectorLayer>();
+        rama_utils::test_helpers::assert_send::<TlsConnectorLayer>();
     }
 
     #[test]
     fn assert_sync() {
-        use rama_utils::test_helpers::assert_sync;
-
-        assert_sync::<TlsConnectorLayer>();
+        rama_utils::test_helpers::assert_sync::<TlsConnectorLayer>();
     }
 
     #[test]
     fn server_identity_canonicalizes_ips() {
         let host = Host::from(std::net::Ipv4Addr::LOCALHOST);
-        assert_eq!(server_identity_for(&host).unwrap(), "127.0.0.1");
+        assert_eq!(
+            ServerName::try_from(&host).unwrap().to_string(),
+            "127.0.0.1"
+        );
 
         let host = Host::try_from("%31%32%37.0.0.1").unwrap();
-        assert_eq!(server_identity_for(&host).unwrap(), "127.0.0.1");
+        assert_eq!(
+            ServerName::try_from(&host).unwrap().to_string(),
+            "127.0.0.1"
+        );
     }
 
     #[test]
     fn server_identity_promotes_encoded_dns_name() {
         let host = Host::try_from("exa%6Dple.com").unwrap();
-        assert_eq!(server_identity_for(&host).unwrap(), "example.com");
+        assert_eq!(
+            ServerName::try_from(&host).unwrap().to_string(),
+            "example.com"
+        );
     }
 
     #[test]
     fn server_identity_preserves_numeric_domain_for_ip_classification() {
         let host = Host::Name(rama_net::address::Domain::try_from("127.0.0.1").unwrap());
-        assert_eq!(server_identity_for(&host).unwrap(), "127.0.0.1");
+        assert_eq!(
+            ServerName::try_from(&host).unwrap().to_string(),
+            "127.0.0.1"
+        );
     }
 
     #[test]
     fn server_identity_rejects_ipvfuture() {
         let host = Host::try_from("[v1.fe80::a]").unwrap();
-        server_identity_for(&host).unwrap_err();
+        ServerName::try_from(&host).unwrap_err();
     }
 
     #[tokio::test]
@@ -1320,7 +1432,7 @@ mod tests {
             .await
             .expect("connector data");
 
-        assert_eq!(data.server_name, Some(host));
+        assert_eq!(data.server_name.map(Host::from), Some(host));
     }
 
     #[tokio::test]
@@ -1374,7 +1486,7 @@ mod tests {
         }
 
         fn target_authority(&self) -> Option<rama_net::address::HostWithOptPort> {
-            Some(Host::from_static("localhost").into())
+            Some(Domain::tld_localhost().into_host().into())
         }
     }
 
@@ -1444,7 +1556,7 @@ mod tests {
         // Off, on through the connector's configuration, and on for one request.
         for (base_stores, request_stores) in [(false, None), (true, None), (false, Some(true))] {
             let base = TlsClientConfig::new()
-                .with_server_name(Host::from_static("localhost"))
+                .with_server_name(Domain::tld_localhost())
                 .with_store_server_hello(base_stores)
                 .try_with_server_trust_anchors([trust_anchor.clone()])
                 .expect("trust anchor");
@@ -1461,7 +1573,7 @@ mod tests {
                 }
             });
             let connector = TlsConnector::secure(transport).with_base_config(base);
-            let input = ConnectRequest::new(HostWithPort::new(Host::from_static("localhost"), 443));
+            let input = ConnectRequest::new(HostWithPort::localhost_domain_https());
             if let Some(store) = request_stores {
                 input.extensions().insert(TlsStoreServerHello(store));
             }
@@ -1516,7 +1628,7 @@ mod tests {
             .into_layer(EchoService::new()),
         );
         let base = TlsClientConfig::new()
-            .with_server_name(Host::from_static("localhost"))
+            .with_server_name(Domain::tld_localhost())
             .try_with_server_trust_anchors([trust_anchor])
             .expect("trust anchor");
 
@@ -1534,7 +1646,7 @@ mod tests {
                 }
             });
             let connector = TlsConnector::secure(transport).with_base_config(base.clone());
-            let input = ConnectRequest::new(HostWithPort::new(Host::from_static("localhost"), 443))
+            let input = ConnectRequest::new(HostWithPort::localhost_domain_https())
                 .with_application_protocol(Protocol::HTTPS);
             #[cfg(feature = "http")]
             {
@@ -1553,8 +1665,7 @@ mod tests {
                     .extensions()
                     .insert(TlsServerVerify(ServerVerifyMode::Auto));
                 input.extensions().insert(
-                    ConnectionAttempt::new()
-                        .with_authenticated_peer(Host::from_static("localhost")),
+                    ConnectionAttempt::new().with_authenticated_peer(Domain::tld_localhost()),
                 );
             }
             let established = tokio::time::timeout(Duration::from_secs(5), connector.serve(input))
@@ -1659,8 +1770,6 @@ mod tests {
     #[cfg(feature = "http")]
     #[test]
     fn fallback_http_version_does_not_constrain_alpn() {
-        use rama_net::http::{FallbackHttpVersion, Version};
-
         let extensions = Extensions::new();
         extensions.insert(TlsAlpn::http_auto());
         extensions.insert(FallbackHttpVersion(Version::HTTP_11));
@@ -1675,8 +1784,6 @@ mod tests {
     #[cfg(feature = "http")]
     #[test]
     fn concrete_http_version_keeps_alps_coupled_to_forced_alpn() {
-        use crate::client::BoringAlps;
-
         for (version, expected_alps) in [
             (Version::HTTP_11, Vec::new()),
             (Version::HTTP_2, vec![ApplicationProtocol::HTTP_2]),
@@ -1710,8 +1817,6 @@ mod tests {
 
     #[test]
     fn inherited_alpn_and_alps_are_preserved_for_any_application_protocol() {
-        use crate::client::BoringAlps;
-
         let base = Extensions::new();
         base.insert(TlsAlpn::http_auto());
         base.insert(BoringAlps {
@@ -1749,8 +1854,6 @@ mod tests {
 
     #[test]
     fn inherited_http_alpn_and_alps_survive_for_https() {
-        use crate::client::BoringAlps;
-
         let base = Extensions::new();
         base.insert(TlsAlpn::http_auto());
         base.insert(BoringAlps {
@@ -1775,9 +1878,7 @@ mod tests {
     }
 
     #[test]
-    fn inherited_http_alpn_suppresses_incompatible_alps() {
-        use crate::client::BoringAlps;
-
+    fn inherited_http_alpn_sends_its_configured_alps() {
         let base = Extensions::new();
         base.insert(TlsAlpn::http_1());
         base.insert(BoringAlps {
@@ -1797,14 +1898,12 @@ mod tests {
             effective
                 .get_ref::<BoringAlps>()
                 .map(|alps| (alps.protocols.as_slice(), alps.new_codepoint)),
-            Some(([].as_slice(), true)),
+            Some(([ApplicationProtocol::HTTP_2].as_slice(), true)),
         );
     }
 
     #[test]
-    fn request_alpn_overrides_base_and_recouples_alps() {
-        use crate::client::BoringAlps;
-
+    fn request_alpn_over_a_base_offer_sends_the_configured_alps() {
         let base = Extensions::new();
         base.insert(TlsAlpn::http_auto());
         base.insert(BoringAlps {
@@ -1825,7 +1924,7 @@ mod tests {
             effective
                 .get_ref::<BoringAlps>()
                 .map(|alps| alps.protocols.as_slice()),
-            Some([].as_slice()),
+            Some([ApplicationProtocol::HTTP_2].as_slice()),
         );
     }
 
@@ -1890,7 +1989,7 @@ mod tests {
         ));
         let client = TlsConnectorData::try_from(
             &TlsClientConfig::new()
-                .with_server_name(Host::from_static("localhost"))
+                .with_server_name(Domain::tld_localhost())
                 .try_with_server_trust_anchors([anchor])
                 .unwrap()
                 .with_client_auth(ClientAuth::Single(ClientAuthData {
@@ -1958,7 +2057,7 @@ mod tests {
         let origin = Extensions::new();
         TlsClientConfig::new()
             .with_alpn_http_1()
-            .with_server_name(Host::from_static("origin.example"))
+            .with_server_name(Domain::from_static("origin.example"))
             .with_server_verify(ServerVerifyMode::Disable)
             .with_ech_requirement(EchRequirement::Required)
             .write_to(&origin);
@@ -1967,12 +2066,12 @@ mod tests {
 
     /// The input that dials a proxy, as the proxy connectors build it.
     fn nested_leg(origin: &Extensions) -> ConnectRequest {
-        rama_net::client::proxy_request(&"https://localhost:443".parse().unwrap(), origin)
+        proxy_request(&"https://localhost:443".parse().unwrap(), origin)
     }
 
     #[test]
     fn a_nested_leg_takes_its_tls_config_from_the_connector() {
-        let proxy_name = Host::from_static("proxy.example");
+        let proxy_name = ServerName::from(Domain::from_static("proxy.example"));
         let connector = TlsConnector::auto(()).with_base_config(
             TlsClientConfig::new()
                 .with_server_name(proxy_name.clone())
@@ -1984,7 +2083,7 @@ mod tests {
         let config = BoringTlsConnectorConfig::from_extensions(&effective);
 
         let http_2 = TlsAlpn::http_2();
-        assert_eq!(config.server_name.map(|name| &name.0), Some(&proxy_name));
+        assert_eq!(config.server_name, Some(&proxy_name));
         assert_eq!(
             config.alpn.map(|alpn| alpn.0.as_slice()),
             Some(http_2.0.as_slice())
@@ -2001,8 +2100,6 @@ mod tests {
 
     #[tokio::test]
     async fn hop_settings_configure_the_leg_handshake() {
-        use rama_net::client::ProxyConnectionExtensions;
-
         let (cert_chain, private_key) =
             generate_server_auth(GeneratedServerAuthConfig::default()).expect("server auth");
         let server =
@@ -2018,7 +2115,7 @@ mod tests {
             tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
         // No trust anchor: only the hop's own settings can let this through.
         let connector = TlsConnector::auto(leg_transport(client_io)).with_base_config(
-            TlsClientConfig::new().with_server_name(Host::from_static("localhost")),
+            TlsClientConfig::new().with_server_name(Domain::from_static("localhost")),
         );
 
         let origin = origin_tls_inputs();
@@ -2036,8 +2133,6 @@ mod tests {
 
     #[test]
     fn a_bag_verify_off_does_not_disable_origin_verification() {
-        use rama_net::client::ProxyConnectionExtensions;
-
         let connector = TlsConnector::auto(()).with_base_config(TlsClientConfig::new());
 
         let origin = Extensions::new();
@@ -2072,10 +2167,6 @@ mod tests {
 
     #[test]
     fn a_nested_leg_keeps_every_config_piece_of_its_connector() {
-        use rama_crypto::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
-        use rama_tls::client::{ClientAuth, ClientAuthData, TlsServerCertPins};
-        use rama_tls::{KeyLogIntent, ProtocolVersion};
-
         let pin = CertificateDer::from(vec![1, 2, 3]);
         let auth = ClientAuth::Single(ClientAuthData {
             cert_chain: vec![CertificateDer::from(vec![4])],
@@ -2106,7 +2197,7 @@ mod tests {
                 .server_cert_pins
                 .expect("the connector's pins")
                 .check(None, &pin)
-                != rama_tls::client::TlsServerCertPinCheck::Mismatched
+                != TlsServerCertPinCheck::Mismatched
         );
         assert!(matches!(
             config.client_auth.map(|auth| &auth.0),
@@ -2140,7 +2231,7 @@ mod tests {
             tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
         let connector = TlsConnector::auto(leg_transport(client_io)).with_base_config(
             TlsClientConfig::new()
-                .with_server_name(Host::from_static("localhost"))
+                .with_server_name(Domain::from_static("localhost"))
                 .try_with_server_trust_anchors([trust_anchor])
                 .expect("proxy trust"),
         );
@@ -2148,7 +2239,7 @@ mod tests {
         // The origin's attempt authenticates the origin, not the proxy.
         let origin = Extensions::new();
         origin.insert(
-            ConnectionAttempt::new().with_authenticated_peer(Host::from_static("origin.example")),
+            ConnectionAttempt::new().with_authenticated_peer(Domain::from_static("origin.example")),
         );
 
         let established = connector
@@ -2169,7 +2260,7 @@ mod tests {
         let tunnel = established
             .conn
             .extensions()
-            .fork_connection(&rama_net::stream::DefaultExtensionsTransfer::new());
+            .fork_connection(&DefaultExtensionsTransfer::new());
         assert!(
             established
                 .conn
@@ -2188,7 +2279,7 @@ mod tests {
     #[test]
     fn an_origin_ech_requirement_is_not_the_policy_of_a_nested_leg() {
         let connector = TlsConnector::auto(()).with_base_config(
-            TlsClientConfig::new().with_server_name(Host::from_static("proxy.example")),
+            TlsClientConfig::new().with_server_name(Domain::from_static("proxy.example")),
         );
 
         connector
@@ -2202,12 +2293,7 @@ mod tests {
         let io = Arc::new(parking_lot::Mutex::new(Some(io)));
         service_fn(move |input: ConnectRequest| {
             let conn = ServiceInput::new(io.lock().take().expect("one proxy connection"));
-            async move {
-                Ok::<_, ConnectionError>(rama_net::client::EstablishedClientConnection {
-                    input,
-                    conn,
-                })
-            }
+            async move { Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn }) }
         })
     }
 
@@ -2217,7 +2303,7 @@ mod tests {
             let auth =
                 ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).expect("auth");
             let base = TlsClientConfig::new()
-                .with_server_name(Host::from_static("localhost"))
+                .with_server_name(Domain::from_static("localhost"))
                 .try_with_server_trust_anchors(auth.cert_chain.clone())
                 .expect("trust anchor");
             let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_server_auth(auth))
@@ -2253,8 +2339,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_nested_leg_handshake_ignores_origin_tls_inputs() {
-        use rama_net::tls::ApplicationProtocol;
-
         let (cert_chain, private_key) =
             generate_server_auth(GeneratedServerAuthConfig::default()).expect("server auth");
         let trust_anchor = cert_chain.last().expect("trust anchor").clone();
@@ -2275,7 +2359,7 @@ mod tests {
         let connector = TlsConnector::auto(leg_transport(client_io)).with_base_config(
             TlsClientConfig::new()
                 .with_alpn_http_2()
-                .with_server_name(Host::from_static("localhost"))
+                .with_server_name(Domain::from_static("localhost"))
                 .try_with_server_trust_anchors([trust_anchor])
                 .expect("proxy trust"),
         );
@@ -2314,7 +2398,7 @@ mod tests {
             tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
         // No trust anchor for the generated certificate: the connection to the proxy must refuse it.
         let connector = TlsConnector::auto(leg_transport(client_io)).with_base_config(
-            TlsClientConfig::new().with_server_name(Host::from_static("localhost")),
+            TlsClientConfig::new().with_server_name(Domain::from_static("localhost")),
         );
 
         let origin = Extensions::new();

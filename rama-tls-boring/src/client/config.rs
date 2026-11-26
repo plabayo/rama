@@ -1,36 +1,38 @@
+use std::sync::Arc;
+
 use itertools::Itertools;
 use rama_boring::{
     ssl::{GreaseValues, Padding, UnknownValues},
     x509::{X509, store::X509Store},
 };
-use rama_core::bytes::Bytes;
-use rama_core::conversion::RamaFrom;
-use rama_core::error::BoxError;
-use rama_core::extensions::{Extension, Extensions, FromExtensions};
+use rama_core::{
+    bytes::Bytes,
+    conversion::RamaFrom,
+    error::BoxError,
+    extensions::{Extension, Extensions, FromExtensions},
+};
 use rama_crypto::pki_types::CertificateDer;
 use rama_net::{
-    address::Host,
     client::pool::ReuseKey,
-    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
+    tls::{AlpnPolicy, ApplicationProtocol, ServerName, TlsAlpn},
 };
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
-use rama_tls::client::{
-    ClientHandshake, ClientHello, ClientHelloExtension, DynTlsServerCertChainPolicy,
-    ECHClientHello, ServerTrustSource, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
-    TlsClientConfigProvider, TlsComponentIdentity, TlsEncryptedClientHello, TlsPoolComponent,
-    TlsPoolId, TlsServerCertPinCheck, TlsServerCertPins, TlsServerName, TlsServerTrust,
-    TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain, TlsStoreServerHello,
-};
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
     SupportedGroup, TlsKeyLog, TlsSupportedVersions,
+    client::{
+        ClientHandshake, ClientHello, ClientHelloExtension, DynTlsServerCertChainPolicy,
+        ECHClientHello, ServerTrustSource, ServerVerificationScope, ServerVerifyMode,
+        TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsClientSni,
+        TlsComponentIdentity, TlsEncryptedClientHello, TlsPoolComponent, TlsPoolId,
+        TlsServerCertPinCheck, TlsServerCertPins, TlsServerTrust, TlsServerVerify,
+        TlsSessionProfileScope, TlsStoreServerCertChain, TlsStoreServerHello,
+    },
 };
-use rama_utils::macros::generate_set_and_with;
-use std::sync::Arc;
-
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
+use rama_utils::macros::generate_set_and_with;
 
 use super::{BoringRequestedTrustAnchors, TlsClientSessionDomain, ech::EchGrease};
 use crate::RamaTlsBoringCrateMarker;
@@ -46,7 +48,8 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub versions: Option<&'a TlsSupportedVersions>,
     pub verify: Option<&'a TlsServerVerify>,
     pub keylog: Option<&'a TlsKeyLog>,
-    pub server_name: Option<&'a TlsServerName>,
+    pub server_name: Option<&'a ServerName>,
+    pub sni_policy: Option<&'a TlsClientSni>,
     pub store_chain: Option<&'a TlsStoreServerCertChain>,
     pub store_server_hello: Option<&'a TlsStoreServerHello>,
     pub client_auth: Option<&'a TlsClientAuth>,
@@ -82,33 +85,6 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub verify_cert_store: Option<Arc<BoringServerVerifyCertStore>>,
     pub min_version: Option<&'a BoringMinVersion>,
     pub max_version: Option<&'a BoringMaxVersion>,
-}
-
-#[derive(Clone, Eq, Hash, PartialEq)]
-enum VerificationScope {
-    Roots(TlsComponentIdentity<rama_boring::x509::store::X509Store>),
-    Platform(TlsComponentIdentity<rama_crypto::platform_verifier::PlatformVerifier>),
-}
-
-impl VerificationScope {
-    fn new(verification: &super::BoringServerVerification) -> Self {
-        match verification {
-            rama_core::combinators::Either::A(store) => {
-                Self::Roots(TlsComponentIdentity::shared(store))
-            }
-            rama_core::combinators::Either::B(verifier) => {
-                Self::Platform(TlsComponentIdentity::shared(verifier))
-            }
-        }
-    }
-}
-
-impl TlsPoolComponent for VerificationScope {
-    type Identity = Self;
-
-    fn pool_component_identity(&self) -> Self::Identity {
-        self.clone()
-    }
 }
 
 impl BoringTlsConnectorConfig<'_> {
@@ -175,6 +151,7 @@ impl BoringTlsConnectorConfig<'_> {
             verify,
             keylog,
             server_name,
+            sni_policy,
             store_chain,
             store_server_hello,
             client_auth,
@@ -246,6 +223,9 @@ impl BoringTlsConnectorConfig<'_> {
         if let Some(domain) = session_domain {
             builder.set_component(*domain);
         }
+        if let Some(sni_policy) = sni_policy {
+            builder.set_component(*sni_policy);
+        }
         if let Some(scope) = session_profile_scope {
             builder.set_component(*scope);
         }
@@ -286,18 +266,16 @@ impl BoringTlsConnectorConfig<'_> {
         if let Some(alps) = alps {
             builder.set_alps(&alps.protocols, alps.new_codepoint);
         }
-        if let Some(verification) = verification
-            && server_trust
-                .and_then(super::verification::reload_source)
-                .is_some()
-        {
-            builder.set_component(&VerificationScope::new(verification));
+        if let Some(scope) = verification.and_then(|verification| {
+            ServerVerificationScope::reloadable(*server_trust, verification)
+        }) {
+            builder.set_component(&scope);
         }
         builder.build()
     }
 
     /// Identity of compatible client sessions: security settings, the non-GREASE
-    /// cipher list, the session domain and the optional profile scope. Other wire
+    /// cipher list, SNI policy, session domain and optional profile scope. Other wire
     /// settings, diagnostic sinks, chain retention and the separately keyed server
     /// name are not part of it, so sessions resume across those variants.
     pub fn session_scope(&self) -> Option<TlsPoolId> {
@@ -365,6 +343,7 @@ impl BoringTlsConnectorConfig<'_> {
             verify,
             keylog: _,
             server_name: _,
+            sni_policy,
             store_chain: _,
             store_server_hello: _,
             client_auth,
@@ -413,6 +392,7 @@ impl BoringTlsConnectorConfig<'_> {
             verify: Some(verify.unwrap_or(&DEFAULT_VERIFY)),
             keylog,
             server_name: None,
+            sni_policy,
             store_chain: None,
             store_server_hello: None,
             client_auth,
@@ -459,7 +439,7 @@ impl BoringTlsConnectorConfig<'_> {
     /// A chain policy, and the platform verifier with its per-name trust
     /// settings, judge a chain for one server name, so such a connection is
     /// never reused for another name.
-    pub fn peer_matches_name(&self, leaf: &CertificateDer<'_>, name: &Host) -> bool {
+    pub fn peer_matches_name(&self, leaf: &CertificateDer<'_>, name: &ServerName) -> bool {
         if !self.authenticates_server()
             || self.server_cert_chain_policy.is_some()
             || self
@@ -474,12 +454,12 @@ impl BoringTlsConnectorConfig<'_> {
         let Ok(certificate) = X509::from_der(leaf.as_ref()) else {
             return false;
         };
-        match name {
-            Host::Name(name) => certificate.check_host(name.as_str()).unwrap_or(false),
-            Host::Address(address) => certificate
+        match (name.as_domain(), name.as_ip()) {
+            (Some(domain), _) => certificate.check_host(domain.as_str()).unwrap_or(false),
+            (None, Some(address)) => certificate
                 .check_ip_asc(&address.to_string())
                 .unwrap_or(false),
-            _ => false,
+            (None, None) => false,
         }
     }
 
@@ -496,6 +476,7 @@ impl BoringTlsConnectorConfig<'_> {
             verify,
             keylog: _,
             server_name: _,
+            sni_policy: _,
             store_chain: _,
             store_server_hello: _,
             client_auth: _,
@@ -922,12 +903,15 @@ pub(crate) enum AlpsCoupling {
     Suppressed,
 }
 
-/// Set an ALPN offer and keep inherited ALPS protocols within that offer.
+/// Set an ALPN offer; a changed offer keeps inherited ALPS protocols within it.
 pub(crate) fn set_alpn_list_with_coupled_alps(
     extensions: &Extensions,
     alpn: TlsAlpn,
 ) -> AlpsCoupling {
     let offered = alpn.0.clone();
+    let unchanged = extensions
+        .get_ref::<TlsAlpn>()
+        .is_some_and(|current| current.0 == offered);
     extensions.insert(alpn);
 
     let Some((protocols, new_codepoint)) = extensions
@@ -936,6 +920,14 @@ pub(crate) fn set_alpn_list_with_coupled_alps(
     else {
         return AlpsCoupling::NotConfigured;
     };
+    if unchanged {
+        // An unchanged offer is sent with its ALPS list as configured or captured.
+        return if protocols.is_empty() {
+            AlpsCoupling::Suppressed
+        } else {
+            AlpsCoupling::Retained
+        };
+    }
 
     let protocols: Vec<_> = protocols
         .into_iter()
@@ -955,9 +947,9 @@ pub(crate) fn set_alpn_list_with_coupled_alps(
 
 /// Offer exactly one ALPN protocol and keep ALPS coherent with that offer.
 ///
-/// ALPS settings are scoped to a negotiated ALPN protocol. BoringSSL requires
-/// every configured ALPS protocol to also occur in its ALPN offer, so callers
-/// which narrow ALPN must update both extensions together. Mirrored ALPS is
+/// BoringSSL sends the configured ALPS list as is, also for protocols outside
+/// the ALPN offer, and only requires settings for the protocol the server
+/// negotiates. An offer that changes keeps ALPS within it: mirrored ALPS is
 /// retained only when it included `protocol`; otherwise an empty newest value
 /// shadows it in the append-only [`Extensions`] chain. The connector registers
 /// no application settings for that empty value, causing BoringSSL to omit ALPS
@@ -1045,9 +1037,9 @@ impl TlsPoolComponent for BoringLegacyExtensions {
     }
 }
 
-/// Presence of optional TLS 1.3 ClientHello extensions BoringSSL decides itself.
+/// Presence of optional ClientHello extensions BoringSSL decides itself.
 ///
-/// The default is the native choice for both.
+/// The default is the native choice for each.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls), scope(connection))]
 #[non_exhaustive]
@@ -1057,6 +1049,8 @@ pub struct BoringExtensionPresence {
     /// Omit psk_key_exchange_modes. Such a connection offers no session, so it
     /// never resumes (RFC 8446 §4.2.9).
     pub omit_psk_key_exchange_modes: bool,
+    /// Omit renegotiation_info from an initial ClientHello, keeping extended_master_secret.
+    pub omit_renegotiation_info: bool,
 }
 
 impl TlsPoolComponent for BoringExtensionPresence {
@@ -1160,7 +1154,19 @@ impl std::fmt::Debug for BoringServerVerifyCertStore {
 
 impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
     fn rama_from(hello: &ClientHello) -> Self {
-        let mut config = Self::new();
+        let mut config = Self::new().with_sni_policy(
+            if hello
+                .ext_server_name()
+                .and_then(|name| name.as_ip())
+                .is_some()
+            {
+                TlsClientSni::IncludeIp
+            } else if hello.ext_server_domain().is_some() {
+                TlsClientSni::Auto
+            } else {
+                TlsClientSni::Disabled
+            },
+        );
 
         // Every shaping piece is set explicitly, absent extensions included,
         // so a layered base config cannot add anything the hello did not offer.
@@ -1276,9 +1282,10 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         if !extension_bodies.is_empty() {
             config.set_extension_bodies(extension_bodies);
         }
-        // Browsers over QUIC send both although only TLS 1.3 can be negotiated there.
+        // Browsers send both, over QUIC too; a hello signalling RFC 5746 by SCSV omits RI.
         let sent = |id| hello.extensions().iter().any(|ext| ext.id() == id);
-        if sent(ExtensionId::EXTENDED_MASTER_SECRET) && sent(ExtensionId::RENEGOTIATION_INFO) {
+        let extended_master_secret = sent(ExtensionId::EXTENDED_MASTER_SECRET);
+        if extended_master_secret {
             config.set_legacy_extensions(true);
         }
         let offers_tls13 = hello.extensions().iter().any(|ext| {
@@ -1288,6 +1295,8 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         let presence = BoringExtensionPresence {
             ec_point_formats: sent(ExtensionId::EC_POINT_FORMATS),
             omit_psk_key_exchange_modes: offers_tls13 && !sent(ExtensionId::PSK_KEY_EXCHANGE_MODES),
+            omit_renegotiation_info: extended_master_secret
+                && !sent(ExtensionId::RENEGOTIATION_INFO),
         };
         if presence != BoringExtensionPresence::default() {
             config.set_extension_presence(presence);
@@ -1303,10 +1312,10 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         config.set_tls12_session_tickets(tls12_session_tickets);
         config.set_requested_trust_anchors(requested_trust_anchors);
 
-        // Egress version safety (mitm mirror): cap boring's max negotiated version
-        // when the mirrored ClientHello isn't a viable TLS 1.3 offer.
-        if let Some(max) = egress_max_version_clamp(hello) {
-            config.set_max_version(max);
+        // Without supported_versions the legacy field is the highest version offered;
+        // a higher native maximum would add the extension the hello did not send.
+        if hello.supported_versions().is_none() {
+            config.set_max_version(hello.protocol_version());
         }
 
         config
@@ -1319,46 +1328,6 @@ const NATIVE_EXTENSIONS: [u16; 33] = [
     0, 5, 10, 11, 13, 14, 16, 18, 19, 20, 21, 23, 27, 34, 35, 41, 42, 43, 44, 45, 47, 51, 57, 4832,
     13172, 17513, 17613, 30032, 0x8a3b, 0xca34, 0xfe0d, 0xff01, 0xffa5,
 ];
-
-/// Compute the egress max-version clamp for a mirrored [`ClientHello`], or
-/// `None` when no clamp is needed.
-///
-/// Two cases require a clamp (otherwise boring would happily offer TLS 1.3 on
-/// egress even when the mirrored client wouldn't or couldn't):
-/// - the hello has **no `supported_versions` extension** (legacy hello): cap to
-///   the legacy `protocol_version`;
-/// - the hello advertises TLS 1.3 but isn't viable as 1.3 (no TLS 1.3 cipher
-///   suite, or no TLS 1.3-capable signature algorithm): clamp to TLS 1.2 rather
-///   than sending an internally inconsistent ClientHello servers reject.
-fn egress_max_version_clamp(hello: &ClientHello) -> Option<ProtocolVersion> {
-    let Some(versions) = hello.supported_versions() else {
-        // No supported_versions extension: the negotiated version lives only in
-        // the legacy field, so cap egress to it.
-        return Some(hello.protocol_version());
-    };
-
-    let advertises_tls13 = versions
-        .iter()
-        .filter(|v| !v.is_grease())
-        .any(|v| *v == ProtocolVersion::TLSv1_3);
-    if !advertises_tls13 {
-        return None;
-    }
-
-    let has_tls13_cipher = hello
-        .cipher_suites()
-        .iter()
-        .filter(|c| !c.is_grease())
-        .any(|c| c.is_tls13());
-    let has_tls13_sig_alg = hello.ext_signature_algorithms().is_some_and(|schemes| {
-        schemes
-            .iter()
-            .filter(|s| !s.is_grease())
-            .any(|s| s.is_tls13_capable())
-    });
-
-    (!has_tls13_cipher || !has_tls13_sig_alg).then_some(ProtocolVersion::TLSv1_2)
-}
 
 /// Classification of request overrides understood by Boring.
 #[derive(Debug, Clone, Copy, Default)]
@@ -1380,8 +1349,9 @@ impl TlsClientConfigProvider for BoringTlsClientConfigProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rama_tls::CompressionAlgorithm;
+
+    use super::*;
 
     fn clamp_of(hello: &ClientHello) -> Option<ProtocolVersion> {
         TlsClientConfig::rama_from(hello)
@@ -1402,75 +1372,133 @@ mod tests {
     }
 
     #[test]
-    fn clamp_to_tls12_when_tls13_advertised_without_tls13_cipher() {
-        let hello = ClientHello::new(
-            ProtocolVersion::TLSv1_2,
-            // no TLS 1.3 cipher suite
-            vec![CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256],
-            vec![CompressionAlgorithm::Null],
-            vec![
-                ClientHelloExtension::SupportedVersions(vec![
-                    ProtocolVersion::TLSv1_3,
-                    ProtocolVersion::TLSv1_2,
-                ]),
-                ClientHelloExtension::SignatureAlgorithms(vec![SignatureScheme::RSA_PSS_SHA256]),
-            ],
-        );
-        assert_eq!(clamp_of(&hello), Some(ProtocolVersion::TLSv1_2));
-    }
-
-    #[test]
-    fn clamp_to_tls12_when_tls13_advertised_without_tls13_capable_sig_alg() {
-        let hello = ClientHello::new(
-            ProtocolVersion::TLSv1_2,
-            vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
-            vec![CompressionAlgorithm::Null],
-            vec![
-                ClientHelloExtension::SupportedVersions(vec![ProtocolVersion::TLSv1_3]),
-                // PKCS1 is TLS 1.2-only
-                ClientHelloExtension::SignatureAlgorithms(vec![SignatureScheme::RSA_PKCS1_SHA256]),
-            ],
-        );
-        assert_eq!(clamp_of(&hello), Some(ProtocolVersion::TLSv1_2));
-    }
-
-    #[test]
-    fn no_clamp_for_viable_tls13_hello() {
-        let hello = ClientHello::new(
-            ProtocolVersion::TLSv1_2,
-            vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
-            vec![CompressionAlgorithm::Null],
-            vec![
-                ClientHelloExtension::SupportedVersions(vec![
-                    ProtocolVersion::TLSv1_3,
-                    ProtocolVersion::TLSv1_2,
-                ]),
-                ClientHelloExtension::SignatureAlgorithms(vec![SignatureScheme::RSA_PSS_SHA256]),
-            ],
-        );
-        assert_eq!(clamp_of(&hello), None);
+    fn a_hello_listing_tls13_is_mirrored_without_a_cap() {
+        // Whether the origin can use TLS 1.3 with these suites and signature algorithms
+        // is between it and the client; the mirror offers what was listed.
+        let hello = |cipher, scheme| {
+            ClientHello::new(
+                ProtocolVersion::TLSv1_2,
+                vec![cipher],
+                vec![CompressionAlgorithm::Null],
+                vec![
+                    ClientHelloExtension::SupportedVersions(vec![
+                        ProtocolVersion::TLSv1_3,
+                        ProtocolVersion::TLSv1_2,
+                    ]),
+                    ClientHelloExtension::SignatureAlgorithms(vec![scheme]),
+                ],
+            )
+        };
+        for (cipher, scheme) in [
+            (
+                CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                SignatureScheme::RSA_PSS_SHA256,
+            ),
+            (
+                CipherSuite::TLS13_AES_128_GCM_SHA256,
+                SignatureScheme::RSA_PKCS1_SHA256,
+            ),
+            (
+                CipherSuite::TLS13_AES_128_GCM_SHA256,
+                SignatureScheme::RSA_PSS_SHA256,
+            ),
+        ] {
+            assert_eq!(clamp_of(&hello(cipher, scheme)), None);
+        }
     }
 }
 
 #[cfg(test)]
 mod pool_tests {
-    use super::*;
+    use std::time::Duration;
+
     use itertools::iproduct;
     use rama_boring::x509::store::X509StoreBuilder;
-    use rama_core::extensions::Extensions;
-    use rama_tls::ProtocolVersion;
-    use rama_tls::client::{
-        ClientAuth, NativeTrustPolicy, PlatformTrustPolicy, ServerVerifyMode, TlsServerCertPin,
-        TlsServerTrustAnchors,
+    use rama_core::{combinators::Either, extensions::Extensions};
+    use rama_crypto::platform_verifier::PlatformVerifier;
+    use rama_tls::{
+        ProtocolVersion,
+        client::{
+            ChannelReloadTrigger, ClientAuth, NativeTrustPolicy, PlatformTrustPolicy,
+            ServerVerifyMode, TlsServerCertPin, TlsServerTrustAnchors,
+        },
+        keylog::NoopKeyLogSink,
     };
-    use rama_tls::keylog::NoopKeyLogSink;
+
+    use super::*;
+    use crate::client::BoringServerTrustCache;
+
+    #[test]
+    fn sni_policy_partitions_pools_sessions_and_contexts() {
+        let config = TlsClientConfig::new();
+        let base = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
+        for policy in [
+            TlsClientSni::Auto,
+            TlsClientSni::IncludeIp,
+            TlsClientSni::Disabled,
+        ] {
+            let config = TlsClientConfig::new().with_sni_policy(policy);
+            let view = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
+            assert_ne!(base.pool_id(), view.pool_id());
+            assert_ne!(base.session_scope(), view.session_scope());
+            assert_ne!(
+                base.context_scope_with_verification(None),
+                view.context_scope_with_verification(None)
+            );
+            for other in [
+                TlsClientSni::Auto,
+                TlsClientSni::IncludeIp,
+                TlsClientSni::Disabled,
+            ] {
+                let config = TlsClientConfig::new().with_sni_policy(other);
+                let other = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
+                assert_eq!(
+                    view.pool_id() == other.pool_id(),
+                    view.sni_policy == other.sni_policy
+                );
+                assert_eq!(
+                    view.session_scope() == other.session_scope(),
+                    view.sni_policy == other.sni_policy
+                );
+                assert_eq!(
+                    view.context_scope_with_verification(None)
+                        == other.context_scope_with_verification(None),
+                    view.sni_policy == other.sni_policy
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn platform_trigger_event_rotates_the_session_scope() {
+        let (sender, trigger) = ChannelReloadTrigger::new();
+        let config = TlsClientConfig::new()
+            .with_server_trust(PlatformTrustPolicy::new().with_reload_trigger(trigger));
+        let view = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
+        let cache = BoringServerTrustCache::default();
+        let scope = || {
+            let verification = cache
+                .server_verification(config.as_extensions())
+                .unwrap()
+                .unwrap();
+            view.session_scope_with_verification(Some(&verification))
+        };
+
+        let first = scope();
+        assert_eq!(first, scope());
+        // The extra roots read the same; the event alone must end resumption.
+        sender.request_reload().unwrap();
+        let next = scope();
+        assert_eq!(first != next, PlatformVerifier::IS_AVAILABLE);
+        assert_eq!(next, scope());
+        drop(sender);
+        let ended = scope();
+        assert_eq!(next != ended, PlatformVerifier::IS_AVAILABLE);
+        assert_eq!(ended, scope());
+    }
 
     #[test]
     fn static_session_scope_survives_rebuilding_native_verification() {
-        use rama_core::combinators::Either;
-        use rama_crypto::platform_verifier::PlatformVerifier;
-        use std::time::Duration;
-
         let anchor = CertificateDer::from(vec![1]);
         let custom =
             TlsServerTrust::custom(TlsServerTrustAnchors::try_new([anchor.clone()]).unwrap());
@@ -1565,15 +1593,15 @@ mod pool_tests {
                 ext.insert(TlsKeyLog(KeyLogIntent::File(format!("pool-test-{value}"))));
             }),
             ("server_name", |ext, value| {
-                ext.insert(TlsServerName(
+                ext.insert(
                     if value == 0 {
                         "one.example"
                     } else {
                         "two.example"
                     }
-                    .parse()
+                    .parse::<ServerName>()
                     .unwrap(),
-                ));
+                );
             }),
             ("store_chain", |ext, value| {
                 ext.insert(TlsStoreServerCertChain(value != 0));
@@ -1959,7 +1987,8 @@ mod native_extension_tests {
 
 #[cfg(test)]
 mod authenticated_alias_tests {
-    use super::*;
+    use std::net::IpAddr;
+
     use rama_boring::{
         asn1::{Asn1Integer, Asn1Time},
         bn::BigNum,
@@ -1967,19 +1996,22 @@ mod authenticated_alias_tests {
         pkey::PKey,
         x509::{X509NameBuilder, extension::SubjectAlternativeName},
     };
+    use rama_net::address::Domain;
     use rama_tls::{
         client::{ServerVerifyMode, TlsServerCertPinSet, TlsServerCertPins},
         server::{CertificateIdentity, LeafCertRequest, ServerAuthData},
     };
 
-    fn matches(policy: &Extensions, leaf: &CertificateDer<'_>, name: &Host) -> bool {
+    use super::*;
+
+    fn matches(policy: &Extensions, leaf: &CertificateDer<'_>, name: &ServerName) -> bool {
         BoringTlsConnectorConfig::from_extensions(policy).peer_matches_name(leaf, name)
     }
 
     #[test]
     fn additional_names_preserve_the_actual_leaf_and_scoped_pin_policy() {
-        let first = Host::from_static("a.example");
-        let second = Host::from_static("b.example");
+        let first = ServerName::from(Domain::from_static("a.example"));
+        let second = ServerName::from(Domain::from_static("b.example"));
         let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest {
             identities: vec![
                 CertificateIdentity::Dns("a.example".parse().unwrap()),
@@ -1993,7 +2025,11 @@ mod authenticated_alias_tests {
         let policy = Extensions::new();
         assert!(matches(&policy, leaf, &first));
         assert!(matches(&policy, leaf, &second));
-        assert!(!matches(&policy, leaf, &Host::from_static("wrong.example")));
+        assert!(!matches(
+            &policy,
+            leaf,
+            &ServerName::from(Domain::from_static("wrong.example"))
+        ));
         policy.insert(TlsServerCertPins::new(
             TlsServerCertPinSet::new(other.cert_chain.first().unwrap().clone())
                 .with_server_name(second.clone()),
@@ -2020,7 +2056,28 @@ mod authenticated_alias_tests {
         let mut subject = X509NameBuilder::new().unwrap();
         subject.append_entry_by_text("CN", "display-only").unwrap();
         let subject = subject.build();
-        for (pattern, expected) in [("*.example.test", true), ("f*.example.test", false)] {
+        for (pattern, target, expected) in [
+            (
+                "*.example.test",
+                ServerName::from(Domain::from_static("foo.example.test")),
+                true,
+            ),
+            (
+                "f*.example.test",
+                ServerName::from(Domain::from_static("foo.example.test")),
+                false,
+            ),
+            (
+                "127.0.0.1",
+                ServerName::from(Domain::from_static("127.0.0.1")),
+                false,
+            ),
+            (
+                "127.0.0.1",
+                ServerName::from(IpAddr::from([127, 0, 0, 1])),
+                false,
+            ),
+        ] {
             let mut certificate = X509::builder().unwrap();
             certificate.set_version(2).unwrap();
             let serial = Asn1Integer::from_bn(&BigNum::from_u32(1).unwrap()).unwrap();
@@ -2042,11 +2099,7 @@ mod authenticated_alias_tests {
             certificate.sign(&key, MessageDigest::sha256()).unwrap();
             let leaf = CertificateDer::from(certificate.build().to_der().unwrap());
             assert_eq!(
-                matches(
-                    &Extensions::new(),
-                    &leaf,
-                    &Host::from_static("foo.example.test"),
-                ),
+                matches(&Extensions::new(), &leaf, &target,),
                 expected,
                 "actual pinned native wildcard behavior for {pattern}"
             );
@@ -2064,7 +2117,7 @@ mod authenticated_alias_tests {
         })
         .unwrap();
         let leaf = identity.cert_chain.first().unwrap();
-        let second = Host::from_static("b.example");
+        let second = ServerName::from(Domain::from_static("b.example"));
 
         let native = Extensions::new();
         native.insert(rama_tls::client::TlsServerTrust::native_roots());

@@ -1,26 +1,34 @@
-use rama::net::client::MaybeProxied;
 use rama::{
+    ServiceInput,
     error::{ErrorExt as _, extra::OpaqueError},
     http::{
         Body, Version,
         client::{
-            EasyHttpWebClient, Http3Connector, HttpConnector, ProxyConnector, masque_quic_transport,
+            EasyHttpWebClient, Http3Connector, HttpConnector, ProxyConnector, http_connect,
+            masque_quic_transport,
         },
         conn::TargetHttpVersion,
-        core::h3::connection::Config as H3Config,
+        core::h3::{client, connection::Config as H3Config},
+        datagram::HttpDatagramSession,
+        header,
+        io::upgrade::handle_upgrade,
+        proto::ext::HttpDatagrams,
         proxy::ProxyRequestBody,
     },
     net::{
-        address::{Host, HostWithPort, ProxyAddress, ProxyProtocol},
+        address::{Domain, Host, HostWithPort, ProxyAddress, ProxyProtocol},
         client::{
-            ConnectorService, ConnectorTarget, EstablishedClientConnection, MaybeProxiedConnector,
-            ProxiedRoute, ProxyRoute,
+            ConnectorService, ConnectorTarget, EstablishedClientConnection, MaybeProxied,
+            MaybeProxiedConnector, ProxiedRoute, ProxyRoute,
         },
         socket::opts::SocketOptions,
         stream::Socket as _,
         tls::ApplicationProtocol,
     },
-    proxy::masque::connect_udp::{ConnectUdpSocket, HttpConnectUdpProxyConnector},
+    proxy::masque::connect_udp::{
+        ConnectUdpSocket, ConnectUdpTarget, HttpConnectUdpProxyConnector, connect_udp_request,
+        session_config, validate_connect_udp_response,
+    },
     quic::{
         Connection, ConnectionError, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, NegotiatedTlsParameters,
         ServerConfig, TransportConfig,
@@ -30,7 +38,7 @@ use rama::{
     },
     tls::{
         SecureTransport,
-        boring::client::TlsConnector,
+        boring::client::{TlsConnector, TlsConnectorData, tls_connect},
         client::{ClientHello, ClientHelloExtension},
     },
     ua::{
@@ -154,12 +162,6 @@ const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP
 /// inside that tunnel have an independent proxy-auth exchange, without MASQUE.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mitm_preserves_inner_http_proxy_credentials_and_challenges() {
-    use rama::{
-        ServiceInput,
-        http::{client::http_connect, header},
-        tls::boring::client::{TlsConnectorData, tls_connect},
-    };
-    use tokio::io::AsyncWriteExt as _;
     timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached()).await.unwrap();
         let own = listener.local_addr().unwrap();
@@ -186,7 +188,7 @@ async fn mitm_preserves_inner_http_proxy_credentials_and_challenges() {
                 stream.write_all(format!("CONNECT {own} HTTP/1.1\r\nHost: {own}\r\nProxy-Authorization: Basic b3V0ZXI6eA==\r\n\r\n").as_bytes()).await.unwrap();
                 assert!(read_raw_http_head(&mut stream).await.starts_with("HTTP/1.1 200"));
                 let tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable)
-                    .with_server_name(Host::from_static("localhost"))
+                    .with_server_name(Domain::from_static("localhost"))
                     .with_alpn([if version == Version::HTTP_2 { ApplicationProtocol::HTTP_2 } else { ApplicationProtocol::HTTP_11 }].into_iter().collect());
                 let stream = tls_connect(ServiceInput::new(stream), Some(TlsConnectorData::try_from(&tls).unwrap())).await.unwrap();
                 let mut request = Request::get("http://destination.example/resource").version(version).body(Body::empty()).unwrap();
@@ -213,18 +215,6 @@ async fn mitm_preserves_inner_http_proxy_credentials_and_challenges() {
 /// The front accepts the outer CONNECT/CONNECT-UDP, then intercepts TLS.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mitm_relays_a_clients_own_authenticated_masque_session() {
-    use rama::{
-        ServiceInput,
-        http::{
-            client::http_connect, core::h3::client, datagram::HttpDatagramSession,
-            io::upgrade::handle_upgrade, proto::ext::HttpDatagrams,
-        },
-        proxy::masque::connect_udp::{
-            ConnectUdpTarget, connect_udp_request, session_config, validate_connect_udp_response,
-        },
-        tls::boring::client::{TlsConnectorData, tls_connect},
-    };
-    use tokio::io::AsyncWriteExt as _;
     let (target, echo_task) = udp_echo().await;
     let (shutdown_tx, shutdown) = shutdown_pair();
     let own = proxy_with(
@@ -294,7 +284,7 @@ async fn mitm_relays_a_clients_own_authenticated_masque_session() {
             request.extensions().insert(TargetHttpVersion(version));
             let tls = TlsClientConfig::new()
                 .with_server_verify(ServerVerifyMode::Disable)
-                .with_server_name(Host::from_static("localhost"));
+                .with_server_name(Domain::from_static("localhost"));
             let mut endpoint = None;
             let mut driver = None;
             let response = if version == Version::HTTP_3 {

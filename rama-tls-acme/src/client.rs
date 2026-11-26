@@ -1,24 +1,22 @@
-use crate::proto::common::{ProtectedHeaderAcme, ProtectedHeaderCrypto, ProtectedHeaderKey};
-use rama_core::error::BoxErrorExt as _;
-
-use super::proto::{
-    client::FinalizePayload,
-    client::{CreateAccountOptions, KeyAuthorization, NewOrderPayload},
-    common::{self},
-    server::REPLAY_NONCE_HEADER,
-    server::{self, Problem},
+use std::{
+    borrow::Cow,
+    time::{Duration, SystemTime},
 };
+
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use parking_lot::Mutex;
 use rama_core::{
     Service,
     bytes::Bytes,
-    error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _, extra::OpaqueError},
     layer::MapErr,
     service::BoxService,
 };
 use rama_crypto::{
-    dep::rcgen::{self, Certificate},
+    dep::rcgen::{
+        self, Certificate, CertificateParams, CustomExtension, DistinguishedName,
+        ExtendedKeyUsagePurpose, KeyPair, SanType,
+    },
     jose::{EMPTY_PAYLOAD, EcdsaKey, Empty, Headers, JWSBuilder, NO_PAYLOAD, Signer},
     pki_types::{CertificateDer, PrivatePkcs8KeyDer, pem::PemObject as _},
 };
@@ -33,11 +31,16 @@ use rama_http::{
 };
 use rama_utils::{macros::generate_set_and_with, time::now_system_time};
 use serde::Serialize;
-use std::{
-    borrow::Cow,
-    time::{Duration, SystemTime},
-};
 use tokio::time::sleep;
+
+use super::proto::{
+    client::{CreateAccountOptions, FinalizePayload, KeyAuthorization, NewOrderPayload},
+    common::{self},
+    server::{self, ChallengeType, Problem, REPLAY_NONCE_HEADER},
+};
+use crate::proto::common::{
+    CanonicalIdentifier, ProtectedHeaderAcme, ProtectedHeaderCrypto, ProtectedHeaderKey,
+};
 
 #[derive(Debug)]
 /// Acme client that will used for all acme operations
@@ -693,29 +696,54 @@ impl<'a> Order<'a> {
     /// Create challenge data need for tls-alpn challenge
     ///
     /// This function returns a private private key and certificate which a TLS
-    /// backend should expose on port 443 (on the configured domain)
+    /// backend should expose on port 443 for the identifier. The validator asks for it
+    /// under [`common::Identifier::tls_alpn_server_name`]: the domain itself, or the
+    /// reverse mapping name of an IP address. The certificate names only the identifier,
+    /// as a `dNSName` or as an `iPAddress` ([RFC 8737 section 3], [RFC 8738 section 6]).
+    ///
+    /// [RFC 8737 section 3]: https://datatracker.ietf.org/doc/html/rfc8737#section-3
+    /// [RFC 8738 section 6]: https://datatracker.ietf.org/doc/html/rfc8738#section-6
     pub fn create_tls_challenge_data(
         &self,
         challenge: &server::Challenge,
         identifier: &common::Identifier,
     ) -> Result<(PrivatePkcs8KeyDer<'static>, Certificate), BoxError> {
+        ensure_challenge(challenge, &ChallengeType::TlsAlpn01, identifier)?;
         let key_authorization = self.create_key_authorization(challenge)?;
+        tls_challenge_certificate(identifier, key_authorization.digest().as_ref())
+    }
 
-        let mut cert_params = rcgen::CertificateParams::new(vec![identifier.to_string()])
-            .context("create certificate params")?;
-        cert_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-        cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(
-            key_authorization.digest().as_ref(),
-        )];
+    /// Create the `dns-01` TXT record value for `challenge` on `identifier`.
+    ///
+    /// An `ip` identifier is refused: `dns-01` cannot validate it ([RFC 8738 section 7]).
+    ///
+    /// [RFC 8738 section 7]: https://datatracker.ietf.org/doc/html/rfc8738#section-7
+    pub fn create_dns_challenge_value(
+        &self,
+        challenge: &server::Challenge,
+        identifier: &common::Identifier,
+    ) -> Result<Box<str>, BoxError> {
+        ensure_challenge(challenge, &ChallengeType::Dns01, identifier)?;
+        Ok(self
+            .create_key_authorization(challenge)?
+            .dns_value()
+            .into_boxed_str())
+    }
 
-        let key_pair = rcgen::KeyPair::generate().context("generate temporary keypair")?;
-        let key_der = key_pair.serialize_der();
-
-        let cert = cert_params
-            .self_signed(&key_pair)
-            .context("sign certificate params")?;
-        let pk = PrivatePkcs8KeyDer::from(key_der);
-        Ok((pk, cert))
+    /// Create a key pair and a certificate signing request that names every identifier of
+    /// this order: a `dNSName` for a `dns` identifier and an `iPAddress` for an `ip` one.
+    ///
+    /// Pass the request to [`Self::finalize`] and keep the key for the issued certificate.
+    pub fn create_csr(
+        &self,
+    ) -> Result<
+        (
+            PrivatePkcs8KeyDer<'static>,
+            rcgen::CertificateSigningRequest,
+        ),
+        BoxError,
+    > {
+        certificate_signing_request(&self.inner.identifiers)
     }
 
     async fn post(
@@ -726,6 +754,89 @@ impl<'a> Order<'a> {
     ) -> Result<Response, ClientError> {
         self.account.post(url, payload).await
     }
+}
+
+/// Refuse `challenge` unless it is of type `expected` and can validate `identifier`.
+fn ensure_challenge(
+    challenge: &server::Challenge,
+    expected: &server::ChallengeType,
+    identifier: &common::Identifier,
+) -> Result<(), BoxError> {
+    if &challenge.r#type != expected {
+        return Err(BoxError::from_static_str(
+            "challenge is not of the type this data is created for",
+        ));
+    }
+    if !challenge.r#type.validates(identifier) {
+        return Err(BoxError::from_static_str(
+            "dns-01 cannot validate an ip identifier",
+        ));
+    }
+    Ok(())
+}
+
+/// The subject alternative name that certifies `identifier`.
+fn subject_alt_name(identifier: CanonicalIdentifier<'_>) -> Result<rcgen::SanType, BoxError> {
+    Ok(match identifier {
+        CanonicalIdentifier::Dns(domain) => SanType::DnsName(
+            domain
+                .as_str()
+                .try_into()
+                .context("encode dns identifier as subject alternative name")?,
+        ),
+        CanonicalIdentifier::Ip(ip) => SanType::IpAddress(ip),
+    })
+}
+
+/// A self-signed `tls-alpn-01` certificate for `identifier` carrying `digest`.
+pub(crate) fn tls_challenge_certificate(
+    identifier: &common::Identifier,
+    digest: &[u8],
+) -> Result<(PrivatePkcs8KeyDer<'static>, Certificate), BoxError> {
+    let mut cert_params = CertificateParams::default();
+    cert_params.subject_alt_names = vec![subject_alt_name(identifier.canonical_view())?];
+    cert_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    cert_params.custom_extensions = vec![CustomExtension::new_acme_identifier(digest)];
+
+    let key_pair = KeyPair::generate().context("generate temporary keypair")?;
+    let key_der = key_pair.serialize_der();
+    let cert = cert_params
+        .self_signed(&key_pair)
+        .context("sign certificate params")?;
+    Ok((PrivatePkcs8KeyDer::from(key_der), cert))
+}
+
+/// A key pair and a certificate signing request naming every one of `identifiers`.
+pub(crate) fn certificate_signing_request(
+    identifiers: &[common::Identifier],
+) -> Result<
+    (
+        PrivatePkcs8KeyDer<'static>,
+        rcgen::CertificateSigningRequest,
+    ),
+    BoxError,
+> {
+    if identifiers.is_empty() {
+        return Err(BoxError::from_static_str(
+            "a certificate signing request needs at least one identifier",
+        ));
+    }
+    let mut params = CertificateParams::default();
+    params.distinguished_name = DistinguishedName::new();
+    for (index, identifier) in identifiers.iter().enumerate() {
+        let canonical = identifier.canonical_view();
+        if !identifiers[..index]
+            .iter()
+            .any(|earlier| earlier.canonical_view() == canonical)
+        {
+            params.subject_alt_names.push(subject_alt_name(canonical)?);
+        }
+    }
+    let key_pair = KeyPair::generate().context("generate certificate key pair")?;
+    let csr = params
+        .serialize_request(&key_pair)
+        .context("create certificate signing request")?;
+    Ok((PrivatePkcs8KeyDer::from(key_pair.serialize_der()), csr))
 }
 
 async fn parse_response<T: serde::de::DeserializeOwned + Send + 'static>(
@@ -841,5 +952,141 @@ impl From<OpaqueError> for ClientError {
 impl From<Problem> for ClientError {
     fn from(value: Problem) -> Self {
         Self::Problem(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv6Addr};
+
+    use rama_crypto::dep::x509_parser::{
+        certificate::X509Certificate,
+        certification_request::X509CertificationRequest,
+        extensions::{GeneralName, ParsedExtension},
+        oid_registry::Oid,
+        prelude::FromDer as _,
+    };
+    use rama_net::address::Domain;
+    use server::{ChallengeStatus, ChallengeType};
+
+    use super::*;
+    use crate::proto::common::Identifier;
+
+    fn challenge(r#type: server::ChallengeType) -> server::Challenge {
+        server::Challenge {
+            r#type,
+            url: "https://acme.test/chall/1".to_owned(),
+            token: "token".to_owned(),
+            status: ChallengeStatus::Pending,
+            error: None,
+        }
+    }
+
+    fn names(general_names: &[GeneralName<'_>]) -> Vec<Box<str>> {
+        general_names
+            .iter()
+            .map(|name| match name {
+                GeneralName::DNSName(name) => format!("dns:{name}").into_boxed_str(),
+                GeneralName::IPAddress(bytes) => format!("ip:{bytes:?}").into_boxed_str(),
+                other => format!("other:{other:?}").into_boxed_str(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn signing_requests_name_dns_and_ip_identifiers() {
+        let identifiers = [
+            Identifier::dns(Domain::example()),
+            Identifier::ip(IpAddr::from([192, 0, 2, 1])),
+            Identifier::ip(Ipv6Addr::LOCALHOST.into()),
+            Identifier::dns("192.0.2.1"),
+        ];
+        let (_key, csr) = certificate_signing_request(&identifiers).unwrap();
+        let (_, request) = X509CertificationRequest::from_der(csr.der()).unwrap();
+        assert!(
+            request
+                .certification_request_info
+                .subject
+                .iter()
+                .next()
+                .is_none()
+        );
+        let san = request
+            .requested_extensions()
+            .into_iter()
+            .flatten()
+            .find_map(|extension| match extension {
+                ParsedExtension::SubjectAlternativeName(san) => Some(san),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            names(&san.general_names),
+            [
+                Box::<str>::from("dns:example.com"),
+                format!("ip:{:?}", [192u8, 0, 2, 1]).into_boxed_str(),
+                format!("ip:{:?}", Ipv6Addr::LOCALHOST.octets()).into_boxed_str(),
+            ]
+        );
+        certificate_signing_request(&[]).unwrap_err();
+    }
+
+    #[test]
+    fn signing_requests_deduplicate_canonical_dns_names() {
+        let identifiers = [
+            Identifier::dns("service.test"),
+            Identifier::dns("SERVICE.TEST"),
+        ];
+        let (_key, csr) = certificate_signing_request(&identifiers).unwrap();
+        let (_, request) = X509CertificationRequest::from_der(csr.der()).unwrap();
+        let san = request
+            .requested_extensions()
+            .into_iter()
+            .flatten()
+            .find_map(|extension| match extension {
+                ParsedExtension::SubjectAlternativeName(san) => Some(san),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            matches!(san.general_names.as_slice(), [GeneralName::DNSName(name)] if *name == "service.test")
+        );
+    }
+
+    #[test]
+    fn tls_alpn_certificates_name_only_the_identifier() {
+        let acme_identifier = Oid::from(&[1, 3, 6, 1, 5, 5, 7, 1, 31]).unwrap();
+        for (identifier, expected) in [
+            (
+                Identifier::ip(IpAddr::from([192, 0, 2, 1])),
+                format!("ip:{:?}", [192u8, 0, 2, 1]).into_boxed_str(),
+            ),
+            (
+                Identifier::dns(Domain::example()),
+                Box::<str>::from("dns:example.com"),
+            ),
+        ] {
+            let (_key, certificate) = tls_challenge_certificate(&identifier, &[7; 32]).unwrap();
+            let (_, certificate) = X509Certificate::from_der(certificate.der()).unwrap();
+            let san = certificate.subject_alternative_name().unwrap().unwrap();
+            assert_eq!(names(&san.value.general_names), [expected]);
+            let extension = certificate
+                .get_extension_unique(&acme_identifier)
+                .unwrap()
+                .unwrap();
+            assert!(extension.critical);
+        }
+    }
+
+    #[test]
+    fn challenge_data_matches_its_challenge_and_identifier() {
+        let ip = Identifier::ip(IpAddr::from([192, 0, 2, 1]));
+        let dns = Identifier::dns(Domain::example());
+        let dns01 = challenge(ChallengeType::Dns01);
+        let tls = challenge(ChallengeType::TlsAlpn01);
+        ensure_challenge(&dns01, &ChallengeType::Dns01, &ip).unwrap_err();
+        ensure_challenge(&dns01, &ChallengeType::Dns01, &dns).unwrap();
+        ensure_challenge(&tls, &ChallengeType::TlsAlpn01, &ip).unwrap();
+        ensure_challenge(&tls, &ChallengeType::Dns01, &dns).unwrap_err();
     }
 }

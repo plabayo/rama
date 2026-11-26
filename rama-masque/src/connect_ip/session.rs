@@ -1,11 +1,18 @@
-use super::{
-    ADDRESS_ASSIGN, ADDRESS_REQUEST, ConnectIpCapsule, ConnectIpPolicy, ConnectIpProtocolError,
-    ConnectIpState, ConnectIpStateLimits, IpPacketDrop, ROUTE_ADVERTISEMENT, decode_ip_datagram,
-    wire::encode_ip_datagram_mut,
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
+    },
+    time::Duration,
 };
-use crate::budget::{Charge, TunnelAccount, TunnelBudget};
+
 use parking_lot::Mutex;
-use rama_core::{bytes::Bytes, extensions::ExtensionsRef};
+use rama_core::{
+    bytes::Bytes,
+    extensions::ExtensionsRef,
+    rt::{IdleActivity, IdleGuard},
+};
 use rama_http::{
     datagram::{
         DatagramTransport, HttpDatagramSession, NativeDatagrams, NativeSendError, NativeSendPolicy,
@@ -19,19 +26,19 @@ use rama_net::ip::{
     icmp::{Icmpv6Echo, Icmpv6EchoKind},
 };
 use rama_utils::{macros::generate_set_and_with, time::deadline_after};
-use std::{
-    fmt,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
-    },
-    time::Duration,
-};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::Notify,
+    task::unconstrained,
     time::{Instant, timeout_at},
 };
+
+use super::{
+    ADDRESS_ASSIGN, ADDRESS_REQUEST, ConnectIpCapsule, ConnectIpPolicy, ConnectIpProtocolError,
+    ConnectIpState, ConnectIpStateLimits, IpPacketDrop, ROUTE_ADVERTISEMENT, decode_ip_datagram,
+    wire::encode_ip_datagram_mut,
+};
+use crate::budget::{Charge, TunnelAccount, TunnelBudget};
 
 /// Configuration shared by a tunnel's send and receive halves.
 #[derive(Debug, Clone)]
@@ -307,8 +314,7 @@ struct Shared {
     budget: TunnelAccount,
     closed: AtomicBool,
     notify: Notify,
-    epoch: Instant,
-    last_activity: AtomicU64,
+    activity: IdleActivity,
     sent: AtomicU64,
     received: AtomicU64,
     dropped: AtomicU64,
@@ -355,15 +361,12 @@ impl Shared {
     }
 
     fn touch(&self) {
-        let elapsed = u64::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        self.last_activity.fetch_max(elapsed, Ordering::Relaxed);
+        self.activity.record();
     }
 
-    fn idle_deadline(&self) -> Instant {
-        deadline_after(
-            self.epoch + Duration::from_nanos(self.last_activity.load(Ordering::Relaxed)),
-            self.config.idle_timeout,
-        )
+    fn idle(&self, now: impl FnOnce() -> Instant) -> bool {
+        let now = now();
+        self.activity.deadline(self.config.idle_timeout) <= now
     }
 
     fn update_state(
@@ -466,8 +469,7 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
             budget,
             closed: AtomicBool::new(false),
             notify: Notify::new(),
-            epoch: Instant::now(),
-            last_activity: AtomicU64::new(0),
+            activity: IdleActivity::new(),
             sent: AtomicU64::new(0),
             received: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
@@ -923,6 +925,14 @@ impl<T> ConnectIpReceiver<T> {
 impl<T: AsyncRead> ConnectIpReceiver<T> {
     /// Receive one event. Invalid packets are observable drops, not protocol errors.
     pub async fn recv(&mut self) -> Result<Option<ConnectIpEvent>, ConnectIpError> {
+        self.recv_with_clock(Instant::now).await
+    }
+
+    /// Receive an event with the clock sampled before shared activity is checked.
+    async fn recv_with_clock(
+        &mut self,
+        now: impl Fn() -> Instant,
+    ) -> Result<Option<ConnectIpEvent>, ConnectIpError> {
         if self.finished {
             return Ok(None);
         }
@@ -930,30 +940,39 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
             self.http.abort();
             return Err(error);
         }
+        // Armed by this call's runtime, which a receive cancelled on another one cannot be.
+        let mut idle =
+            IdleGuard::for_activity(self.shared.config.idle_timeout, &self.shared.activity);
         loop {
             tokio::task::consume_budget().await;
-            let deadline = self.shared.idle_deadline();
-            if Instant::now() >= deadline {
+            if self.shared.idle(&now) {
                 self.shared.close();
                 self.http.abort();
                 return Err(ConnectIpError::Timeout);
             }
+            let shared = &self.shared;
+            // A ready event wins over an idle deadline passing at the same time; the deadline
+            // is polled unconstrained so a reader spending the task budget cannot starve it.
+            let received = async {
+                tokio::select! {
+                    biased;
+                    result = self.http.recv() => Some(result),
+                    () = unconstrained(idle.expired(&shared.activity)) => None,
+                }
+            };
             let event = tokio::select! {
-                _ = self.shared.cancelled() => {
+                _ = shared.cancelled() => {
                     self.http.abort();
                     return Err(ConnectIpError::Closed);
                 }
-                result = timeout_at(deadline, self.http.recv()) => match result {
-                    Ok(Ok(event)) => event,
-                    Ok(Err(error)) => {
+                result = received => match result {
+                    Some(Ok(event)) => event,
+                    Some(Err(error)) => {
                         self.shared.close();
                         self.http.abort();
                         return Err(error.into());
                     }
-                    Err(_) => {
-                        if Instant::now() < self.shared.idle_deadline() {
-                            continue;
-                        }
+                    None => {
                         self.shared.close();
                         self.http.abort();
                         return Err(ConnectIpError::Timeout);
@@ -1065,5 +1084,40 @@ fn link_local(address: std::net::IpAddr) -> bool {
         std::net::IpAddr::V6(a) => {
             a.is_unicast_link_local() || a.is_multicast() && (a.segments()[0] & 15) <= 2
         }
+    }
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use rama_core::ServiceInput;
+    use rama_utils::octets::kib;
+    use tokio::{io::duplex, time::advance};
+
+    use super::*;
+    use crate::connect_ip::{ConnectIpRole, ConnectIpSession};
+
+    #[tokio::test(start_paused = true)]
+    async fn receive_fast_path_observes_activity_during_the_clock_read() {
+        let (peer, io) = duplex(kib(1));
+        let config = ConnectIpSessionConfig::new(ConnectIpPolicy::new());
+        let mut peer =
+            HttpDatagramSession::with_config(ServiceInput::new(peer), config.http_config());
+        let mut session =
+            ConnectIpSession::new(ServiceInput::new(io), ConnectIpRole::Client, config).unwrap();
+        peer.send_capsule(ROUTE_ADVERTISEMENT, Bytes::new())
+            .await
+            .unwrap();
+        let shared = session.receiver.shared.clone();
+        let deadline = shared.activity.deadline(shared.config.idle_timeout);
+        advance(shared.config.idle_timeout).await;
+        let event = session
+            .receiver
+            .recv_with_clock(|| {
+                shared.touch();
+                deadline
+            })
+            .await
+            .unwrap();
+        assert!(matches!(event, Some(ConnectIpEvent::Control(_))));
     }
 }

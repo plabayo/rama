@@ -466,7 +466,10 @@ impl Drop for PacketPermit {
 mod tests {
     use super::*;
     use rama_utils::octets;
-    use std::assert_matches;
+    use std::{
+        assert_matches,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     fn budget(datagrams: usize, bytes: usize) -> PacketBudget {
         PacketBudget::new(ReceiveQueueLimits::new(datagrams, bytes).unwrap())
@@ -865,8 +868,6 @@ mod tests {
 
     #[test]
     fn sender_wakes_after_releasing_the_queue_lock() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
         struct InspectWake {
             queue: std::sync::Weak<Mutex<QueueState<u8>>>,
             wakes: AtomicUsize,

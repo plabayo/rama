@@ -82,7 +82,7 @@ use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef,
 use rama_core::futures::maybe;
 use rama_core::telemetry::tracing::trace;
 use rama_utils::collections::smallvec::SmallVec;
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::{generate_set_and_with, nonzero};
 use rama_utils::reactive::{Change, ChangeListener, Party, WaitQueue, Waiter, Wakes};
 use rama_utils::time::{AtomicInstant, now_monotonic_nanos};
 use std::collections::{BTreeMap, VecDeque};
@@ -157,7 +157,7 @@ const OPEN_CANDIDATES: usize = 4;
 
 /// The most connections a limit allows: its slots are a semaphore's permits.
 /// A larger limit is this one.
-const MAX_LIMIT: NonZeroUsize = NonZeroUsize::new(Semaphore::MAX_PERMITS).unwrap();
+const MAX_LIMIT: NonZeroUsize = nonzero!(Semaphore::MAX_PERMITS);
 
 /// The shortest wait of a checkout at a limit for a connection to expire: a
 /// tiny idle timeout must not turn the wait into polling.

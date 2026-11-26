@@ -1,9 +1,12 @@
 use rama_boring::{ssl::UnknownValues, x509::store::X509Store};
-use rama_core::{error::BoxError, telemetry::tracing};
+use rama_core::{
+    error::{BoxError, ErrorContext as _},
+    telemetry::tracing,
+};
 use rama_crypto::pki_types::CertificateDer;
-use rama_net::address::{Domain, Host, HostWithPort};
+use rama_net::{address::HostWithPort, tls::ServerName};
 use rama_tls::{
-    KeyLogIntent,
+    KeyLogIntent, ProtocolVersion,
     client::{
         ClientHello, DynTlsServerCertChainPolicy, ServerVerifyMode, TlsClientConfig,
         TlsServerCertPins, TlsServerTrust, TlsServerVerify,
@@ -12,7 +15,10 @@ use rama_tls::{
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
 
-use crate::client::BoringClientConfigExt as _;
+use crate::client::{
+    BoringClientConfigExt as _,
+    negotiable::{ALL_VERSIONS, cipher_negotiable, cipher_supported, version_supported},
+};
 
 /// Server-authentication policy for upstream TLS connections made by a
 /// [`TlsMitmRelay`](super::TlsMitmRelay).
@@ -59,8 +65,10 @@ impl TlsMitmEgressServerAuth {
         /// A DNS identity is also sent as SNI. Without an explicit identity,
         /// the relay uses ingress SNI. When verification or pinning is
         /// configured and ingress SNI is absent, it falls back to the
-        /// connector-target host.
-        pub fn server_name(mut self, server_name: Host) -> Self {
+        /// connector-target host. A target that is not a server name fails
+        /// only where verification or a name-scoped pin needs one; otherwise
+        /// no SNI is sent.
+        pub fn server_name(mut self, server_name: impl Into<ServerName>) -> Self {
             self.config.set_server_name(server_name);
             self
         }
@@ -198,15 +206,28 @@ impl TlsMitmEgressServerAuth {
     /// pinning is configured; an explicit policy server name is written later
     /// and therefore does not need this fallback.
     pub(super) fn requires_connector_target_identity(&self) -> bool {
-        self.config
-            .as_extensions()
-            .get_ref::<TlsServerVerify>()
-            .is_some_and(|verify| verify.0 == ServerVerifyMode::Auto)
+        let extensions = self.config.as_extensions();
+        !extensions.contains::<ServerName>()
+            && (self.verifies_server() || extensions.get_ref::<TlsServerCertPins>().is_some())
+    }
+
+    /// Return whether the upstream handshake cannot be authenticated without a
+    /// server name: the certificate is verified against a name, or no
+    /// configured pin set applies to a connection without one.
+    pub(super) fn requires_server_name(&self) -> bool {
+        self.verifies_server()
             || self
                 .config
                 .as_extensions()
                 .get_ref::<TlsServerCertPins>()
-                .is_some()
+                .is_some_and(|pins| !pins.applies_to(None))
+    }
+
+    fn verifies_server(&self) -> bool {
+        self.config
+            .as_extensions()
+            .get_ref::<TlsServerVerify>()
+            .is_some_and(|verify| verify.0 == ServerVerifyMode::Auto)
     }
 }
 
@@ -218,7 +239,7 @@ impl TlsMitmEgressServerAuth {
 /// between the two entry points.
 pub(super) fn tls_client_config(
     client_hello: Option<&ClientHello>,
-    server_name: Option<Host>,
+    server_name: Option<ServerName>,
     keylog: KeyLogIntent,
     server_auth: Option<&TlsMitmEgressServerAuth>,
 ) -> TlsClientConfig {
@@ -229,7 +250,10 @@ pub(super) fn tls_client_config(
             tracing::debug!(
                 "TLS MITM relay mirrors the ClientHello without values the native engine cannot negotiate"
             );
-            TlsClientConfig::new_from_client_hello(hello).with_unknown_values(UnknownValues::Drop)
+            let mut config = TlsClientConfig::new_from_client_hello(hello)
+                .with_unknown_values(UnknownValues::Drop);
+            offer_negotiable_only(&mut config, hello);
+            config
         }
         None => TlsClientConfig::new(),
     }
@@ -249,32 +273,96 @@ pub(super) fn tls_client_config(
     config
 }
 
+// Unknown-value dropping misses suites and versions, which are set as listed.
+fn offer_negotiable_only(config: &mut TlsClientConfig, hello: &ClientHello) {
+    let suites = hello.cipher_suites();
+    // Without a negotiable suite the ingress offer is mirrored as is: a relay never invents one.
+    if suites
+        .iter()
+        .any(|suite| cipher_negotiable(u16::from(*suite), ALL_VERSIONS))
+    {
+        config.set_cipher_suites(
+            suites
+                .iter()
+                .copied()
+                .filter(|suite| {
+                    suite.is_grease() || cipher_supported(u16::from(*suite), ALL_VERSIONS)
+                })
+                .collect(),
+        );
+    }
+    match hello.supported_versions() {
+        Some(versions) => {
+            let offered: Vec<_> = versions
+                .iter()
+                .copied()
+                .filter(|version| version.is_grease() || version_supported(u16::from(*version)))
+                .collect();
+            if offered.iter().any(|version| !version.is_grease()) {
+                config.set_supported_versions(offered);
+            }
+        }
+        // Without supported_versions the legacy field is the only version offered.
+        None if hello.protocol_version() < ProtocolVersion::TLSv1_2
+            && version_supported(u16::from(hello.protocol_version())) =>
+        {
+            config.set_min_version(hello.protocol_version());
+        }
+        None => {}
+    }
+}
+
 /// Resolve the relay's effective upstream identity without changing transparent
 /// no-SNI behavior merely because a disabled policy object was attached.
 pub(super) fn server_name(
-    ingress_sni: Option<&Domain>,
+    ingress_sni: Option<&ServerName>,
     connector_target: Option<&HostWithPort>,
     server_auth: Option<&TlsMitmEgressServerAuth>,
-) -> Option<Host> {
-    ingress_sni.cloned().map(Into::into).or_else(|| {
-        if server_auth.is_some_and(TlsMitmEgressServerAuth::requires_connector_target_identity) {
-            connector_target.map(|target| target.host.clone())
-        } else {
-            None
+) -> Result<Option<ServerName>, BoxError> {
+    if let Some(sni) = ingress_sni {
+        return Ok(Some(sni.clone()));
+    }
+    let Some(server_auth) =
+        server_auth.filter(|server_auth| server_auth.requires_connector_target_identity())
+    else {
+        return Ok(None);
+    };
+    let Some(target) = connector_target else {
+        return Ok(None);
+    };
+    match ServerName::try_from(&target.host) {
+        Ok(server_name) => Ok(Some(server_name)),
+        Err(error) if server_auth.requires_server_name() => {
+            Err(error).context("connector target host is not a TLS server name")
         }
-    })
+        Err(_) => {
+            tracing::debug!(
+                server.address = %target.host,
+                "connector target is not a TLS server name: no SNI is sent upstream"
+            );
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::{self, Read, Write};
 
-    use rama_boring::ssl::HandshakeError;
+    use rama_boring::{
+        pkey::PKey,
+        ssl::{HandshakeError, Ssl, SslContextBuilder, SslMethod, SslVersion},
+        x509::X509,
+    };
+    use rama_boring_tokio::SslStreamBuilder;
+    use rama_net::address::{Domain, Host};
     use rama_tls::{
         CipherSuite, CompressionAlgorithm, ExtensionId, ProtocolVersion, SignatureScheme,
         SupportedGroup,
-        client::{ClientHelloExtension, parse_client_hello_handshake},
+        client::{ClientHelloExtension, TlsServerCertPinSet, parse_client_hello_handshake},
+        server::{GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData},
     };
+    use rama_utils::octets::kib;
 
     use super::*;
     use crate::client::{BoringTlsConnectorConfig, TlsConnectorData};
@@ -399,6 +487,118 @@ mod tests {
     }
 
     #[test]
+    fn mirror_filters_suites_and_versions_the_native_engine_cannot_negotiate() {
+        let suites = |values: &[u16]| values.iter().copied().map(CipherSuite::from).collect();
+        let versions = |values: &[u16]| {
+            values
+                .iter()
+                .copied()
+                .map(ProtocolVersion::from)
+                .collect::<Vec<_>>()
+        };
+        let hello = ClientHello::new(
+            ProtocolVersion::TLSv1_2,
+            suites(&[0x1301, 0xfe00, 0xc013, 0x00ff, 0xffff]),
+            vec![CompressionAlgorithm::Null],
+            vec![
+                ClientHelloExtension::SupportedVersions(versions(&[
+                    0x0a0a, 0x0304, 0x0303, 0x0302, 0x0301, 0x0300,
+                ])),
+                ClientHelloExtension::SupportedGroups(vec![SupportedGroup::X25519]),
+                ClientHelloExtension::SignatureAlgorithms(vec![
+                    SignatureScheme::ECDSA_NISTP256_SHA256,
+                ]),
+            ],
+        );
+        let emitted = emitted(&tls_client_config(
+            Some(&hello),
+            None,
+            KeyLogIntent::Disabled,
+            None,
+        ));
+        // The renegotiation SCSV is a signal and stays.
+        assert_eq!(
+            emitted.cipher_suites(),
+            suites(&[0x1301, 0xc013, 0x00ff]).as_slice()
+        );
+        let sent: Vec<_> = emitted
+            .supported_versions()
+            .unwrap()
+            .iter()
+            .filter(|version| !version.is_grease())
+            .copied()
+            .collect();
+        assert_eq!(sent, versions(&[0x0304, 0x0303, 0x0302, 0x0301]));
+    }
+
+    #[test]
+    fn mirror_without_a_negotiable_suite_keeps_the_ingress_suites() {
+        let offered: Vec<_> = [0x00ff, 0xfe00, 0xffff]
+            .into_iter()
+            .map(CipherSuite::from)
+            .collect();
+        let hello = ClientHello::new(
+            ProtocolVersion::TLSv1_2,
+            offered.clone(),
+            vec![CompressionAlgorithm::Null],
+            vec![ClientHelloExtension::SupportedGroups(vec![
+                SupportedGroup::X25519,
+            ])],
+        );
+        let config = tls_client_config(Some(&hello), None, KeyLogIntent::Disabled, None);
+        assert_eq!(emitted(&config).cipher_suites(), offered.as_slice());
+    }
+
+    #[test]
+    fn mirror_keeps_renegotiation_info_presence_next_to_extended_master_secret() {
+        let opaque = |id: ExtensionId, data: Vec<u8>| ClientHelloExtension::Opaque { id, data };
+        for renegotiation_info in [false, true] {
+            let mut extensions = vec![
+                ClientHelloExtension::SupportedGroups(vec![SupportedGroup::X25519]),
+                opaque(ExtensionId::EXTENDED_MASTER_SECRET, Vec::new()),
+            ];
+            if renegotiation_info {
+                extensions.push(opaque(ExtensionId::RENEGOTIATION_INFO, vec![0]));
+            }
+            let hello = ClientHello::new(
+                ProtocolVersion::TLSv1_2,
+                vec![CipherSuite::from(0x00ff), CipherSuite::from(0xc013)],
+                vec![CompressionAlgorithm::Null],
+                extensions,
+            );
+            let emitted = emitted(&tls_client_config(
+                Some(&hello),
+                None,
+                KeyLogIntent::Disabled,
+                None,
+            ));
+            let sent = |id| emitted.extensions().iter().any(|ext| ext.id() == id);
+            assert!(sent(ExtensionId::EXTENDED_MASTER_SECRET));
+            assert_eq!(sent(ExtensionId::RENEGOTIATION_INFO), renegotiation_info);
+        }
+    }
+
+    #[test]
+    fn mirror_of_a_legacy_tls11_offer_offers_tls11() {
+        let hello = ClientHello::new(
+            ProtocolVersion::TLSv1_1,
+            vec![CipherSuite::from(0xc013)],
+            vec![CompressionAlgorithm::Null],
+            vec![ClientHelloExtension::SupportedGroups(vec![
+                SupportedGroup::X25519,
+            ])],
+        );
+        let emitted = emitted(&tls_client_config(
+            Some(&hello),
+            None,
+            KeyLogIntent::Disabled,
+            None,
+        ));
+        assert_eq!(emitted.protocol_version(), ProtocolVersion::TLSv1_1);
+        assert!(emitted.supported_versions().is_none());
+    }
+
+    #[test]
     fn ordinary_mimic_configuration_keeps_its_default_unknown_value_policy() {
         let source = offered_hello();
         let ordinary = emitted(
@@ -423,5 +623,126 @@ mod tests {
                 .unknown_values
                 .is_none()
         );
+    }
+
+    fn target_that_is_not_a_server_name() -> HostWithPort {
+        HostWithPort::new("[v1.foo]".parse::<Host>().unwrap(), 443)
+    }
+
+    fn pin() -> CertificateDer<'static> {
+        CertificateDer::from(vec![1, 2, 3])
+    }
+
+    #[test]
+    fn global_pins_proceed_without_sni_when_the_target_is_not_a_server_name() {
+        let target = target_that_is_not_a_server_name();
+        let policy =
+            TlsMitmEgressServerAuth::new().with_server_cert_pins(TlsServerCertPins::new(pin()));
+        let name = server_name(None, Some(&target), Some(&policy)).unwrap();
+        assert_eq!(name, None);
+
+        let config = tls_client_config(None, name, KeyLogIntent::Disabled, Some(&policy));
+        assert_eq!(emitted(&config).ext_server_name(), None);
+    }
+
+    #[test]
+    fn name_scoped_pins_require_a_server_name_from_the_target() {
+        let target = target_that_is_not_a_server_name();
+        let policy = TlsMitmEgressServerAuth::new().with_server_cert_pins(TlsServerCertPins::new(
+            TlsServerCertPinSet::new(pin()).with_server_name(Domain::from_static("target.example")),
+        ));
+        server_name(None, Some(&target), Some(&policy)).unwrap_err();
+    }
+
+    #[test]
+    fn verification_requires_a_server_name_from_the_target() {
+        let target = target_that_is_not_a_server_name();
+        let policy = TlsMitmEgressServerAuth::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .with_server_cert_pins(TlsServerCertPins::new(pin()));
+        server_name(None, Some(&target), Some(&policy)).unwrap_err();
+    }
+
+    #[test]
+    fn a_configured_server_name_does_not_need_the_target() {
+        let target = target_that_is_not_a_server_name();
+        let policy = TlsMitmEgressServerAuth::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .with_server_name(Domain::from_static("policy.example"));
+        let name = server_name(None, Some(&target), Some(&policy)).unwrap();
+
+        let config = tls_client_config(None, name, KeyLogIntent::Disabled, Some(&policy));
+        assert_eq!(
+            emitted(&config).ext_server_name(),
+            Some(&ServerName::from(Domain::from_static("policy.example")))
+        );
+    }
+
+    /// The version the mirror of `hello` negotiates with an origin accepting only `version`.
+    async fn origin_negotiates(hello: &ClientHello, version: SslVersion) -> Option<SslVersion> {
+        let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::SelfSignedLeaf(
+            LeafCertRequest::default(),
+        ))
+        .unwrap();
+        let mut origin = SslContextBuilder::new(SslMethod::tls_server()).unwrap();
+        origin
+            .set_certificate(&X509::from_der(auth.cert_chain[0].as_ref()).unwrap())
+            .unwrap();
+        origin
+            .set_private_key(&PKey::private_key_from_der(auth.private_key.secret_der()).unwrap())
+            .unwrap();
+        origin.set_min_proto_version(Some(version)).unwrap();
+        origin.set_max_proto_version(Some(version)).unwrap();
+        let origin = Ssl::new(&origin.build()).unwrap();
+        let config = tls_client_config(Some(hello), None, KeyLogIntent::Disabled, None);
+        let mut data = TlsConnectorData::try_from(&config).unwrap();
+        data.server_name = Some(ServerName::from(Domain::from_static("origin.example")));
+        let (client_io, origin_io) = tokio::io::duplex(kib(64));
+        let (client, _origin) = tokio::join!(
+            SslStreamBuilder::new(data.into_ssl().unwrap(), client_io).connect(),
+            SslStreamBuilder::new(origin, origin_io).accept(),
+        );
+        client.ok().and_then(|stream| stream.ssl().version())
+    }
+
+    #[tokio::test]
+    async fn mirror_of_tls13_without_tls13_suites_or_schemes_is_left_to_the_origin() {
+        let hello = |ciphers: Vec<u16>, scheme| {
+            ClientHello::new(
+                ProtocolVersion::TLSv1_2,
+                ciphers.into_iter().map(CipherSuite::from).collect(),
+                vec![CompressionAlgorithm::Null],
+                vec![
+                    ClientHelloExtension::SupportedVersions(vec![
+                        ProtocolVersion::TLSv1_3,
+                        ProtocolVersion::TLSv1_2,
+                    ]),
+                    ClientHelloExtension::SupportedGroups(vec![
+                        SupportedGroup::X25519,
+                        SupportedGroup::SECP256R1,
+                    ]),
+                    ClientHelloExtension::SignatureAlgorithms(vec![scheme]),
+                ],
+            )
+        };
+        for hello in [
+            hello(vec![0xc02b, 0xc02f], SignatureScheme::ECDSA_NISTP256_SHA256),
+            hello(vec![0x1301, 0xc02b], SignatureScheme::ECDSA_SHA1_Legacy),
+        ] {
+            let mirrored = emitted(&tls_client_config(
+                Some(&hello),
+                None,
+                KeyLogIntent::Disabled,
+                None,
+            ));
+            assert_eq!(mirrored.cipher_suites(), hello.cipher_suites());
+            assert_eq!(mirrored.supported_versions(), hello.supported_versions());
+            // The origin refuses TLS 1.3 as it would for the client, and TLS 1.2 completes.
+            assert_eq!(origin_negotiates(&hello, SslVersion::TLS1_3).await, None);
+            assert_eq!(
+                origin_negotiates(&hello, SslVersion::TLS1_2).await,
+                Some(SslVersion::TLS1_2)
+            );
+        }
     }
 }

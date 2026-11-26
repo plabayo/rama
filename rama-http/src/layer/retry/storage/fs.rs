@@ -1,22 +1,5 @@
 //! Bounded memory capture with overflow to a private temporary file.
 
-use super::{DEFAULT_TIMEOUT, MemoryCapture, ReplaySource, ReplayStore, ReplayWriter};
-use crate::{
-    HeaderMap, StreamingBody,
-    body::{Frame, SizeHint},
-};
-use parking_lot::Mutex;
-#[cfg(any(unix, windows))]
-use rama_core::io::ReadAt as _;
-use rama_core::{
-    bytes::Bytes,
-    error::{BoxError, BoxErrorExt as _},
-    futures::future::BoxFuture,
-};
-use rama_utils::{
-    fs::TempDir,
-    octets::{kib, mib, mib_u64},
-};
 #[cfg(not(any(unix, windows)))]
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::{
@@ -28,7 +11,30 @@ use std::{
     task::{Context, Poll, ready},
     time::Duration,
 };
+
+use parking_lot::Mutex;
+#[cfg(any(unix, windows))]
+use rama_core::io::ReadAt as _;
+use rama_core::{
+    bytes::Bytes,
+    error::{BoxError, BoxErrorExt as _},
+    futures::future::BoxFuture,
+};
+use rama_utils::{
+    fs::TempDir,
+    macros::generate_set_and_with,
+    octets::{kib, mib, mib_u64},
+};
 use tokio::{runtime::Handle, task::JoinHandle};
+
+use super::{
+    DEFAULT_HANDOFF_TIMEOUT, DEFAULT_TIMEOUT, MemoryCapture, ReplaySource, ReplayStore,
+    ReplayWriter, expected_len,
+};
+use crate::{
+    HeaderMap, StreamingBody,
+    body::{Frame, SizeHint},
+};
 
 const MAX_FILES: usize = 64;
 const READ_CHUNK: usize = kib(64);
@@ -55,6 +61,7 @@ pub struct FsReplayStore {
     memory_threshold: usize,
     max_body_bytes: usize,
     timeout: Duration,
+    handoff_timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -104,6 +111,7 @@ impl FsReplayStore {
             memory_threshold,
             max_body_bytes,
             timeout: DEFAULT_TIMEOUT,
+            handoff_timeout: DEFAULT_HANDOFF_TIMEOUT,
         })
     }
 
@@ -115,6 +123,14 @@ impl FsReplayStore {
         }
     }
 
+    generate_set_and_with! {
+        /// Set how long a retry waits for a still-live first reader.
+        pub fn handoff_timeout(mut self, timeout: Duration) -> Self {
+            self.handoff_timeout = timeout;
+            self
+        }
+    }
+
     /// Private temporary directory. Its lifetime includes outstanding readers.
     pub fn directory(&self) -> &Path {
         self.storage.directory.path()
@@ -122,12 +138,23 @@ impl FsReplayStore {
 }
 
 impl ReplayStore for FsReplayStore {
-    fn start(&self) -> Box<dyn ReplayWriter> {
+    fn start(&self, size_hint: &SizeHint) -> Box<dyn ReplayWriter> {
+        // Bound the memory prefix by the expected length only when it stays in memory.
+        let expected = expected_len(size_hint);
+        let expected = if expected <= self.memory_threshold {
+            expected
+        } else {
+            0
+        };
         Box::new(Writer {
             store: self.clone(),
             state: State::Memory,
-            buffered: MemoryCapture::default(),
+            buffered: MemoryCapture::new(expected, self.memory_threshold),
         })
+    }
+
+    fn reuse_buffered_bytes(&self) -> bool {
+        false
     }
 
     fn max_bytes(&self) -> u64 {
@@ -136,6 +163,10 @@ impl ReplayStore for FsReplayStore {
 
     fn timeout(&self) -> Duration {
         self.timeout
+    }
+
+    fn handoff_timeout(&self) -> Duration {
+        self.handoff_timeout
     }
 }
 
@@ -401,10 +432,10 @@ impl StreamingBody for FileCursor {
 
 #[cfg(test)]
 mod tests {
-    use super::super::append;
-    use super::*;
-    use crate::body::util::BodyExt as _;
     use rama_core::futures::FutureExt as _;
+
+    use super::{super::append, *};
+    use crate::body::util::BodyExt as _;
 
     fn single_io_runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
@@ -442,7 +473,7 @@ mod tests {
             let parent = TempDir::new().await.unwrap();
             let size = READ_CHUNK * 2 + 1;
             let store = FsReplayStore::in_dir(parent.path()).await.unwrap();
-            let mut writer = store.start();
+            let mut writer = store.start(&SizeHint::default());
             append(&mut *writer, "ab".into()).await.unwrap();
             assert_eq!(store.storage.usage.lock().files, 0);
             append(&mut *writer, vec![b'x'; size - 2].into())
@@ -480,8 +511,8 @@ mod tests {
     async fn concurrent_spills_share_quota_and_admit_after_reader_drop() {
         let parent = TempDir::new().await.unwrap();
         let store = FsReplayStore::new(parent.path(), 0, 4, 4).await.unwrap();
-        let mut first = store.start();
-        let mut second = store.clone().start();
+        let mut first = store.start(&SizeHint::default());
+        let mut second = store.clone().start(&SizeHint::default());
         let (a, b) = tokio::join!(
             append(&mut *first, "1234".into()),
             append(&mut *second, "5678".into())
@@ -494,10 +525,16 @@ mod tests {
             .unwrap();
         let reader = source.clone_cursor();
         drop(source);
-        assert!(append(&mut *store.start(), "x".into()).await.is_err());
+        assert!(
+            append(&mut *store.start(&SizeHint::default()), "x".into())
+                .await
+                .is_err()
+        );
         drop(reader);
         wait_for_cleanup(&store).await;
-        append(&mut *store.start(), "x".into()).await.unwrap();
+        append(&mut *store.start(&SizeHint::default()), "x".into())
+            .await
+            .unwrap();
         wait_for_cleanup(&store).await;
     }
 
@@ -511,7 +548,7 @@ mod tests {
             .await
             .unwrap();
         let capture = async |bytes: Bytes, marker: &'static str| {
-            let mut writer = store.start();
+            let mut writer = store.start(&SizeHint::default());
             append(&mut *writer, bytes).await.unwrap();
             let mut trailers = HeaderMap::new();
             trailers.insert("x-upload", marker.parse().unwrap());
@@ -553,7 +590,7 @@ mod tests {
         let store = FsReplayStore::new(parent.path(), 0, 8, 1024).await.unwrap();
         let mut uploads = Vec::new();
         for _ in 0..MAX_FILES {
-            let mut writer = store.start();
+            let mut writer = store.start(&SizeHint::default());
             append(&mut *writer, "a".into()).await.unwrap();
             append(&mut *writer, "b".into()).await.unwrap();
             uploads.push(writer.finish(None).await.unwrap());
@@ -563,9 +600,15 @@ mod tests {
             assert_eq!(usage.files, MAX_FILES);
             assert_eq!(usage.bytes, (2 * MAX_FILES) as u64);
         }
-        assert!(append(&mut *store.start(), "c".into()).await.is_err());
+        assert!(
+            append(&mut *store.start(&SizeHint::default()), "c".into())
+                .await
+                .is_err()
+        );
         drop(uploads.pop().unwrap());
-        append(&mut *store.start(), "d".into()).await.unwrap();
+        append(&mut *store.start(&SizeHint::default()), "d".into())
+            .await
+            .unwrap();
         drop(uploads);
         wait_for_cleanup(&store).await;
     }
@@ -574,7 +617,7 @@ mod tests {
     async fn small_spilled_frames_are_charged_and_flushed_on_replay() {
         let parent = TempDir::new().await.unwrap();
         let store = FsReplayStore::new(parent.path(), 4, 12, 12).await.unwrap();
-        let mut writer = store.start();
+        let mut writer = store.start(&SizeHint::default());
         for chunk in ["12345", "", "a", "bc", "d", "ef"] {
             append(&mut *writer, chunk.into()).await.unwrap();
         }
@@ -594,7 +637,7 @@ mod tests {
         single_io_runtime().block_on(async {
             let parent = TempDir::new().await.unwrap();
             let store = FsReplayStore::new(parent.path(), 1, 16, 16).await.unwrap();
-            let mut writer = store.start();
+            let mut writer = store.start(&SizeHint::default());
             append(&mut *writer, "a".into()).await.unwrap();
             let release = pause_io().await;
             assert!(append(&mut *writer, "bc".into()).now_or_never().is_none());
@@ -619,7 +662,7 @@ mod tests {
         single_io_runtime().block_on(async {
             let parent = TempDir::new().await.unwrap();
             let store = FsReplayStore::new(parent.path(), 0, 3, 3).await.unwrap();
-            let mut writer = store.start();
+            let mut writer = store.start(&SizeHint::default());
             append(&mut *writer, "a".into()).await.unwrap();
             let release = pause_io().await;
             // With a zero buffer threshold this append submits a file write.
@@ -631,7 +674,7 @@ mod tests {
             drop(writer);
             assert_eq!(store.storage.usage.lock().bytes, 3);
             assert!(
-                append(&mut *store.start(), "x".into())
+                append(&mut *store.start(&SizeHint::default()), "x".into())
                     .now_or_never()
                     .expect("the outstanding write still holds the full quota")
                     .is_err()
@@ -647,7 +690,7 @@ mod tests {
         let (parent, store, release, seal) = runtime.block_on(async {
             let parent = TempDir::new().await.unwrap();
             let store = FsReplayStore::new(parent.path(), 8, 10, 10).await.unwrap();
-            let mut writer = store.start();
+            let mut writer = store.start(&SizeHint::default());
             append(&mut *writer, "123456789".into()).await.unwrap();
             let release = pause_io().await;
             // The tail fits in the write buffer even with the only I/O thread
@@ -668,7 +711,7 @@ mod tests {
             // The outstanding write owns its file and quota even across
             // shutdown. Its completion frees the full budget for another runtime.
             wait_for_cleanup(&store).await;
-            let mut writer = store.start();
+            let mut writer = store.start(&SizeHint::default());
             append(&mut *writer, "abcdefghij".into()).await.unwrap();
             let replay = writer.finish(None).await.unwrap();
             assert_eq!(
@@ -686,7 +729,7 @@ mod tests {
         single_io_runtime().block_on(async {
             let parent = TempDir::new().await.unwrap();
             let store = FsReplayStore::new(parent.path(), 0, 8, 8).await.unwrap();
-            let mut writer = store.start();
+            let mut writer = store.start(&SizeHint::default());
             append(&mut *writer, "12345678".into()).await.unwrap();
             let source = writer.finish(None).await.unwrap();
             let mut cursor = source.clone_cursor();
@@ -697,7 +740,7 @@ mod tests {
             assert_eq!(store.storage.usage.lock().bytes, 8);
             drop(release);
             wait_for_cleanup(&store).await;
-            append(&mut *store.start(), "12345678".into())
+            append(&mut *store.start(&SizeHint::default()), "12345678".into())
                 .await
                 .unwrap();
         });
@@ -708,7 +751,7 @@ mod tests {
         let (_parent, mut reader) = single_io_runtime().block_on(async {
             let parent = TempDir::new().await.unwrap();
             let store = FsReplayStore::new(parent.path(), 0, 8, 8).await.unwrap();
-            let mut writer = store.start();
+            let mut writer = store.start(&SizeHint::default());
             append(&mut *writer, "data".into()).await.unwrap();
             let mut trailers = HeaderMap::new();
             trailers.insert("x-upload", "finished".parse().unwrap());
@@ -759,13 +802,17 @@ mod tests {
     async fn failed_capture_releases_reservations() {
         let parent = TempDir::new().await.unwrap();
         let store = FsReplayStore::new(parent.path(), 1, 4, 3).await.unwrap();
-        let mut writer = store.start();
+        let mut writer = store.start(&SizeHint::default());
         append(&mut *writer, "ab".into()).await.unwrap();
         assert!(append(&mut *writer, "cd".into()).await.is_err());
         drop(writer);
         wait_for_cleanup(&store).await;
         tokio::fs::remove_dir(store.directory()).await.unwrap();
-        assert!(append(&mut *store.start(), "ab".into()).await.is_err());
+        assert!(
+            append(&mut *store.start(&SizeHint::default()), "ab".into())
+                .await
+                .is_err()
+        );
         assert_eq!(store.storage.usage.lock().files, 0);
     }
 }

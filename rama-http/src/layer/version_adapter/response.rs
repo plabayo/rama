@@ -7,9 +7,9 @@ use rama_http_types::proto::ext::Protocol;
 use rama_http_types::{Request, Response, StatusCode, Version};
 use rama_utils::macros::define_inner_service_accessors;
 
-use super::request::{DowngradeWebSocketKey, is_websocket_protocol};
+use super::request::DowngradeWebSocketKey;
 use crate::layer::remove_header::remove_illegal_h2_response_headers;
-use crate::utils::request_connect_protocol;
+use crate::utils::{is_websocket_protocol, request_connect_protocol};
 
 #[derive(Clone, Debug, ExtensionsRef)]
 /// [`Service`] which will adapt the response version to the original request version.

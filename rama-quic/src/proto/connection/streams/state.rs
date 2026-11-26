@@ -80,8 +80,15 @@ impl StreamRecv {
 )]
 pub struct StreamsState {
     pub(super) side: Side,
-    // Set of streams that are currently open, or could be immediately opened by the peer
+    /// Send halves of open streams, by id; see `recv` for which peer streams have entries.
     pub(super) send: FxHashMap<StreamId, Option<Box<Send>>>,
+    /// Receive halves of open streams, by id.
+    ///
+    /// A missing peer stream below `next_remote` is closed. A peer stream from `next_remote` up
+    /// to `max_remote` is idle until a frame opens it, and holds entries only once a local
+    /// operation reserved them: both halves at once, and only a peer frame, which opens the
+    /// stream first, removes its receive half. So for such a stream a receive entry without a
+    /// send entry means its send half was closed locally.
     pub(super) recv: FxHashMap<StreamId, Option<StreamRecv>>,
     pub(super) free_recv: Vec<StreamRecv>,
     pub(super) next: [u64; 2],
@@ -202,7 +209,7 @@ impl StreamsState {
         receive_window: VarInt,
         stream_receive_window: VarInt,
     ) -> Self {
-        let mut this = Self {
+        Self {
             side,
             send: FxHashMap::default(),
             recv: FxHashMap::default(),
@@ -244,15 +251,7 @@ impl StreamsState {
             receive_window_shrink_debt: 0,
             streams_blocked: [false, false],
             blocked_open: [false, false],
-        };
-
-        for dir in Dir::iter() {
-            for i in 0..this.max_remote[dir as usize] {
-                this.insert(true, StreamId::new(!side, dir, i));
-            }
         }
-
-        this
     }
 
     pub(crate) fn set_params(&mut self, params: &TransportParameters) {
@@ -273,9 +272,10 @@ impl StreamsState {
         }
         self.initial_send_credit = params.initial_max_data.into();
         self.received_max_data(params.initial_max_data);
-        for i in 0..self.max_remote[Dir::Bi as usize] {
-            let id = StreamId::new(!self.side, Dir::Bi, i);
-            if let Some(s) = self.send.get_mut(&id).and_then(|s| s.as_mut()) {
+        for (id, slot) in &mut self.send {
+            if id.initiator() != self.side
+                && let Some(s) = slot.as_mut()
+            {
                 s.max_data = params.initial_max_stream_data_bidi_local.into();
             }
         }
@@ -286,10 +286,6 @@ impl StreamsState {
     fn ensure_remote_streams(&mut self, dir: Dir) {
         let new_count = self.max_concurrent_remote_count[dir as usize]
             .saturating_sub(self.allocated_remote_count[dir as usize]);
-        for i in 0..new_count {
-            let id = StreamId::new(!self.side, dir, self.max_remote[dir as usize] + i);
-            self.insert(true, id);
-        }
         self.allocated_remote_count[dir as usize] += new_count;
         self.max_remote[dir as usize] += new_count;
     }
@@ -364,6 +360,7 @@ impl StreamsState {
         self.validate_receive_id(id).inspect_err(|_e| {
             debug!("received illegal STREAM frame");
         })?;
+        let opened = self.open_remote(id);
 
         let window = self.receive_window_for(id);
         let Some(rs) = self.recv.get_mut(&id).map(get_or_insert_recv(window)) else {
@@ -381,7 +378,9 @@ impl StreamsState {
         self.data_recvd = self.data_recvd.saturating_add(new_bytes);
 
         if !rs.stopped {
-            self.on_stream_frame(true, id);
+            if !opened {
+                self.queue_readable(id);
+            }
             return Ok(ShouldTransmit(false));
         }
 
@@ -421,6 +420,7 @@ impl StreamsState {
         self.validate_receive_id(id).inspect_err(|_e| {
             debug!("received illegal RESET_STREAM frame");
         })?;
+        let opened = self.open_remote(id);
 
         let window = self.receive_window_for(id);
         let Some(rs) = self.recv.get_mut(&id).map(get_or_insert_recv(window)) else {
@@ -451,8 +451,9 @@ impl StreamsState {
             )]
             let rs = self.recv.remove(&id).flatten().unwrap();
             self.stream_recv_freed(id, rs);
+        } else if !opened {
+            self.queue_readable(id);
         }
-        self.on_stream_frame(!stopped, id);
 
         // Update connection-level flow control
         Ok(if credited != final_offset.into_inner() {
@@ -493,6 +494,7 @@ impl StreamsState {
                 "STOP_SENDING on unopened stream",
             ));
         }
+        self.open_remote(id);
 
         let max_send_data = self.max_send_data(id);
         let Some(stream) = self
@@ -506,7 +508,6 @@ impl StreamsState {
         if stream.try_stop(error_code) {
             self.events
                 .push_back(StreamEvent::Stopped { id, error_code });
-            self.on_stream_frame(false, id);
         }
         Ok(())
     }
@@ -518,7 +519,7 @@ impl StreamsState {
         id: StreamId,
     ) -> Result<(), TransportError> {
         self.validate_receive_id(id)?;
-        self.on_stream_frame(false, id);
+        self.open_remote(id);
         Ok(())
     }
 
@@ -833,30 +834,64 @@ impl StreamsState {
         stream_frames
     }
 
-    /// Notify the application that new streams were opened or a stream became readable.
-    fn on_stream_frame(&mut self, notify_readable: bool, stream: StreamId) {
-        if stream.initiator() == self.side {
-            // Notifying about the opening of locally-initiated streams would be redundant.
-            if notify_readable {
-                self.queue_readable(stream);
-            }
-            return;
+    /// Open the peer stream `id` names and every lower one in its direction (RFC 9000 §3.2),
+    /// materializing their slots; returns whether `id` was not open before.
+    fn open_remote(&mut self, id: StreamId) -> bool {
+        if id.initiator() == self.side {
+            return false;
         }
-        let limit = self.max_remote[stream.dir() as usize];
+        let dir = id.dir();
+        let limit = self.max_remote[dir as usize];
         debug_assert!(
-            stream.index() < limit,
+            id.index() < limit,
             "every frame naming a peer stream is checked against the limit first"
         );
-        if stream.index() >= limit {
-            // Never let a missed check open streams past what was granted.
-            return;
+        // Never let a missed check open streams past what was granted.
+        if id.index() < self.next_remote[dir as usize] || id.index() >= limit {
+            return false;
         }
-        let next = &mut self.next_remote[stream.dir() as usize];
-        if stream.index() >= *next {
-            *next = stream.index() + 1;
-            self.opened[stream.dir() as usize] = true;
-        } else if notify_readable {
-            self.queue_readable(stream);
+        for index in self.next_remote[dir as usize]..=id.index() {
+            self.insert_remote_slot(StreamId::new(!self.side, dir, index));
+        }
+        self.next_remote[dir as usize] = id.index() + 1;
+        self.opened[dir as usize] = true;
+        true
+    }
+
+    /// Materialize the slot of a granted peer stream the peer has not opened yet, so local
+    /// operations on it see the stream as idle rather than closed.
+    pub(super) fn reserve_remote_slot(&mut self, id: StreamId) {
+        if self.is_unopened_remote(id) {
+            self.insert_remote_slot(id);
+        }
+    }
+
+    /// Whether `id` is a peer stream within the granted limit that the peer has not opened yet.
+    pub(super) fn is_unopened_remote(&self, id: StreamId) -> bool {
+        let dir = id.dir() as usize;
+        id.initiator() != self.side
+            && id.index() >= self.next_remote[dir]
+            && id.index() < self.max_remote[dir]
+    }
+
+    /// Whether `id` is a peer bidirectional stream whose idle send slot is not materialized.
+    pub(super) fn is_idle_remote_send(&self, id: StreamId) -> bool {
+        id.dir() == Dir::Bi && self.is_unopened_remote(id) && !self.recv.contains_key(&id)
+    }
+
+    /// Add the idle slots of a peer stream unless a local operation reserved them already, in
+    /// which case a missing send half was closed and must stay closed.
+    fn insert_remote_slot(&mut self, id: StreamId) {
+        let hash_map::Entry::Vacant(recv) = self.recv.entry(id) else {
+            return;
+        };
+        recv.insert(self.free_recv.pop());
+        if id.dir() == Dir::Bi {
+            debug_assert!(
+                !self.send.contains_key(&id),
+                "a send half without its receive half"
+            );
+            self.send.entry(id).or_insert(None);
         }
     }
 
@@ -1007,6 +1042,7 @@ impl StreamsState {
         self.validate_remote_limit(id).inspect_err(|_e| {
             debug!("received illegal MAX_STREAM_DATA frame");
         })?;
+        self.open_remote(id);
 
         let write_limit = self.write_limit();
         let reserve_cap = (self.initial_send_credit / 2).min(self.send_window / 2);
@@ -1033,8 +1069,6 @@ impl StreamsState {
                 "MAX_STREAM_DATA on unopened stream",
             ));
         }
-
-        self.on_stream_frame(false, id);
         Ok(())
     }
 
@@ -1187,14 +1221,11 @@ impl StreamsState {
         expanded
     }
 
-    pub(super) fn insert(&mut self, remote: bool, id: StreamId) {
-        let bi = id.dir() == Dir::Bi;
-        // bidirectional OR (unidirectional AND NOT remote)
-        if bi || !remote {
-            assert!(self.send.insert(id, None).is_none());
-        }
-        // bidirectional OR (unidirectional AND remote)
-        if bi || remote {
+    /// Add the slots of a stream this side opens.
+    pub(super) fn insert_local(&mut self, id: StreamId) {
+        debug_assert_eq!(id.initiator(), self.side);
+        assert!(self.send.insert(id, None).is_none());
+        if id.dir() == Dir::Bi {
             let recv = self.free_recv.pop();
             assert!(self.recv.insert(id, recv).is_none());
         }
@@ -1335,7 +1366,7 @@ mod tests {
 
     use super::*;
     use crate::proto::{
-        ReadableError, RecvStream, SendStream, WriteError,
+        ReadError, ReadableError, RecvStream, SendStream, WriteError,
         connection::{State as ConnState, Streams},
     };
 
@@ -3404,10 +3435,360 @@ mod tests {
         for _ in 0..2 {
             client.set_max_concurrent(Dir::Uni, 200u32.into());
             client.set_max_concurrent(Dir::Bi, 201u32.into());
-            assert_eq!(client.recv.len(), 200 + 201);
             assert_eq!(client.max_remote[Dir::Uni as usize], 200);
             assert_eq!(client.max_remote[Dir::Bi as usize], 201);
+            assert_eq!(client.allocated_remote_count[Dir::Uni as usize], 200);
+            assert_eq!(client.allocated_remote_count[Dir::Bi as usize], 201);
+            // Granted capacity costs no slots until the peer opens a stream.
+            assert!(client.recv.is_empty() && client.send.is_empty());
         }
+    }
+
+    fn receive_data(state: &mut StreamsState, id: StreamId, data: &'static [u8], fin: bool) {
+        assert_eq!(
+            state.received(
+                frame::Stream {
+                    id,
+                    offset: 0,
+                    fin,
+                    data: Bytes::from_static(data),
+                },
+                data.len(),
+            ),
+            Ok(ShouldTransmit(false))
+        );
+    }
+
+    fn read_all(state: &mut StreamsState, id: StreamId) -> Result<Vec<u8>, ReadError> {
+        let mut pending = Retransmits::default();
+        let mut recv = RecvStream {
+            id,
+            state,
+            pending: &mut pending,
+        };
+        let mut chunks = recv.read(true).expect("readable stream");
+        let mut data = Vec::new();
+        let result = loop {
+            match chunks.next(usize::MAX) {
+                Ok(Some(chunk)) => data.extend_from_slice(&chunk.bytes),
+                Ok(None) => break Ok(data),
+                Err(e) => break Err(e),
+            }
+        };
+        let _transmit = chunks.finalize();
+        result
+    }
+
+    #[test]
+    fn granted_remote_streams_take_no_slots_until_opened() {
+        let mut client = StreamsState::new(
+            Side::Client,
+            10_000u32.into(),
+            10_000u32.into(),
+            octets::mib_u64(1),
+            octets::mib_u32(1).into(),
+            octets::mib_u32(1).into(),
+        );
+        assert_eq!((client.recv.capacity(), client.send.capacity()), (0, 0));
+        client.set_max_concurrent(Dir::Uni, 20_000u32.into());
+        assert_eq!(client.max_remote[Dir::Uni as usize], 20_000);
+        assert_eq!((client.recv.capacity(), client.send.capacity()), (0, 0));
+
+        // Opening a stream materializes it and the lower streams it implicitly opens.
+        receive_data(
+            &mut client,
+            StreamId::new(Side::Server, Dir::Uni, 0),
+            b"a",
+            false,
+        );
+        receive_data(
+            &mut client,
+            StreamId::new(Side::Server, Dir::Bi, 2),
+            b"b",
+            false,
+        );
+        assert_eq!(client.recv.len(), 1 + 3);
+        assert_eq!(client.send.len(), 3);
+        assert!(client.recv.capacity() < 64, "{}", client.recv.capacity());
+        assert_eq!(client.poll(), Some(StreamEvent::Opened { dir: Dir::Bi }));
+        assert_eq!(client.poll(), Some(StreamEvent::Opened { dir: Dir::Uni }));
+        assert_eq!(client.poll(), None);
+    }
+
+    #[test]
+    fn implicitly_opened_lower_stream_is_not_closed() {
+        let mut client = make(Side::Client);
+        receive_data(
+            &mut client,
+            StreamId::new(Side::Server, Dir::Uni, 5),
+            b"five",
+            true,
+        );
+        assert_eq!(client.next_remote[Dir::Uni as usize], 6);
+        let three = StreamId::new(Side::Server, Dir::Uni, 3);
+        receive_data(&mut client, three, b"three", true);
+        assert_eq!(read_all(&mut client, three).unwrap(), b"three");
+        // The lower stream was already open, so its data is announced as readable.
+        assert_eq!(client.poll(), Some(StreamEvent::Opened { dir: Dir::Uni }));
+        assert_eq!(client.poll(), Some(StreamEvent::Readable { id: three }));
+    }
+
+    #[test]
+    fn frame_for_a_closed_remote_stream_does_not_resurrect_it() {
+        let mut client = make(Side::Client);
+        let id = StreamId::new(Side::Server, Dir::Uni, 0);
+        receive_data(&mut client, id, b"data", true);
+        assert_eq!(read_all(&mut client, id).unwrap(), b"data");
+        assert!(!client.recv.contains_key(&id));
+        let max_remote = client.max_remote[Dir::Uni as usize];
+        let allocated = client.allocated_remote_count[Dir::Uni as usize];
+
+        receive_data(&mut client, id, b"data", true);
+        assert!(!client.recv.contains_key(&id));
+        let mut pending = Retransmits::default();
+        let mut recv = RecvStream {
+            id,
+            state: &mut client,
+            pending: &mut pending,
+        };
+        assert_eq!(recv.read(true).err(), Some(ReadableError::ClosedStream));
+        assert!(recv.stop(0u32.into()).is_err());
+        assert_eq!(client.max_remote[Dir::Uni as usize], max_remote);
+        assert_eq!(client.allocated_remote_count[Dir::Uni as usize], allocated);
+    }
+
+    #[test]
+    fn reset_of_an_unopened_remote_stream_opens_the_lower_ones() {
+        let mut client = make(Side::Client);
+        let reset = StreamId::new(Side::Server, Dir::Uni, 2);
+        assert_eq!(
+            client.received_reset(frame::ResetStream {
+                id: reset,
+                error_code: 7u32.into(),
+                final_offset: 0u32.into(),
+            }),
+            Ok(ShouldTransmit(false))
+        );
+        assert_eq!(client.next_remote[Dir::Uni as usize], 3);
+        assert_eq!(
+            read_all(&mut client, reset),
+            Err(ReadError::Reset(7u32.into()))
+        );
+        let idle = StreamId::new(Side::Server, Dir::Uni, 1);
+        assert_eq!(read_all(&mut client, idle), Err(ReadError::Blocked));
+        assert_eq!(client.poll(), Some(StreamEvent::Opened { dir: Dir::Uni }));
+        assert_eq!(client.poll(), None);
+    }
+
+    /// Close the send half of the unopened peer stream `id` locally, by finish or reset,
+    /// and have the peer acknowledge it.
+    fn close_send_half_before_open(state: &mut StreamsState, id: StreamId, reset: bool) {
+        // The peer stream was never accepted; count it as the driver would once it is.
+        state.send_streams += 1;
+        let mut pending = Retransmits::default();
+        let mut send = SendStream {
+            id,
+            state,
+            pending: &mut pending,
+            conn_state: &ConnState::Established,
+        };
+        if reset {
+            send.reset(0u32.into()).unwrap();
+            state.reset_acked(id);
+        } else {
+            send.finish().unwrap();
+            let frames = state.write_stream_frames(
+                &mut Vec::new(),
+                128,
+                true,
+                DatagramQueuePosition::default(),
+            );
+            assert_eq!(frames.len(), 1);
+            for frame in frames {
+                assert!(frame.fin);
+                state.received_ack_of(frame);
+            }
+        }
+        assert!(!state.send.contains_key(&id), "the send half is released");
+    }
+
+    #[test]
+    fn locally_closed_send_half_stays_closed_once_the_peer_opens_the_stream() {
+        for reset in [false, true] {
+            for opened_by in [4, 6] {
+                let mut client = make(Side::Client);
+                let id = StreamId::new(Side::Server, Dir::Bi, 4);
+                close_send_half_before_open(&mut client, id, reset);
+                let mut pending = Retransmits::default();
+                let send = SendStream {
+                    id,
+                    state: &mut client,
+                    pending: &mut pending,
+                    conn_state: &ConnState::Established,
+                };
+                assert!(!send.is_open(), "reset {reset}");
+
+                // The peer opens the stream directly or through a higher one; the receive
+                // half works, the send half stays closed as before the peer opened it.
+                let opener = StreamId::new(Side::Server, Dir::Bi, opened_by);
+                receive_data(&mut client, opener, b"data", false);
+                assert_eq!(client.next_remote[Dir::Bi as usize], opened_by + 1);
+                assert_eq!(read_all(&mut client, id), Err(ReadError::Blocked));
+                let mut send = SendStream {
+                    id,
+                    state: &mut client,
+                    pending: &mut pending,
+                    conn_state: &ConnState::Established,
+                };
+                assert!(!send.is_open(), "reset {reset}, opened by {opened_by}");
+                assert_eq!(send.write(b"x"), Err(WriteError::ClosedStream));
+                assert!(send.finish().is_err());
+                assert!(send.reset(0u32.into()).is_err());
+                assert!(
+                    !client.send.contains_key(&id),
+                    "reset {reset}, opened by {opened_by}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn locally_stopped_receive_half_stays_stopped_once_the_peer_opens_the_stream() {
+        let mut client = make(Side::Client);
+        let id = StreamId::new(Side::Server, Dir::Uni, 2);
+        let mut pending = Retransmits::default();
+        let mut recv = RecvStream {
+            id,
+            state: &mut client,
+            pending: &mut pending,
+        };
+        recv.stop(0u32.into()).unwrap();
+        assert_eq!(pending.stop_sending.len(), 1);
+        receive_data(
+            &mut client,
+            StreamId::new(Side::Server, Dir::Uni, 3),
+            b"x",
+            false,
+        );
+        let mut recv = RecvStream {
+            id,
+            state: &mut client,
+            pending: &mut pending,
+        };
+        assert_eq!(recv.read(true).err(), Some(ReadableError::ClosedStream));
+        // The peer's FIN releases the stopped stream exactly once.
+        receive_data(&mut client, id, b"late", true);
+        assert!(!client.recv.contains_key(&id));
+        receive_data(&mut client, id, b"late", true);
+        assert!(!client.recv.contains_key(&id));
+    }
+
+    #[test]
+    fn local_use_of_an_unopened_remote_stream_keeps_it_idle() {
+        let mut client = make(Side::Client);
+        let uni = StreamId::new(Side::Server, Dir::Uni, 4);
+        let bi = StreamId::new(Side::Server, Dir::Bi, 4);
+        let mut pending = Retransmits::default();
+        let mut recv = RecvStream {
+            id: uni,
+            state: &mut client,
+            pending: &mut pending,
+        };
+        assert_eq!(recv.received_reset(), Ok(None));
+        assert!(
+            client.recv.is_empty(),
+            "checking for a reset reserves nothing"
+        );
+        assert_eq!(read_all(&mut client, uni), Err(ReadError::Blocked));
+        let mut send = SendStream {
+            id: bi,
+            state: &mut client,
+            pending: &mut pending,
+            conn_state: &ConnState::Established,
+        };
+        assert!(send.is_open());
+        assert_eq!(send.stopped(), Ok(None));
+        assert_eq!(send.priority(), Ok(0));
+        send.set_priority(3).unwrap();
+        assert_eq!(send.priority(), Ok(3));
+        let mut recv = RecvStream {
+            id: bi,
+            state: &mut client,
+            pending: &mut pending,
+        };
+        assert_eq!(recv.received_reset(), Ok(None));
+        // Local use opens nothing; the peer's data later lands on the slots it made.
+        assert_eq!(client.next_remote, [0, 0]);
+        assert_eq!(client.poll(), None);
+        receive_data(&mut client, uni, b"late", true);
+        assert_eq!(read_all(&mut client, uni).unwrap(), b"late");
+        receive_data(&mut client, bi, b"bi", false);
+        assert_eq!(client.send[&bi].as_ref().unwrap().priority, 3);
+        assert_eq!(client.next_remote, [5, 5]);
+    }
+
+    #[test]
+    fn out_of_order_opens_never_exceed_the_granted_concurrency() {
+        let mut client = make(Side::Client);
+        let concurrency = client.allocated_remote_count[Dir::Uni as usize];
+        for _ in 0..20 {
+            // The peer opens its highest granted stream first, then fills in the rest downwards.
+            let first = client.next_remote[Dir::Uni as usize];
+            let highest = client.sent_max_remote[Dir::Uni as usize] - 1;
+            for index in (first..=highest).rev() {
+                receive_data(
+                    &mut client,
+                    StreamId::new(Side::Server, Dir::Uni, index),
+                    b"x",
+                    true,
+                );
+                assert!(
+                    client.recv.len() as u64 <= concurrency,
+                    "{}",
+                    client.recv.len()
+                );
+            }
+            for index in first..=highest {
+                let id = StreamId::new(Side::Server, Dir::Uni, index);
+                assert_eq!(read_all(&mut client, id).unwrap(), b"x");
+            }
+            let mut grant = Retransmits::default();
+            client.queue_max_stream_id(&mut grant);
+            client.write_control_frames(
+                &mut Vec::new(),
+                &mut grant,
+                &mut ThinRetransmits::default(),
+                &mut FrameStats::default(),
+                128,
+            );
+            assert!(client.recv.is_empty());
+        }
+        assert_eq!(client.next_remote[Dir::Uni as usize], 20 * concurrency);
+        assert!(client.recv.capacity() <= 2 * concurrency as usize);
+    }
+
+    #[test]
+    fn remote_stream_churn_keeps_slots_bounded_and_credit_flowing() {
+        let mut client = make(Side::Client);
+        let initial = client.max_remote[Dir::Uni as usize];
+        for index in 0..5_000 {
+            let id = StreamId::new(Side::Server, Dir::Uni, index);
+            receive_data(&mut client, id, b"x", true);
+            assert_eq!(read_all(&mut client, id).unwrap(), b"x");
+            // Freed streams return credit, which the peer may use once advertised in batches.
+            let mut grant = Retransmits::default();
+            client.queue_max_stream_id(&mut grant);
+            client.write_control_frames(
+                &mut Vec::new(),
+                &mut grant,
+                &mut ThinRetransmits::default(),
+                &mut FrameStats::default(),
+                128,
+            );
+        }
+        assert!(client.recv.is_empty() && client.send.is_empty());
+        assert_eq!(client.max_remote[Dir::Uni as usize], initial + 5_000);
+        assert_eq!(client.allocated_remote_count[Dir::Uni as usize], initial);
     }
 
     #[test]

@@ -161,6 +161,9 @@ async fn tls12_sessions_are_reused_and_tls13_tickets_offered_once() {
             .any(|session| ptr::eq(session.session(), taken.session()));
         assert_eq!(put_back, version == SslVersion::TLS1_2, "{version:?}");
         assert_eq!(taken.is_single_use(), version == SslVersion::TLS1_3);
-        assert_eq!(taken.key().server(), &Host::from_static("a.test"));
+        assert_eq!(
+            taken.key().server(),
+            &ServerName::from(Domain::from_static("a.test"))
+        );
     }
 }

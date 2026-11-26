@@ -283,6 +283,7 @@ impl<'a> Chunks<'a> {
         pending: &'a mut Retransmits,
     ) -> Result<Self, ReadableError> {
         let window = streams.receive_window_for(id);
+        streams.reserve_remote_slot(id);
         let mut entry = match streams.recv.entry(id) {
             Entry::Occupied(entry) => entry,
             Entry::Vacant(_) => return Err(ReadableError::ClosedStream),

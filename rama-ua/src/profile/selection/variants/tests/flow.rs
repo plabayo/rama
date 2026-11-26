@@ -362,3 +362,55 @@ fn closest_capture_follows_the_documented_field_order() {
         assert_eq!(scope, scope_tag(1));
     }
 }
+
+#[test]
+fn a_request_pin_to_a_shape_without_fetch_metadata_is_refused_on_a_secure_flow() {
+    let mut profile = profile_with_flows(
+        "browser",
+        &[
+            http_flow(Method::GET, None, Some(NAVIGATE_TYPED)),
+            http_flow(Method::GET, None, None),
+        ],
+    );
+    let plaintext = request_variant_with_headers(Version::HTTP_3, Vec::new());
+    let analysis = Arc::make_mut(profile.captured.as_mut().unwrap());
+    let mut scopes = analysis.scopes.to_vec();
+    scopes[2].observations.variants = vec![AnalyzedCaptureVariant {
+        value: plaintext.clone().into(),
+        weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(4)),
+    }]
+    .into();
+    analysis.scopes = scopes.into();
+    let database: UserAgentDatabase = [profile].into_iter().collect();
+    let flow = http_flow(Method::GET, None, None);
+    let context = ConnectionContext::default();
+    for (pin, eligible) in [(request_variant().id, true), (plaintext.id, false)] {
+        let mut query = SelectionRequest {
+            flow: flow.clone(),
+            ..request(context.clone())
+        };
+        query.pins.request = Some(pin);
+        let selected = database.select(&query, ProfileSeed([7; 32]), DrawKey([7; 32]));
+        if !eligible {
+            assert!(matches!(
+                selected,
+                Err(SelectionError::IncompatiblePin(refused)) if refused == pin
+            ));
+            continue;
+        }
+        let selected = selected.unwrap();
+        let connection = selected
+            .connection(&context, ProfileSeed([7; 32]), DrawKey([8; 32]))
+            .unwrap();
+        let drawn = selected
+            .request(
+                &connection,
+                &flow,
+                &HeaderMap::new(),
+                ProfileSeed([7; 32]),
+                DrawKey([9; 32]),
+            )
+            .unwrap();
+        assert_eq!(drawn.variant, pin);
+    }
+}

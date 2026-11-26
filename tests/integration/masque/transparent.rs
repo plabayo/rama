@@ -7,7 +7,7 @@ use rama::{
     tls::{boring::proxy::TlsMitmRelay, server::PeekTlsClientHelloService},
 };
 
-async fn transparent(proxy: SocketAddress, intercepted: bool) -> (SocketAddress, Tasks) {
+pub(crate) async fn transparent(proxy: SocketAddress, intercepted: bool) -> (SocketAddress, Tasks) {
     let scope = WeakScope::detached();
     let (ca, key) = generate_certificate_authority_x509(&SelfSignedCaConfig::default()).unwrap();
     let tls = TlsMitmRelay::new_cached_in_memory(ca, key);

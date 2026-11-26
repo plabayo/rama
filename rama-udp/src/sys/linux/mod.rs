@@ -2,8 +2,7 @@ use std::{io, os::fd::AsFd};
 
 use super::{cmsg, imp::set_socket_option};
 
-// TODO: Add opt-in ICMP error-queue support once callers can drain it
-// before I/O and associate entries with transmitted datagrams.
+pub(super) mod errqueue;
 
 pub(super) mod gso {
     use super::*;

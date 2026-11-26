@@ -313,7 +313,6 @@ impl StreamingInner {
                     return Poll::Ready(Ok(None));
                 }
 
-                _ = std::mem::replace(&mut self.state, State::Error(Some(status.clone())));
                 debug!("decoder inner stream error: {:?}", status);
                 return Poll::Ready(Err(status));
             }
@@ -344,7 +343,12 @@ impl StreamingInner {
             Err(frame) => match frame.into_trailers() {
                 Ok(frame_trailers) => {
                     if let Some(trailers) = &mut self.trailers {
-                        trailers.extend(frame_trailers);
+                        if let Err(err) = trailers.try_insert_map(frame_trailers) {
+                            trace!(%err, "trailers past the header map capacity");
+                            return Poll::Ready(Err(Status::internal(
+                                "decode: too many trailer fields",
+                            )));
+                        }
                     } else {
                         self.trailers = Some(frame_trailers);
                     }
@@ -465,10 +469,21 @@ impl<T> Stream for Streaming<T> {
     type Item = Result<T, Status>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let polled = self.as_mut().poll_next_message(cx);
+        // An error is yielded once; every later poll then reports the stream as exhausted.
+        if let Poll::Ready(Some(Err(_))) = &polled {
+            self.inner.state = State::Error(None);
+        }
+        polled
+    }
+}
+
+impl<T> Streaming<T> {
+    fn poll_next_message(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<T, Status>>> {
         loop {
-            // When the stream encounters an error yield that error once and then on subsequent
-            // calls to poll_next return Poll::Ready(None) indicating that the stream has been
-            // fully exhausted.
             if let State::Error(status) = &mut self.inner.state {
                 return Poll::Ready(status.take().map(Err));
             }
@@ -612,6 +627,19 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(status.code(), Code::OutOfRange);
+    }
+
+    #[tokio::test]
+    async fn a_terminal_error_is_yielded_once_then_the_stream_ends() {
+        let mut oversized = vec![0];
+        oversized.extend_from_slice(&u32::MAX.to_be_bytes());
+        let truncated = frame(0, b"cut")[..HEADER_SIZE + 1].to_vec();
+        for (wire, code) in [(oversized, Code::OutOfRange), (truncated, Code::Internal)] {
+            let mut streaming = streaming(vec![Bytes::from(wire)], None);
+            assert_eq!(streaming.message().await.unwrap_err().code(), code);
+            assert!(streaming.message().await.unwrap().is_none(), "{code:?}");
+            assert!(streaming.message().await.unwrap().is_none(), "{code:?}");
+        }
     }
 
     #[cfg(feature = "compression")]

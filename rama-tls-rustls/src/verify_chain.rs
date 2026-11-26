@@ -101,7 +101,9 @@ impl ServerCertVerifier for ChainVerifier {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        let host = Host::rama_try_from(server_name).ok();
+        let identity = Host::rama_try_from(server_name)
+            .ok()
+            .and_then(|host| rama_net::tls::ServerName::try_from(host).ok());
         let (kind, chain) = match &self.source {
             ChainSource::Presented => (
                 ServerCertChainKind::Presented,
@@ -125,14 +127,14 @@ impl ServerCertVerifier for ChainVerifier {
                 self.verified_path(roots, end_entity, intermediates, server_name, now)?,
             ),
             ChainSource::Platform(platform) => {
-                let host = host.as_ref().ok_or(rustls::Error::InvalidCertificate(
+                let identity = identity.as_ref().ok_or(rustls::Error::InvalidCertificate(
                     CertificateError::NotValidForName,
                 ))?;
                 let verify = || {
                     platform.verify_server_chain(
                         end_entity,
                         intermediates,
-                        host,
+                        identity,
                         Some(ocsp_response),
                         UNIX_EPOCH + Duration::from_secs(now.as_secs()),
                     )
@@ -149,7 +151,7 @@ impl ServerCertVerifier for ChainVerifier {
                 };
                 let chain = verified.map_err(|err| {
                     tracing::debug!(
-                        %host,
+                        %identity,
                         %err,
                         "rustls connector: platform verifier rejected the server certificate"
                     );
@@ -166,10 +168,10 @@ impl ServerCertVerifier for ChainVerifier {
         };
 
         if let Some(policy) = &self.chain_policy
-            && let Err(err) = policy.check(&ServerCertChain::new(kind, host.as_ref(), &chain))
+            && let Err(err) = policy.check(&ServerCertChain::new(kind, identity.as_ref(), &chain))
         {
             tracing::debug!(
-                ?host,
+                ?identity,
                 %err,
                 "rustls connector: server certificate chain rejected by policy"
             );

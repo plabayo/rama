@@ -25,8 +25,8 @@
 //! preknowledge producers can supply the same candidates and extensions.
 //!
 //! Use the same TLS defaults and Alt-Svc cache in discovery and selection.
-//! WebSocket (`wss`) service selection and HTTP-to-HTTPS upgrades are not
-//! implemented by this layer. Each Alt-Svc authority has independent ECH
+//! A `wss` request uses the records of its `https` origin (RFC 9460 section 9.6);
+//! HTTP-to-HTTPS upgrades are not implemented by this layer. Each Alt-Svc authority has independent ECH
 //! reliance, as specified by RFC 9848 section 6: an origin's ECH advertisement
 //! does not itself require its separately advertised alternatives to offer ECH.
 //!
@@ -310,7 +310,10 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
         reliant: &mut bool,
     ) -> Result<(), ConnectionError> {
         if !self.enabled
-            || input.application_protocol.as_ref() != Some(&Protocol::HTTPS)
+            || !input
+                .application_protocol
+                .as_ref()
+                .is_some_and(|protocol| protocol == &Protocol::HTTPS || protocol == &Protocol::WSS)
             || input.extensions().contains::<HttpServiceCandidates>()
             || dials_another_endpoint(input)
         {

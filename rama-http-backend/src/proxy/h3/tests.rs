@@ -1,6 +1,14 @@
 mod spin;
 
-use crate::client::{MaxInformationalResponses, RefusedStreamBudget};
+use std::{
+    io,
+    num::NonZeroUsize,
+    pin::Pin,
+    sync::atomic::{AtomicU8, AtomicUsize, Ordering},
+    task::{Context, Poll},
+    time::Duration,
+};
+
 use rama_core::{
     bytes::Bytes,
     extensions::ExtensionsRef,
@@ -45,14 +53,6 @@ use rama_ws::{
     AsyncWebSocket, Message,
     protocol::{PerMessageDeflateConfig, Role, WebSocketConfig},
 };
-use std::{
-    io,
-    num::NonZeroUsize,
-    pin::Pin,
-    sync::atomic::{AtomicU8, AtomicUsize, Ordering},
-    task::{Context, Poll},
-    time::Duration,
-};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf},
     sync::oneshot,
@@ -60,6 +60,7 @@ use tokio::{
 };
 
 use super::*;
+use crate::client::{MaxInformationalResponses, RefusedStreamBudget};
 
 const LIMIT: Duration = Duration::from_secs(20);
 
@@ -591,6 +592,200 @@ async fn native_h3_mitm_rejects_only_proven_unprocessed_post() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_answers_a_failed_request_with_the_custom_error_response() {
+    timeout(LIMIT, async {
+        let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+        let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+        let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
+        let origin_driver = spawn(origin_driver.run());
+        let relay = Http3MitmRelay::new(WeakScope::detached()).with_error_response(|context| {
+            assert_eq!(context.reason, RelayErrorReason::RequestFailed);
+            assert_eq!(context.version, Version::HTTP_3);
+            assert_eq!(*context.method, Method::POST);
+            assert_eq!(context.uri.path_or_root().as_ref(), "/change");
+            let mut response = Response::new(Body::from("relay failed"));
+            *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+            response
+                .headers_mut()
+                .insert("X-Relay-Error", HeaderValue::from_static("request-failed"));
+            response
+                .headers_mut()
+                .insert("x-relay-detail", HeaderValue::from_static("cancelled"));
+            response
+        });
+        let relay = spawn(async move {
+            relay
+                .with_ingress_config(ordinary_config())
+                .with_egress_config(ordinary_config())
+                .serve(BridgeIo(ingress, egress))
+                .await
+        });
+        let (mut browser, browser_driver) =
+            client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                .unwrap();
+        let browser_driver = spawn(browser_driver.run());
+        let request = Request::builder()
+            .method(Method::POST)
+            .version(Version::HTTP_3)
+            .uri("https://localhost/change")
+            .body(Body::from("one change"))
+            .unwrap();
+        let (result, ()) = tokio::join!(browser.send_request(request), async {
+            let (request, response) = origin.accept().await.unwrap().resolve().await.unwrap();
+            // Processed, so the relay answers instead of rejecting the request.
+            response.reset(Code::H3_REQUEST_CANCELLED).unwrap();
+            drop(request);
+        });
+        let response = result.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        // In the handler's order; HTTP/3 carries names in lowercase.
+        let custom: Vec<_> = response
+            .headers()
+            .ordered_iter()
+            .filter(|(name, _)| name.as_str().starts_with("x-relay"))
+            .map(|(name, value)| (name.as_str(), value.to_str().unwrap()))
+            .collect();
+        assert_eq!(
+            custom,
+            [
+                ("x-relay-error", "request-failed"),
+                ("x-relay-detail", "cancelled"),
+            ]
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "relay failed");
+        for endpoint in [
+            &browser_endpoint,
+            &ingress_endpoint,
+            &egress_endpoint,
+            &origin_endpoint,
+        ] {
+            endpoint.close(0u32, b"complete");
+        }
+        tokio::join!(
+            browser_endpoint.shutdown(),
+            ingress_endpoint.shutdown(),
+            egress_endpoint.shutdown(),
+            origin_endpoint.shutdown()
+        );
+        let _results = tokio::join!(browser_driver, origin_driver, relay);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_never_answers_a_failed_connect_as_a_tunnel() {
+    timeout(LIMIT, async {
+        let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+        let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+        let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
+        let origin_driver = spawn(origin_driver.run());
+        // A hook that answers 200, as `Response::new` does.
+        let relay = Http3MitmRelay::new(WeakScope::detached())
+            .with_error_response(|_| Response::new(Body::from("relay failed")));
+        let relay = spawn(async move {
+            relay
+                .with_ingress_config(ordinary_config())
+                .with_egress_config(ordinary_config())
+                .serve(BridgeIo(ingress, egress))
+                .await
+        });
+        let (mut browser, browser_driver) =
+            client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                .unwrap();
+        let browser_driver = spawn(browser_driver.run());
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .version(Version::HTTP_3)
+            .uri(Uri::parse_authority_form("localhost:443").unwrap())
+            .body(Body::empty())
+            .unwrap();
+        let (result, ()) = tokio::join!(browser.send_request(request), async {
+            let (request, response) = origin.accept().await.unwrap().resolve().await.unwrap();
+            response.reset(Code::H3_REQUEST_CANCELLED).unwrap();
+            drop(request);
+        });
+        assert_eq!(result.unwrap().status(), StatusCode::BAD_GATEWAY);
+        for endpoint in [
+            &browser_endpoint,
+            &ingress_endpoint,
+            &egress_endpoint,
+            &origin_endpoint,
+        ] {
+            endpoint.close(0u32, b"complete");
+        }
+        tokio::join!(
+            browser_endpoint.shutdown(),
+            ingress_endpoint.shutdown(),
+            egress_endpoint.shutdown(),
+            origin_endpoint.shutdown()
+        );
+        let _results = tokio::join!(browser_driver, origin_driver, relay);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_normalizes_informational_error_hooks() {
+    for status in [StatusCode::CONTINUE, StatusCode::EARLY_HINTS] {
+        timeout(LIMIT, async {
+            let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+            let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+            let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
+            let origin_driver = spawn(origin_driver.run());
+            let relay = Http3MitmRelay::new(WeakScope::detached()).with_error_response(move |_| {
+                Response::builder()
+                    .status(status)
+                    .body(Body::from("relay failed"))
+                    .unwrap()
+            });
+            let relay = spawn(async move {
+                relay
+                    .with_ingress_config(ordinary_config())
+                    .with_egress_config(ordinary_config())
+                    .serve(BridgeIo(ingress, egress))
+                    .await
+            });
+            let (mut browser, browser_driver) =
+                client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                    .unwrap();
+            let browser_driver = spawn(browser_driver.run());
+            let request = Request::builder()
+                .method(Method::GET)
+                .version(Version::HTTP_3)
+                .uri("https://localhost/")
+                .body(Body::empty())
+                .unwrap();
+            let (result, ()) = tokio::join!(browser.send_request(request), async {
+                let (request, response) = origin.accept().await.unwrap().resolve().await.unwrap();
+                response.reset(Code::H3_REQUEST_CANCELLED).unwrap();
+                drop(request);
+            });
+            assert_eq!(result.unwrap().status(), StatusCode::BAD_GATEWAY);
+            for endpoint in [
+                &browser_endpoint,
+                &ingress_endpoint,
+                &egress_endpoint,
+                &origin_endpoint,
+            ] {
+                endpoint.close(0u32, b"complete");
+            }
+            tokio::join!(
+                browser_endpoint.shutdown(),
+                ingress_endpoint.shutdown(),
+                egress_endpoint.shutdown(),
+                origin_endpoint.shutdown()
+            );
+            let _results = tokio::join!(browser_driver, origin_driver, relay);
+        })
+        .await
+        .unwrap();
+    }
 }
 
 #[tokio::test(start_paused = true)]

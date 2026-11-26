@@ -35,7 +35,10 @@ use rama::{
     http::core::h3::transport::{
         self, ClosedStream, ReadError, SendDatagramError, StoppedError, WriteError,
     },
-    net::{address::Domain, stream::SocketInfo, tls::ApplicationProtocol},
+    net::{
+        stream::SocketInfo,
+        tls::{ApplicationProtocol, ServerName},
+    },
     quic::{
         self as rq,
         proto::{
@@ -137,7 +140,7 @@ impl Quinn {
             server_name: handshake
                 .as_ref()
                 .and_then(|data| data.server_name.as_deref())
-                .and_then(|name| Domain::try_from(name).ok()),
+                .and_then(ServerName::parse),
             resumed: None,
             algorithms: NegotiatedTlsAlgorithms::default(),
             server_hello: None,

@@ -1,17 +1,17 @@
+use std::sync::Arc;
+
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, ExtensionsRef},
 };
 
+use super::{ConnID, ReqToConnID, ReuseKey};
 use crate::{
     AuthorityInputExt, ConnectorTransportProtocolInputExt, Protocol, ProtocolInputExt,
     address::{HostWithOptPort, ProxyAddress},
     client::{ConnectorTarget, ProxyRoute},
     transport::TransportProtocol,
 };
-
-use super::{ConnID, ReqToConnID, ReuseKey};
-use std::sync::Arc;
 
 /// An optional application partition of a connection pool's normal route identity.
 ///
@@ -123,10 +123,19 @@ where
         Ok(BasicConnId {
             partition: input.extensions().get_arc::<PoolPartition>(),
             protocol: input.target_protocol().cloned(),
-            authority,
+            authority: authority.canonicalize(),
             proxy_route_requested: proxy_route.is_some(),
-            proxy_address: proxy_route.and_then(ProxyRoute::proxy_address).cloned(),
-            connector_target: input.extensions().get_ref().cloned(),
+            proxy_address: proxy_route
+                .and_then(ProxyRoute::proxy_address)
+                .cloned()
+                .map(|mut proxy| {
+                    proxy.address = proxy.address.canonicalize();
+                    proxy
+                }),
+            connector_target: input
+                .extensions()
+                .get_ref::<ConnectorTarget>()
+                .map(|target| ConnectorTarget(target.0.clone().canonicalize())),
             connector_transport_protocol: input.connector_transport_protocol(),
         })
     }
@@ -134,7 +143,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::client::pool::{LruDropPool, PooledConnector};
     use core::convert::Infallible;
     use std::sync::{
         Arc,
@@ -145,12 +153,31 @@ mod tests {
 
     use super::*;
     use crate::{
-        address::HostWithPort,
+        address::{Domain, Host, HostWithPort},
         client::{
             ConnectRequest, EstablishedClientConnection, EstablishedProxyRoute,
             ProxyConnectionExtensions, ProxyRoute,
+            pool::{LruDropPool, PooledConnector},
         },
     };
+
+    #[test]
+    fn canonical_identity_unifies_numeric_authorities_and_physical_targets() {
+        let id = |host: Host| {
+            let request = ConnectRequest::new(HostWithPort::new(host.clone(), 443));
+            request
+                .extensions
+                .insert(ConnectorTarget(HostWithPort::new(host, 443)));
+            BasicConnIdentifier::new().id(&request).unwrap()
+        };
+        let address = id("192.0.2.1".parse().unwrap());
+        assert_eq!(address, id(Host::Name(Domain::from_static("192.0.2.1"))));
+        assert_ne!(address, id(Host::Name(Domain::from_static("192.0.2.1."))));
+        assert_eq!(
+            id(Host::EXAMPLE_NAME),
+            id(Host::from_static("EXAMPLE.com."))
+        );
+    }
 
     #[test]
     fn separates_application_protocols() {

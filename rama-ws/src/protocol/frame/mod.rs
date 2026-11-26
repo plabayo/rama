@@ -5,7 +5,7 @@ use rama_core::{
     bytes::{Buf, Bytes, BytesMut},
     telemetry::tracing::trace,
 };
-use rama_utils::octets::kib;
+use rama_utils::octets::{RETAINED_BUFFER_LEN, kib};
 use std::io::{self, Cursor, Error as IoError, ErrorKind as IoErrorKind, IoSlice, Read, Write};
 
 pub mod coding;
@@ -30,10 +30,6 @@ const COPIED_PAYLOAD_MAX_LEN: usize = kib(4);
 
 /// Payloads from this size on are written from their own storage instead of through `out_buffer`.
 const DIRECT_PAYLOAD_MIN_LEN: usize = kib(64);
-
-/// Capacity a drained `in_buffer` or `out_buffer` keeps at most; for `out_buffer` twice the
-/// write length when that is larger.
-pub(super) const RETAINED_BUFFER_LEN: usize = kib(256);
 
 /// Step in which a shared payload is masked into `out_buffer`; a multiple of the mask length.
 const MASKED_CHUNK_LEN: usize = kib(64);
@@ -327,6 +323,7 @@ impl FrameCodec {
     /// Empties the drained `out_buffer`, giving back storage that one outsized frame grew.
     #[inline]
     fn reset_out_buffer(&mut self) {
+        // A large write length keeps twice its size, so steady large writes reuse the buffer.
         let retained = RETAINED_BUFFER_LEN.max(self.out_buffer_write_len.saturating_mul(2));
         if self.out_buffer.capacity() > retained {
             self.out_buffer = BytesMut::new();

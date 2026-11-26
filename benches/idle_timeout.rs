@@ -1,12 +1,22 @@
 //! Idle-timeout cost per forwarded datagram: the HTTP datagram relay and a CONNECT-UDP
 //! socket over capsule carriers, in memory or on loopback TCP, and the idle guard itself.
 //! Each sample moves a burst of `BURST` small datagrams between spawned tasks, as a proxy's
-//! tunnel tasks run; carrier setup is excluded.
+//! tunnel tasks run; carrier setup is excluded. The `per_event` benches set the cost of
+//! recording one activity on the shared idle primitive against the shapes it replaced.
 
 #![expect(
     clippy::unwrap_used,
     reason = "benchmark setup and delivery must succeed"
 )]
+
+use std::{
+    assert_matches,
+    future::Future,
+    pin::Pin,
+    sync::atomic::{AtomicU64, Ordering},
+    task::{Context, Waker},
+    time::Duration,
+};
 
 use divan::{black_box, counter::ItemsCount};
 use rama::{
@@ -15,18 +25,16 @@ use rama::{
     graceful::Scope,
     http::datagram::{HttpDatagramRelay, HttpDatagramSession, SessionEvent},
     io::BridgeIo,
-    net::{
-        address::SocketAddress,
-        proxy::{IdleActivity, IdleGuard},
-    },
+    net::address::SocketAddress,
     proxy::masque::connect_udp::{ConnectUdpSocket, ConnectUdpSocketConfig, session_config},
+    rt::{IdleActivity, IdleGuard, IdleProgress},
     udp::{DatagramSenderExt as _, DatagramSocket as _, DatagramSocketExt as _, SendDatagram},
 };
-use std::{assert_matches, future::Future, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     runtime::{Builder, Runtime},
+    time::{Instant, Sleep},
 };
 
 mod bench_alloc;
@@ -83,22 +91,82 @@ impl Carrier for TcpStream {
     }
 }
 
-/// Per-activity cost of the guard's own reset.
-#[divan::bench]
-fn idle_guard_reset(bencher: divan::Bencher) {
-    let rt = runtime(false);
-    let _entered = rt.enter();
-    let mut guard = IdleGuard::new(Duration::from_mins(2));
-    bencher.bench_local(|| guard.reset());
-}
+const IDLE: Duration = Duration::from_mins(2);
 
-/// Per-activity cost of recording on the shared activity stamp.
-#[divan::bench]
-fn idle_activity_record(bencher: divan::Bencher) {
-    let rt = runtime(false);
-    let _entered = rt.enter();
-    let activity = IdleActivity::new();
-    bencher.bench_local(|| activity.record());
+/// Per-activity cost of the shared primitive and of the shapes it replaced.
+#[divan::bench_group]
+mod per_event {
+    use tokio::time::sleep;
+
+    use super::{
+        AtomicU64, Context, Duration, IDLE, IdleActivity, IdleGuard, IdleProgress, Instant,
+        Ordering, Pin, Sleep, Waker, black_box, runtime,
+    };
+
+    /// Shared: the guard's own reset, a timestamp of its owner.
+    #[divan::bench]
+    fn idle_guard_reset(bencher: divan::Bencher) {
+        let rt = runtime(false);
+        let _entered = rt.enter();
+        let mut guard = IdleGuard::new(IDLE);
+        bencher.bench_local(|| guard.reset());
+    }
+
+    /// Shared: recording on the activity stamp of other tasks.
+    #[divan::bench]
+    fn idle_activity_record(bencher: divan::Bencher) {
+        let rt = runtime(false);
+        let _entered = rt.enter();
+        let activity = IdleActivity::new();
+        bencher.bench_local(|| activity.record());
+    }
+
+    /// Shared: counting on the progress of other tasks.
+    #[divan::bench]
+    fn idle_progress_record(bencher: divan::Bencher) {
+        let progress = IdleProgress::new();
+        bencher.bench_local(|| black_box(&progress).record());
+    }
+
+    /// Replaced: a registered timer moved on every event (datagram demux, guard reset).
+    #[divan::bench]
+    fn sleep_reset(bencher: divan::Bencher) {
+        let rt = runtime(false);
+        let _entered = rt.enter();
+        let mut sleep: Pin<Box<Sleep>> = Box::pin(sleep(IDLE));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(sleep.as_mut().poll(&mut cx).is_pending());
+        bencher.bench_local(|| sleep.as_mut().reset(Instant::now() + IDLE));
+    }
+
+    /// Replaced: a progress counter read when the timer fires (stream and I/O bridges).
+    #[divan::bench]
+    fn progress_counter(bencher: divan::Bencher) {
+        let progress = AtomicU64::new(0);
+        bencher.bench_local(|| black_box(&progress).fetch_add(1, Ordering::Relaxed));
+    }
+
+    /// Replaced: nanoseconds since an epoch, raised atomically (CONNECT-IP session).
+    #[divan::bench]
+    fn epoch_fetch_max(bencher: divan::Bencher) {
+        let rt = runtime(false);
+        let _entered = rt.enter();
+        let epoch = Instant::now();
+        let last = AtomicU64::new(0);
+        bencher.bench_local(|| {
+            let elapsed = u64::try_from(epoch.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            black_box(&last).fetch_max(elapsed, Ordering::Relaxed);
+        });
+    }
+
+    /// The deadline a fired timer computes from a record: paid once per timeout, not per event.
+    #[divan::bench]
+    fn activity_deadline(bencher: divan::Bencher) {
+        let rt = runtime(false);
+        let _entered = rt.enter();
+        let activity = IdleActivity::new();
+        bencher.bench_local(|| black_box(&activity).deadline(Duration::from_secs(1)));
+    }
 }
 
 /// Run both ends of a burst as tasks of `rt` and hand back what they own.

@@ -1,15 +1,30 @@
-use crate::RamaTlsRustlsCrateMarker;
-use crate::dep::rustls::{self, ALL_VERSIONS};
-use crate::key_log::RamaKeyLog;
-use rama_core::conversion::{RamaTryFrom, RamaTryInto};
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
-use rama_core::extensions::Extension;
-use rama_core::telemetry::tracing;
-use rama_net::tls::AlpnPolicy;
-use rama_tls::keylog::open_intent_sink;
-use rama_tls::server::{ClientVerifyMode, GeneratedServerAuthConfig, ServerAuthData};
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{pin::Pin, sync::Arc};
+
+use rama_core::{
+    conversion::{RamaTryFrom, RamaTryInto},
+    error::{BoxError, BoxErrorExt as _, ErrorContext},
+    extensions::Extension,
+    telemetry::tracing,
+};
+use rama_crypto::cert::{ensure_certificate_public_key_matches, generate_server_auth};
+use rama_net::tls::{AlpnPolicy, ServerName};
+use rama_tls::{
+    keylog::open_intent_sink,
+    server::{ClientVerifyMode, GeneratedServerAuthConfig, ServerAuthData},
+};
+
+use super::config::RustlsTlsAcceptorConfig;
+
+use crate::{
+    RamaTlsRustlsCrateMarker,
+    dep::rustls::{
+        self, ALL_VERSIONS, InconsistentKeys,
+        crypto::CryptoProvider,
+        server::danger::ClientCertVerifier,
+        sign::{CertifiedKey, SingleCertAndKey},
+    },
+    key_log::RamaKeyLog,
+};
 
 #[derive(Clone, Debug, Extension)]
 #[extension(tags(tls))]
@@ -20,6 +35,8 @@ use std::sync::Arc;
 /// [`TlsServerConfig`]: rama_tls::server::TlsServerConfig
 pub struct TlsAcceptorData {
     pub(super) server_config: ServerConfig,
+    pub(super) client_verifier: Option<Arc<dyn ClientCertVerifier>>,
+    pub(super) resumption_safe: bool,
 }
 
 #[derive(Clone)]
@@ -65,11 +82,15 @@ impl TryFrom<super::config::RustlsTlsAcceptorConfig<'_>> for TlsAcceptorData {
         if let Some(dynamic) = value.dynamic {
             Ok(Self {
                 server_config: ServerConfig::Async(dynamic.0.clone()),
+                client_verifier: None,
+                resumption_safe: false,
             })
         } else {
-            let config = rustls::ServerConfig::try_from(value)?;
+            let (config, client_verifier) = build_server_config_inner(&value, None)?;
             Ok(Self {
                 server_config: ServerConfig::Stored(Arc::new(config)),
+                client_verifier,
+                resumption_safe: value.modify.is_none(),
             })
         }
     }
@@ -112,6 +133,15 @@ pub(super) fn build_server_config(
     value: &super::config::RustlsTlsAcceptorConfig<'_>,
     provider: Option<Arc<rustls::crypto::CryptoProvider>>,
 ) -> Result<rustls::ServerConfig, BoxError> {
+    build_server_config_inner(value, provider).map(|(config, _)| config)
+}
+
+type ClientVerifier = Arc<dyn ClientCertVerifier>;
+
+fn build_server_config_inner(
+    value: &RustlsTlsAcceptorConfig<'_>,
+    provider: Option<Arc<CryptoProvider>>,
+) -> Result<(rustls::ServerConfig, Option<ClientVerifier>), BoxError> {
     if value.dynamic.is_some() {
         tracing::debug!(
             "ignoring dynamic field when converting RustlsTlsAcceptorConfig into rustls::ServerConfig directly",
@@ -140,6 +170,7 @@ pub(super) fn build_server_config(
     };
     let provider = builder.crypto_provider().clone();
 
+    let mut client_verifier = None;
     let builder = match value.client_verify.map(|v| &v.0) {
         None | Some(ClientVerifyMode::Auto | ClientVerifyMode::Disable) => {
             builder.with_no_client_auth()
@@ -157,6 +188,7 @@ pub(super) fn build_server_config(
             )
             .build()
             .context("rustls server: build client cert verifier")?;
+            client_verifier = Some(verifier.clone());
             builder.with_client_cert_verifier(verifier)
         }
     };
@@ -171,8 +203,7 @@ pub(super) fn build_server_config(
         // self-signed scaffold so the hook can install its own cert source.
         // Without a modify hook there is nothing to serve, so this is an error.
         None if value.modify.is_some() => {
-            let (chain, key) =
-                rama_crypto::cert::generate_server_auth(GeneratedServerAuthConfig::default())?;
+            let (chain, key) = generate_server_auth(GeneratedServerAuthConfig::default())?;
             (chain, key, None)
         }
         None => {
@@ -182,14 +213,24 @@ pub(super) fn build_server_config(
         }
     };
 
-    let mut server_config = match ocsp {
-        Some(ocsp) => builder
-            .with_single_cert_with_ocsp(cert_chain, key, ocsp)
-            .context("rustls server: set single cert with ocsp")?,
-        None => builder
-            .with_single_cert(cert_chain, key)
-            .context("rustls server: set single cert")?,
-    };
+    let signing_key = builder
+        .crypto_provider()
+        .key_provider
+        .load_private_key(key)?;
+    let mut certified_key = CertifiedKey::new(cert_chain, signing_key);
+    let leaf = certified_key.end_entity_cert()?;
+    if let Some(public_key) = certified_key.key.public_key() {
+        // Challenge certificates carry a critical extension intended for their validator.
+        ensure_certificate_public_key_matches(leaf, &public_key)?;
+    } else {
+        certified_key.keys_match().or_else(|error| match error {
+            rustls::Error::InconsistentKeys(InconsistentKeys::Unknown) => Ok(()),
+            error => Err(error),
+        })?;
+    }
+    certified_key.ocsp = ocsp.filter(|response| !response.is_empty());
+    let mut server_config =
+        builder.with_cert_resolver(Arc::new(SingleCertAndKey::from(certified_key)));
 
     if let Some(alpn) = value.alpn {
         server_config.alpn_protocols = alpn.0.iter().map(|p| p.as_bytes().to_vec()).collect();
@@ -214,7 +255,7 @@ pub(super) fn build_server_config(
         server_config.cert_resolver = Arc::new(RequireAlpn(server_config.cert_resolver));
     }
 
-    Ok(server_config)
+    Ok((server_config, client_verifier))
 }
 
 /// Certificate selection runs for every ClientHello, including a resumed session.
@@ -251,6 +292,8 @@ impl From<Arc<rustls::ServerConfig>> for TlsAcceptorData {
     fn from(value: Arc<rustls::ServerConfig>) -> Self {
         Self {
             server_config: ServerConfig::Stored(value),
+            client_verifier: None,
+            resumption_safe: false,
         }
     }
 }
@@ -265,14 +308,19 @@ impl<D: DynamicConfigProvider> From<Arc<D>> for TlsAcceptorData {
     fn from(value: Arc<D>) -> Self {
         Self {
             server_config: ServerConfig::Async(value),
+            client_verifier: None,
+            resumption_safe: false,
         }
     }
 }
 
+/// Resolve a server configuration using the native hello and its observed SNI.
+/// The observed name retains IP literals omitted by the native hello view.
 pub trait DynamicConfigProvider: Send + Sync + 'static {
     fn get_config(
         &self,
         client_hello: rustls::server::ClientHello<'_>,
+        server_name: Option<&ServerName>,
     ) -> impl Future<Output = Result<Arc<rustls::ServerConfig>, BoxError>> + Send;
 }
 
@@ -282,6 +330,7 @@ pub(crate) trait DynDynamicConfigProvider {
     fn get_config<'a, 'b: 'a>(
         &'a self,
         client_hello: rustls::server::ClientHello<'b>,
+        server_name: Option<&'b ServerName>,
     ) -> Pin<Box<dyn Future<Output = Result<Arc<rustls::ServerConfig>, BoxError>> + Send + 'a>>;
 }
 
@@ -292,16 +341,37 @@ where
     fn get_config<'a, 'b: 'a>(
         &'a self,
         client_hello: rustls::server::ClientHello<'b>,
+        server_name: Option<&'b ServerName>,
     ) -> Pin<Box<dyn Future<Output = Result<Arc<rustls::ServerConfig>, BoxError>> + Send + 'a>>
     {
-        Box::pin(self.get_config(client_hello))
+        Box::pin(self.get_config(client_hello, server_name))
     }
 }
 
 #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
 mod server_pieces_tests {
-    use super::*;
     use rama_tls::server::{GeneratedServerAuthConfig, TlsServerConfig};
+
+    use super::*;
+    use crate::server::config::RustlsServerConfigExt;
+
+    #[test]
+    fn configured_certificate_requires_its_matching_private_key() {
+        let (cert_chain, private_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
+        let (_, other_key) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
+        let auth = ServerAuthData {
+            cert_chain,
+            private_key,
+            ocsp: None,
+        };
+        TlsAcceptorData::try_from(&TlsServerConfig::new().with_server_auth(auth.clone())).unwrap();
+        TlsAcceptorData::try_from(&TlsServerConfig::new().with_server_auth(ServerAuthData {
+            private_key: other_key,
+            ..auth
+        }))
+        .unwrap_err();
+    }
 
     fn stored(data: &TlsAcceptorData) -> Option<&Arc<rustls::ServerConfig>> {
         match &data.server_config {
@@ -326,7 +396,6 @@ mod server_pieces_tests {
 
     #[test]
     fn modify_rustls_config_runs_last() {
-        use crate::server::config::RustlsServerConfigExt;
         crate::ensure_default_crypto_provider();
         let cfg = TlsServerConfig::new()
             .try_with_generated_server_auth(GeneratedServerAuthConfig::default())

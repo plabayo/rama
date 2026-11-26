@@ -398,8 +398,8 @@ async fn new_inner_client(
             },
         )
         .with_default_connection_pool();
-    // Without HTTP/3 for this request, nothing may discover it either.
-    let builder = if cfg.no_alt_svc || !quic {
+    // An explicit HTTP/2 target can still use an HTTP/2 alternative over TCP.
+    let builder = if cfg.no_alt_svc || !(quic || cfg.http_2) {
         builder.without_alt_svc()
     } else {
         builder

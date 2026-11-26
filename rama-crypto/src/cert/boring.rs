@@ -1,21 +1,23 @@
 //! BoringSSL-backed self-signed certificate generation (feature `boring`).
 
 use super::{
-    CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
+    CanonicalIdentity, CertificateAuthorityData, CertificateKeyKind, CertificateSubject,
     CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, LeafCertUsage,
-    SelfSignedCaConfig, validate_certificate_lifetime, validate_leaf_request,
+    SelfSignedCaConfig, unique_canonical_identities, validate_certificate_lifetime,
+    validate_leaf_request,
 };
 use crate::dep::boring::{
     asn1::{Asn1Object, Asn1ObjectRef, Asn1Time},
     bn::{BigNum, MsbOption},
     ec::{EcGroup, EcKey},
+    error::ErrorStack,
     hash::MessageDigest,
     nid::Nid,
     pkey::{Id, PKey, PKeyRef, Private},
     rand::rand_bytes,
     rsa::Rsa,
     x509::{
-        X509, X509Extension, X509NameBuilder, X509Ref,
+        X509, X509Builder, X509Extension, X509NameBuilder, X509Ref,
         extension::{
             AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage,
             SubjectAlternativeName, SubjectKeyIdentifier,
@@ -160,27 +162,31 @@ pub fn aki_from_ca_pubkey_keyid(ca_cert: &X509Ref) -> Result<X509Extension, BoxE
 
 /// Message digest to use when signing a certificate with `key`.
 ///
-/// - EdDSA (Ed25519 / Ed448) is a "pure" signature scheme: `X509_sign` must be
-///   invoked with a NULL digest because the algorithm signs the message
-///   directly instead of a prehash. Passing a real digest makes BoringSSL's
-///   `EVP_DigestSignInit` fail.
+/// - `None` for EdDSA (Ed25519 / Ed448): a "pure" scheme that signs the message
+///   directly instead of a prehash, so `X509_sign` takes no digest.
 /// - ECDSA pairs the digest to the curve strength (P-384 → SHA-384,
 ///   P-521 → SHA-512), per common practice / CA-Browser-Forum guidance; an
 ///   unnamed (explicit-parameter) curve falls back to SHA-256.
-/// - Everything else (RSA, RSA-PSS, DSA) signs over SHA-256, as before.
-pub fn signing_digest_for(key: &PKeyRef<Private>) -> MessageDigest {
+/// - Everything else (RSA, RSA-PSS, DSA) signs over SHA-256.
+fn signing_digest_for(key: &PKeyRef<Private>) -> Option<MessageDigest> {
     match key.id() {
-        Id::ED25519 | Id::ED448 => {
-            // SAFETY: a null `EVP_MD` is precisely what `X509_sign` expects for
-            // EdDSA keys; BoringSSL reads it as "no prehash".
-            unsafe { MessageDigest::from_ptr(std::ptr::null()) }
-        }
-        Id::EC => match key.ec_key().ok().and_then(|ec| ec.group().curve_name()) {
-            Some(Nid::SECP521R1) => MessageDigest::sha512(),
-            Some(Nid::SECP384R1) => MessageDigest::sha384(),
-            _ => MessageDigest::sha256(),
-        },
-        _ => MessageDigest::sha256(),
+        Id::ED25519 | Id::ED448 => None,
+        Id::EC => Some(
+            match key.ec_key().ok().and_then(|ec| ec.group().curve_name()) {
+                Some(Nid::SECP521R1) => MessageDigest::sha512(),
+                Some(Nid::SECP384R1) => MessageDigest::sha384(),
+                _ => MessageDigest::sha256(),
+            },
+        ),
+        _ => Some(MessageDigest::sha256()),
+    }
+}
+
+/// Sign `builder` with `key`, using the digest [`signing_digest_for`] picks.
+fn sign_x509(builder: &mut X509Builder, key: &PKeyRef<Private>) -> Result<(), ErrorStack> {
+    match signing_digest_for(key) {
+        Some(digest) => builder.sign(key, digest),
+        None => builder.sign_without_digest(key),
     }
 }
 
@@ -440,15 +446,12 @@ fn build_leaf_certificate(
         if empty_subject {
             subject_alt_name.critical();
         }
-        for (index, identity) in request.identities.iter().enumerate() {
-            if request.identities[..index].contains(identity) {
-                continue;
-            }
+        for identity in unique_canonical_identities(&request.identities) {
             match identity {
-                CertificateIdentity::Dns(domain) => {
+                CanonicalIdentity::Dns(domain) => {
                     subject_alt_name.dns(domain.as_str());
                 }
-                CertificateIdentity::Ip(ip) => {
+                CanonicalIdentity::Ip(ip) => {
                     subject_alt_name.ip(&ip.to_string());
                 }
             }
@@ -488,9 +491,7 @@ fn build_leaf_certificate(
     }
 
     let signing_key = issuer.map(|(_, key)| key).unwrap_or(&privkey);
-    cert_builder
-        .sign(signing_key, signing_digest_for(signing_key))
-        .context("x509 cert builder: sign cert")?;
+    sign_x509(&mut cert_builder, signing_key).context("x509 cert builder: sign cert")?;
 
     let cert = cert_builder.build();
 
@@ -577,9 +578,7 @@ pub fn generate_certificate_authority_x509(
         .append_extension(subject_key_identifier.as_ref())
         .context("x509 cert builder: add subject key id x509 extension")?;
 
-    ca_cert_builder
-        .sign(&privkey, signing_digest_for(&privkey))
-        .context("x509 cert builder: sign cert")?;
+    sign_x509(&mut ca_cert_builder, &privkey).context("x509 cert builder: sign cert")?;
 
     let cert = ca_cert_builder.build();
 
@@ -819,9 +818,7 @@ pub fn self_signed_server_auth_mirror_cert_with_extensions(
             .context("x509 cert builder: append extra revocation extension")?;
     }
 
-    cert_builder
-        .sign(ca_privkey, signing_digest_for(ca_privkey))
-        .context("x509 cert builder: sign mirrored cert")?;
+    sign_x509(&mut cert_builder, ca_privkey).context("x509 cert builder: sign mirrored cert")?;
 
     Ok((cert_builder.build(), privkey))
 }

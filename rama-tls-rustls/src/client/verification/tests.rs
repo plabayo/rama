@@ -1,5 +1,24 @@
 use super::*;
 use rama_tls::client::TlsClientConfig;
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+use {
+    crate::client::RustlsTlsConnectorConfig, rama_core::error::BoxErrorExt as _,
+    rama_net::tls::ApplicationProtocol,
+};
+#[cfg(all(unix, feature = "ring"))]
+use {
+    crate::{client::RustlsClientConfigExt as _, verify::NoServerCertVerifier},
+    std::{
+        fs,
+        future::{Future as _, poll_fn},
+        io::Write as _,
+        pin::pin,
+        process::Command,
+        sync::mpsc,
+        task::Poll,
+        time::Duration,
+    },
+};
 
 fn custom_root(index: usize) -> TlsClientConfig {
     TlsClientConfig::new()
@@ -8,7 +27,11 @@ fn custom_root(index: usize) -> TlsClientConfig {
 }
 
 fn cached_roots(cache: &RustlsServerTrustCache, config: &TlsClientConfig) -> Arc<RootCertStore> {
-    match cache.server_verification(config.as_extensions()).unwrap() {
+    match cache
+        .server_verification(config.as_extensions())
+        .unwrap()
+        .map(|verification| verification.verifier)
+    {
         Some(Either::A(roots)) => roots,
         _ => panic!("expected a rustls root store"),
     }
@@ -38,22 +61,44 @@ fn derived_cache_is_shared_by_clones_and_respects_capacity() {
     assert_eq!(second_store.len(), 1);
 }
 
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[test]
+fn native_config_cache_is_bounded_and_shared_by_clones() {
+    crate::ensure_default_crypto_provider();
+    let cache = RustlsServerTrustCache::new(NonZeroUsize::new(2).unwrap());
+    let clone = cache.clone();
+    let protocols = [
+        ApplicationProtocol::HTTP_11,
+        ApplicationProtocol::HTTP_2,
+        ApplicationProtocol::HTTP_3,
+        ApplicationProtocol::HTTP_10,
+    ];
+    for protocol in protocols {
+        let config = TlsClientConfig::new().with_alpn([protocol].into_iter().collect());
+        let key = RustlsTlsConnectorConfig::from_extensions(config.as_extensions())
+            .native_config_key(None)
+            .unwrap();
+        let built = cache
+            .client_config(key.clone(), || {
+                Ok(ClientConfig::builder()
+                    .with_root_certificates(RootCertStore::empty())
+                    .with_no_client_auth())
+            })
+            .unwrap();
+        let shared = clone
+            .client_config(key, || {
+                Err(BoxError::from_static_str("cached entry expected"))
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&built, &shared));
+    }
+    cache.configs().run_pending_tasks();
+    assert!((1..=2).contains(&cache.configs().entry_count()));
+}
+
 #[cfg(all(unix, feature = "ring"))]
 #[test]
 fn cold_default_is_offloaded_and_custom_verification_skips_it() {
-    use crate::client::{RustlsClientConfigExt as _, RustlsTlsConnectorConfig};
-    use crate::verify::NoServerCertVerifier;
-    use std::{
-        fs,
-        future::{Future as _, poll_fn},
-        io::Write as _,
-        pin::pin,
-        process::Command,
-        sync::mpsc,
-        task::Poll,
-        time::Duration,
-    };
-
     const CHILD: &str = "RAMA_TEST_RUSTLS_COLD_TRUST";
     if let Some(path) = std::env::var_os(CHILD) {
         crate::ensure_default_crypto_provider();
@@ -101,7 +146,10 @@ fn cold_default_is_offloaded_and_custom_verification_skips_it() {
                 })
                 .await
                 .unwrap();
-                std::assert_matches!(verification, Some(Either::A(_)));
+                std::assert_matches!(
+                    verification.map(|verification| verification.verifier),
+                    Some(Either::A(_))
+                );
             });
         assert!(writer.join().unwrap(), "cold default blocked the runtime");
         return;

@@ -4,14 +4,18 @@ use rama_core::{
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
-use rama_http::conn::TargetHttpVersion;
+use std::sync::Arc;
+
+use rama_http::conn::{SelectedHttpService, TargetHttpVersion};
 use rama_net::{
     HttpVersionInputExt, TargetHttpVersionInputExt,
     client::{ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection},
     http::FallbackHttpVersion,
+    tls::TlsAlpn,
 };
 use rama_utils::macros::define_inner_service_accessors;
 
+use super::{preserve, profile::OptionalEmulation};
 use crate::profile::{
     replay::{
         connection::{
@@ -23,10 +27,8 @@ use crate::profile::{
         },
         request::{LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport},
     },
-    selection::variants::{EmulationContext, ProfileConnectionReuse},
+    selection::variants::{ConnectionSelection, EmulationContext, ProfileConnectionReuse},
 };
-
-use super::{preserve, profile::OptionalEmulation};
 
 /// Connector that prepares and checks the connection variant of the profile
 /// selected by [`ProfileEmulateLayer`](super::ProfileEmulateLayer).
@@ -83,6 +85,21 @@ where
     type Output = EstablishedClientConnection<S::Connection, Input>;
 
     async fn serve(&self, req: Input) -> Result<Self::Output, Self::Error> {
+        // A discovered alternative may reach another version the selected profile holds;
+        // a caller ALPN keeps the pre-connect requirement.
+        if req.extensions().contains::<SelectedHttpService>()
+            && !req.extensions().contains::<TlsAlpn>()
+            && let Some(context) = EmulationContext::of(req.extensions())
+            && let Some(selected) = req
+                .target_http_version()
+                .and_then(|version| context.selected.for_negotiated(version))
+        {
+            EmulationContext {
+                selected: Arc::new(selected),
+                ..context.clone()
+            }
+            .publish(req.extensions());
+        }
         let mut skipped = false;
         let ech = EmulationContext::of(req.extensions()).is_some() && self.compiler.ech_ready(&req);
         let prepared =
@@ -192,14 +209,22 @@ where
                     ConnectionError::application(error, ConnectionErrorKind::Protocol)
                 })?;
             // Every request using this connection inherits its wire differences.
-            if let Some(report) = req.extensions().get_ref::<ProfilePreservationReport>() {
+            if !conn.extensions().contains::<ConnectionSelection>()
+                && let Some(report) = req.extensions().get_ref::<ProfilePreservationReport>()
+            {
                 let report = match conn.extensions().get_ref::<ProfilePreservationReport>() {
                     Some(inner) => report.clone().followed_by(inner.clone()),
                     None => report.clone(),
                 };
                 conn.extensions().insert(report);
             }
-            conn.extensions().insert(admission.into_selection());
+            let selection = conn
+                .extensions()
+                .get_ref::<ConnectionSelection>()
+                .or_else(|| req.extensions().get_ref::<ConnectionSelection>())
+                .cloned()
+                .unwrap_or_else(|| admission.into_selection());
+            conn.extensions().insert(selection);
             ProfileConnectionReuse::new(context, version, req.extensions())
                 .publish(conn.extensions());
         }

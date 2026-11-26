@@ -2,6 +2,9 @@
 
 mod classify;
 
+#[cfg(feature = "boring")]
+mod ech;
+
 #[cfg(any(
     feature = "boring",
     all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))

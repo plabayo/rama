@@ -211,7 +211,7 @@ async fn compiler_errors_stop_before_dial() {
 }
 
 #[tokio::test]
-async fn caller_h3_settings_are_reported_and_compiled_output_is_applied() {
+async fn earlier_h3_settings_are_replaced_and_compiled_output_is_applied() {
     let calls = Arc::new(AtomicUsize::new(0));
     let applied = Arc::new(AtomicUsize::new(0));
     let request = input(false);
@@ -228,24 +228,13 @@ async fn caller_h3_settings_are_reported_and_compiled_output_is_applied() {
         .unwrap();
     assert_eq!(calls.load(Ordering::Relaxed), 1);
     assert_eq!(applied.load(Ordering::Relaxed), 1);
-    assert_eq!(
+    // The profile inserts its own settings over the ones inserted before it ran.
+    assert_ne!(
         connection
             .input
             .extensions()
             .get_ref::<ClientSettingsProfile>(),
         Some(&caller)
-    );
-    assert_eq!(
-        connection
-            .conn
-            .extensions()
-            .get_ref::<ProfilePreservationReport>()
-            .unwrap()
-            .differences
-            .as_ref(),
-        [ProfilePreservationDifference::LoweredProfileItem {
-            item: LoweredProfileItem::CallerHttp3Settings
-        }]
     );
 }
 

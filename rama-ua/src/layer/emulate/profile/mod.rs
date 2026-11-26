@@ -13,13 +13,21 @@ use rama_http::{
     layer::alt_svc::SendAltUsed,
     proto::h3::qpack::{FieldSectionBase, encoding::HeaderPreferences},
 };
+#[cfg(feature = "tls")]
+use rama_net::{ConnectorTargetInputExt as _, tls::TargetEchConfig};
 use rama_net::{
     ProtocolInputExt as _, TargetHttpVersionInputExt as _,
-    tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
+    tls::{ApplicationProtocol, TlsAlpn},
 };
+#[cfg(feature = "tls")]
+use rama_tls::client::resolve_target_ech;
 use rama_utils::{macros::define_inner_service_accessors, octets::kib};
 use rand::RngExt as _;
 
+use super::{
+    SelectedUserAgentProfile, preserve,
+    source::{ProfileSelectFallback, ProfileSource, is_no_match},
+};
 use crate::{
     UserAgent,
     profile::{
@@ -45,11 +53,6 @@ use crate::{
     },
 };
 
-use super::{
-    SelectedUserAgentProfile, preserve,
-    source::{ProfileSelectFallback, ProfileSource, is_no_match},
-};
-
 const MAXIMUM_FETCH_CONTEXT_BYTES: usize = kib(16);
 
 /// Select a captured profile and publish its immutable emulation context.
@@ -57,7 +60,8 @@ const MAXIMUM_FETCH_CONTEXT_BYTES: usize = kib(16);
 /// The selected identity follows the configured [`ProfileSelector`], completed by a
 /// [`UserAgent`] request extension or, with auto-detection, the request's own
 /// `User-Agent` header. When no profile of that identity can emulate the request,
-/// [`ProfileSelectFallback`] decides whether a looser identity is tried.
+/// [`ProfileSelectFallback`] decides whether a looser identity is tried; an auto-detected
+/// User-Agent without any profile falls back to its browser family.
 ///
 /// # Request flow
 ///
@@ -84,8 +88,11 @@ const MAXIMUM_FETCH_CONTEXT_BYTES: usize = kib(16);
 ///
 /// A [`RequestInitiator::Navigate`] link navigation thus replays a form submission
 /// with the same Fetch metadata, and a stylesheet replays a navigation when no stylesheet was captured. Identity
-/// fallback only applies when the identity has no capture to stand in at all, such
-/// as none for the request's HTTP version.
+/// fallback only applies when the identity has no capture to stand in at all, under any
+/// HTTP version the connection may negotiate; the request draws for the negotiated one.
+/// Without a caller [`TargetHttpVersion`] or ALPN, a secure TCP request offers the HTTP
+/// versions the profile captured for that kind of request. Ordinary requests, CONNECT
+/// tunnels and WebSocket handshakes each use their own captured versions.
 ///
 /// A closest capture replays with the caller's own request context, as those fields
 /// describe the request rather than the browser. The caller's `Sec-Fetch-*` fields
@@ -258,6 +265,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
+        // Only a User-Agent detected here from the header is a preference that may be relaxed.
+        let mut detected = false;
         if self.config.try_auto_detect_user_agent && !req.extensions().contains::<UserAgent>() {
             if let Some(header) = req
                 .headers()
@@ -267,6 +276,7 @@ where
                 let agent = UserAgent::new(header.to_owned());
                 tracing::trace!(user_agent.original = %header, "user agent auto-detected from request");
                 req.extensions().insert(agent);
+                detected = true;
             } else {
                 tracing::debug!(
                     "user agent auto-detection not possible: no usable user agent header"
@@ -285,7 +295,7 @@ where
                 }
             }
         }
-        match self.select(&req) {
+        match self.select(&req, detected) {
             Ok(()) => {
                 if self.config.optional {
                     req.extensions().insert(OptionalEmulation);
@@ -301,9 +311,37 @@ where
 }
 
 impl<S, P: ProfileSource> ProfileEmulateService<S, P> {
-    fn select<Body>(&self, req: &Request<Body>) -> Result<(), BoxError> {
+    fn select<Body>(&self, req: &Request<Body>, detected: bool) -> Result<(), BoxError> {
+        if !is_auto(req) {
+            return self.select_once(req, None, true, detected);
+        }
+        // The profile's own versions are tried before any fallback to another identity.
+        for target in [None, Some(Version::HTTP_11), Some(Version::HTTP_2)] {
+            match self.select_once(req, target, false, detected) {
+                Err(error) => match error.downcast_ref::<SelectionError>() {
+                    Some(SelectionError::MissingFlow | SelectionError::MissingCapabilities(_)) => {}
+                    // No profile of this identity: only the relaxed selection can help.
+                    Some(SelectionError::MissingProfile) => break,
+                    _ => return Err(error),
+                },
+                Ok(()) => return Ok(()),
+            }
+        }
+        self.select_once(req, None, true, detected)
+    }
+
+    /// Select for the request, or for `target` when given; a selected `target` is set on it.
+    /// Only `relax` lets the selector loosen to another identity; `detected` marks a
+    /// User-Agent this layer read from the header rather than one the caller configured.
+    fn select_once<Body>(
+        &self,
+        req: &Request<Body>,
+        target: Option<Version>,
+        relax: bool,
+        detected: bool,
+    ) -> Result<(), BoxError> {
         let config = &self.config;
-        let required = required_capabilities(req).map_err(BoxError::from)?;
+        let required = required_capabilities(req, target).map_err(BoxError::from)?;
         let connection = req
             .extensions()
             .get_ref::<ConnectionContext>()
@@ -311,7 +349,9 @@ impl<S, P: ProfileSource> ProfileEmulateService<S, P> {
             .unwrap_or_default();
         let flow = request_flow(
             req,
-            req.target_http_version().unwrap_or(req.version()),
+            target
+                .or_else(|| req.target_http_version())
+                .unwrap_or(req.version()),
             connection,
         )?;
         let seed = config.seed.unwrap_or_else(random_seed);
@@ -327,17 +367,35 @@ impl<S, P: ProfileSource> ProfileEmulateService<S, P> {
                 .copied()
                 .unwrap_or(config.pins),
         };
-        let fallback = req
-            .extensions()
-            .get_ref::<ProfileSelectFallback>()
-            .copied()
-            .unwrap_or(config.select_fallback);
+        #[cfg(feature = "tls")]
+        if req
+            .target_protocol()
+            .is_some_and(|protocol| protocol.is_secure())
+            && let Some(config) = req.extensions().get_ref::<TargetEchConfig>()
+            && let Some(target) = req.connector_target()
+            && config.matches_target(&target)
+        {
+            request.client.ech_ready = Some(
+                resolve_target_ech(req.extensions(), &target, true)
+                    .is_ok_and(|resolution| resolution.config.is_some()),
+            );
+        }
+        let fallback = if relax {
+            req.extensions()
+                .get_ref::<ProfileSelectFallback>()
+                .copied()
+                .unwrap_or(config.select_fallback)
+        } else {
+            ProfileSelectFallback::Abort
+        };
         let mut selected = self.source.select_profile(&request, seed, connection_key);
         // An auto-detected User-Agent is a preference, not a configured selector: without a
-        // matching profile, such as for `desktop firefox`, the browser family is emulated.
-        // A configured `user_agent` is only relaxed by the fallback policy.
-        if let Err(error) = &selected
-            && is_no_match(error)
+        // profile of that User-Agent, such as for `desktop firefox`, the browser family is
+        // emulated. A profile that exists is never swapped for another identity, and a
+        // configured `user_agent` (selector or extension) is only relaxed by the fallback policy.
+        if relax
+            && detected
+            && matches!(&selected, Err(SelectionError::MissingProfile))
             && config.selector.user_agent.is_none()
             && request.client.user_agent.is_some()
         {
@@ -358,6 +416,18 @@ impl<S, P: ProfileSource> ProfileEmulateService<S, P> {
             selected = self.source.select_profile(&request, seed, connection_key);
         }
         let selected = selected?;
+        // An auto offer holds only the versions under which the profile can replay this
+        // request; a peer picking another would fail it after connecting.
+        let (target, selected) = match target {
+            None if is_auto(req) => match selected.for_flow_version() {
+                Some((version, narrowed)) => (Some(version), narrowed),
+                None => (None, selected),
+            },
+            target => (target, selected),
+        };
+        if let Some(target) = target {
+            req.extensions().insert(TargetHttpVersion(target));
+        }
         let selected = Arc::new(
             if req.extensions().contains::<ConnectionBootstrapRequest>() {
                 selected.for_connection_bootstrap(seed, connection_key)?
@@ -549,6 +619,13 @@ fn replay_request<Body>(
     req: &mut Request<Body>,
 ) -> Result<(), BoxError> {
     let drawn;
+    let version = connection_extensions
+        .and_then(|extensions| extensions.get_ref::<TargetHttpVersion>())
+        .map(|target| target.0)
+        .unwrap_or(req.version());
+    // A discovered alternative may reach another version the profile holds.
+    let widened = context.selected.for_negotiated(version);
+    let selected_profile = widened.as_ref().unwrap_or(&context.selected);
     let found = connection_extensions
         .and_then(|extensions| extensions.get_ref::<ConnectionSelection>())
         .or_else(|| req.extensions().get_ref::<ConnectionSelection>());
@@ -557,7 +634,7 @@ fn replay_request<Body>(
         connection
     } else {
         // Relayed or offline requests have no profile connection: draw the variant to replay.
-        drawn = context.selected.connection(
+        drawn = selected_profile.connection(
             &req.extensions()
                 .get_ref::<ConnectionContext>()
                 .cloned()
@@ -567,10 +644,6 @@ fn replay_request<Body>(
         )?;
         &drawn
     };
-    let version = connection_extensions
-        .and_then(|extensions| extensions.get_ref::<TargetHttpVersion>())
-        .map(|target| target.0)
-        .unwrap_or(req.version());
     let flow = request_flow(
         req,
         version,
@@ -580,7 +653,7 @@ fn replay_request<Body>(
         req.headers(),
         req.extensions().get_ref::<InputHeaderOrder>(),
     );
-    let selected = context.selected.request(
+    let selected = selected_profile.request(
         connection,
         &flow,
         &original,
@@ -712,11 +785,26 @@ fn request_flow<Body>(
     })
 }
 
-fn required_capabilities<Body>(req: &Request<Body>) -> Result<CapabilitySet, SelectionError> {
-    let explicit = req
-        .extensions()
-        .get_ref::<TargetHttpVersion>()
-        .map(|target| target.0);
+/// Without a caller target or ALPN, "auto" is whatever version the profile holds a flow
+/// of this request for.
+fn is_auto<Body>(req: &Request<Body>) -> bool {
+    !req.extensions().contains::<TargetHttpVersion>()
+        && !req.extensions().contains::<TlsAlpn>()
+        && req.version() != Version::HTTP_3
+        && req
+            .target_protocol()
+            .is_some_and(|protocol| protocol.is_secure())
+}
+
+fn required_capabilities<Body>(
+    req: &Request<Body>,
+    target: Option<Version>,
+) -> Result<CapabilitySet, SelectionError> {
+    let explicit = target.or_else(|| {
+        req.extensions()
+            .get_ref::<TargetHttpVersion>()
+            .map(|target| target.0)
+    });
     let version = explicit.unwrap_or(req.version());
     let configured = req.extensions().get_ref::<TlsAlpn>().cloned();
     if version == Version::HTTP_3 {
@@ -729,7 +817,13 @@ fn required_capabilities<Body>(req: &Request<Body>) -> Result<CapabilitySet, Sel
     {
         let alpn = configured
             .or_else(|| explicit.map(alpn_for_version))
-            .or_else(|| req.target_protocol().and_then(default_tls_alpn))
+            // A browser offers both versions for a secure origin, a WebSocket one included;
+            // the offer then keeps those under which the profile holds this request's flow.
+            .or_else(|| {
+                req.target_protocol()
+                    .filter(|protocol| protocol.is_http_based())
+                    .map(|_| TlsAlpn::http_auto())
+            })
             .unwrap_or_else(|| alpn_for_version(version));
         CapabilitySet::for_alpn(&alpn, SelectionTransport::TcpTls)
     } else {

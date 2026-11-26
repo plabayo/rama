@@ -345,10 +345,7 @@ where
             .extensions()
             .get_arc::<QuicProfile>()
             .map(with_critical_stream_credit);
-        if let Some(profile) = &profile {
-            input.extensions().insert_arc(profile.clone());
-        }
-        let h3_config = self.h3_config(&input, profile.as_deref())?;
+        self.h3_config(&input, profile.as_deref())?;
         let quic = if coalescing::pool_group(&input).is_some() {
             &self.coalescing
         } else {
@@ -359,6 +356,11 @@ where
             input,
             conn: connection,
         } = quic.serve(input).await?;
+        let profile = input
+            .extensions()
+            .get_arc::<QuicProfile>()
+            .map(with_critical_stream_credit);
+        let h3_config = self.h3_config(&input, profile.as_deref())?;
         let early = h3_config.early_requests
             && input.extensions().contains::<EarlyDataPermit>()
             && !input.extensions().contains::<ForbidEarlyData>()
@@ -446,6 +448,7 @@ mod concrete_transport_tests {
     use rama_core::error::error_chain;
     use rama_core::{
         extensions::{Extensions, Ingress},
+        futures::future::BoxFuture,
         rt::spawn,
     };
     use rama_crypto::pki_types::CertificateDer;
@@ -461,16 +464,16 @@ mod concrete_transport_tests {
     };
     use rama_net::{
         Protocol,
-        address::{Host, HostWithPort, SocketAddress},
+        address::{HostWithPort, SocketAddress},
         client::{
             ConnectionErrorDomain, ConnectorTarget, ProxyRoute, ProxyRouteFailureCache,
             ProxyRouteFailureCacheConnector, ProxyRoutes, ProxyRoutesConnector, pool::ReuseKey,
         },
-        tls::{AlpnPolicy, TlsAlpn},
+        tls::{AlpnPolicy, ServerName, TlsAlpn},
     };
     use rama_quic::{
         ClientConfig, EndpointConfig, ServerConfig,
-        tls::{TlsConfigError, TlsOptions},
+        tls::{ClientConfigRequest, TlsConfigError, TlsOptions, acquire_cached_client_config},
     };
     use rama_quic_proto::{
         VarInt,
@@ -485,7 +488,7 @@ mod concrete_transport_tests {
         server::{LeafCertRequest, ServerAuthData, TlsServerConfig},
     };
     use std::{
-        future::pending,
+        future::{self, pending},
         sync::atomic::{AtomicUsize, Ordering},
         time::Duration,
     };
@@ -521,8 +524,31 @@ mod concrete_transport_tests {
     }
 
     impl QuicClientConfigProvider for CustomProvider {
-        fn peer_matches_name(&self, _: &Extensions, _: &CertificateDer<'_>, _: &Host) -> bool {
+        fn peer_matches_name(
+            &self,
+            _: &Extensions,
+            _: &CertificateDer<'_>,
+            _: &ServerName,
+        ) -> bool {
             false
+        }
+
+        fn acquire_client_config(
+            &self,
+            request: ClientConfigRequest<'_>,
+        ) -> Result<Option<ClientConfig>, TlsConfigError> {
+            acquire_cached_client_config(self, request)
+        }
+
+        fn acquire_client_config_async<'a>(
+            &'a self,
+            request: ClientConfigRequest<'a>,
+        ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
+            Box::pin(future::ready(self.acquire_client_config(request)))
+        }
+
+        fn allows_early_data(&self, _extensions: &Extensions) -> bool {
+            true
         }
 
         fn client_config(
@@ -980,15 +1006,13 @@ mod concrete_transport_tests {
             .unwrap();
         let clone = connector.clone();
         let endpoint = |connector: Http3Connector| async move {
-            connector
+            let EstablishedClientConnection { input, conn } = connector
                 .quic()
                 .endpoints()
                 .serve(ConnectRequest::new(HostWithPort::local_ipv4(443)))
                 .await
-                .unwrap()
-                .conn
-                .endpoint()
-                .clone()
+                .unwrap();
+            conn.ready(&input).await.unwrap().endpoint().clone()
         };
         let (first, second) = tokio::join!(endpoint(connector), endpoint(clone));
         assert_eq!(first.local_addr().unwrap(), second.local_addr().unwrap());
@@ -1021,13 +1045,15 @@ mod concrete_transport_tests {
         assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
         assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
         assert_eq!(provider.authenticated_checks.load(Ordering::Relaxed), 1);
-        connector
+        let EstablishedClientConnection { input, conn } = connector
             .quic()
             .endpoints()
             .serve(ConnectRequest::new(HostWithPort::local_ipv4(443)))
             .await
+            .unwrap();
+        conn.ready(&input)
+            .await
             .unwrap()
-            .conn
             .endpoint()
             .close(0u32, b"test complete");
     }

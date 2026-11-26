@@ -15,7 +15,7 @@ pub use config::{
 
 mod client_hellos;
 #[doc(inline)]
-pub use client_hellos::ServerClientHellos;
+pub use client_hellos::{ServerClientHellos, ServerHandshakeHellos, publish_server_client_hellos};
 
 mod hello;
 #[doc(inline)]

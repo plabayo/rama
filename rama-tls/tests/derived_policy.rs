@@ -1,26 +1,26 @@
 //! A layer derives TLS settings after a pool miss; the native connector must
 //! retain caller compatibility without weakening producer or proxy restrictions.
 
+use std::convert::Infallible;
+
 use rama_core::{
     ServiceInput,
     extensions::{Extension, Extensions, ExtensionsRef},
     service::service_fn,
 };
 use rama_net::{
-    address::{Host, ProxyAddress},
+    address::{Domain, ProxyAddress},
     client::{
         ConnectRequest, ConnectionPolicyScope, ConnectorService as _, EstablishedClientConnection,
         ProxyDialRequest, ProxyDialer, ProxyRoute,
         pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
     },
     stream::DefaultExtensionsTransfer,
-    tls::TlsAlpn,
+    tls::{ServerName, TlsAlpn},
 };
 use rama_tls::client::{
-    ServerVerifyMode, TlsClientConfigProvider, TlsConnectionReuse, TlsPoolId, TlsServerName,
-    TlsServerVerify,
+    ServerVerifyMode, TlsClientConfigProvider, TlsConnectionReuse, TlsPoolId, TlsServerVerify,
 };
-use std::convert::Infallible;
 
 #[derive(Debug)]
 struct Provider<const ID: u8>;
@@ -36,7 +36,7 @@ impl<const ID: u8> TlsClientConfigProvider for Provider<ID> {
         TlsPoolId::builder()
             .maybe_with_alpn(input.get_ref::<TlsAlpn>())
             .maybe_with_verify(input.get_ref::<TlsServerVerify>())
-            .maybe_with_server_name(input.get_ref::<TlsServerName>())
+            .maybe_with_server_name(input.get_ref::<ServerName>())
             .build()
     }
 
@@ -80,7 +80,7 @@ fn derived_settings_admit_and_reuse_the_original_caller_policy() {
     changed.insert(TlsServerVerify(ServerVerifyMode::Disable));
     assert!(!policy.matches(&changed));
     changed.insert(TlsServerVerify(ServerVerifyMode::Auto));
-    changed.insert(TlsServerName(Host::from_static("other.example")));
+    changed.insert(ServerName::from(Domain::from_static("other.example")));
     assert!(!policy.matches(&changed));
 
     let explicit = caller();

@@ -1,7 +1,7 @@
 //! Native session ownership, engine parameters and failure before connection admission.
 
 use crate::tls::{ClientHandshake, ClientSessionPolicy};
-use rama_net::address::Host;
+use rama_net::{address::Domain, tls::ServerName};
 use rama_tls::client::{ClientHello, ClientHelloExtension};
 
 use super::*;
@@ -55,7 +55,10 @@ fn prepared_ssl_is_consumed_once_and_retries_keep_fresh_native_state() {
                 })
             })));
         let client = BoringTlsProvider::new()
-            .prepare_fresh_client_config(&client, Host::try_from("localhost").unwrap())
+            .prepare_fresh_client_config(
+                &client,
+                ServerName::from(Domain::from_static("localhost")),
+            )
             .unwrap()
             .crypto;
         assert_eq!(initializations.load(Ordering::SeqCst), 1);
@@ -131,10 +134,7 @@ fn wrong_peer_does_not_consume_the_prepared_ssl() {
     let (client, server) = configs();
     let count = count_initializations(&client);
     let client = BoringTlsProvider::new()
-        .prepare_fresh_client_config(
-            &client,
-            rama_net::address::Host::try_from("localhost").unwrap(),
-        )
+        .prepare_fresh_client_config(&client, ServerName::from(Domain::from_static("localhost")))
         .unwrap()
         .crypto;
     assert!(
@@ -163,10 +163,7 @@ fn racing_attempts_own_distinct_sessions_and_initialize_each_once() {
     let (client, server) = configs();
     let count = count_initializations(&client);
     let client = BoringTlsProvider::new()
-        .prepare_fresh_client_config(
-            &client,
-            rama_net::address::Host::try_from("localhost").unwrap(),
-        )
+        .prepare_fresh_client_config(&client, ServerName::from(Domain::from_static("localhost")))
         .unwrap()
         .crypto;
     assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -226,7 +223,7 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
             .client_config_for_peer(
                 &policy,
                 policy.as_extensions(),
-                &Host::try_from("localhost").unwrap(),
+                &ServerName::from(Domain::from_static("localhost")),
             )
             .unwrap();
         assert!(
@@ -243,7 +240,7 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
                 .client_config_for_peer(
                     &policy,
                     policy.as_extensions(),
-                    &Host::try_from("localhost").unwrap(),
+                    &ServerName::from(Domain::from_static("localhost")),
                 )
                 .unwrap();
             assert_eq!(full.crypto.resumable_version("localhost"), None);
@@ -264,7 +261,7 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
             .client_config_for_peer(
                 &policy,
                 policy.as_extensions(),
-                &Host::try_from("localhost").unwrap(),
+                &ServerName::from(Domain::from_static("localhost")),
             )
             .unwrap();
         assert_eq!(resumed.crypto.resumable_version("localhost"), Some(version));
@@ -285,7 +282,7 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
             .client_config_for_peer(
                 &policy,
                 policy.as_extensions(),
-                &Host::try_from("localhost").unwrap(),
+                &ServerName::from(Domain::from_static("localhost")),
             )
             .unwrap_err();
     }

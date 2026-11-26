@@ -64,10 +64,11 @@ use {
 use {
     crate::{
         extensions::Extensions,
-        net::{address::Host, client::pool::ReuseKey},
+        futures::future::{self, BoxFuture},
+        net::{client::pool::ReuseKey, tls::ServerName},
         quic::{
             ClientConfig,
-            tls::{QuicClientConfigProvider, TlsConfigError, TlsOptions},
+            tls::{ClientConfigRequest, QuicClientConfigProvider, TlsConfigError, TlsOptions},
         },
     },
     rama_crypto::pki_types::CertificateDer,
@@ -289,7 +290,25 @@ impl QuicClientConfigProvider for UnavailableQuicTls {
         Err(TlsConfigError::BackendUnavailable)
     }
 
-    fn peer_matches_name(&self, _: &Extensions, _: &CertificateDer<'_>, _: &Host) -> bool {
+    fn acquire_client_config(
+        &self,
+        _: ClientConfigRequest<'_>,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        Err(TlsConfigError::BackendUnavailable)
+    }
+
+    fn acquire_client_config_async<'a>(
+        &'a self,
+        request: ClientConfigRequest<'a>,
+    ) -> BoxFuture<'a, Result<Option<ClientConfig>, TlsConfigError>> {
+        Box::pin(future::ready(self.acquire_client_config(request)))
+    }
+
+    fn allows_early_data(&self, _: &Extensions) -> bool {
+        false
+    }
+
+    fn peer_matches_name(&self, _: &Extensions, _: &CertificateDer<'_>, _: &ServerName) -> bool {
         false
     }
 }
@@ -1961,7 +1980,10 @@ mod tests {
                 pool::{ConnID as _, ReqToConnID},
             },
         },
-        rama_net::{http::TargetHttpVersion, tls::ApplicationProtocol},
+        rama_net::{
+            http::TargetHttpVersion,
+            tls::{ApplicationProtocol, ServerName},
+        },
         rama_tls::client::{ServerVerifyMode, TlsPoolId, TlsServerVerify},
         rama_tls::{
             ProtocolVersion,
@@ -2037,8 +2059,9 @@ mod tests {
                         .map_or(Version::HTTP_2, |version| version.0);
                     let conn = ServiceInput::new(());
                     conn.extensions.insert(TargetHttpVersion(version));
-                    conn.extensions
-                        .insert(TlsServerAuthentication(Some(input.authority.host.clone())));
+                    conn.extensions.insert(TlsServerAuthentication(Some(
+                        ServerName::try_from(&input.authority.host).unwrap(),
+                    )));
                     conn.extensions.insert(NegotiatedTlsParameters {
                         protocol_version: ProtocolVersion::TLSv1_3,
                         application_layer_protocol: Some(if version == Version::HTTP_3 {

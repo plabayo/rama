@@ -27,21 +27,25 @@
 //! [`rustls-native-certs`]: https://github.com/rustls/rustls-native-certs
 //! [pr228]: https://github.com/rustls/rustls-native-certs/pull/228
 
-use std::error::Error as StdError;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
-use std::{env, fmt, fs, io};
-
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt as _;
+use std::{
+    env,
+    error::Error as StdError,
+    fmt, fs, io,
+    path::{Path, PathBuf},
+    sync::{Arc, LazyLock},
+};
 
 use rama_core::{
     error::BoxError,
     telemetry::tracing::{debug, warn},
 };
 
-use crate::pki_types::CertificateDer;
-use crate::pki_types::pem::{self, PemObject};
+use crate::pki_types::{
+    CertificateDer,
+    pem::{self, PemObject},
+};
 
 #[cfg(all(unix, not(target_os = "macos")))]
 mod unix;
@@ -64,7 +68,7 @@ mod notifications;
 mod changes;
 mod load;
 #[doc(inline)]
-pub use changes::NativeCertsChanges;
+pub use changes::{NativeCertsChanges, NativeCertsWake};
 #[doc(inline)]
 pub use load::{load_validated_extra_certs, load_validated_native_certs};
 
@@ -103,25 +107,38 @@ static NATIVE_TRUST_ANCHORS: LazyLock<SharedTrustAnchors> = LazyLock::new(|| {
         debug!(%err, "rama native-certs: error while loading native root certificate");
     }
 
-    let base: &[CertificateDer<'static>] = if result.certs.is_empty() && !paths.has_overrides() {
-        warn!(
-            native_cert_errors = result.errors.len(),
-            "rama native-certs: no native system root certificates found; \
-             falling back to the bundled webpki (Mozilla CCADB) root certificates"
-        );
-        bundled_root_certs()
-    } else {
-        debug!(
-            native_cert_count = result.certs.len(),
-            "rama native-certs: loaded native system root certificates"
-        );
-        &result.certs
-    };
-    base.iter()
+    native_base(&result, paths.has_overrides())
+        .iter()
         .chain(shared_extra_trust_anchors().iter())
         .cloned()
         .collect()
 });
+
+/// The native roots, or the bundled roots when an unconfigured system store
+/// holds none. Unreadable entries never enable that fallback.
+fn native_base(result: &CertificateResult, has_overrides: bool) -> &[CertificateDer<'static>] {
+    if !result.certs.is_empty() || has_overrides {
+        debug!(
+            native_cert_count = result.certs.len(),
+            "rama native-certs: loaded native system root certificates"
+        );
+        return &result.certs;
+    }
+    if result.unreadable.is_some() {
+        warn!(
+            native_cert_errors = result.errors.len(),
+            "rama native-certs: native root certificate files are unreadable; \
+             trusting no native roots instead of the bundled webpki root certificates"
+        );
+        return &result.certs;
+    }
+    warn!(
+        native_cert_errors = result.errors.len(),
+        "rama native-certs: no native system root certificates found; \
+         falling back to the bundled webpki (Mozilla CCADB) root certificates"
+    );
+    bundled_root_certs()
+}
 
 /// Returns the cached, process-wide extra trust anchors, loaded from
 /// `SSL_CERT_EXTRA_FILE` (a PEM file) and `SSL_CERT_EXTRA_DIR` (directories,
@@ -216,11 +233,19 @@ pub struct CertificateResult {
     pub certs: Vec<CertificateDer<'static>>,
     /// Any errors encountered while loading certificates.
     pub errors: Vec<Error>,
+    /// Index of the first native trust source error.
     source_error: Option<usize>,
+    /// Index of the first filesystem read failure other than a missing path.
+    unreadable: Option<usize>,
 }
 
 impl CertificateResult {
     fn pem_error(&mut self, err: pem::Error, path: &Path) {
+        if let pem::Error::Io(error) = &err
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            self.unreadable.get_or_insert(self.errors.len());
+        }
         self.errors.push(Error {
             context: "failed to read PEM from file",
             kind: match err {
@@ -234,6 +259,9 @@ impl CertificateResult {
     }
 
     fn io_error(&mut self, err: io::Error, path: &Path, context: &'static str) {
+        if err.kind() != io::ErrorKind::NotFound {
+            self.unreadable.get_or_insert(self.errors.len());
+        }
         self.errors.push(Error {
             context,
             kind: ErrorKind::Io {
@@ -303,6 +331,22 @@ impl CertPaths {
     }
 }
 
+#[cfg(all(unix, any(not(target_os = "macos"), test)))]
+fn discover_cert_paths<'a>(
+    files: impl IntoIterator<Item = &'a Path>,
+    dirs: impl IntoIterator<Item = &'a Path>,
+) -> CertPaths {
+    let candidate = |path: &&Path| path.try_exists().unwrap_or(true);
+    CertPaths {
+        file: files.into_iter().find(candidate).map(Path::to_path_buf),
+        dirs: dirs
+            .into_iter()
+            .filter(candidate)
+            .map(Path::to_path_buf)
+            .collect(),
+    }
+}
+
 /// Load certificates from the given paths.
 ///
 /// If both are `None`, returns an empty [`CertificateResult`].
@@ -314,7 +358,8 @@ impl CertPaths {
 ///
 /// If `dir` is defined, a directory must exist at this path. The directory is
 /// not scanned recursively and may be empty; entries that are not readable
-/// (e.g. root-only files) are skipped.
+/// (e.g. root-only files) and PEM sections other than certificates (e.g. the
+/// CRLs `openssl rehash` links as `<hash>.r0`) are skipped.
 ///
 /// On Unix, each file is read at most once: directory entries that resolve to a file
 /// already read (for example the symlinks created by `openssl rehash`, or a link to
@@ -332,12 +377,7 @@ fn load_certs_from_paths_internal(
     file: Option<&Path>,
     dir: &[impl AsRef<Path>],
 ) -> CertificateResult {
-    let mut out = read_cert_paths(
-        file,
-        dir,
-        |path, out| load_pem_certs(path, out, false),
-        |path, out| load_pem_certs(path, out, true),
-    );
+    let mut out = read_cert_paths(file, dir, load_pem_certs);
     sort_and_deduplicate(&mut out.certs);
     out
 }
@@ -347,11 +387,11 @@ fn sort_and_deduplicate(certs: &mut Vec<CertificateDer<'static>>) {
     certs.dedup();
 }
 
+/// Reads the bundle `file` first, then every directory entry with [`load_dir_entry`].
 fn read_cert_paths(
     file: Option<&Path>,
     dirs: &[impl AsRef<Path>],
     read_bundle: impl FnOnce(&Path, &mut CertificateResult),
-    read_entry: impl Fn(&Path, &mut CertificateResult),
 ) -> CertificateResult {
     let mut out = CertificateResult::default();
     let mut seen = SeenFiles::default();
@@ -364,7 +404,13 @@ fn read_cert_paths(
     }
 
     for dir in dirs {
-        load_pem_certs_from_dir(dir.as_ref(), &mut out, &mut seen, &read_entry);
+        load_pem_certs_from_dir(dir.as_ref(), &mut out, &mut seen);
+    }
+    // Unreadable entries must not pass for an empty store that permits a fallback.
+    if out.certs.is_empty()
+        && let Some(index) = out.unreadable
+    {
+        out.source_error.get_or_insert(index);
     }
     out
 }
@@ -404,12 +450,10 @@ impl SeenFiles {
 }
 
 /// Load certificates from a certificate directory (what OpenSSL calls CAdir).
-fn load_pem_certs_from_dir(
-    dir: &Path,
-    out: &mut CertificateResult,
-    seen: &mut SeenFiles,
-    read_entry: impl Fn(&Path, &mut CertificateResult),
-) {
+///
+/// Failing to list the directory is a source error; a bad entry is recorded
+/// as a plain error and does not stop the other entries from loading.
+fn load_pem_certs_from_dir(dir: &Path, out: &mut CertificateResult, seen: &mut SeenFiles) {
     let dir_reader = match fs::read_dir(dir) {
         Ok(reader) => reader,
         Err(err) => {
@@ -444,27 +488,39 @@ fn load_pem_certs_from_dir(
         };
 
         if metadata.is_file() && seen.first_visit(&metadata) {
-            read_entry(&path, out);
+            load_dir_entry(&path, out);
         }
     }
 }
 
-fn load_pem_certs(path: &Path, out: &mut CertificateResult, skip_eperm: bool) {
-    let iter = match CertificateDer::pem_file_iter(path) {
-        Ok(iter) => iter,
+/// A CAdir holds certificates next to CRLs, keys and other files: only
+/// CERTIFICATE sections are read, and an unreadable entry is a soft error.
+fn load_dir_entry(path: &Path, out: &mut CertificateResult) {
+    match CertificateDer::pem_file_iter(path) {
+        Err(pem::Error::Io(error)) if error.kind() == io::ErrorKind::PermissionDenied => {
+            out.io_error(error, path, "skipping unreadable certificate file");
+        }
+        entries => push_pem_certs(entries, path, out),
+    }
+}
+
+fn load_pem_certs(path: &Path, out: &mut CertificateResult) {
+    push_pem_certs(CertificateDer::pem_file_iter(path), path, out);
+}
+
+fn push_pem_certs(
+    entries: Result<impl Iterator<Item = Result<CertificateDer<'static>, pem::Error>>, pem::Error>,
+    path: &Path,
+    out: &mut CertificateResult,
+) {
+    let entries = match entries {
+        Ok(entries) => entries,
         Err(err) => {
-            if skip_eperm
-                && let pem::Error::Io(io_error) = &err
-                && io_error.kind() == io::ErrorKind::PermissionDenied
-            {
-                return;
-            }
             out.pem_error(err, path);
             return;
         }
     };
-
-    for result in iter {
+    for result in entries {
         match result {
             Ok(cert) => out.certs.push(cert),
             Err(err) => out.pem_error(err, path),
@@ -527,18 +583,23 @@ const ENV_EXTRA_CERT_DIR: &str = "SSL_CERT_EXTRA_DIR";
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    use std::{
+        sync::{
+            OnceLock,
+            atomic::{AtomicUsize, Ordering},
+        },
+        thread,
+    };
+
+    #[cfg(unix)]
+    use fs::{File, Permissions};
+
     use super::*;
 
     #[test]
     fn cold_async_anchor_reads_share_one_load_and_warm_reads_need_no_runtime() {
-        use std::{
-            sync::{
-                OnceLock,
-                atomic::{AtomicUsize, Ordering},
-            },
-            thread,
-        };
-
         static LOADS: AtomicUsize = AtomicUsize::new(0);
         static LOADER_THREAD: OnceLock<thread::ThreadId> = OnceLock::new();
         static ANCHORS: LazyLock<SharedTrustAnchors> = LazyLock::new(|| {
@@ -573,7 +634,7 @@ mod tests {
     #[test]
     fn from_env_missing_file() {
         let mut result = CertificateResult::default();
-        load_pem_certs(Path::new("no/such/file"), &mut result, false);
+        load_pem_certs(Path::new("no/such/file"), &mut result);
         match &result.errors.first().unwrap().kind {
             ErrorKind::Io { inner, .. } => assert_eq!(inner.kind(), io::ErrorKind::NotFound),
             other => panic!("unexpected error {other:?}"),
@@ -585,10 +646,8 @@ mod tests {
     const MALFORMED_PEM: &str = "-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n";
 
     /// A fresh directory under the system temp dir, removed on drop.
-    #[cfg(unix)]
     pub(super) struct TestDir(pub(super) PathBuf);
 
-    #[cfg(unix)]
     impl TestDir {
         pub(super) fn new(name: &str) -> Self {
             let path = env::temp_dir().join(format!(
@@ -601,7 +660,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     impl Drop for TestDir {
         fn drop(&mut self) {
             _ = fs::remove_dir_all(&self.0);
@@ -611,8 +669,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn dir_symlinks_to_same_file_read_once() {
-        use std::os::unix::fs::symlink;
-
         let dir = TestDir::new("symlinks");
         fs::write(dir.0.join("Example_Root.pem"), MALFORMED_PEM).unwrap();
         symlink("Example_Root.pem", dir.0.join("01234567.0")).unwrap();
@@ -625,8 +681,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn dir_entry_for_cert_file_skipped() {
-        use std::os::unix::fs::symlink;
-
         let file_dir = TestDir::new("bundle");
         let cert_dir = TestDir::new("bundle-links");
         let file = file_dir.0.join("ca-bundle.crt");
@@ -655,7 +709,6 @@ mod tests {
             Path::new("no/such/directory"),
             &mut result,
             &mut SeenFiles::default(),
-            |path, out| load_pem_certs(path, out, true),
         );
         match &result.errors.first().unwrap().kind {
             ErrorKind::Io { inner, .. } => assert_eq!(inner.kind(), io::ErrorKind::NotFound),
@@ -689,10 +742,102 @@ mod tests {
     }
 
     #[test]
+    fn filesystem_read_failures_do_not_enable_bundled_roots() {
+        let path = Path::new("trust-store");
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
+            let mut result = CertificateResult::default();
+            result.io_error(io::Error::from(kind), path, "read trust source");
+            assert!(native_base(&result, false).is_empty());
+            let mut result = CertificateResult::default();
+            result.pem_error(pem::Error::Io(io::Error::from(kind)), path);
+            assert!(native_base(&result, false).is_empty());
+        }
+        let mut missing = CertificateResult::default();
+        missing.io_error(
+            io::Error::from(io::ErrorKind::NotFound),
+            path,
+            "read trust source",
+        );
+        assert_eq!(native_base(&missing, false), bundled_root_certs());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn inaccessible_ancestors_survive_native_path_discovery() {
+        let dir = TestDir::new("inaccessible-native-ancestor");
+        let ancestor = dir.0.join("private");
+        fs::create_dir(&ancestor).unwrap();
+        let bundle = ancestor.join("bundle.pem");
+        let certs = ancestor.join("certs");
+        fs::write(&bundle, b"").unwrap();
+        fs::create_dir(&certs).unwrap();
+        fs::set_permissions(&ancestor, Permissions::from_mode(0o0)).unwrap();
+        let inaccessible = bundle.try_exists().is_err();
+        let paths = discover_cert_paths([bundle.as_path()], [certs.as_path()]);
+        let result = paths.load();
+        fs::set_permissions(&ancestor, Permissions::from_mode(0o700)).unwrap();
+        if !inaccessible {
+            return;
+        }
+        assert_eq!(paths.file.as_deref(), Some(bundle.as_path()));
+        assert_eq!(paths.dirs, [certs]);
+        assert!(result.unreadable.is_some());
+        assert!(native_base(&result, false).is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unreadable_directory_and_symlink_target_do_not_enable_bundled_roots() {
+        let entries = TestDir::new("inaccessible-target");
+        let locked = TestDir::new("inaccessible-directory");
+        let target = locked.0.join("root.pem");
+        fs::write(&target, b"certificate").unwrap();
+        symlink(&target, entries.0.join("root.pem")).unwrap();
+        fs::set_permissions(&locked.0, Permissions::from_mode(0o000)).unwrap();
+        let inaccessible = fs::read_dir(&locked.0).is_err();
+        let directory = load_certs_from_paths_internal(None, &[&locked.0]);
+        let symlink = load_certs_from_paths_internal(None, &[&entries.0]);
+        fs::set_permissions(&locked.0, Permissions::from_mode(0o700)).unwrap();
+        if !inaccessible {
+            eprintln!("directory permission checks unavailable for this user");
+            return;
+        }
+        for result in [directory, symlink] {
+            assert!(result.certs.is_empty());
+            assert!(result.source_error.is_some());
+            assert!(native_base(&result, false).is_empty());
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn static_roots_fall_back_only_for_an_empty_readable_store() {
+        let dir = TestDir::new("static-fallback");
+        let empty = load_certs_from_paths_internal(None, &[&dir.0]);
+        assert_eq!(native_base(&empty, false), bundled_root_certs());
+        assert!(native_base(&empty, true).is_empty());
+
+        let locked = dir.0.join("private-root.pem");
+        fs::write(
+            &locked,
+            b"-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        fs::set_permissions(&locked, Permissions::from_mode(0o000)).unwrap();
+        let unreadable = File::open(&locked).is_err();
+        let result = load_certs_from_paths_internal(None, &[&dir.0]);
+        fs::set_permissions(&locked, Permissions::from_mode(0o600)).unwrap();
+        if unreadable {
+            assert!(native_base(&result, false).is_empty());
+            assert!(result.source_error.is_some());
+        }
+    }
+
+    #[test]
     #[cfg(unix)]
     fn from_env_with_non_regular_and_empty_file() {
         let mut result = CertificateResult::default();
-        load_pem_certs(Path::new("/dev/null"), &mut result, false);
+        load_pem_certs(Path::new("/dev/null"), &mut result);
         assert_eq!(result.certs.len(), 0);
         assert!(result.errors.is_empty());
     }

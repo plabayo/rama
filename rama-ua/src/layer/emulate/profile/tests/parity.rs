@@ -2,7 +2,8 @@ use rama_core::extensions::ExtensionsRef;
 use std::sync::LazyLock;
 
 use rama_core::error::BoxError;
-use rama_http::proto::h2::PseudoHeaderOrder;
+use rama_http::{conn::SelectedHttpService, proto::h2::PseudoHeaderOrder};
+use rama_net::tls::ApplicationProtocol;
 
 use super::*;
 use crate::{
@@ -41,7 +42,7 @@ pub(super) async fn emulate_drawn(
     request: Request<()>,
     request_key: [u8; 32],
 ) -> Result<Request<()>, BoxError> {
-    emulate_with(layer, request, [1; 32], [2; 32], request_key).await
+    emulate_with(layer, request, [1; 32], [2; 32], request_key, None, false).await
 }
 
 /// [`emulate`] drawing its profile and connection from `seed`.
@@ -50,7 +51,43 @@ pub(super) async fn emulate_seeded(
     request: Request<()>,
     seed: [u8; 32],
 ) -> Result<Request<()>, BoxError> {
-    emulate_with(layer, request, seed, seed, [3; 32]).await
+    emulate_with(layer, request, seed, seed, [3; 32], None, false).await
+}
+
+/// [`emulate`] for a request without a target version on a connection negotiating `negotiated`.
+pub(super) async fn emulate_negotiated(
+    layer: ProfileEmulateLayer,
+    request: Request<()>,
+    negotiated: Version,
+) -> Result<Request<()>, BoxError> {
+    emulate_with(
+        layer,
+        request,
+        [1; 32],
+        [2; 32],
+        [3; 32],
+        Some(negotiated),
+        false,
+    )
+    .await
+}
+
+/// [`emulate`] for a request whose connector reaches a discovered alternative on `version`.
+pub(super) async fn emulate_alternative(
+    layer: ProfileEmulateLayer,
+    request: Request<()>,
+    version: Version,
+) -> Result<Request<()>, BoxError> {
+    emulate_with(
+        layer,
+        request,
+        [1; 32],
+        [2; 32],
+        [3; 32],
+        Some(version),
+        true,
+    )
+    .await
 }
 
 async fn emulate_with(
@@ -59,12 +96,14 @@ async fn emulate_with(
     seed: [u8; 32],
     connection_key: [u8; 32],
     request_key: [u8; 32],
+    negotiated: Option<Version>,
+    alternative: bool,
 ) -> Result<Request<()>, BoxError> {
-    let inner = service_fn(|request: Request<()>| async move {
+    let inner = service_fn(move |mut request: Request<()>| async move {
         let Some(context) = EmulationContext::of(request.extensions()).cloned() else {
             return Ok::<_, BoxError>(request);
         };
-        let version = request.version();
+        let version = negotiated.unwrap_or(request.version());
         let transport = service_fn(move |input: ConnectRequest| async move {
             let conn = Sink(Extensions::new());
             conn.extensions().insert(TargetHttpVersion(version));
@@ -72,12 +111,29 @@ async fn emulate_with(
         });
         let input = ConnectRequest::new("example.com:443".parse().unwrap())
             .with_application_protocol(Protocol::HTTPS);
-        input.extensions().insert(TargetHttpVersion(version));
+        // Without a target the connection negotiates its version, as the request then has.
+        if negotiated.is_none() {
+            input.extensions().insert(TargetHttpVersion(version));
+        }
+        // A discovered alternative pins the attempt to the version it serves.
+        if alternative {
+            let protocol = ApplicationProtocol::try_from(version).unwrap();
+            input.extensions().insert(SelectedHttpService::new(
+                HttpOrigin::new(Protocol::HTTPS, "example.com:443".parse().unwrap()).unwrap(),
+                HttpServiceCandidate::new(protocol, "alternative.example:8443".parse().unwrap())
+                    .with_source(HttpServiceSource::AltSvc),
+            ));
+            input.extensions().insert(TargetHttpVersion(version));
+        }
+        *request.version_mut() = version;
         context.publish(input.extensions());
         // Connectors see the request's extensions, including its preservation choices.
         request
             .extensions()
             .clone_to_if_absent::<UserAgent>(input.extensions());
+        request
+            .extensions()
+            .clone_to_if_absent::<TlsAlpn>(input.extensions());
         let established = ProfileEmulateHttpConnectModifier::new(transport)
             .serve(input)
             .await?;
@@ -345,30 +401,48 @@ async fn tls_requests_never_draw_a_plaintext_request_shape() {
 
 #[tokio::test]
 async fn alt_used_is_requested_as_often_as_captured_without_a_caller_value() {
-    // These navigations over HTTP/3 were captured both with and without `alt-used`.
-    let header = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0";
-    let (mut with, mut without) = (0, 0);
-    for draw in 0..64u8 {
-        let mut request = navigate(Version::HTTP_3);
-        let headers = request.headers_mut();
-        headers.insert("user-agent", header.parse().unwrap());
-        headers.insert("cookie", "c0=1; c1=1".parse().unwrap());
-        let emitted = emulate_drawn(
-            embedded().with_try_auto_detect_user_agent(true),
-            request,
-            [draw; 32],
-        )
-        .await
-        .unwrap();
-        // The alt-svc layer writes the value; emulation only reserves its position.
-        assert!(!emitted.headers().contains_key("alt-used"), "draw {draw}");
-        if emitted.extensions().contains::<SendAltUsed>() {
-            with += 1;
-        } else {
-            without += 1;
+    // Which profile captured both kinds changes with each embedded-set refresh.
+    let database = embedded_database();
+    let mut mixed = None;
+    for header in database.iter_ua_str() {
+        let (mut with, mut without) = (0, 0);
+        for draw in 0..64u8 {
+            let mut request = navigate(Version::HTTP_3);
+            let headers = request.headers_mut();
+            headers.insert("user-agent", header.parse().unwrap());
+            headers.insert("cookie", "c0=1; c1=1".parse().unwrap());
+            let emitted = match emulate_drawn(
+                embedded().with_try_auto_detect_user_agent(true),
+                request,
+                [draw; 32],
+            )
+            .await
+            {
+                Ok(emitted) => emitted,
+                // A profile without a captured HTTP/3 navigation cannot show the mix.
+                Err(_) if draw == 0 => break,
+                Err(error) => panic!("{header}: draw {draw}: {error}"),
+            };
+            // The alt-svc layer writes the value; emulation only reserves its position.
+            assert!(
+                !emitted.headers().contains_key("alt-used"),
+                "{header}: draw {draw}"
+            );
+            if emitted.extensions().contains::<SendAltUsed>() {
+                with += 1;
+            } else {
+                without += 1;
+            }
+        }
+        if with > 0 && without > 0 {
+            mixed = Some(header);
+            break;
         }
     }
-    assert!(with > 0 && without > 0, "with {with}, without {without}");
+    assert!(
+        mixed.is_some(),
+        "no embedded profile draws HTTP/3 navigations both with and without alt-used"
+    );
 }
 
 #[tokio::test]

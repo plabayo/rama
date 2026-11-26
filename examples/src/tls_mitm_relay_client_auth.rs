@@ -27,7 +27,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::ExtensionsRef as _,
     io::BridgeIo,
-    net::address::Host,
+    net::{address::Domain, tls::ServerName},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -77,7 +77,9 @@ impl Service<TlsMitmClientAuthInput> for MappingPolicy {
     type Error = BoxError;
 
     async fn serve(&self, input: TlsMitmClientAuthInput) -> Result<Self::Output, Self::Error> {
-        if input.server_name.as_ref() != Some(&Host::from_static("localhost")) {
+        if input.server_name.as_ref().and_then(ServerName::as_domain)
+            != Some(&Domain::from_static("localhost"))
+        {
             return Err(BoxError::from_static_str(
                 "destination outside mapping policy",
             ));
@@ -422,7 +424,7 @@ impl DemoCertificates {
 
     fn connector(&self, version: SslVersion) -> Result<TlsConnectorData, BoxError> {
         let config = TlsClientConfig::new()
-            .with_server_name(Host::from_static("localhost"))
+            .with_server_name(Domain::from_static("localhost"))
             .with_server_verify(ServerVerifyMode::Auto)
             .try_with_server_trust_anchors([CertificateDer::from(self.server_ca.cert.to_der()?)])?
             .with_keylog(KeyLogIntent::Disabled);

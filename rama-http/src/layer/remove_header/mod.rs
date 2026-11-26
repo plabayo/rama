@@ -162,9 +162,7 @@ pub fn coalesce_cookie_headers(headers: &mut HeaderMap) {
 /// HTTP/2 forbids connection-specific (hop-by-hop) header fields: the only
 /// exception is `TE`, and even then only with the value `trailers`
 /// (RFC 9113 §8.2.2). This removes the connection-specific headers (including
-/// any named by a `Connection` header), plus `Host` (replaced by the
-/// `:authority` pseudo-header) and `Sec-WebSocket-Key` (unused in the HTTP/2
-/// WebSocket handshake per RFC 8441 §5.1).
+/// any named by a `Connection` header), plus `Host` (replaced by `:authority`).
 pub fn remove_illegal_h2_request_headers(headers: &mut HeaderMap) {
     // A `TE` sender nominates it (RFC 9110 §10.1.4); its `trailers` is kept below.
     for name in connection_header_names(headers)
@@ -183,7 +181,6 @@ pub fn remove_illegal_h2_request_headers(headers: &mut HeaderMap) {
         &header::KEEP_ALIVE,
         &header::TRANSFER_ENCODING,
         &header::UPGRADE,
-        &header::SEC_WEBSOCKET_KEY,
         &header::HOST,
     ] {
         while headers.remove(header).is_some() {

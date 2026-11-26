@@ -20,6 +20,7 @@ use rama_core::{
 };
 use rama_crypto::dep::boring::{pkey::PKey, x509::X509};
 use rama_net::{
+    client::ConnectorTarget,
     http::{TargetHttpVersion, Version},
     tls::ApplicationProtocol,
 };
@@ -32,7 +33,7 @@ use rama_quic_proto::{
 use rama_tls::{
     SecureTransport,
     alpn::AlpnRouter,
-    client::{ClientHello, ClientHelloExtension, TlsClientConfig},
+    client::{ClientHello, ClientHelloExtension, ServerVerifyMode, TlsClientConfig, TlsClientSni},
     server::ServerAuthData,
 };
 use rama_tls_boring::{
@@ -41,7 +42,7 @@ use rama_tls_boring::{
 };
 use rama_udp::test_utils::MemoryDatagramSocket;
 use rama_utils::collections::NonEmptyVec;
-use tokio::time::timeout;
+use tokio::{sync::oneshot::channel, time::timeout};
 
 use super::*;
 use crate::{
@@ -1396,3 +1397,85 @@ async fn migration_ingress_keeps_concurrent_origin_and_alpn_selection_separate()
 }
 
 mod migration_bench;
+
+#[tokio::test]
+async fn relay_preserves_ip_literal_sni_and_absence_in_both_egress_forms() {
+    timeout(LIMIT, async {
+        for mirror in [false, true] {
+            for literal in [None, Some("192.0.2.1"), Some("2001:db8::1")] {
+                let mitm_identity = identity();
+                let origin_identity = untrusted_identity();
+                let Sockets {
+                    client,
+                    ingress,
+                    ingress_address,
+                    egress,
+                    origin,
+                } = sockets(&origin_identity, 24700);
+                ingress
+                    .extensions()
+                    .insert(ConnectorTarget("fallback.example:443".parse().unwrap()));
+                let policy = TlsClientConfig::new()
+                    .with_alpn([ApplicationProtocol::from(ALPN)].into_iter().collect())
+                    .with_server_verify(ServerVerifyMode::Disable);
+                let mut relay = QuicMitmRelay::new(
+                    issuer(&mitm_identity),
+                    WeakScope::detached(),
+                    policy.clone(),
+                    VarInt::from_u32(0x0101),
+                );
+                relay.set_mirror_client(mirror);
+                let service = PeekQuicClientHelloService::new(
+                    BoringTlsProvider::new(),
+                    relay.into_layer(QuicRelay::new(VarInt::from_u32(0x0101))),
+                );
+                let relaying =
+                    tokio::spawn(async move { service.serve(BridgeIo(ingress, egress)).await });
+                let (sent, received) = channel();
+                let upstream = tokio::spawn(async move {
+                    let connection = origin.accept().await.unwrap().await.unwrap();
+                    sent.send(
+                        connection
+                            .extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
+                            .unwrap()
+                            .server_name
+                            .clone(),
+                    )
+                    .unwrap();
+                    connection.closed().await;
+                    origin
+                });
+                let config = ClientConfig::try_from_rama_tls_with_provider(
+                    &policy.with_sni_policy(if literal.is_some() {
+                        TlsClientSni::IncludeIp
+                    } else {
+                        TlsClientSni::Disabled
+                    }),
+                    TlsOptions::default(),
+                    &BoringTlsProvider::new(),
+                )
+                .unwrap();
+                let connection = client
+                    .connect_with(
+                        config,
+                        ingress_address,
+                        literal.unwrap_or("fallback.example"),
+                    )
+                    .unwrap()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    received.await.unwrap(),
+                    literal.map(|name| name.parse().unwrap()),
+                    "mirror={mirror}"
+                );
+                connection.close(0u32, b"done");
+                relaying.await.unwrap().unwrap();
+                drop(upstream.await.unwrap());
+            }
+        }
+    })
+    .await
+    .unwrap();
+}

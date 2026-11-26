@@ -24,7 +24,10 @@ const IPV6_PKTINFO: libc::c_int = 50;
 const IPV6_DONTFRAG: libc::c_int = 62;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-use super::linux::gso;
+use super::linux::{
+    errqueue::{self, IcmpReports},
+    gso,
+};
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 const IP_RECV_ORIGINAL_DESTINATION: libc::c_int = 20;
@@ -55,6 +58,10 @@ pub(crate) struct UdpSocketState {
     /// Cached `SO_SNDBUF`.
     #[cfg(target_vendor = "apple")]
     send_buffer_size: AtomicUsize,
+
+    /// The error queue, on while an ICMP error receiver holds it.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    icmp_reports: IcmpReports,
 }
 
 impl UdpSocketState {
@@ -309,6 +316,8 @@ impl UdpSocketState {
             connected_peer: io.peer_addr().ok().and_then(|address| address.as_socket()),
             #[cfg(target_vendor = "apple")]
             send_buffer_size: AtomicUsize::new(io.send_buffer_size().unwrap_or(usize::MAX)),
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            icmp_reports: IcmpReports::default(),
         })
     }
 
@@ -339,7 +348,24 @@ impl UdpSocketState {
         meta: &mut [RecvMeta],
     ) -> io::Result<usize> {
         let _ = self.gro_segments;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        for _ in 0..errqueue::ABSORBED_PER_RECEIVE {
+            match recv_via_recvmmsg(&socket.0, bufs, meta) {
+                // The queued report carries this error: receive the datagrams behind it.
+                Err(error) if self.icmp_reports.active() && errqueue::is_queued_error(&error) => {}
+                result => return result,
+            }
+        }
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        return Err(io::ErrorKind::Interrupted.into());
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         recv_via_recvmmsg(&socket.0, bufs, meta)
+    }
+
+    /// The error queue of the socket this state was created for.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub(crate) fn icmp_reports(&self) -> &IcmpReports {
+        &self.icmp_reports
     }
 
     #[cfg(any(
@@ -473,6 +499,8 @@ fn send(state: &UdpSocketState, io: &SockRef<'_>, transmit: &Transmit<'_>) -> io
         encode_src_ip,
     )?;
 
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let mut retried = false;
     loop {
         // SAFETY: `sendmsg(2)` reads the name, iovec array, payload and control bytes that
         // `msg_hdr` describes. `prepare_msg` returned `Ok`, so by its safety-usable invariant
@@ -490,6 +518,11 @@ fn send(state: &UdpSocketState, io: &SockRef<'_>, transmit: &Transmit<'_>) -> io
             // Retry the transmission
             io::ErrorKind::Interrupted => {}
             io::ErrorKind::WouldBlock => return Err(e),
+            // An earlier datagram's ICMP error fails this send before it leaves: retry once.
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            _ if !retried && state.icmp_reports.active() && errqueue::is_queued_error(&e) => {
+                retried = true;
+            }
             _ => {
                 // Some network adapters and drivers do not support GSO. Unfortunately, Linux
                 // offers no easy way for us to detect this short of an EIO or sometimes EINVAL
@@ -1100,7 +1133,9 @@ const _: () = assert!(
 ///
 /// The caller must ensure that every byte of `name` is initialized. (libc declares the
 /// storage's filler fields as possibly uninitialized, so a valid value does not imply this.)
-unsafe fn decode_socket_addr(name: &MaybeUninit<libc::sockaddr_storage>) -> io::Result<SocketAddr> {
+pub(crate) unsafe fn decode_socket_addr(
+    name: &MaybeUninit<libc::sockaddr_storage>,
+) -> io::Result<SocketAddr> {
     let storage = name.as_ptr();
     // SAFETY: the place read `(*storage).ss_family` needs `storage` aligned and dereferenceable
     // for the field, and the field initialized: `storage` comes from the reference `name`,
@@ -1202,7 +1237,7 @@ pub(crate) fn set_socket_option(
     }
 }
 
-fn get_socket_option(
+pub(crate) fn get_socket_option(
     socket: &impl AsFd,
     level: libc::c_int,
     name: libc::c_int,

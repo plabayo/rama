@@ -618,6 +618,7 @@ fn static_initial_association_is_admitted_without_a_native_metadata_compiler() {
                     revision: 0,
                 },
             },
+            ech_ready: false,
         };
         let prepared = selected.prepare_for_replay().unwrap();
         assert!(prepared.preservation_report.differences.is_empty());

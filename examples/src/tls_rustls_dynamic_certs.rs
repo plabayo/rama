@@ -180,7 +180,7 @@ impl ResolvesServerCert for DynamicIssuer {
         // Convert to rama client hello, because we are used to working with that, this is however not needed and can be skipped
         let client_hello = ClientHello::rama_from(client_hello);
 
-        let key = match client_hello.ext_server_name() {
+        let key = match client_hello.ext_server_domain() {
             Some(domain) => {
                 if domain == "example" {
                     self.example_data.clone()

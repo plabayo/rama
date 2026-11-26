@@ -3,8 +3,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::{
-    Body, Request, Response, StreamingBody, io::upgrade::Upgraded,
+    Body, Request, Response, StreamingBody, conn::TargetHttpVersion, io::upgrade::Upgraded,
     opentelemetry::version_as_protocol_version, service::web::response::IntoResponse,
+    utils::request_signals_upgrade,
 };
 use rama_core::{
     Service, bytes,
@@ -30,6 +31,10 @@ use rama_core::{
 /// connection or HTTP/2 stream state.
 ///
 /// See [`HttpUpgradeMitmRelayExtensions`] for an example of selecting metadata.
+///
+/// A request that signals an upgrade ([`request_signals_upgrade`]) and carries no
+/// [`TargetHttpVersion`] is forwarded on its ingress version, so both directions mirror
+/// each other as if the relay were not there; nothing else about the request changes.
 pub struct HttpUpgradeMitmRelay<M, S> {
     scope: WeakScope,
     nested_matcher_svc: M,
@@ -103,6 +108,11 @@ where
             Ok(sm) => sm,
             Err(err) => return Ok(err.into_response()),
         };
+
+        // The handshake response is forwarded as is, so it must stay on the ingress version.
+        if request_signals_upgrade(&req) && !req.extensions().contains::<TargetHttpVersion>() {
+            req.extensions().insert(TargetHttpVersion(req.version()));
+        }
 
         if let Some(res_svc_matcher) = maybe_res_svc_matcher {
             tracing::debug!("HttpUpgradeMitmRelay: upgrade MITM relay req match made...");
@@ -215,6 +225,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Version;
     use crate::io::upgrade::{self, OnUpgrade};
     use rama_core::{
         ServiceInput,
@@ -316,6 +327,108 @@ mod tests {
                 assert!(transport.get_ref::<Selected>().is_none());
             }
             drop(res);
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_upgrades_keep_their_version_and_other_requests_none() {
+        let get = crate::Method::GET;
+        let post = crate::Method::POST;
+        // (relay matches, method, upgrade value, extended CONNECT, caller target, egress target)
+        let cases = [
+            (false, &get, Some(""), false, None, Some(Version::HTTP_11)),
+            (
+                true,
+                &get,
+                Some("websocket"),
+                false,
+                None,
+                Some(Version::HTTP_11),
+            ),
+            (
+                false,
+                &get,
+                Some("websocket"),
+                false,
+                None,
+                Some(Version::HTTP_11),
+            ),
+            (
+                true,
+                &get,
+                Some("h2c, websocket"),
+                false,
+                None,
+                Some(Version::HTTP_11),
+            ),
+            (
+                false,
+                &get,
+                Some("test"),
+                false,
+                None,
+                Some(Version::HTTP_11),
+            ),
+            (
+                false,
+                &post,
+                Some("websocket"),
+                false,
+                None,
+                Some(Version::HTTP_11),
+            ),
+            (false, &get, None, true, None, Some(Version::HTTP_2)),
+            (
+                true,
+                &get,
+                Some("websocket"),
+                false,
+                Some(Version::HTTP_2),
+                Some(Version::HTTP_2),
+            ),
+            (false, &get, None, false, None, None),
+            // a custom matcher selecting an ordinary request
+            (true, &get, None, false, None, None),
+        ];
+        for (matched, method, upgrade, extended, target, expected) in cases {
+            let mut req = Request::new(Body::empty());
+            *req.method_mut() = method.clone();
+            if extended {
+                *req.version_mut() = Version::HTTP_2;
+                *req.method_mut() = crate::Method::CONNECT;
+                req.extensions()
+                    .insert(crate::proto::ext::Protocol::from_static("x-tunnel"));
+            }
+            if let Some(upgrade) = upgrade {
+                // An empty value sends only `Connection: upgrade`.
+                if !upgrade.is_empty() {
+                    req.headers_mut()
+                        .insert(crate::header::UPGRADE, upgrade.parse().unwrap());
+                }
+                req.headers_mut()
+                    .insert(crate::header::CONNECTION, "upgrade".parse().unwrap());
+            }
+            if let Some(version) = target {
+                req.extensions().insert(TargetHttpVersion(version));
+            }
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let upstream = service_fn(move |req: Request| {
+                tx.send(req.extensions().get_ref::<TargetHttpVersion>().map(|t| t.0))
+                    .unwrap();
+                async { Ok::<_, Infallible>(Response::new(Body::empty())) }
+            });
+            let relay =
+                service_fn(|_: BridgeIo<Upgraded, Upgraded>| async { Ok::<_, Infallible>(()) });
+            let matcher = MatcherServicePair::new(matched, MatcherServicePair::new(false, relay));
+            HttpUpgradeMitmRelay::new(WeakScope::detached(), matcher, upstream)
+                .serve(req)
+                .await
+                .unwrap();
+            assert_eq!(
+                rx.recv().await.unwrap(),
+                expected,
+                "matched={matched} {method} upgrade={upgrade:?} extended={extended} target={target:?}"
+            );
         }
     }
 

@@ -1,8 +1,9 @@
-use rama_net::address::Domain;
+use std::{collections::BTreeSet, net::IpAddr};
+
+use rama_net::{address::Domain, tls::ServerName};
 use rama_tls::{CipherSuite, CompressionAlgorithm, ExtensionId, ProtocolVersion};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use std::collections::BTreeSet;
 
 use super::*;
 use crate::profile::{
@@ -43,3 +44,32 @@ fn capture(hello: &ClientHello) -> TlsCapture {
 mod encoding;
 mod ownership;
 mod structure;
+
+#[test]
+fn ip_sni_capture_retains_the_policy_without_retaining_the_address() {
+    let capture_ip = |ip: IpAddr| {
+        capture(&hello(vec![ClientHelloExtension::ServerName(Some(
+            ServerName::from(ip),
+        ))]))
+    };
+    let first = capture_ip([192, 0, 2, 1].into());
+    let second = capture_ip([192, 0, 2, 2].into());
+    assert_eq!(first, second);
+    assert!(matches!(
+        first.extensions[0].value,
+        TlsCapturedExtensionValue::IpServerName
+    ));
+    let encoded = first.canonical(TlsCaptureLimits::default()).unwrap();
+    assert_eq!(
+        TlsCapture::from_canonical(&encoded, TlsCaptureLimits::default()).unwrap(),
+        first
+    );
+    let dns = capture(&hello(vec![ClientHelloExtension::ServerName(Some(
+        Domain::example().into(),
+    ))]));
+    assert_ne!(first, dns);
+    assert!(matches!(
+        dns.extensions[0].value,
+        TlsCapturedExtensionValue::ServerName { present: true }
+    ));
+}

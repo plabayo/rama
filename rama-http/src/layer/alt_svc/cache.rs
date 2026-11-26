@@ -880,6 +880,8 @@ impl AltSvcCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tls")]
+    use rama_net::tls::ServerName;
     use rama_net::{Protocol, tls::ApplicationProtocol};
     #[cfg(feature = "tls")]
     use {
@@ -993,7 +995,7 @@ mod tests {
                 extensions.insert(ConnectionPolicyScope::Connector);
                 extensions.insert(TargetHttpVersion(Version::HTTP_2));
                 extensions.insert(TlsServerAuthentication(Some(
-                    origin().authority().host.clone(),
+                    ServerName::try_from(&origin().authority().host).unwrap(),
                 )));
                 extensions.insert(NegotiatedTlsParameters {
                     protocol_version: ProtocolVersion::TLSv1_3,

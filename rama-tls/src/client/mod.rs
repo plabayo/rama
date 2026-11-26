@@ -31,10 +31,13 @@ mod parser;
 pub use parser::{
     ClientHelloHandshakePrefix, ClientHelloMessageError, ClientHelloReassemblyConfig,
     DEFAULT_CLIENT_HELLO_MAX_SIZE, client_hello_message_size,
-    extract_sni_from_client_hello_handshake, extract_sni_from_client_hello_handshake_with_config,
-    extract_sni_from_client_hello_record, parse_client_hello, parse_client_hello_handshake,
-    parse_client_hello_handshake_prefix, parse_client_hello_handshake_prefix_with_config,
-    parse_client_hello_handshake_with_config, parse_client_hello_message_prefix,
+    extract_sni_domain_from_client_hello_handshake,
+    extract_sni_domain_from_client_hello_handshake_with_config,
+    extract_sni_domain_from_client_hello_record, extract_sni_from_client_hello_handshake,
+    extract_sni_from_client_hello_handshake_with_config, extract_sni_from_client_hello_record,
+    parse_client_hello, parse_client_hello_handshake, parse_client_hello_handshake_prefix,
+    parse_client_hello_handshake_prefix_with_config, parse_client_hello_handshake_with_config,
+    parse_client_hello_message_prefix,
 };
 
 mod chain_policy;
@@ -49,8 +52,9 @@ pub mod ech_discovery;
 
 mod ech;
 pub use ech::{
-    EchRequirement, EchRetryConfig, TargetEchResolution, TlsEchAccepted, resolve_target_ech,
-    target_ech_required,
+    EchDiscoveryComplete, EchRequirement, EchRetryConfig, TargetEchResolution, TlsEchAccepted,
+    TlsProfilePreparation, resolve_target_ech, resolve_target_ech_for_preparation,
+    target_ech_ready, target_ech_required,
 };
 
 #[cfg(feature = "native-certs")]
@@ -63,19 +67,24 @@ pub use native_trust::{
     NativeTrustRefreshError, NativeTrustStoreChanges,
 };
 #[cfg(feature = "native-certs")]
-pub use server_trust::{server_trust_anchors, server_trust_anchors_async};
+pub use server_trust::{
+    ServerTrustKey, ServerTrustRoots, ServerTrustSnapshot, ServerVerificationScope,
+    SharedServerTrustRoots, server_trust_anchors, server_trust_anchors_async,
+    shared_platform_verifier, shared_platform_verifier_async,
+};
 
 mod config;
 #[cfg(feature = "http")]
 mod http;
 mod pool;
 mod server_trust;
+use std::{fmt, sync::Arc};
+
 #[doc(inline)]
 pub use config::{
-    ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
+    ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientAuth, TlsClientConfig, TlsClientSni,
     TlsEncryptedClientHello, TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet,
-    TlsServerCertPins, TlsServerIdentity, TlsServerName, TlsServerVerify, TlsStoreServerCertChain,
-    TlsStoreServerHello,
+    TlsServerCertPins, TlsServerVerify, TlsStoreServerCertChain, TlsStoreServerHello,
 };
 #[cfg(feature = "http")]
 pub use http::{http_alpn_override, negotiated_http_version};
@@ -83,7 +92,14 @@ pub use pool::{
     TlsComponentIdentity, TlsConnectionReuse, TlsDerivedPolicy, TlsPoolComponent, TlsPoolId,
     TlsPoolIdBuilder, publish_tls_required,
 };
+use rama_core::extensions::{Extension, Extensions};
 use rama_crypto::pki_types::CertificateDer;
+use rama_net::{
+    address::{Host, HostRef},
+    client::pool::ReuseKey,
+    tls::{ApplicationProtocol, ServerName},
+};
+use serde::{Deserialize, Serialize};
 #[doc(inline)]
 pub use server_trust::{
     NativeTrustPolicy, PlatformTrustPolicy, ServerTrustSource, TlsServerTrust,
@@ -93,12 +109,6 @@ pub use server_trust::{
 use super::{
     CertificateCompressionAlgorithm, CipherSuite, ProtocolVersion, SignatureScheme, SupportedGroup,
 };
-use rama_core::extensions::{Extension, Extensions};
-use rama_net::address::{Domain, Host};
-use rama_net::client::pool::ReuseKey;
-use rama_net::tls::ApplicationProtocol;
-use serde::{Deserialize, Serialize};
-use std::{fmt, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(tls), scope(connection))]
@@ -123,8 +133,8 @@ pub struct NegotiatedTlsParameters {
     /// before confirmation does not mean the peer has no certificate.
     pub peer_certificate_chain: Option<Vec<CertificateDer<'static>>>,
     /// Received SNI on a server, not a verified peer identity. Absent on clients
-    /// and when the peer omits SNI (including IP-address connections).
-    pub server_name: Option<Domain>,
+    /// and when the peer omits SNI.
+    pub server_name: Option<ServerName>,
     /// Whether TLS resumed a session. Absent until the backend has decided,
     /// or if it cannot report resumption.
     pub resumed: Option<bool>,
@@ -159,9 +169,12 @@ pub struct NegotiatedTlsAlgorithms {
 /// handshake authenticated no server identity: verification was disabled or
 /// there was no server name to verify against. Negotiated ALPN or a received
 /// certificate alone does not prove server authentication.
+///
+/// A client TLS stack publishes this after its handshake. HTTP alternative services
+/// (Alt-Svc, HTTPS records) are learned and used only on connections whose name matches.
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(tls), scope(connection))]
-pub struct TlsServerAuthentication(pub Option<rama_net::address::Host>);
+pub struct TlsServerAuthentication(pub Option<ServerName>);
 
 /// Merge extension lists A and B, with
 /// B overwriting any conflict with A, and otherwise push it to the back.
@@ -217,10 +230,9 @@ pub trait TlsClientConfigProvider: fmt::Debug + Send + Sync {
     /// can refine it; successful handshake authentication is still reported
     /// separately on the established connection.
     fn authenticates_origin(&self, extensions: &Extensions, origin: &Host) -> bool {
-        extensions
-            .get_ref::<TlsServerName>()
-            .is_none_or(|name| &name.0 == origin)
-            && self.authenticates_server(extensions)
+        extensions.get_ref::<ServerName>().is_none_or(|name| {
+            HostRef::from(name) == HostRef::from(origin.canonical_identity().as_ref())
+        }) && self.authenticates_server(extensions)
     }
 }
 
@@ -244,10 +256,40 @@ impl<P: TlsClientConfigProvider + ?Sized> TlsClientConfigProvider for Arc<P> {
 
 #[cfg(test)]
 mod tests {
-    use rama_net::address::Domain;
     use std::assert_matches;
 
+    use rama_net::address::Domain;
+
     use super::*;
+
+    #[derive(Debug)]
+    struct AuthenticatingProvider;
+
+    impl TlsClientConfigProvider for AuthenticatingProvider {
+        fn pool_id(&self, _: &Extensions) -> Option<TlsPoolId> {
+            None
+        }
+
+        fn pool_classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
+        }
+
+        fn authenticates_server(&self, _: &Extensions) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn origin_authentication_compares_canonical_identities() {
+        let extensions = Extensions::new();
+        extensions.insert(ServerName::from(Domain::from_static("192.0.2.1")));
+        let spelled = Host::Name(Domain::from_static("192.0.2.1"));
+        assert!(AuthenticatingProvider.authenticates_origin(&extensions, &spelled));
+        let address = Host::Address([192, 0, 2, 1].into());
+        assert!(AuthenticatingProvider.authenticates_origin(&extensions, &address));
+        let other = Host::from_static("other.example");
+        assert!(!AuthenticatingProvider.authenticates_origin(&extensions, &other));
+    }
 
     #[test]
     fn test_merge_client_hello_lists_empty() {
@@ -287,7 +329,7 @@ mod tests {
                 ClientHelloExtension::SupportedVersions(vec![]),
             ],
             &[
-                ClientHelloExtension::ServerName(Some(Domain::from_static("example.com"))),
+                ClientHelloExtension::ServerName(Some(Domain::example().into())),
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![]),
             ],
         );

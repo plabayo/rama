@@ -63,6 +63,7 @@ use rama::{
     graceful::Scope,
     http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
+    net::address::Domain,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -149,7 +150,7 @@ async fn main() {
 
     let mut order = account
         .try_new_order(NewOrderPayload {
-            identifiers: vec![Identifier::dns("example.com")],
+            identifiers: vec![Identifier::dns(Domain::example())],
             ..Default::default()
         })
         .await

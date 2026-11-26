@@ -188,21 +188,15 @@ async fn initial_qpack_admission_rejects_unbound_fields_and_lowers_unpinned_inse
         let inner = service_fn(move |input: ConnectRequest| {
             observed.fetch_add(1, Ordering::Relaxed);
             async move {
-                let encoding = input.extensions().get_ref::<EncoderPreferences>().unwrap();
-                let capacity = if case == 3 { 8192 } else { 4096 };
-                assert_eq!(encoding.target_capacity, Some(capacity));
+                let encoding = input.extensions().get_arc::<EncoderPreferences>().unwrap();
+                // The profile's capacity replaces one inserted before it ran.
+                assert_eq!(encoding.target_capacity, Some(4096));
                 assert_eq!(encoding.defer_dynamic_first_section, Some(true));
-                assert!(input.extensions().contains::<ClientSettingsProfile>());
-                assert_eq!(
+                assert!(
                     input
                         .extensions()
-                        .get_ref::<ProfilePreservationReport>()
-                        .unwrap()
-                        .differences
-                        .contains(&ProfilePreservationDifference::LoweredProfileItem {
-                            item: LoweredProfileItem::CallerQpackEncoding
-                        }),
-                    case == 3
+                        .get_arc::<ClientSettingsProfile>()
+                        .is_some()
                 );
                 // Without an initial request pin the insertions are dropped, not refused.
                 assert_eq!(
@@ -358,13 +352,10 @@ async fn initial_dynamic_qpack_references_are_admitted_before_transport_io() {
             let inner = service_fn(move |input: ConnectRequest| {
                 observed.fetch_add(1, Ordering::Relaxed);
                 async move {
-                    let encoding = input.extensions().get_ref::<EncoderPreferences>().unwrap();
+                    let encoding = input.extensions().get_arc::<EncoderPreferences>().unwrap();
                     assert_eq!(encoding.target_capacity, Some(4096));
-                    // A conflicting caller choice is retained and reported.
-                    assert_eq!(
-                        encoding.defer_dynamic_first_section,
-                        Some(caller_defer.unwrap_or(false))
-                    );
+                    // The profile's choice replaces one inserted before it ran.
+                    assert_eq!(encoding.defer_dynamic_first_section, Some(false));
                     let conn = ServiceInput::new(());
                     conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
                     Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })

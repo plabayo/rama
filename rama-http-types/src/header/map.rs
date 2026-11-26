@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::{
     collections::{HashMap, hash_map::RandomState},
     convert::TryFrom,
@@ -1344,9 +1346,18 @@ impl<T> HeaderMap<T> {
     where
         K: Into<HeaderName>,
     {
-        // Ensure that there is space in the map
-        self.try_reserve_one()?;
         let key = key.into();
+        if (self.entries.len() == self.capacity() || self.danger.is_yellow())
+            && let Some((probe, index)) = self.find(&key)
+        {
+            return Ok(Entry::Occupied(OccupiedEntry {
+                map: self,
+                index,
+                probe,
+            }));
+        }
+
+        self.try_reserve_one()?;
 
         Ok(insert_phase_one!(
             self,
@@ -1458,8 +1469,14 @@ impl<T> HeaderMap<T> {
     where
         K: Into<HeaderName>,
     {
-        self.try_reserve_one()?;
         let key = key.into();
+        if (self.entries.len() == self.capacity() || self.danger.is_yellow())
+            && let Some((_, index)) = self.find(&key)
+        {
+            return Ok(Some(self.insert_occupied(index, key, value)));
+        }
+
+        self.try_reserve_one()?;
 
         Ok(insert_phase_one!(
             self,
@@ -1628,8 +1645,15 @@ impl<T> HeaderMap<T> {
     where
         K: Into<HeaderName>,
     {
-        self.try_reserve_one()?;
         let key = key.into();
+        if (self.entries.len() == self.capacity() || self.danger.is_yellow())
+            && let Some((_, index)) = self.find(&key)
+        {
+            self.append_value(index, key, value);
+            return Ok(true);
+        }
+
+        self.try_reserve_one()?;
 
         Ok(insert_phase_one!(
             self,
@@ -1662,6 +1686,207 @@ impl<T> HeaderMap<T> {
         ))
     }
 
+    /// Retains only field names accepted by `keep`, including reserved positions.
+    ///
+    /// Remaining lines keep their order, spelling and values.
+    pub fn retain_names(&mut self, mut keep: impl FnMut(&HeaderName) -> bool) {
+        let mut index = 0;
+        while index < self.entries.len() {
+            if keep(&self.entries[index].key) {
+                index += 1;
+            } else {
+                let key = self.entries[index].key.clone();
+                self.remove(key);
+            }
+        }
+        if let Some(cold) = self.cold.as_mut() {
+            cold.reserved.retain(|position| keep(&position.key));
+        }
+        self.release_unused_cold_state();
+    }
+
+    /// Retains only the lines of `key` accepted by `keep`, which visits them in insertion order.
+    ///
+    /// Remaining lines keep their order, spelling and any change `keep` made to their
+    /// values. Once none remains, the name is removed as by [`remove`](Self::remove).
+    pub fn retain_values<K>(&mut self, key: K, mut keep: impl FnMut(&mut T) -> bool)
+    where
+        K: AsHeaderName,
+    {
+        let Some((probe, index)) = key.find(self) else {
+            return;
+        };
+        let keep_first = keep(&mut self.entries[index].value);
+        let mut next = self.entries[index]
+            .links
+            .map_or(Link::Entry(index), |links| Link::Extra(links.next));
+        while let Link::Extra(extra) = next {
+            if keep(&mut self.extra_values[extra].value) {
+                next = self.extra_values[extra].next;
+            } else {
+                next = self.remove_extra_value(extra).next;
+            }
+        }
+        if !keep_first {
+            self.remove_first_value(probe, index);
+        }
+    }
+
+    /// Removes the first value of entry `index`; its next value, if any, takes
+    /// the entry's place with its own position and spelling.
+    fn remove_first_value(&mut self, probe: usize, index: usize) {
+        let Some(links) = self.entries[index].links else {
+            drop(self.remove_found(probe, index));
+            return;
+        };
+        let ExtraValue {
+            key, value, order, ..
+        } = self.remove_extra_value(links.next);
+        // The freed slot of the promoted value names the entry instead (order invariant).
+        let freed = mem::replace(&mut self.entries[index].order, order);
+        self.order[order] = Some(Link::Entry(index));
+        self.remove_order(freed);
+        let entry = &mut self.entries[index];
+        let old = (
+            mem::replace(&mut entry.key, key),
+            mem::replace(&mut entry.value, value),
+        );
+        // Dropped last, so a panicking drop leaves a consistent map.
+        drop(old);
+    }
+
+    /// Inserts the lines of `other` as [`try_insert_lines`](Self::try_insert_lines)
+    /// would, in the insertion order [`into_ordered_iter`](Self::into_ordered_iter) yields.
+    ///
+    /// A position `other` reserved for a name this map holds no position for is
+    /// reserved here too, in the same order relative to the inserted lines.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the map could not hold one more name; the lines and
+    /// reservations merged before that one stay merged.
+    pub fn try_insert_map(&mut self, other: HeaderMap<T>) -> Result<(), MaxSizeReached> {
+        self.try_merge_map(other, true)
+    }
+
+    /// Appends all lines and reserved positions from `other` in their source order.
+    ///
+    /// Existing values keep their positions and spelling; each appended line keeps its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another name cannot fit, keeping the preceding lines and reservations.
+    pub fn try_append_map(&mut self, other: HeaderMap<T>) -> Result<(), MaxSizeReached> {
+        self.try_merge_map(other, false)
+    }
+
+    fn try_merge_map(
+        &mut self,
+        mut other: HeaderMap<T>,
+        replace: bool,
+    ) -> Result<(), MaxSizeReached> {
+        // A reservation taken out of `other` leaves an unnamed `None` slot, which
+        // ordered iteration skips like any other hole.
+        let mut reserved = other
+            .cold
+            .as_mut()
+            .map(|cold| mem::take(&mut cold.reserved))
+            .unwrap_or_default();
+        reserved.sort_unstable_by_key(|position| position.order);
+        let mut reserved = reserved.into_iter().peekable();
+
+        let new_names = other
+            .keys()
+            .filter(|name| !self.contains_key(*name))
+            .count();
+        self.try_reserve_new_names(new_names)?;
+        let existing = self.entries.len();
+        let repeated = other.len() != other.keys_len();
+        let mut replaced = Vec::new();
+        let mut lines = other.into_ordered_iter();
+        while let Some((name, value)) = lines.next() {
+            let slot = lines.index - 1;
+            while let Some(position) = reserved.next_if(|position| position.order < slot) {
+                self.try_reserve_position2(position.key)?;
+            }
+            if replace {
+                self.try_insert_line(name, value, existing, repeated.then_some(&mut replaced))?;
+            } else {
+                self.try_append(name, value)?;
+            }
+        }
+        for position in reserved {
+            self.try_reserve_position2(position.key)?;
+        }
+        Ok(())
+    }
+
+    /// Inserts `lines` in order, each with its own casing.
+    ///
+    /// The first line of a name replaces the values this map holds for it as
+    /// [`try_insert`](Self::try_insert) would, keeping that name's position in
+    /// insertion order; its later lines follow as [`try_append`](Self::try_append) would.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the map could not hold one more name; the lines
+    /// inserted before that one stay inserted.
+    pub fn try_insert_lines<I>(&mut self, lines: I) -> Result<(), MaxSizeReached>
+    where
+        I: IntoIterator<Item = (HeaderName, T)>,
+    {
+        let existing = self.entries.len();
+        let mut replaced = Vec::new();
+        for (name, value) in lines {
+            self.try_insert_line(name, value, existing, Some(&mut replaced))?;
+        }
+        Ok(())
+    }
+
+    /// One line of a merge; only repeated names of preexisting entries need replacement history.
+    fn try_insert_line(
+        &mut self,
+        name: HeaderName,
+        value: T,
+        existing: usize,
+        replaced: Option<&mut Vec<bool>>,
+    ) -> Result<(), MaxSizeReached> {
+        let index = match self.find(&name) {
+            Some((_, index))
+                if index >= existing
+                    || replaced
+                        .as_ref()
+                        .and_then(|replaced| replaced.get(index))
+                        .copied()
+                        .unwrap_or(false) =>
+            {
+                self.append_value(index, name, value);
+                return Ok(());
+            }
+            Some((_, index)) => {
+                drop(self.insert_occupied(index, name, value));
+                index
+            }
+            None => {
+                _ = self.try_insert(name, value)?;
+                return Ok(());
+            }
+        };
+        if let Some(replaced) = replaced {
+            if replaced.len() <= index {
+                replaced.resize(index + 1, false);
+            }
+            replaced[index] = true;
+        }
+        Ok(())
+    }
+
+    /// Reserves for new names, clamped so insertion reports the map limit after the partial merge.
+    fn try_reserve_new_names(&mut self, names: usize) -> Result<(), MaxSizeReached> {
+        let max_reserve = usable_capacity(MAX_SIZE).saturating_sub(self.entries.len());
+        self.try_reserve(names.min(max_reserve))
+    }
+
     /// Reserves the next position in insertion order for the first entry of
     /// `key` that is created later.
     ///
@@ -1669,8 +1894,8 @@ impl<T> HeaderMap<T> {
     /// [`into_ordered_iter`](Self::into_ordered_iter)) yields that entry at the
     /// reserved position instead of after the headers inserted in between. Every
     /// path that creates a new entry claims the reservation: `insert`, `append`,
-    /// `entry`, their `try_` forms and `extend`. A reservation that is never
-    /// claimed yields nothing.
+    /// `entry`, their `try_` forms, `extend`, `try_insert_lines` and
+    /// `try_insert_map`. A reservation that is never claimed yields nothing.
     ///
     /// This is a no-op when `key` is already present or already reserved.
     /// Reservations survive growth, removal of other headers and `clone`;
@@ -4717,6 +4942,47 @@ fn test_bounds() {
 }
 
 #[test]
+fn inserting_replacement_map_keeps_capacity() {
+    let mut target = HeaderMap::<usize>::with_capacity(1);
+    let capacity = target.capacity();
+    for index in 0..capacity {
+        target.insert(
+            HeaderName::try_from(format!("x-existing-{index}")).unwrap(),
+            0,
+        );
+    }
+    let mut source = HeaderMap::with_capacity(capacity);
+    for name in target.keys() {
+        source.append(name, 1);
+    }
+
+    target.try_insert_map(source).unwrap();
+
+    assert_eq!(target.capacity(), capacity);
+    assert_eq!(target.keys_len(), capacity);
+    assert!(target.values().all(|value| *value == 1));
+    assert_header_map_invariants(&target);
+}
+
+#[test]
+fn inserting_repeated_lines_reserves_for_names() {
+    let mut target = HeaderMap::<usize>::default();
+    let mut single_name = HeaderMap::default();
+    single_name.insert(HeaderName::from_static("X-Repeated"), 0);
+    let single_name_capacity = single_name.capacity();
+    let count = single_name_capacity * 8;
+
+    target
+        .try_insert_lines((0..count).map(|index| (HeaderName::from_static("X-Repeated"), index)))
+        .unwrap();
+
+    assert_eq!(target.capacity(), single_name_capacity);
+    assert_eq!(target.keys_len(), 1);
+    assert!(target.get_all("x-repeated").iter().copied().eq(0..count));
+    assert_header_map_invariants(&target);
+}
+
+#[test]
 fn iter_size_hint_bounds_the_remaining_values() {
     fn check(mut iter: impl Iterator, len: usize) {
         for remaining in (0..=len).rev() {
@@ -6233,10 +6499,12 @@ fn collision_mitigation_at_max_size_still_refuses_beyond_capacity() {
         map.try_insert("x-one-too-many", HeaderValue::from_static("no"))
             .is_err()
     );
+    // A present name needs no room.
     assert!(
-        map.try_append("x-full-0", HeaderValue::from_static("no"))
-            .is_err()
+        map.try_append("x-full-0", HeaderValue::from_static("yes"))
+            .unwrap()
     );
+    assert_eq!(map.keys_len(), capacity);
     assert_header_map_invariants(&map);
 }
 
@@ -6464,4 +6732,572 @@ fn try_reserve_position_refuses_beyond_max_capacity() {
     assert_eq!(map.keys_len(), capacity);
     assert_eq!(ordered_names(&map).last().unwrap(), "x-last-slot");
     assert_header_map_invariants(&map);
+}
+
+#[cfg(test)]
+fn ordered_lines(map: &HeaderMap) -> Vec<(Box<str>, Box<str>)> {
+    map.ordered_iter()
+        .map(|(name, value)| {
+            (
+                name.as_original_str().into(),
+                value.to_str().unwrap().into(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn lines(expected: &[(&str, &str)]) -> Vec<(Box<str>, Box<str>)> {
+    expected
+        .iter()
+        .map(|(name, value)| ((*name).into(), (*value).into()))
+        .collect()
+}
+
+#[cfg(test)]
+fn named(name: &str) -> HeaderName {
+    HeaderName::from_bytes(name.as_bytes()).unwrap()
+}
+
+#[cfg(test)]
+fn line(name: &str, value: &'static str) -> (HeaderName, HeaderValue) {
+    (named(name), HeaderValue::from_static(value))
+}
+
+#[cfg(test)]
+fn merge_target() -> HeaderMap {
+    let mut map = HeaderMap::new();
+    map.insert("x-replaced", HeaderValue::from_static("old-1"));
+    map.append("x-replaced", HeaderValue::from_static("old-2"));
+    map.insert("x-kept", HeaderValue::from_static("kept"));
+    map.reserve_position("x-reserved");
+    map.insert("x-after", HeaderValue::from_static("after"));
+    map
+}
+
+#[test]
+fn try_insert_map_matches_insert_then_append_with_source_casing() {
+    let mut source = HeaderMap::new();
+    source.insert(named("X-Replaced"), HeaderValue::from_static("new-1"));
+    source.append(named("X-REPLACED"), HeaderValue::from_static("new-2"));
+    source.insert(named("X-Reserved"), HeaderValue::from_static("r"));
+    source.insert(named("X-Added"), HeaderValue::from_static("added"));
+
+    let mut expected = merge_target();
+    expected
+        .try_insert(named("X-Replaced"), HeaderValue::from_static("new-1"))
+        .unwrap();
+    expected
+        .try_append(named("X-REPLACED"), HeaderValue::from_static("new-2"))
+        .unwrap();
+    expected
+        .try_insert(named("X-Reserved"), HeaderValue::from_static("r"))
+        .unwrap();
+    expected
+        .try_insert(named("X-Added"), HeaderValue::from_static("added"))
+        .unwrap();
+
+    let mut map = merge_target();
+    map.try_insert_map(source).unwrap();
+
+    assert_eq!(
+        ordered_lines(&map),
+        lines(&[
+            ("X-Replaced", "new-1"),
+            ("x-kept", "kept"),
+            ("X-Reserved", "r"),
+            ("x-after", "after"),
+            ("X-REPLACED", "new-2"),
+            ("X-Added", "added"),
+        ])
+    );
+    assert_eq!(ordered_lines(&map), ordered_lines(&expected));
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn try_insert_map_keeps_the_source_line_order_of_interleaved_names() {
+    let mut source = HeaderMap::new();
+    source.append(named("X-A"), HeaderValue::from_static("1"));
+    source.append(named("X-B"), HeaderValue::from_static("2"));
+    source.append(named("x-a"), HeaderValue::from_static("3"));
+    source.append(named("x-B"), HeaderValue::from_static("4"));
+
+    let mut empty = HeaderMap::new();
+    empty.try_insert_map(source.clone()).unwrap();
+    assert_eq!(
+        ordered_lines(&empty),
+        lines(&[("X-A", "1"), ("X-B", "2"), ("x-a", "3"), ("x-B", "4")])
+    );
+
+    let mut map = HeaderMap::new();
+    map.insert("x-b", HeaderValue::from_static("old-b"));
+    map.insert("x-kept", HeaderValue::from_static("kept"));
+    map.insert("x-a", HeaderValue::from_static("old-a"));
+    map.try_insert_map(source).unwrap();
+    assert_eq!(
+        ordered_lines(&map),
+        lines(&[
+            ("X-B", "2"),
+            ("x-kept", "kept"),
+            ("X-A", "1"),
+            ("x-a", "3"),
+            ("x-B", "4"),
+        ])
+    );
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn try_insert_map_carries_source_reservations_over_in_order() {
+    let mut source = HeaderMap::new();
+    source.insert(named("X-First"), HeaderValue::from_static("1"));
+    source.reserve_position(named("X-Later"));
+    source.insert(named("X-Last"), HeaderValue::from_static("2"));
+    source.reserve_position(named("X-Trailing"));
+
+    let mut map = HeaderMap::new();
+    map.insert("x-kept", HeaderValue::from_static("kept"));
+    map.try_insert_map(source.clone()).unwrap();
+    map.insert(named("X-Trailing"), HeaderValue::from_static("t"));
+    map.insert(named("x-new"), HeaderValue::from_static("new"));
+    map.insert(named("X-Later"), HeaderValue::from_static("later"));
+    assert_eq!(
+        ordered_lines(&map),
+        lines(&[
+            ("x-kept", "kept"),
+            ("X-First", "1"),
+            ("X-Later", "later"),
+            ("X-Last", "2"),
+            ("X-Trailing", "t"),
+            ("x-new", "new"),
+        ])
+    );
+    assert_header_map_invariants(&map);
+
+    // A name the destination already holds a position for keeps that position.
+    let mut map = HeaderMap::new();
+    map.reserve_position("x-later");
+    map.insert("x-kept", HeaderValue::from_static("kept"));
+    map.try_insert_map(source).unwrap();
+    map.insert(named("X-Later"), HeaderValue::from_static("later"));
+    assert_eq!(
+        ordered_lines(&map),
+        lines(&[
+            ("X-Later", "later"),
+            ("x-kept", "kept"),
+            ("X-First", "1"),
+            ("X-Last", "2"),
+        ])
+    );
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn try_insert_lines_replaces_first_and_appends_later_lines_in_order() {
+    let mut map = merge_target();
+    map.try_insert_lines([
+        line("X-Replaced", "a"),
+        line("X-New", "n-1"),
+        line("x-REPLACED", "b"),
+        line("X-Reserved", "r"),
+        line("x-new", "n-2"),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        ordered_lines(&map),
+        lines(&[
+            ("X-Replaced", "a"),
+            ("x-kept", "kept"),
+            ("X-Reserved", "r"),
+            ("x-after", "after"),
+            ("X-New", "n-1"),
+            ("x-REPLACED", "b"),
+            ("x-new", "n-2"),
+        ])
+    );
+    assert_header_map_invariants(&map);
+}
+
+#[cfg(test)]
+fn map_one_name_short_of_max_capacity() -> HeaderMap {
+    let capacity = usable_capacity(MAX_SIZE);
+    let mut map = HeaderMap::with_capacity(capacity);
+    for i in 0..capacity - 1 {
+        map.insert(
+            HeaderName::from_bytes(format!("x-full-{i}").as_bytes()).unwrap(),
+            HeaderValue::from_static("value"),
+        );
+    }
+    map
+}
+
+#[test]
+fn try_insert_lines_refuses_beyond_max_capacity_and_keeps_earlier_lines() {
+    let mut map = map_one_name_short_of_max_capacity();
+    let result = map.try_insert_lines([
+        line("x-full-0", "a"),
+        line("x-full-0", "b"),
+        line("x-last-slot", "c"),
+        line("x-no-slot", "d"),
+    ]);
+    assert!(result.is_err());
+
+    let replaced: Vec<_> = map.get_all("x-full-0").iter().collect();
+    assert_eq!(replaced, ["a", "b"]);
+    assert_eq!(map["x-last-slot"], "c");
+    assert!(!map.contains_key("x-no-slot"));
+    assert_eq!(map.keys_len(), usable_capacity(MAX_SIZE));
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn try_insert_map_refuses_beyond_max_capacity_and_keeps_earlier_names() {
+    let mut map = map_one_name_short_of_max_capacity();
+    let mut source = HeaderMap::new();
+    source.insert("x-new-1", HeaderValue::from_static("1"));
+    source.append("x-new-1", HeaderValue::from_static("2"));
+    source.insert("x-new-2", HeaderValue::from_static("3"));
+    assert!(map.try_insert_map(source).is_err());
+
+    let values: Vec<_> = map.get_all("x-new-1").iter().collect();
+    assert_eq!(values, ["1", "2"]);
+    assert!(!map.contains_key("x-new-2"));
+    assert_eq!(map.keys_len(), usable_capacity(MAX_SIZE));
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn present_names_are_replaced_and_appended_in_a_full_map() {
+    let mut map = map_one_name_short_of_max_capacity();
+    map.insert(named("X-Last"), HeaderValue::from_static("last"));
+    assert_eq!(map.keys_len(), usable_capacity(MAX_SIZE));
+
+    assert_eq!(
+        map.try_insert(named("X-Full-0"), HeaderValue::from_static("a"))
+            .unwrap()
+            .unwrap(),
+        "value"
+    );
+    assert!(
+        map.try_append(named("x-FULL-0"), HeaderValue::from_static("b"))
+            .unwrap()
+    );
+    match map.try_entry("x-full-1").unwrap() {
+        Entry::Occupied(mut entry) => entry.append(HeaderValue::from_static("e")),
+        Entry::Vacant(_) => panic!("present name reported vacant"),
+    }
+    map.try_insert_lines([line("x-full-2", "l-1"), line("X-Full-2", "l-2")])
+        .unwrap();
+    let mut source = HeaderMap::new();
+    source.insert(named("X-LAST"), HeaderValue::from_static("m-1"));
+    source.append(named("x-last"), HeaderValue::from_static("m-2"));
+    map.try_insert_map(source).unwrap();
+
+    assert!(
+        map.try_insert("x-new", HeaderValue::from_static("n"))
+            .is_err()
+    );
+    assert!(
+        map.try_append("x-new", HeaderValue::from_static("n"))
+            .is_err()
+    );
+    assert!(map.try_entry("x-new").is_err());
+    assert!(map.try_insert_lines([line("x-new", "n")]).is_err());
+
+    let tail: Vec<_> = ordered_lines(&map).split_off(usable_capacity(MAX_SIZE) - 2);
+    assert_eq!(
+        tail,
+        lines(&[
+            ("x-full-24574", "value"),
+            ("X-LAST", "m-1"),
+            ("x-FULL-0", "b"),
+            ("x-full-1", "e"),
+            ("X-Full-2", "l-2"),
+            ("x-last", "m-2"),
+        ])
+    );
+    assert_eq!(ordered_lines(&map)[0], ("X-Full-0".into(), "a".into()));
+    assert_eq!(ordered_lines(&map)[2], ("x-full-2".into(), "l-1".into()));
+    assert_eq!(map.keys_len(), usable_capacity(MAX_SIZE));
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn present_names_do_not_grow_at_an_ordinary_capacity_boundary() {
+    for operation in 0..3 {
+        let mut map = HeaderMap::with_capacity(6);
+        let capacity = map.capacity();
+        for index in 0..capacity {
+            map.insert(
+                HeaderName::from_bytes(format!("x-{index}").as_bytes()).unwrap(),
+                HeaderValue::from_static("a"),
+            );
+        }
+        match operation {
+            0 => {
+                map.try_insert("x-0", HeaderValue::from_static("b"))
+                    .unwrap();
+            }
+            1 => {
+                map.try_append("x-0", HeaderValue::from_static("b"))
+                    .unwrap();
+            }
+            _ => {
+                map.try_entry("x-0")
+                    .unwrap()
+                    .or_insert(HeaderValue::from_static("b"));
+            }
+        }
+        assert_eq!(map.capacity(), capacity);
+        assert_header_map_invariants(&map);
+    }
+}
+
+#[cfg(test)]
+const INTERLEAVED_LINES: [(&str, &str); 7] = [
+    ("X-A", "a"),
+    ("X-Multi", "1"),
+    ("X-B", "b"),
+    ("x-multi", "2"),
+    ("X-C", "c"),
+    ("X-MULTI", "3"),
+    ("X-D", "d"),
+];
+
+#[cfg(test)]
+fn interleaved_map() -> HeaderMap {
+    let mut map = HeaderMap::new();
+    for (name, value) in INTERLEAVED_LINES {
+        map.append(named(name), HeaderValue::from_static(value));
+    }
+    map
+}
+
+#[test]
+fn retaining_values_drops_only_rejected_lines_in_place() {
+    for mask in 0..8u8 {
+        let mut map = interleaved_map();
+        let mut visited = Vec::new();
+        map.retain_values("x-multi", |value| {
+            let line = visited.len();
+            visited.push(value.to_str().unwrap().to_owned());
+            mask & (1 << line) != 0
+        });
+        assert_eq!(visited, ["1", "2", "3"]);
+        assert_header_map_invariants(&map);
+
+        let kept = |value: &str| match value {
+            "1" => mask & 1 != 0,
+            "2" => mask & 2 != 0,
+            "3" => mask & 4 != 0,
+            _ => true,
+        };
+        let expected: Vec<_> = INTERLEAVED_LINES
+            .into_iter()
+            .filter(|(_, value)| kept(value))
+            .collect();
+        assert_eq!(ordered_lines(&map), lines(&expected), "mask {mask:#b}");
+        let kept_values: Vec<_> = ["1", "2", "3"].into_iter().filter(|v| kept(v)).collect();
+        assert_eq!(
+            map.get_all("x-multi").iter().collect::<Vec<_>>(),
+            kept_values,
+            "mask {mask:#b}"
+        );
+        assert_eq!(map.contains_key("x-multi"), !kept_values.is_empty());
+
+        // Lines added afterwards still join the end of the name and of the order.
+        map.append(named("x-MULTI"), HeaderValue::from_static("4"));
+        let mut expected = expected;
+        expected.push(("x-MULTI", "4"));
+        assert_eq!(ordered_lines(&map), lines(&expected), "mask {mask:#b}");
+        assert_eq!(
+            map.get_all("x-multi").iter().last(),
+            Some(&HeaderValue::from_static("4"))
+        );
+        assert_header_map_invariants(&map);
+    }
+}
+
+#[test]
+fn retaining_no_values_removes_the_name_like_remove() {
+    let mut retained = interleaved_map();
+    retained.retain_values("x-multi", |_| false);
+    let mut removed = interleaved_map();
+    removed.remove("x-multi");
+    for map in [&mut retained, &mut removed] {
+        map.insert(named("X-multi"), HeaderValue::from_static("new"));
+        assert_header_map_invariants(map);
+    }
+    assert_eq!(ordered_lines(&retained), ordered_lines(&removed));
+    assert_eq!(
+        ordered_lines(&retained),
+        lines(&[
+            ("X-A", "a"),
+            ("X-B", "b"),
+            ("X-C", "c"),
+            ("X-D", "d"),
+            ("X-multi", "new")
+        ])
+    );
+}
+
+#[test]
+fn retaining_values_keeps_changes_and_sensitivity_of_kept_lines() {
+    let mut map = interleaved_map();
+    for (name, value) in map.iter_mut() {
+        if name == "x-multi" {
+            value.set_sensitive(value == "2");
+        }
+    }
+    map.retain_values("x-multi", |value| {
+        if value == "3" {
+            *value = HeaderValue::from_static("three");
+        }
+        value != "1"
+    });
+    assert_eq!(
+        ordered_lines(&map),
+        lines(&[
+            ("X-A", "a"),
+            ("X-B", "b"),
+            ("x-multi", "2"),
+            ("X-C", "c"),
+            ("X-MULTI", "three"),
+            ("X-D", "d")
+        ])
+    );
+    let sensitive: Vec<_> = map
+        .get_all("x-multi")
+        .iter()
+        .map(HeaderValue::is_sensitive)
+        .collect();
+    assert_eq!(sensitive, [true, false]);
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn retaining_values_leaves_reserved_positions_of_other_names() {
+    let mut map = HeaderMap::new();
+    map.insert(named("X-A"), HeaderValue::from_static("a"));
+    map.reserve_position("x-before");
+    map.append(named("Connection"), HeaderValue::from_static("host"));
+    map.append(named("X-B"), HeaderValue::from_static("b"));
+    map.append(named("connection"), HeaderValue::from_static("keep-alive"));
+    map.reserve_position("x-after");
+    map.append(named("X-C"), HeaderValue::from_static("c"));
+    map.retain_values("connection", |value| value != "host");
+    map.insert(named("X-After"), HeaderValue::from_static("after"));
+    map.insert(named("X-Before"), HeaderValue::from_static("before"));
+    map.insert(named("X-Last"), HeaderValue::from_static("last"));
+    assert_eq!(
+        ordered_lines(&map),
+        lines(&[
+            ("X-A", "a"),
+            ("X-Before", "before"),
+            ("X-B", "b"),
+            ("connection", "keep-alive"),
+            ("X-After", "after"),
+            ("X-C", "c"),
+            ("X-Last", "last")
+        ])
+    );
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn retaining_values_with_a_panicking_predicate_leaves_a_valid_map() {
+    let mut map: HeaderMap<ManuallyAllocated> = HeaderMap::default();
+    map.append("x-multi", ManuallyAllocated::new(1, false));
+    map.append("x-other", ManuallyAllocated::new(2, false));
+    map.append("x-multi", ManuallyAllocated::new(3, false));
+    map.append("x-multi", ManuallyAllocated::new(4, false));
+    let mut calls = 0;
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        map.retain_values("x-multi", |_| {
+            calls += 1;
+            assert!(calls < 3, "intentional predicate panic");
+            false
+        });
+    }));
+    assert!(result.is_err());
+    assert_header_map_invariants(&map);
+    assert_eq!(map.len(), 3);
+
+    map.retain_values("x-multi", |_| false);
+    assert_header_map_invariants(&map);
+    let values: Vec<_> = map.into_ordered_iter().collect();
+    assert_eq!(values.len(), 1);
+}
+
+#[test]
+fn retaining_values_with_a_panicking_drop_leaves_a_valid_map() {
+    for panicking in 0..3 {
+        let mut map: HeaderMap<ManuallyAllocated> = HeaderMap::default();
+        map.append("x-multi", ManuallyAllocated::new(1, panicking == 0));
+        map.append("x-other", ManuallyAllocated::new(2, false));
+        map.append("x-multi", ManuallyAllocated::new(3, panicking == 1));
+        map.append("x-multi", ManuallyAllocated::new(4, panicking == 2));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            map.retain_values("x-multi", |value| !value.panic_on_drop);
+        }));
+        assert!(result.is_err());
+        assert_header_map_invariants(&map);
+        let expected: &[&str] = if panicking == 0 {
+            &["x-other", "x-multi", "x-multi"]
+        } else {
+            &["x-multi", "x-other", "x-multi"]
+        };
+        assert_eq!(ordered_names(&map), expected);
+        let values: Vec<_> = map.into_ordered_iter().collect();
+        assert_eq!(values.len(), 3);
+    }
+}
+
+#[test]
+fn retaining_names_filters_lines_and_reservations_without_reordering() {
+    let mut map = HeaderMap::new();
+    map.insert(named("X-A"), HeaderValue::from_static("a"));
+    map.reserve_position("x-drop");
+    map.reserve_position("x-later");
+    map.append(named("X-Drop"), HeaderValue::from_static("drop"));
+    map.append(named("X-B"), HeaderValue::from_static("b"));
+    map.retain_names(|name| name != "x-drop");
+    map.insert("x-drop", HeaderValue::from_static("new"));
+    map.insert("x-later", HeaderValue::from_static("later"));
+    assert_eq!(
+        ordered_lines(&map),
+        lines(&[
+            ("X-A", "a"),
+            ("x-later", "later"),
+            ("X-B", "b"),
+            ("x-drop", "new")
+        ])
+    );
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn appending_a_map_keeps_lines_casing_and_reserved_positions() {
+    let mut target = HeaderMap::new();
+    target.append(named("X-A"), HeaderValue::from_static("old"));
+    let mut source = HeaderMap::new();
+    source.append(named("x-A"), HeaderValue::from_static("a"));
+    source.reserve_position("x-later");
+    source.append(named("X-B"), HeaderValue::from_static("b"));
+    source.append(named("x-a"), HeaderValue::from_static("last"));
+    target.try_append_map(source).unwrap();
+    target.insert("x-later", HeaderValue::from_static("later"));
+    assert_eq!(
+        ordered_lines(&target),
+        lines(&[
+            ("X-A", "old"),
+            ("x-A", "a"),
+            ("x-later", "later"),
+            ("X-B", "b"),
+            ("x-a", "last")
+        ])
+    );
+    assert_header_map_invariants(&target);
 }

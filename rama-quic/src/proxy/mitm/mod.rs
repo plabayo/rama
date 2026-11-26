@@ -3,13 +3,12 @@
 //! Ingress and egress are independent QUIC connections: transport settings, RTT estimation
 //! and optional spin signaling belong to each hop. Spin bits are not copied across them.
 
-use rama_utils::macros::define_inner_service_accessors;
 use std::{sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
 use rama_core::{
     Layer, Service,
-    error::{BoxError, BoxErrorExt as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::{Extensions, ExtensionsRef},
     graceful::WeakScope,
     io::BridgeIo,
@@ -26,10 +25,9 @@ use rama_crypto::{
     pki_types::{CertificateDer, PrivateKeyDer},
 };
 use rama_net::{
-    address::Host,
     client::ConnectorTarget,
     http::{TargetHttpVersion, Version},
-    tls::ApplicationProtocol,
+    tls::{ApplicationProtocol, ServerName},
 };
 use rama_quic_proto::{
     ConnectionId, Side, VarInt,
@@ -49,19 +47,23 @@ use rama_quic_proto::{
 };
 use rama_tls::{
     SecureTransport,
-    client::TlsClientConfig,
+    client::{TlsClientConfig, TlsClientSni},
     server::{ServerAuthData, TlsServerConfig},
 };
-use rama_tls_boring::client::ServerAnswerRecorder;
-use rama_tls_boring::proxy::{
-    cert_issuer::BoringMitmCertIssuer,
-    client_auth::{
-        TlsMitmCertificateRequest, TlsMitmClientAuthInput, TlsMitmClientAuthPlan,
-        TlsMitmClientAuthPolicy, TlsMitmClientIdentity,
+use rama_tls_boring::{
+    client::ServerAnswerRecorder,
+    proxy::{
+        cert_issuer::BoringMitmCertIssuer,
+        client_auth::{
+            TlsMitmCertificateRequest, TlsMitmClientAuthInput, TlsMitmClientAuthPlan,
+            TlsMitmClientAuthPolicy, TlsMitmClientIdentity,
+        },
     },
 };
 use rama_udp::DatagramSocket;
-use rama_utils::{guard::DropGuard, octets, time::deadline_after};
+use rama_utils::{
+    guard::DropGuard, macros::define_inner_service_accessors, octets, time::deadline_after,
+};
 use tokio::{
     sync::oneshot,
     time::{Instant, timeout_at},
@@ -71,12 +73,14 @@ use super::InputWithQuicClientHello;
 use crate::{
     ClientConfig, Connecting, Connection, ConnectionError, Endpoint, EndpointConfig,
     IncomingOutcome, NegotiatedTlsParameters, ServerConfig, TransportConfig,
-    proto::ServerCrypto,
-    proto::crypto::{
-        self,
-        boring::{
-            HandshakeInitializer, SharedClientSessions, on_handshake_completed, retry_tag,
-            server_config_from_rama, server_initial_keys,
+    proto::{
+        ServerCrypto,
+        crypto::{
+            self,
+            boring::{
+                HandshakeInitializer, SharedClientSessions, on_handshake_completed, retry_tag,
+                server_config_from_rama, server_initial_keys,
+            },
         },
     },
     tls::{BoringTlsProvider, TlsOptions},
@@ -405,14 +409,18 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
         if hello.ext_alpn().is_none() {
             return Err(BoxError::from_static_str("QUIC ClientHello offers no ALPN"));
         }
+        // The QUIC handshake always binds the egress session to a server name.
         let server_name = match hello.ext_server_name() {
-            Some(name) => Host::Name(name.clone()),
+            Some(name) => name.clone(),
             None => ingress
                 .extensions()
                 .get_ref::<ConnectorTarget>()
-                .map(|target| target.0.host.clone())
                 .ok_or_else(|| {
                     BoxError::from_static_str("QUIC MITM needs a server name or a target")
+                })
+                .and_then(|target| {
+                    ServerName::try_from(&target.0.host)
+                        .context("connector target host is not a TLS server name")
                 })?,
         };
 
@@ -626,7 +634,7 @@ fn origin_handshake_refusal(error: ConnectionError) -> BoxError {
 struct OriginResolver<Issuer, Egress> {
     relay: QuicMitmRelay<Issuer>,
     peeked: PeekedClientHello,
-    server_name: Host,
+    server_name: ServerName,
     client_auth: Option<(TlsMitmClientAuthPolicy, Extensions)>,
     egress: Mutex<Option<Egress>>,
     origin: Arc<Mutex<Option<Origin>>>,
@@ -690,6 +698,11 @@ where
                 None => offered.iter().cloned().collect(),
             };
             tls.set_alpn(allowed);
+            tls.set_sni_policy(match self.peeked.client_hello.ext_server_name() {
+                Some(name) if name.as_ip().is_some() => TlsClientSni::IncludeIp,
+                Some(_) => TlsClientSni::Auto,
+                None => TlsClientSni::Disabled,
+            });
             // The mirrored certificate is built from the origin's leaf.
             tls.set_store_server_cert_chain(true);
             tls.insert(initializer.clone());

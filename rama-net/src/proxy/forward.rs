@@ -3,30 +3,26 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::std::sync::Arc;
-
-use super::IdleGuard;
-
-use crate::conn::LingeringClose;
-
-use rama_core::graceful::WeakScope;
-use rama_core::graceful::{Cause, Scope, enter_scope_with};
-use rama_core::telemetry::tracing;
-use rama_core::{
-    Service,
-    extensions::ExtensionsRef,
-    futures::maybe,
-    io::{AbortIo, BridgeIo, Io, shutdown_within},
-};
-use rama_utils::{macros::generate_set_and_with, octets::kib, time::deadline_after};
-
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Notify;
-
 // `BridgeCloseReason` is shared with the frame-oriented bridge in
 // `rama-core::stream::forward`. Re-exported here for convience.
 #[doc(inline)]
 pub use rama_core::stream::BridgeCloseReason;
+use rama_core::{
+    Service,
+    extensions::ExtensionsRef,
+    futures::maybe,
+    graceful::{Cause, Scope, WeakScope, enter_scope_with},
+    io::{AbortIo, BridgeIo, Io, shutdown_within},
+    rt::{IdleGuard, IdleProgress},
+    telemetry::tracing,
+};
+use rama_utils::{macros::generate_set_and_with, octets::kib, time::deadline_after};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::Notify,
+};
+
+use crate::{conn::LingeringClose, std::sync::Arc};
 
 /// Direction tag used internally by [`run_bridge`] to disambiguate
 /// per-direction errors when classifying I/O failures.
@@ -495,7 +491,8 @@ where
     let aborts = Arc::new(Aborts::new(&left, &right));
     let bytes_l_to_r = Arc::new(AtomicU64::new(0));
     let bytes_r_to_l = Arc::new(AtomicU64::new(0));
-    let progress = Arc::new(AtomicU64::new(0));
+    // Counted per forwarded chunk, read only when the idle timer fires.
+    let progress = idle_timeout.map(|_| IdleProgress::new());
 
     let first_byte_seen = Arc::new(AtomicBool::new(false));
     let upstream_eof_seen = Arc::new(AtomicBool::new(false));
@@ -540,7 +537,7 @@ where
             &mut left_r,
             &mut right_w,
             bytes_l_to_r.clone(),
-            progress.clone(),
+            progress.as_ref(),
             buf_size,
             (&stop, shutdown_grace),
             right_w_shut.clone(),
@@ -554,7 +551,7 @@ where
             &mut right_r,
             &mut left_w,
             bytes_r_to_l.clone(),
-            progress.clone(),
+            progress.as_ref(),
             buf_size,
             (&stop, shutdown_grace),
             left_w_shut.clone(),
@@ -572,7 +569,7 @@ where
             idle_timeout,
             first_byte_timeout,
             first_byte_timeout_start,
-            &progress,
+            progress.as_ref(),
             &first_byte_seen,
             &upstream_eof_seen,
             &client_spoke,
@@ -784,7 +781,7 @@ async fn run_select_loop<F1, F2>(
     idle_timeout: Option<Duration>,
     first_byte_timeout: Option<Duration>,
     first_byte_timeout_start: FirstByteTimeoutStart,
-    progress: &AtomicU64,
+    progress: Option<&IdleProgress>,
     first_byte_seen: &AtomicBool,
     upstream_eof_seen: &AtomicBool,
     client_spoke: &Notify,
@@ -803,7 +800,6 @@ where
         }
         (Some(d), FirstByteTimeoutStart::ClientFirstByte) => FirstByteWindow::PendingClient(d),
     };
-    let mut last_progress: u64 = 0;
     let mut l_to_r_done = false;
     let mut r_to_l_done = false;
     // The reason of whichever arm finished first — that's the one
@@ -858,15 +854,7 @@ where
                     return d.finish();
                 }
             }
-            () = maybe(idle.as_mut().map(IdleGuard::tick)) => {
-                let cur = progress.load(Ordering::Relaxed);
-                if cur != last_progress {
-                    last_progress = cur;
-                    if let Some(g) = idle.as_mut() {
-                        g.reset();
-                    }
-                    continue;
-                }
+            () = maybe(idle.as_mut().zip(progress).map(|(idle, progress)| idle.stalled(progress))) => {
                 return draining.map_or((BridgeCloseReason::IdleTimeout, None), Draining::finish);
             }
             () = maybe(match &mut first_byte {
@@ -942,7 +930,7 @@ async fn copy_one_way<R, W>(
     reader: &mut R,
     writer: &mut W,
     bytes: Arc<AtomicU64>,
-    progress: Arc<AtomicU64>,
+    progress: Option<&IdleProgress>,
     buf_size: usize,
     (stop, shutdown_grace): (&Stop, Duration),
     write_side_shut: Arc<AtomicBool>,
@@ -992,7 +980,9 @@ where
                     copy_err = Some(err);
                     break;
                 }
-                progress.fetch_add(1, Ordering::Relaxed);
+                if let Some(progress) = progress {
+                    progress.record();
+                }
             }
             Err(err) => {
                 end.mark_read_ended();
@@ -1234,18 +1224,28 @@ fn emit_close_event(outcome: &IoForwardOutcome) {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
-    use std::time::Duration;
+    use std::{
+        assert_matches,
+        sync::atomic::AtomicUsize,
+        task::{Context, Poll},
+        time::Duration,
+    };
+
+    use rama_core::{
+        ServiceInput,
+        bytes::Bytes,
+        extensions::NoExtensionsTransfer,
+        graceful::attach_scope,
+        io::{PrefixedIo, ReplayReader},
+    };
+    use tokio::{
+        io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf, duplex},
+        task::JoinHandle,
+        time::{Instant, sleep},
+    };
 
     use super::*;
-
     use crate::stream::NestedConnection;
-    use rama_core::{ServiceInput, extensions::NoExtensionsTransfer, graceful::attach_scope};
-
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex},
-        task::JoinHandle,
-    };
 
     /// A bridge of plain test I/O, given the extensions a bridge requires.
     fn bridge<S, T>(left: S, right: T) -> BridgeIo<ServiceInput<S>, ServiceInput<T>> {
@@ -1330,9 +1330,6 @@ mod tests {
 
     #[tokio::test]
     async fn forward_sends_peeked_prefix_with_buffered_rest() {
-        use rama_core::bytes::Bytes;
-        use rama_core::io::{PrefixedIo, ReplayReader};
-
         // A 2 byte peek splits a length-prefixed request;
         // some servers reset on a first segment that short.
         let (mut client, proxy) = duplex(64);
@@ -1800,6 +1797,29 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn forward_idle_timeout_follows_the_last_forward() {
+        let timeout = Duration::from_millis(100);
+        let svc = IoForwardService::default().with_idle_timeout(timeout);
+
+        let (mut a_user, a_proxy) = duplex(64);
+        let (mut b_user, b_proxy) = duplex(64);
+
+        let task = tokio::spawn(async move { svc.serve(bridge(a_proxy, b_proxy)).await.unwrap() });
+
+        sleep(Duration::from_millis(80)).await;
+        a_user.write_all(b"x").await.unwrap();
+        let mut buf = [0u8; 1];
+        b_user.read_exact(&mut buf).await.unwrap();
+        let last = Instant::now();
+
+        let outcome = task.await.unwrap();
+        assert_eq!(outcome.reason(), BridgeCloseReason::IdleTimeout);
+        let idle = last.elapsed();
+        assert!(idle >= timeout, "idled out early: {idle:?}");
+        assert!(idle <= 2 * timeout, "idled out late: {idle:?}");
+    }
+
     #[tokio::test]
     async fn forward_idle_timeout_resets_on_progress() {
         let svc = IoForwardService::default().with_idle_timeout(Duration::from_millis(150));
@@ -1890,11 +1910,6 @@ mod tests {
     /// future ones. Pin the contract.
     #[tokio::test]
     async fn copy_one_way_calls_shutdown_once_on_write_error() {
-        use std::sync::atomic::AtomicUsize;
-        use std::task::{Context, Poll};
-
-        use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-
         struct ReadOnce {
             done: bool,
         }
@@ -1954,14 +1969,13 @@ mod tests {
             fail_write: true,
         };
         let bytes = Arc::new(AtomicU64::new(0));
-        let progress = Arc::new(AtomicU64::new(0));
         let write_side_shut = Arc::new(AtomicBool::new(false));
         let end = Arc::new(DirectionEnd::default());
         let res = copy_one_way(
             &mut reader,
             &mut writer,
             bytes,
-            progress,
+            None,
             64,
             (&Stop::never(), Duration::from_millis(50)),
             write_side_shut.clone(),

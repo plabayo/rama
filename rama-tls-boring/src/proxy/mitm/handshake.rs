@@ -1,16 +1,5 @@
-use super::client_auth::{
-    TlsMitmCertificateRequest, TlsMitmClientAuthInput, TlsMitmClientAuthPolicy,
-    TlsMitmClientIdentity,
-};
-use super::{
-    AcceptorKey, HandshakeRelayClassification, TlsMitmRelay, TlsMitmRelayError,
-    TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind, server_name_as_sni,
-};
-use crate::{
-    TlsStream,
-    client::{self, ServerAnswerRecorder},
-    type_conversion::peer_certificate_chain,
-};
+use std::sync::Arc;
+
 use rama_boring::{
     ssl::{
         AsyncSelectCertError, BoxCertificateFinish, CertificateSelection, NameType,
@@ -29,17 +18,29 @@ use rama_core::{
 #[cfg(feature = "http")]
 use rama_net::http::{TargetHttpVersion, Version};
 use rama_net::{
-    address::Domain,
     client::ConnectorTarget,
     extensions::StreamTransformed,
-    tls::{ApplicationProtocol, TargetEchConfig, TargetEchServiceBinding},
+    tls::{ApplicationProtocol, ServerName, TargetEchConfig, TargetEchServiceBinding},
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, SecureTransport,
     client::{EchRequirement, NegotiatedTlsParameters, TlsEncryptedClientHello, TlsServerVerify},
 };
-use std::sync::Arc;
 use tokio::sync::oneshot;
+
+use super::{
+    AcceptorKey, HandshakeRelayClassification, TlsMitmRelay, TlsMitmRelayError,
+    TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind,
+    client_auth::{
+        TlsMitmCertificateRequest, TlsMitmClientAuthInput, TlsMitmClientAuthPolicy,
+        TlsMitmClientIdentity,
+    },
+};
+use crate::{
+    TlsStream,
+    client::{self, ServerAnswerRecorder, TlsConnectError},
+    type_conversion::peer_certificate_chain,
+};
 
 struct Snapshot {
     cert: X509,
@@ -198,7 +199,9 @@ where
             let auth = self.egress_server_auth_ref();
             let config = super::egress::tls_client_config(
                 None,
-                super::egress::server_name(None, target, auth),
+                super::egress::server_name(None, target, auth)
+                    .context("tls mitm relay: resolve direct egress server name")
+                    .map_err(TlsMitmRelayError::config)?,
                 self.keylog_intent.clone(),
                 auth,
             );
@@ -454,9 +457,14 @@ where
             peer_certificate_chain: peer_chain,
             server_name: ssl
                 .servername(NameType::HOST_NAME)
-                .map(Domain::try_from)
-                .transpose()
-                .map_err(TlsMitmRelayError::config)?,
+                .map(|name| {
+                    ServerName::parse(name).ok_or_else(|| {
+                        TlsMitmRelayError::config(BoxError::from_static_str(
+                            "tls mitm relay: ingress servername is no DNS name or IP literal",
+                        ))
+                    })
+                })
+                .transpose()?,
             resumed: Some(ssl.session_reused()),
             algorithms: ssl.rama_into(),
             server_hello: None,
@@ -482,8 +490,12 @@ where
 }
 
 fn ingress_error<T>(error: &rama_boring_tokio::HandshakeError<T>) -> TlsMitmRelayError {
+    let sni = error
+        .ssl()
+        .and_then(|ssl| ssl.servername(NameType::HOST_NAME))
+        .and_then(ServerName::parse);
     let code = error.code();
-    if let Some(io) = error.as_io_error() {
+    let error = if let Some(io) = error.as_io_error() {
         TlsMitmRelayError::handshake_io(
             TlsMitmRelayErrorDirection::Ingress,
             BoxError::from_static_str("tls mitm relay: ingress TLS I/O failed")
@@ -499,7 +511,8 @@ fn ingress_error<T>(error: &rama_boring_tokio::HandshakeError<T>) -> TlsMitmRela
                 .context_debug_field("code", code),
             code,
         )
-    }
+    };
+    error.maybe_with_sni(sni)
 }
 
 fn egress_error<T>(error: client::TlsConnectError<T>) -> TlsMitmRelayError {
@@ -509,7 +522,11 @@ fn egress_error<T>(error: client::TlsConnectError<T>) -> TlsMitmRelayError {
             error.context("tls connect builder error"),
             None,
         ),
-        client::TlsConnectError::Handshake { error, server_name } => {
+        TlsConnectError::Handshake {
+            error,
+            server_name,
+            outgoing_sni,
+        } => {
             let code = error.code();
             let error = if let Some(io) = error.as_io_error() {
                 TlsMitmRelayError::handshake_io(
@@ -517,7 +534,7 @@ fn egress_error<T>(error: client::TlsConnectError<T>) -> TlsMitmRelayError {
                     BoxError::from_static_str("tls mitm relay: egress TLS I/O failed")
                         .context_field("io_error", io.to_string())
                         .context_debug_field("code", code)
-                        .context_debug_field("server_identity", server_name.clone()),
+                        .context_debug_field("server_identity", server_name),
                 )
             } else if let Some(stack) = error.as_ssl_error_stack() {
                 TlsMitmRelayError::handshake_ssl(TlsMitmRelayErrorDirection::Egress, stack)
@@ -526,11 +543,11 @@ fn egress_error<T>(error: client::TlsConnectError<T>) -> TlsMitmRelayError {
                     TlsMitmRelayErrorDirection::Egress,
                     BoxError::from_static_str("tls mitm relay: egress handshake failed")
                         .context_debug_field("code", code)
-                        .context_debug_field("server_identity", server_name.clone()),
+                        .context_debug_field("server_identity", server_name),
                     code,
                 )
             };
-            error.maybe_with_sni(server_name.as_ref().and_then(server_name_as_sni))
+            error.maybe_with_sni(outgoing_sni)
         }
     }
 }

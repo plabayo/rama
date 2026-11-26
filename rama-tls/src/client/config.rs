@@ -1,26 +1,22 @@
-use base64::{Engine as _, prelude::BASE64_STANDARD};
-use rama_core::{
-    error::{BoxError, BoxErrorExt as _},
-    extensions::{Extension, Extensions},
-};
-use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
-use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 use std::{
-    borrow::Cow,
     hash::{Hash, Hasher},
-    net::IpAddr,
     sync::Arc,
 };
 
+use base64::{Engine as _, prelude::BASE64_STANDARD};
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    extensions::{Extension, Extensions},
+};
+use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
+use rama_net::tls::{AlpnPolicy, ApplicationProtocol, ServerName, TlsAlpn};
+use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
+
 use super::{
-    ClientHandshake, DynTlsServerCertChainPolicy, ServerTrustSource, TlsServerTrust,
-    TlsServerTrustAnchors, TlsSessionProfileScope,
+    ClientHandshake, DynTlsServerCertChainPolicy, ServerTrustSource, TlsPoolComponent,
+    TlsServerTrust, TlsServerTrustAnchors, TlsSessionProfileScope,
 };
 use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions};
-use rama_net::{
-    address::{Domain, Host},
-    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
-};
 
 /// A backend agnostic builder for the common TLS configs.
 ///
@@ -125,13 +121,22 @@ impl TlsClientConfig {
     generate_set_and_with! {
         /// Set the server identity used for certificate verification.
         ///
-        /// A DNS identity is also sent as SNI. An IP identity is matched against
-        /// an `iPAddress` subject alternative name and is not sent as SNI.
+        /// A DNS identity is eligible for SNI. An IP identity is matched against
+        /// an `iPAddress` subject alternative name and by default is not sent as SNI.
         /// Overrides the identity the connector would otherwise derive from the
         /// transport authority host, for the connection this configures: the
         /// identity of a connection underneath is never one of its inputs.
-        pub fn server_name(mut self, server_name: Host) -> Self {
-            self.0.insert(TlsServerName(server_name));
+        pub fn server_name(mut self, server_name: impl Into<ServerName>) -> Self {
+            self.0.insert(server_name.into());
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set which server identities are sent as SNI, independently of certificate verification.
+        /// Including IP literals requires the BoringSSL backend.
+        pub fn sni_policy(mut self, policy: TlsClientSni) -> Self {
+            self.0.insert(policy);
             self
         }
     }
@@ -366,33 +371,37 @@ impl Clone for TlsClientConfig {
     }
 }
 
-/// Server identity used for certificate verification and, for DNS names, SNI.
-#[derive(Debug, Clone, Extension)]
+/// Which server identities are sent in the ClientHello server_name extension.
+/// Certificate verification always uses the configured server identity.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls), scope(connection))]
-pub struct TlsServerName(pub Host);
-
-/// A server certificate identity resolved from a [`Host`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TlsServerIdentity<'a> {
-    /// DNS identity, also eligible for SNI.
-    Dns(Cow<'a, Domain>),
-    /// IP identity, matched against an `iPAddress` SAN and never sent as SNI.
-    Ip(IpAddr),
+pub enum TlsClientSni {
+    /// Send DNS identities only, as required by RFC 6066 section 3.
+    #[default]
+    Auto,
+    /// Also send IP identities as dotted IPv4 or bare IPv6 literals; unsupported by rustls.
+    IncludeIp,
+    /// Omit SNI, including for DNS identities.
+    Disabled,
 }
 
-impl<'a> TryFrom<&'a Host> for TlsServerIdentity<'a> {
-    type Error = BoxError;
-
-    fn try_from(host: &'a Host) -> Result<Self, Self::Error> {
-        if let Ok(ip) = host.try_as_ip() {
-            return Ok(Self::Ip(ip));
+impl TlsClientSni {
+    /// Whether this policy sends the canonical identity as SNI.
+    #[must_use]
+    pub fn sends(self, name: &ServerName) -> bool {
+        match self {
+            Self::Disabled => false,
+            Self::IncludeIp => true,
+            Self::Auto => name.as_domain().is_some(),
         }
+    }
+}
 
-        let domain = host.try_as_domain()?;
-        match domain.as_str().parse() {
-            Ok(ip) => Ok(Self::Ip(ip)),
-            Err(_) => Ok(Self::Dns(domain)),
-        }
+impl TlsPoolComponent for TlsClientSni {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
     }
 }
 
@@ -454,7 +463,7 @@ pub enum TlsServerCertPin {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TlsServerCertPinSet {
     pins: Vec<TlsServerCertPin>,
-    server_names: Vec<Host>,
+    server_names: Vec<ServerName>,
 }
 
 /// Result of checking a server certificate against configured pin sets.
@@ -490,9 +499,6 @@ impl std::str::FromStr for TlsServerCertPin {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        use rama_core::error::ErrorContext as _;
-        use rama_crypto::pki_types::pem::PemObject as _;
-
         if let Some(digest) = s.strip_prefix("sha256/") {
             let digest: [u8; 32] = BASE64_STANDARD
                 .decode(digest)
@@ -567,15 +573,15 @@ impl TlsServerCertPinSet {
     generate_set_and_with! {
         /// Scope this set to `server_name`, added as an alternative to any
         /// previously set server names. Without any the set applies globally.
-        pub fn server_name(mut self, server_name: impl Into<Host>) -> Self {
+        pub fn server_name(mut self, server_name: impl Into<ServerName>) -> Self {
             self.server_names.push(server_name.into());
             self
         }
     }
 
-    fn applies_to(&self, server_name: Option<&Host>) -> bool {
+    fn applies_to(&self, server_name: Option<&ServerName>) -> bool {
         self.server_names.is_empty()
-            || server_name.is_some_and(|name| self.server_names.iter().any(|scope| scope == name))
+            || server_name.is_some_and(|name| self.server_names.contains(name))
     }
 }
 
@@ -614,7 +620,7 @@ impl TlsServerCertPins {
     #[doc(hidden)]
     pub fn check(
         &self,
-        server_name: Option<&Host>,
+        server_name: Option<&ServerName>,
         certificate: &CertificateDer<'_>,
     ) -> TlsServerCertPinCheck {
         // leaf spki digest computed at most once, across all sets;
@@ -647,7 +653,7 @@ impl TlsServerCertPins {
 
     /// Return whether at least one pin set applies to `server_name`.
     #[doc(hidden)]
-    pub fn applies_to(&self, server_name: Option<&Host>) -> bool {
+    pub fn applies_to(&self, server_name: Option<&ServerName>) -> bool {
         self.sets
             .iter()
             .any(|pin_set| pin_set.applies_to(server_name))
@@ -727,10 +733,63 @@ pub enum ServerVerifyMode {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{
+        assert_matches,
+        net::{IpAddr, Ipv4Addr},
+    };
+
     use rama_core::extensions::Extensions;
+    use rama_net::address::{Domain, Host};
     use rama_utils::collections::smallvec::smallvec;
-    use std::assert_matches;
+
+    use super::*;
+
+    #[test]
+    fn sni_policy_is_explicit_and_preserved_by_config_transfers() {
+        assert_eq!(TlsClientSni::default(), TlsClientSni::Auto);
+        assert!(
+            TlsClientConfig::new()
+                .as_extensions()
+                .get_ref::<TlsClientSni>()
+                .is_none()
+        );
+        let mut config = TlsClientConfig::new().with_sni_policy(TlsClientSni::IncludeIp);
+        let extensions = Extensions::new();
+        config.clone().write_to(&extensions);
+        assert_eq!(
+            extensions.get_ref::<TlsClientSni>(),
+            Some(&TlsClientSni::IncludeIp)
+        );
+        config.set_sni_policy(TlsClientSni::Disabled);
+        assert_eq!(
+            config.as_extensions().get_ref::<TlsClientSni>(),
+            Some(&TlsClientSni::Disabled)
+        );
+        assert_eq!(
+            extensions.get_ref::<TlsClientSni>(),
+            Some(&TlsClientSni::IncludeIp)
+        );
+    }
+
+    #[test]
+    fn pins_scoped_to_an_address_apply_to_its_name_spelling_only() {
+        let address = ServerName::from(IpAddr::from([127, 0, 0, 1]));
+        let spelled = ServerName::from(Domain::try_from("127.0.0.1").unwrap());
+        let pins = |scope: ServerName| {
+            TlsServerCertPins::new(
+                TlsServerCertPinSet::new(CertificateDer::from(vec![1])).with_server_name(scope),
+            )
+        };
+        assert!(pins(address.clone()).applies_to(Some(&spelled)));
+        assert!(pins(spelled).applies_to(Some(&address)));
+        for other in [
+            ServerName::from(IpAddr::from([127, 0, 0, 2])),
+            ServerName::from(IpAddr::from(Ipv4Addr::LOCALHOST.to_ipv6_mapped())),
+            ServerName::from(Domain::tld_localhost()),
+        ] {
+            assert!(!pins(address.clone()).applies_to(Some(&other)), "{other}");
+        }
+    }
 
     #[test]
     fn request_override_parents_survive_tls_configuration_clone() {
@@ -767,23 +826,44 @@ mod tests {
     }
 
     #[test]
+    fn pin_policy_identity_agrees_with_scope_matching() {
+        let certificate = CertificateDer::from(vec![1]);
+        let ip = ServerName::from(IpAddr::from([192, 0, 2, 1]));
+        let scoped = |domain| {
+            TlsServerCertPins::new(
+                TlsServerCertPinSet::new(certificate.clone())
+                    .with_server_name(Domain::from_static(domain)),
+            )
+        };
+        let dotted = scoped("192.0.2.1.");
+        let literal = scoped("192.0.2.1");
+        assert!(!dotted.applies_to(Some(&ip)));
+        assert!(literal.applies_to(Some(&ip)));
+        assert_ne!(dotted, literal);
+        assert_ne!(dotted.digest, literal.digest);
+        let address =
+            TlsServerCertPins::new(TlsServerCertPinSet::new(certificate).with_server_name(ip));
+        assert_eq!(literal, address);
+        assert_eq!(literal.digest, address.digest);
+    }
+
+    #[test]
     fn server_identity_classifies_dns_and_ip_hosts() {
         let dns = Host::try_from("exa%6Dple.com").unwrap();
-        let TlsServerIdentity::Dns(domain) = TlsServerIdentity::try_from(&dns).unwrap() else {
-            panic!("expected DNS identity");
-        };
+        let name = ServerName::try_from(&dns).unwrap();
+        let domain = name.as_domain().unwrap();
         assert_eq!(domain.as_str(), "example.com");
 
         let ip = Host::from(std::net::Ipv4Addr::LOCALHOST);
         assert_eq!(
-            TlsServerIdentity::try_from(&ip).unwrap(),
-            TlsServerIdentity::Ip(std::net::Ipv4Addr::LOCALHOST.into())
+            ServerName::try_from(&ip).unwrap(),
+            ServerName::from(IpAddr::V4(Ipv4Addr::LOCALHOST))
         );
 
         let numeric_domain = Host::Name(Domain::from_static("127.0.0.1"));
         assert_eq!(
-            TlsServerIdentity::try_from(&numeric_domain).unwrap(),
-            TlsServerIdentity::Ip(std::net::Ipv4Addr::LOCALHOST.into())
+            ServerName::try_from(&numeric_domain).unwrap(),
+            ServerName::from(IpAddr::V4(Ipv4Addr::LOCALHOST))
         );
     }
 
@@ -984,7 +1064,7 @@ mod tests {
     fn scoped_pin_set_does_not_apply_without_a_server_name() {
         let pins = TlsServerCertPins::new(
             TlsServerCertPinSet::new(CertificateDer::from(vec![1]))
-                .with_server_name(Host::from_static("api.example.com")),
+                .with_server_name(ServerName::from(Domain::from_static("api.example.com"))),
         );
 
         assert_eq!(
@@ -998,27 +1078,27 @@ mod tests {
     fn scoped_pin_set_only_applies_to_its_server_names() {
         let pins = TlsServerCertPins::new(
             TlsServerCertPinSet::new(CertificateDer::from(vec![1]))
-                .with_server_name(Host::from_static("api.example.com"))
-                .with_server_name(Host::from_static("uploads.example.com")),
+                .with_server_name(ServerName::from(Domain::from_static("api.example.com")))
+                .with_server_name(ServerName::from(Domain::from_static("uploads.example.com"))),
         );
 
         assert_eq!(
             pins.check(
-                Some(&Host::from_static("api.example.com")),
+                Some(&ServerName::from(Domain::from_static("api.example.com"))),
                 &CertificateDer::from(vec![1]),
             ),
             TlsServerCertPinCheck::Matched
         );
         assert_eq!(
             pins.check(
-                Some(&Host::from_static("api.example.com")),
+                Some(&ServerName::from(Domain::from_static("api.example.com"))),
                 &CertificateDer::from(vec![2]),
             ),
             TlsServerCertPinCheck::Mismatched
         );
         assert_eq!(
             pins.check(
-                Some(&Host::from_static("www.example.com")),
+                Some(&ServerName::from(Domain::from_static("www.example.com"))),
                 &CertificateDer::from(vec![1]),
             ),
             TlsServerCertPinCheck::NotApplicable
@@ -1029,13 +1109,13 @@ mod tests {
     fn applicable_pin_sets_are_alternatives() {
         let pins = TlsServerCertPins::new(
             TlsServerCertPinSet::new(CertificateDer::from(vec![1]))
-                .with_server_name(Host::from_static("api.example.com")),
+                .with_server_name(ServerName::from(Domain::from_static("api.example.com"))),
         )
         .with_pin_set(
             TlsServerCertPinSet::new(CertificateDer::from(vec![2]))
-                .with_server_name(Host::from_static("api.example.com")),
+                .with_server_name(ServerName::from(Domain::from_static("api.example.com"))),
         );
-        let server_name = Host::from_static("api.example.com");
+        let server_name = ServerName::from(Domain::from_static("api.example.com"));
 
         assert_eq!(
             pins.check(Some(&server_name), &CertificateDer::from(vec![1])),
@@ -1059,10 +1139,10 @@ mod tests {
                 CertificateDer::from(vec![3]),
             ])
             .unwrap()
-            .with_server_name(Host::from_static("api.example.com")),
+            .with_server_name(ServerName::from(Domain::from_static("api.example.com"))),
         );
-        let api = Host::from_static("api.example.com");
-        let other = Host::from_static("www.example.com");
+        let api = ServerName::from(Domain::from_static("api.example.com"));
+        let other = ServerName::from(Domain::from_static("www.example.com"));
 
         assert_eq!(
             pins.check(Some(&api), &CertificateDer::from(vec![1])),

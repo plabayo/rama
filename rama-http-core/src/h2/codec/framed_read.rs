@@ -269,13 +269,6 @@ fn decode_frame(decoder: &mut FrameDecoder, mut bytes: BytesMut) -> Result<Optio
             // Parse the header frame w/o parsing the payload
             let (mut frame, mut payload) = match frame::$frame::load($head, $bytes) {
                 Ok(res) => res,
-                Err(frame::Error::InvalidDependencyId) => {
-                    proto_err!(stream: "invalid HEADERS dependency ID");
-                    // A stream cannot depend on itself. An endpoint MUST
-                    // treat this as a stream error (Section 5.4.2) of type
-                    // `PROTOCOL_ERROR`.
-                    return Err(Error::library_reset($head.stream_id(), Reason::PROTOCOL_ERROR));
-                },
                 Err(e) => {
                     proto_err!(conn: "failed to load frame; err={:?}", e);
                     return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));

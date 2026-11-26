@@ -6,6 +6,7 @@ use std::{
 
 use crate::HeaderMap;
 use crate::body::http_body::{Body, Frame, SizeHint};
+use crate::header::trailer::merge_trailers;
 use bytes::{Buf, BufMut, Bytes};
 
 use crate::body::http_body_util::util::BufList;
@@ -63,7 +64,7 @@ impl<B: Buf> Collected<B> {
 
         if let Ok(trailers) = frame.into_trailers() {
             if let Some(current) = &mut self.trailers {
-                current.extend(trailers);
+                merge_trailers(current, trailers);
             } else {
                 self.trailers = Some(trailers);
             }
@@ -117,8 +118,19 @@ mod tests {
     use rama_core::futures::stream;
 
     use crate::body::http_body_util::{BodyExt, Full, StreamBody};
+    use crate::header::trailer::merge_fixture;
 
     use super::*;
+
+    #[test]
+    fn later_trailer_frames_merge_line_by_line() {
+        let (first, later) = merge_fixture::sections();
+        let mut collected = Collected::<Bytes>::default();
+        collected.push_frame(Frame::trailers(first));
+        collected.push_frame(Frame::trailers(later));
+        let trailers = collected.trailers().unwrap();
+        assert_eq!(merge_fixture::lines(trailers), merge_fixture::MERGED);
+    }
 
     #[tokio::test]
     async fn size_and_end_follow_what_is_left() {

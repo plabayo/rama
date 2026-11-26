@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use super::{DialedProxyConnection, ProxyLeg};
 use crate::{
-    address::ProxyAddress,
+    address::{HostWithPort, ProxyAddress, ProxyProtocol},
     client::{
         ProxyRoute,
         pool::{ConnectionReuse, ConnectionReusePolicy, PoolPartition, ReuseKey},
@@ -22,26 +22,51 @@ pub fn proxy_connection_reuse(connection: &Extensions) -> Option<ConnectionReuse
     let marker = connection.get_ref::<DialedProxyConnection>()?;
     Some(ConnectionReuse::restriction(ProxyConnectionReuse {
         rules: connection.get_ref::<ConnectionReuse>().cloned(),
+        proxy: ProxyEndpoint::of(&marker.proxy),
         hops: marker.hops.clone(),
         partition: marker.partition.clone(),
     }))
 }
 
-/// The rules a connection to a proxy was published with, the proxies it went through
-/// and the pool partition it was dialed under, checked against each origin request as
-/// [`proxy_request`](super::proxy_request) turns it into a request to that proxy.
+/// The rules a connection to a proxy was published with, the proxy it reaches, the
+/// proxies it went through and the pool partition it was dialed under, checked against
+/// each origin request as [`proxy_request`](super::proxy_request) turns it into a request
+/// to that proxy.
 #[derive(Debug)]
 struct ProxyConnectionReuse {
     rules: Option<ConnectionReuse>,
+    proxy: ProxyEndpoint,
     hops: Arc<[ProxyAddress]>,
     partition: Option<PoolPartition>,
 }
 
+/// The proxy a connection reaches, without its credential: a pool partition keeps
+/// credentials apart where that is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProxyEndpoint {
+    protocol: ProxyProtocol,
+    address: HostWithPort,
+}
+
+impl ProxyEndpoint {
+    fn of(proxy: &ProxyAddress) -> Self {
+        Self {
+            protocol: proxy.protocol.clone(),
+            address: proxy.address.clone().canonicalize(),
+        }
+    }
+}
+
 impl ProxyConnectionReuse {
-    fn leg_key(hops: &Arc<[ProxyAddress]>, partition: Option<&PoolPartition>) -> ReuseKey {
+    fn leg_key(
+        proxy: ProxyEndpoint,
+        hops: &Arc<[ProxyAddress]>,
+        partition: Option<&PoolPartition>,
+    ) -> ReuseKey {
+        let key = ReuseKey::of::<Self>().and(ReuseKey::new(proxy));
         let key = match partition {
-            Some(partition) => ReuseKey::of::<Self>().and(partition.key().clone()),
-            None => ReuseKey::of::<Self>(),
+            Some(partition) => key.and(partition.key().clone()),
+            None => key,
         };
         if hops.is_empty() {
             key
@@ -60,7 +85,7 @@ impl ConnectionReusePolicy for ProxyConnectionReuse {
     }
 
     fn connection_key(&self) -> Option<ReuseKey> {
-        let leg = Self::leg_key(&self.hops, self.partition.as_ref());
+        let leg = Self::leg_key(self.proxy.clone(), &self.hops, self.partition.as_ref());
         match &self.rules {
             Some(rules) => Some(leg.and(rules.key()?.clone())),
             None => Some(leg),
@@ -71,7 +96,11 @@ impl ConnectionReusePolicy for ProxyConnectionReuse {
         let proxy = input.get_ref::<ProxyRoute>()?.proxy_address()?;
         let leg = ProxyLeg::new(proxy, input);
         let view = leg.extensions();
-        let key = Self::leg_key(&leg.hops(), view.get_ref::<PoolPartition>());
+        let key = Self::leg_key(
+            ProxyEndpoint::of(proxy),
+            &leg.hops(),
+            view.get_ref::<PoolPartition>(),
+        );
         match &self.rules {
             Some(rules) => Some(key.and(rules.request_key(view)?)),
             None => Some(key),
@@ -249,6 +278,23 @@ mod tests {
             drop(connector.serve(request(hop)).await.unwrap().conn);
             assert_eq!(dials.load(Ordering::Relaxed), expected);
         }
+    }
+
+    #[test]
+    fn a_tunnel_serves_only_requests_to_the_proxy_it_reaches() {
+        let a: ProxyAddress = "http://proxy-a.example:8080".parse().unwrap();
+        let b: ProxyAddress = "http://proxy-b.example:8080".parse().unwrap();
+        let routed = |proxy: &ProxyAddress| routed_with_hop_partition(proxy, None);
+        let tunnel = tunnel_over(&a, &routed(&a));
+
+        assert!(tunnel.matches(&routed(&a)));
+        assert!(!tunnel.matches(&routed(&b)));
+        // The same proxy spoken to with another protocol is another connection.
+        assert!(!tunnel.matches(&routed(&"socks5://proxy-a.example:8080".parse().unwrap())));
+        // Credentials are for a pool partition to separate, not for the proxy's identity.
+        assert!(tunnel.matches(&routed(
+            &"http://user:secret@proxy-a.example:8080".parse().unwrap()
+        )));
     }
 
     #[test]

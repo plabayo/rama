@@ -3,6 +3,7 @@
 
 use rama::{
     Layer, Service, ServiceInput,
+    crypto::cert::boring::generate_certificate_authority_x509,
     error::{BoxError, CauseExt as _, error_chain, extra::OpaqueError},
     extensions::{Extensions, ExtensionsRef as _},
     futures::{StreamExt as _, stream},
@@ -30,6 +31,7 @@ use rama::{
             ext::Protocol as ConnectProtocol,
             h1::ext::{OriginalResponseBodyFraming, informational::OnInformational},
         },
+        proxy::mitm::HttpMitmRelay,
         server::HttpServer,
         ws::{
             Message,
@@ -43,13 +45,14 @@ use rama::{
             },
         },
     },
+    io::BridgeIo,
     layer::{
-        AddInputExtensionLayer, HijackLayer, MapInputLayer,
+        AddInputExtensionLayer, ArcLayer, HijackLayer, MapErrLayer, MapInputLayer,
         timeout::{Elapsed, Timeout},
     },
     net::{
         Protocol,
-        address::{Host, ProxyAddress, ProxyProtocol, SocketAddress},
+        address::{Domain, ProxyAddress, ProxyProtocol, SocketAddress},
         client::{ConnectorService as _, ConnectorTarget, ProxyRoute},
         socket::SocketOptions,
         stream::layer::TcpStreamOptionsLayer,
@@ -65,10 +68,14 @@ use rama::{
     tls::{
         boring::{
             client::{TlsConnectorData, handshake::PreparedClient},
+            proxy::TlsMitmRelay,
             server::{BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer},
         },
         client::{ServerVerifyMode, TlsClientConfig},
-        server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+        server::{
+            GeneratedServerAuthConfig, PeekTlsClientHelloService, SelfSignedCaConfig,
+            ServerAuthData, TlsServerConfig,
+        },
     },
     udp::{DatagramError, UdpSocketConfig, UdpSocketFactory},
     utils::rng::{HasherRng, Rng as _},
@@ -454,6 +461,8 @@ async fn endpoint_with_connect_support(
             let route = route.clone();
             async move {
                 let version = req.version();
+                let method = req.method().clone();
+                let upgrade = req.headers().get(UPGRADE).cloned();
                 let authority = req
                     .uri()
                     .host_with_opt_port()
@@ -585,6 +594,12 @@ async fn endpoint_with_connect_support(
                 response
                     .headers_mut()
                     .insert("x-origin-authority", authority.parse().unwrap());
+                response
+                    .headers_mut()
+                    .insert("x-origin-method", method.as_str().parse().unwrap());
+                if let Some(upgrade) = upgrade {
+                    response.headers_mut().insert("x-origin-upgrade", upgrade);
+                }
                 response.headers_mut().insert(
                     "x-ingress-version",
                     HeaderValue::from_str(&format!("{version:?}")).unwrap(),
@@ -725,7 +740,7 @@ async fn tunnel_with_alpn(
     let io = handle_upgrade(&response).await.unwrap();
     let mut tls = TlsClientConfig::new()
         .with_server_verify(ServerVerifyMode::Disable)
-        .with_server_name(Host::from_static("localhost"))
+        .with_server_name(Domain::from_static("localhost"))
         .with_alpn(
             [if version == Version::HTTP_2 {
                 ApplicationProtocol::HTTP_2
@@ -782,8 +797,13 @@ async fn exchange(
 }
 
 fn websocket_client() -> BoxService<Request, Response, OpaqueError> {
+    websocket_client_with(
+        TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
+    )
+}
+
+fn websocket_client_with(tls: TlsClientConfig) -> BoxService<Request, Response, OpaqueError> {
     let scope = WeakScope::detached();
-    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
     EasyHttpWebClient::connector_builder(scope.clone())
         .with_default_transport_connector()
         .with_default_dns_connector()
@@ -975,6 +995,583 @@ async fn websockets_relay_across_versions_and_connect_tunnels() {
     .expect("WebSocket matrix deadline");
 }
 
+#[derive(Clone, Copy, Debug)]
+enum WsForm {
+    H1,
+    H2,
+    H3,
+    Auto(Option<Version>),
+}
+
+/// A WebSocket without a target keeps the configured ALPN offer for the server to pick
+/// from; a target narrows it; without a configured offer `wss://` offers only `http/1.1`.
+#[tokio::test]
+async fn websocket_versions_follow_the_alpn_offer_and_target() {
+    timeout(Duration::from_secs(60), async {
+        let both = [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
+        let both = endpoint(None, &both).await;
+        let http1 = endpoint(None, &[ApplicationProtocol::HTTP_11]).await;
+        let no_alpn = endpoint(None, &[]).await;
+        let offering = websocket_client();
+        let not_offering = websocket_client_with(
+            TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
+        );
+        // (client offers h2, origin, form, negotiated version or `None` for an error)
+        let cases = [
+            (true, &both, WsForm::H1, Some(Version::HTTP_11)),
+            (true, &both, WsForm::H2, Some(Version::HTTP_2)),
+            (true, &both, WsForm::H3, Some(Version::HTTP_3)),
+            (true, &both, WsForm::Auto(None), Some(Version::HTTP_2)),
+            (
+                true,
+                &both,
+                WsForm::Auto(Some(Version::HTTP_11)),
+                Some(Version::HTTP_11),
+            ),
+            (
+                true,
+                &both,
+                WsForm::Auto(Some(Version::HTTP_2)),
+                Some(Version::HTTP_2),
+            ),
+            (
+                true,
+                &both,
+                WsForm::Auto(Some(Version::HTTP_3)),
+                Some(Version::HTTP_3),
+            ),
+            (false, &both, WsForm::Auto(None), Some(Version::HTTP_11)),
+            (true, &http1, WsForm::Auto(None), Some(Version::HTTP_11)),
+            (true, &http1, WsForm::H2, None),
+            (true, &no_alpn, WsForm::Auto(None), Some(Version::HTTP_11)),
+            (true, &no_alpn, WsForm::H1, Some(Version::HTTP_11)),
+        ];
+        for (offers_h2, origin, form, expected) in cases {
+            let context = format!("offers_h2={offers_h2} {} {form:?}", origin.address);
+            let web = if offers_h2 { &offering } else { &not_offering };
+            let url = format!("wss://{}/ws", origin.address);
+            let extensions = Extensions::new();
+            let builder = match form {
+                WsForm::H1 => web.websocket(url),
+                WsForm::H2 => web.websocket_h2(url),
+                WsForm::H3 => web.websocket_h3(url),
+                WsForm::Auto(target) => {
+                    if let Some(version) = target {
+                        extensions.insert(TargetHttpVersion(version));
+                    }
+                    web.websocket_auto(url)
+                }
+            };
+            let result = builder
+                .with_protocols(SecWebSocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT))
+                .with_per_message_deflate_overwrite_extensions()
+                .handshake(extensions)
+                .await;
+            let Some(version) = expected else {
+                assert!(
+                    result.is_err(),
+                    "{context}: {:?}",
+                    result.map(|s| s.response().version)
+                );
+                continue;
+            };
+            let mut socket = result.unwrap_or_else(|err| panic!("{context}: {err:?}"));
+            assert_eq!(socket.response().version, version, "{context}");
+            assert_eq!(
+                socket.response().headers["x-origin-version"],
+                format!("{version:?}"),
+                "{context}"
+            );
+            assert_eq!(
+                socket.response().status,
+                if version == Version::HTTP_11 {
+                    StatusCode::SWITCHING_PROTOCOLS
+                } else {
+                    StatusCode::OK
+                },
+                "{context}"
+            );
+            assert_eq!(socket.accepted_protocol(), Some("echo"), "{context}");
+            assert!(
+                socket
+                    .response()
+                    .headers
+                    .contains_key("sec-websocket-extensions"),
+                "{context}"
+            );
+            for message in [Message::text("negotiated"), Message::binary(vec![9; 65536])] {
+                socket.send_message(message.clone()).await.unwrap();
+                assert_eq!(socket.recv_message().await.unwrap(), message, "{context}");
+            }
+            socket.close(None).await.unwrap();
+            assert_eq!(
+                socket.recv_message().await.unwrap(),
+                Message::Close(None),
+                "{context}"
+            );
+        }
+    })
+    .await
+    .expect("WebSocket version deadline");
+}
+
+/// The forward-proxy upgrade relay (`HttpUpgradeMitmRelay` over `EasyHttpWebClient`, the
+/// shape of `rama serve proxy`) across ingress versions and origin kinds: an upgrade keeps
+/// its ingress version, also when the origin offers `h2`, unless middleware in front of the
+/// relay sets a target; an ordinary request adapts to the egress connection as before.
+#[tokio::test]
+async fn forward_upgrade_relay_matrix() {
+    timeout(Duration::from_secs(60), async {
+        let plain = origin().await;
+        let both = endpoint(
+            None,
+            &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+        )
+        .await;
+        let http1 = endpoint(None, &[ApplicationProtocol::HTTP_11]).await;
+        let h1 = Some("h1");
+        let v11 = Some("HTTP/1.1");
+        let v2 = Some("HTTP/2.0");
+        // (middleware target, ingress, origin, the version an ordinary GET reached or `None`
+        // for an error response, the version an upgrade reached or `None` for a failed one)
+        let cells = [
+            (None, Version::HTTP_11, "http", &plain, h1, h1),
+            (
+                None,
+                Version::HTTP_11,
+                "https [h2, http/1.1]",
+                &both,
+                v2,
+                v11,
+            ),
+            (None, Version::HTTP_11, "https [http/1.1]", &http1, v11, v11),
+            (None, Version::HTTP_2, "http", &plain, h1, None),
+            (None, Version::HTTP_2, "https [h2, http/1.1]", &both, v2, v2),
+            (None, Version::HTTP_2, "https [http/1.1]", &http1, v11, None),
+            (
+                Some(Version::HTTP_2),
+                Version::HTTP_11,
+                "http",
+                &plain,
+                None,
+                None,
+            ),
+            (
+                Some(Version::HTTP_2),
+                Version::HTTP_11,
+                "https [h2, http/1.1]",
+                &both,
+                v2,
+                v2,
+            ),
+            (
+                Some(Version::HTTP_2),
+                Version::HTTP_11,
+                "https [http/1.1]",
+                &http1,
+                None,
+                None,
+            ),
+            (
+                Some(Version::HTTP_2),
+                Version::HTTP_2,
+                "https [h2, http/1.1]",
+                &both,
+                v2,
+                v2,
+            ),
+        ];
+        let client = websocket_client();
+        for (target, ingress, kind, origin, get, upgrade) in cells {
+            let scheme = if kind.starts_with("https") {
+                "https"
+            } else {
+                "http"
+            };
+            let (address, task) =
+                forward_relay(&format!("{scheme}://{}", origin.address), target, ingress).await;
+            let context = format!("target={target:?} ingress={ingress:?} origin={kind}");
+
+            let req = Request::builder()
+                .uri(format!("http://{address}/echo?test=1"))
+                .version(ingress)
+                .body(Body::empty())
+                .unwrap();
+            req.extensions().insert(TargetHttpVersion(ingress));
+            let response = client.serve(req).await.unwrap();
+            match get {
+                Some(version) => {
+                    assert_eq!(response.status(), StatusCode::OK, "{context}");
+                    assert_eq!(response.headers()["x-origin-version"], version, "{context}");
+                }
+                None => assert!(response.status().is_server_error(), "{context}"),
+            }
+            response.into_body().collect().await.unwrap();
+
+            let url = format!("ws://{address}/ws");
+            let builder = if ingress == Version::HTTP_2 {
+                client.websocket_h2(url)
+            } else {
+                client.websocket(url)
+            };
+            let result = builder.handshake(Extensions::new()).await;
+            let Some(version) = upgrade else {
+                assert!(
+                    result.is_err(),
+                    "{context}: {:?}",
+                    result.map(|socket| socket.response().status)
+                );
+                task.abort();
+                continue;
+            };
+            let mut socket = result.unwrap_or_else(|err| panic!("{context}: {err:?}"));
+            assert_eq!(
+                socket.response().status,
+                if ingress == Version::HTTP_11 {
+                    StatusCode::SWITCHING_PROTOCOLS
+                } else {
+                    StatusCode::OK
+                },
+                "{context}"
+            );
+            // The plaintext origin does not label its WebSocket responses.
+            if version != "h1" {
+                assert_eq!(
+                    socket.response().headers["x-origin-version"],
+                    version,
+                    "{context}"
+                );
+            }
+            for message in [Message::text("relayed"), Message::binary(vec![3; 4096])] {
+                socket.send_message(message.clone()).await.unwrap();
+                assert_eq!(socket.recv_message().await.unwrap(), message, "{context}");
+            }
+            socket.close(None).await.unwrap();
+            assert_eq!(
+                socket.recv_message().await.unwrap(),
+                Message::Close(None),
+                "{context}"
+            );
+            task.abort();
+        }
+    })
+    .await
+    .expect("WebSocket relay deadline");
+}
+
+/// A plaintext forward relay to `base` in the shape of `rama serve proxy`, serving
+/// `ingress`. With a `target`, middleware sets it and the response is translated back.
+async fn forward_relay(
+    base: &str,
+    target: Option<Version>,
+    ingress: Version,
+) -> (String, JoinHandle<()>) {
+    let scope = WeakScope::detached();
+    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
+    let web = EasyHttpWebClient::connector_builder(scope.clone())
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .without_proxy_support()
+        .with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_11)
+        .with_default_http_connector()
+        .with_default_connection_pool()
+        .build_client();
+    let web: BoxService<Request, Response, BoxError> = if target.is_some() {
+        ResponseVersionAdapter::new(web).boxed()
+    } else {
+        MapErrLayer::into_box_error().into_layer(web).boxed()
+    };
+    let relay = HttpUpgradeMitmRelayLayer::new(
+        scope.clone(),
+        HttpWebSocketRelayServiceRequestMatcher::default_with_scope(scope.clone()),
+    )
+    .into_layer(web);
+    let base: Uri = base.parse().unwrap();
+    let relay = Arc::new(
+        (
+            ErrorHandlerLayer::new(),
+            RemoveRequestHeaderLayer::exact(HOST),
+            RewriteUriLayer::new(UriMatchReplaceOrigin::new(
+                base.scheme().unwrap().clone(),
+                base.host_with_opt_port().unwrap(),
+            )),
+            target.map(|version| AddInputExtensionLayer::new(TargetHttpVersion(version))),
+        )
+            .into_layer(relay),
+    );
+    let listener = TcpListener::bind_address("127.0.0.1:0", scope.clone())
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let task = if ingress == Version::HTTP_2 {
+        let mut server = HttpServer::new_h2(scope);
+        server.h2_mut().set_enable_connect_protocol();
+        let server = server.service(relay);
+        tokio::spawn(async move { listener.serve(server).await })
+    } else {
+        let server = HttpServer::new_http1(scope).service(relay);
+        tokio::spawn(async move { listener.serve(server).await })
+    };
+    (address, task)
+}
+
+/// An authenticated `localhost` origin over TCP (`h2`, `http/1.1`) and HTTP/3 on the same
+/// port, advertising HTTP/3 by Alt-Svc on ordinary responses and echoing WebSockets on all.
+async fn advertising_origin() -> (u16, TlsClientConfig, Vec<JoinHandle<()>>, Endpoint) {
+    let scope = WeakScope::detached();
+    let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+    let trust = TlsClientConfig::default_http()
+        .try_with_server_trust_anchors(auth.cert_chain.clone())
+        .unwrap()
+        .with_server_verify(ServerVerifyMode::Auto);
+    let port = Arc::new(parking_lot::Mutex::new(0u16));
+    let advertised = port.clone();
+    let service = Arc::new(service_fn(move |req: Request| {
+        let advertised = *advertised.lock();
+        async move {
+            let version = req.version();
+            let mut response = if is_http_req_websocket_handshake(&req) {
+                ErrorHandlerLayer::new()
+                    .into_layer(WebSocketAcceptor::new().into_echo_service())
+                    .serve(req)
+                    .await
+                    .unwrap()
+            } else {
+                let mut response = Response::new(Body::empty());
+                response.headers_mut().insert(
+                    "alt-svc",
+                    HeaderValue::from_str(&format!("h3=\":{advertised}\"")).unwrap(),
+                );
+                response
+            };
+            response.headers_mut().insert(
+                "x-origin-version",
+                HeaderValue::from_str(&format!("{version:?}")).unwrap(),
+            );
+            Ok::<_, Infallible>(response)
+        }
+    }));
+    let tls = TlsServerConfig::new()
+        .with_server_auth(auth.clone())
+        .with_alpn(
+            [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+                .into_iter()
+                .collect(),
+        );
+    let mut http = HttpServer::auto(scope.clone());
+    http.h2_mut().set_enable_connect_protocol();
+    let tcp = TlsAcceptorLayer::new(tls).into_layer(http.service(service.clone()));
+    let mut h3 = HttpServer::new_http3(scope.clone());
+    h3.http3_mut().extended_connect = true;
+    let tls = TlsServerConfig::new()
+        .with_server_auth(auth)
+        .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+    let mut transport = TransportConfig::default();
+    h3.http3().configure_transport(&mut transport).unwrap();
+    let mut config = ServerConfig::try_from_rama_tls_with_provider(
+        &tls,
+        TlsOptions::default(),
+        &BoringTlsProvider::new(),
+    )
+    .unwrap();
+    config.set_transport_config(Arc::new(transport));
+    let (listener, endpoint) =
+        bind_tcp_and_quic(scope.clone(), "127.0.0.1:0".parse().unwrap(), config)
+            .await
+            .unwrap();
+    let local = listener.local_addr().unwrap().port();
+    *port.lock() = local;
+    let tcp_task = tokio::spawn(async move { listener.serve(tcp).await });
+    let quic_task = tokio::spawn(endpoint.clone().serve(scope, h3.service(service)));
+    (local, trust, vec![tcp_task, quic_task], endpoint)
+}
+
+/// A learned HTTP/3 advertisement moves a WebSocket, or an `https` request signalled only
+/// by an `Upgrade` header, to HTTP/3 Extended CONNECT only with the opt-in.
+#[tokio::test]
+async fn advertised_http3_moves_an_upgrade_only_when_allowed() {
+    timeout(Duration::from_secs(30), async {
+        let (port, trust, tasks, endpoint) = advertising_origin().await;
+        for allow in [false, true] {
+            let scope = WeakScope::detached();
+            let web = EasyHttpWebClient::connector_builder(scope)
+                .with_default_transport_connector()
+                .with_default_dns_connector()
+                .without_proxy_support()
+                .with_tls_support_using_boringssl(trust.clone())
+                .with_default_http_connector()
+                .with_default_connection_pool()
+                .configure_http_service(|selector| {
+                    selector.set_http3_upgrades(allow);
+                })
+                .build_client()
+                .boxed();
+            let origin = format!("localhost:{port}");
+
+            // An ordinary request learns the advertisement.
+            let response = web
+                .serve(
+                    Request::builder()
+                        .uri(format!("https://{origin}/"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(response.headers().contains_key("alt-svc"), "allow={allow}");
+            response.into_body().collect().await.unwrap();
+
+            let expected = if allow {
+                Version::HTTP_3
+            } else {
+                Version::HTTP_2
+            };
+            let mut socket = web
+                .websocket_auto(format!("wss://{origin}/ws"))
+                .handshake(Extensions::new())
+                .await
+                .unwrap_or_else(|err| panic!("allow={allow}: {err:?}"));
+            assert_eq!(socket.response().version, expected, "allow={allow}");
+            assert_eq!(socket.response().status, StatusCode::OK, "allow={allow}");
+            assert_eq!(
+                socket.response().headers["x-origin-version"],
+                format!("{expected:?}"),
+                "allow={allow}"
+            );
+            let message = Message::text("advertised");
+            socket.send_message(message.clone()).await.unwrap();
+            assert_eq!(
+                socket.recv_message().await.unwrap(),
+                message,
+                "allow={allow}"
+            );
+            socket.close(None).await.unwrap();
+
+            // An `https` upgrade named only by its headers follows the same rule.
+            let request = Request::builder()
+                .uri(format!("https://{origin}/ws"))
+                .header("connection", "Upgrade")
+                .header("upgrade", "websocket")
+                .header("sec-websocket-version", "13")
+                .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                .body(Body::empty())
+                .unwrap();
+            let response = web.serve(request).await.unwrap();
+            assert_eq!(response.version(), expected, "allow={allow}");
+            assert_eq!(
+                response.headers()["x-origin-version"],
+                format!("{expected:?}"),
+                "allow={allow}"
+            );
+
+            // An upgrade no version can translate stays on its own, even with the opt-in.
+            let request = Request::builder()
+                .uri(format!("https://{origin}/"))
+                .header("connection", "Upgrade")
+                .header("upgrade", "test")
+                .body(Body::empty())
+                .unwrap();
+            let response = web.serve(request).await.unwrap();
+            assert_eq!(
+                response.headers()["x-origin-version"],
+                "HTTP/1.1",
+                "allow={allow}"
+            );
+        }
+        drop(tasks);
+        drop(endpoint);
+    })
+    .await
+    .expect("advertised HTTP/3 deadline");
+}
+
+/// Untargeted upgrades the version adapter cannot translate reach an origin offering `h2`
+/// on HTTP/1.1, while an ordinary request and the auto WebSocket form negotiate `h2`.
+#[tokio::test]
+async fn untranslatable_upgrades_stay_on_their_version() {
+    timeout(Duration::from_secs(20), async {
+        let origin = endpoint(
+            None,
+            &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+        )
+        .await;
+        let web = websocket_client();
+        let cases: [(&str, &[(&str, &str)], &str); 5] = [
+            (
+                "other",
+                &[("connection", "Upgrade"), ("upgrade", "test")],
+                "HTTP/1.1",
+            ),
+            (
+                "multi-token",
+                &[
+                    ("connection", "Upgrade"),
+                    ("upgrade", "h2c, websocket"),
+                    ("sec-websocket-version", "13"),
+                    ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+                ],
+                "HTTP/1.1",
+            ),
+            (
+                "without connection",
+                &[("upgrade", "connect-udp")],
+                "HTTP/1.1",
+            ),
+            (
+                "connection only",
+                &[("connection", "keep-alive, Upgrade")],
+                "HTTP/1.1",
+            ),
+            ("ordinary", &[], "HTTP/2.0"),
+        ];
+        for (case, headers, expected) in cases {
+            let mut request = Request::builder().uri(format!("https://{}/", origin.address));
+            for (name, value) in headers {
+                request = request.header(*name, *value);
+            }
+            let response = web
+                .serve(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.headers()["x-origin-version"], expected, "{case}");
+            assert_eq!(response.headers()["x-origin-method"], "GET", "{case}");
+        }
+        // A WebSocket opening handshake is a GET: a POST upgrade with a body stays as sent.
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("https://{}/", origin.address))
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .body(Body::from("upgrade payload"))
+            .unwrap();
+        let response = web.serve(request).await.unwrap();
+        assert_eq!(response.headers()["x-origin-version"], "HTTP/1.1");
+        assert_eq!(response.headers()["x-origin-method"], "POST");
+        assert_eq!(response.headers()["x-origin-upgrade"], "websocket");
+        assert_eq!(response.headers()["x-request-length"], "15");
+        assert_eq!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            b"upgrade payload"
+        );
+
+        let socket = web
+            .websocket_auto(format!("wss://{}/ws", origin.address))
+            .handshake(Extensions::new())
+            .await
+            .unwrap();
+        assert_eq!(socket.response().version, Version::HTTP_2);
+    })
+    .await
+    .expect("upgrade version deadline");
+}
+
 #[tokio::test]
 async fn websocket_failures_do_not_become_successful_tunnels() {
     timeout(Duration::from_secs(20), async {
@@ -1133,6 +1730,214 @@ async fn ingress_and_mitm_version_matrix() {
     })
     .await
     .expect("proxy matrix deadline");
+}
+
+/// A transparent MITM relay in front of `target`, as `rama serve proxy` intercepts: TLS is
+/// terminated with the client's mirrored offer when `tls`, and HTTP is relayed as is.
+async fn transparent_mitm(target: String, tls: bool) -> (String, JoinHandle<()>) {
+    let scope = WeakScope::detached();
+    let http = HttpMitmRelay::new(scope.clone()).with_http_middleware((
+        HttpUpgradeMitmRelayLayer::new(
+            scope.clone(),
+            HttpWebSocketRelayServiceRequestMatcher::default_with_scope(scope.clone()),
+        ),
+        ArcLayer::new(),
+    ));
+    let (ca, key) = generate_certificate_authority_x509(&SelfSignedCaConfig::default()).unwrap();
+    let intercept = PeekTlsClientHelloService::new(
+        TlsMitmRelay::new_cached_in_memory(ca, key).into_layer(http.clone()),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((ingress, _)) = listener.accept().await else {
+                return;
+            };
+            let target = target.clone();
+            let http = http.clone();
+            let intercept = intercept.clone();
+            tokio::spawn(async move {
+                let Ok(egress) = tokio::net::TcpStream::connect(target.as_str()).await else {
+                    return;
+                };
+                let bridge = BridgeIo(ServiceInput::new(ingress), ServiceInput::new(egress));
+                if tls {
+                    _ = intercept.serve(bridge).await;
+                } else {
+                    _ = http.serve(bridge).await;
+                }
+            });
+        }
+    });
+    (address, task)
+}
+
+/// Every scheme through the transparent MITM relay, the client on each handshake form
+/// against origins offering `http/1.1` or `h2, http/1.1`: the relay mirrors the client's
+/// side, so both peers observe the same version, and nothing is adapted in between.
+#[tokio::test]
+async fn transparent_mitm_scheme_matrix() {
+    timeout(Duration::from_secs(90), async {
+        let plain = origin().await;
+        let http1 = endpoint(None, &[ApplicationProtocol::HTTP_11]).await;
+        let both = endpoint(
+            None,
+            &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+        )
+        .await;
+        let origins = [
+            ("http", &plain, false),
+            ("https [http/1.1]", &http1, true),
+            ("https [h2, http/1.1]", &both, true),
+        ];
+        let web = websocket_client();
+        let mut observed = Vec::new();
+        for (kind, origin, tls) in origins {
+            let (relay, task) = transparent_mitm(origin.address.clone(), tls).await;
+            let (http, ws) = if tls { ("https", "wss") } else { ("http", "ws") };
+            for form in [Some(Version::HTTP_11), Some(Version::HTTP_2), None] {
+                let cell = format!("{kind} {form:?}");
+                let mut req = Request::builder()
+                    .uri(format!("{http}://{relay}/echo?test=1"))
+                    .body(Body::empty())
+                    .unwrap();
+                if let Some(version) = form {
+                    *req.version_mut() = version;
+                    req.extensions().insert(TargetHttpVersion(version));
+                }
+                let get = match timeout(Duration::from_secs(10), web.serve(req)).await {
+                    Ok(Ok(response)) => {
+                        let line = format!(
+                            "GET {} {:?} origin={}",
+                            response.status().as_u16(),
+                            response.version(),
+                            response
+                                .headers()
+                                .get("x-origin-version")
+                                .map_or("-", |value| value.to_str().unwrap())
+                        );
+                        response.into_body().collect().await.unwrap();
+                        line
+                    }
+                    Ok(Err(_)) => "GET error".to_owned(),
+                    Err(_) => "GET timeout".to_owned(),
+                };
+                let url = format!("{ws}://{relay}/ws");
+                let builder = match form {
+                    Some(Version::HTTP_11) => web.websocket(url),
+                    Some(_) => web.websocket_h2(url),
+                    None => web.websocket_auto(url),
+                };
+                let ws = match timeout(Duration::from_secs(10), builder.handshake(Extensions::new())).await {
+                    Ok(Ok(mut socket)) => {
+                        let line = format!(
+                            "WS {} {:?} origin={}",
+                            socket.response().status.as_u16(),
+                            socket.response().version,
+                            socket
+                                .response()
+                                .headers
+                                .get("x-origin-version")
+                                .map_or("-", |value| value.to_str().unwrap())
+                        );
+                        let message = Message::text("mirrored");
+                        socket.send_message(message.clone()).await.unwrap();
+                        assert_eq!(socket.recv_message().await.unwrap(), message, "{cell}");
+                        socket.close(None).await.unwrap();
+                        line
+                    }
+                    Ok(Err(HandshakeError::ValidationError(error))) => format!("WS invalid {error}"),
+                    Ok(Err(_)) => "WS error".to_owned(),
+                    Err(_) => "WS timeout".to_owned(),
+                };
+                observed.push(format!("{cell}: {get}; {ws}"));
+            }
+            task.abort();
+        }
+        // Plaintext h2 is prior knowledge towards a relay whose origin speaks HTTP/1.1
+        // only, and a client offering only `h2` shares no ALPN with an `http/1.1` origin.
+        let expected = [
+            "http Some(HTTP/1.1): GET 200 HTTP/1.1 origin=h1; WS 101 HTTP/1.1 origin=-",
+            "http Some(HTTP/2.0): GET 502 HTTP/2.0 origin=-; WS error",
+            "http None: GET 200 HTTP/1.1 origin=h1; WS 101 HTTP/1.1 origin=-",
+            "https [http/1.1] Some(HTTP/1.1): GET 200 HTTP/1.1 origin=HTTP/1.1; WS 101 HTTP/1.1 origin=HTTP/1.1",
+            "https [http/1.1] Some(HTTP/2.0): GET error; WS error",
+            "https [http/1.1] None: GET 200 HTTP/1.1 origin=HTTP/1.1; WS 101 HTTP/1.1 origin=HTTP/1.1",
+            "https [h2, http/1.1] Some(HTTP/1.1): GET 200 HTTP/1.1 origin=HTTP/1.1; WS 101 HTTP/1.1 origin=HTTP/1.1",
+            "https [h2, http/1.1] Some(HTTP/2.0): GET 200 HTTP/2.0 origin=HTTP/2.0; WS 200 HTTP/2.0 origin=HTTP/2.0",
+            "https [h2, http/1.1] None: GET 200 HTTP/2.0 origin=HTTP/2.0; WS 200 HTTP/2.0 origin=HTTP/2.0",
+        ];
+        assert_eq!(observed, expected, "{observed:#?}");
+    })
+    .await
+    .expect("transparent MITM deadline");
+}
+
+/// HTTP/3 through the transparent QUIC MITM relay (`QuicMitmRelay` + `Http3MitmRelay`):
+/// both peers observe HTTP/3, an ordinary request and an Extended CONNECT WebSocket
+/// pass, and an origin without HTTP/3 fails the client's handshake.
+#[cfg(feature = "quic")]
+#[tokio::test]
+async fn transparent_mitm_http3_cells() {
+    timeout(Duration::from_secs(60), async {
+        let origin = endpoint(
+            None,
+            &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+        )
+        .await;
+        let (relay, _relay) =
+            crate::masque::transparent::transparent(origin.address.parse().unwrap(), true).await;
+        let web = websocket_client();
+
+        let request = Request::builder()
+            .version(Version::HTTP_3)
+            .uri(format!("https://{relay}/echo?test=1"))
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        let response = web.serve(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.version(), Version::HTTP_3);
+        assert_eq!(response.headers()["x-origin-version"], "HTTP/3.0");
+        response.into_body().collect().await.unwrap();
+
+        let mut socket = web
+            .websocket_h3(format!("wss://{relay}/ws"))
+            .handshake(Extensions::new())
+            .await
+            .unwrap();
+        assert_eq!(socket.response().status, StatusCode::OK);
+        assert_eq!(socket.response().version, Version::HTTP_3);
+        assert_eq!(socket.response().headers["x-origin-version"], "HTTP/3.0");
+        let message = Message::text("relayed over h3");
+        socket.send_message(message.clone()).await.unwrap();
+        assert_eq!(socket.recv_message().await.unwrap(), message);
+        socket.close(None).await.unwrap();
+
+        // An origin serving TCP only: the relay has no HTTP/3 egress to mirror.
+        let tcp_only = origin_with_upload_wait(false).await;
+        let (relay, _relay) =
+            crate::masque::transparent::transparent(tcp_only.address.parse().unwrap(), true).await;
+        let request = Request::builder()
+            .version(Version::HTTP_3)
+            .uri(format!("https://{relay}/echo?test=1"))
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        let result = timeout(Duration::from_secs(20), web.serve(request)).await;
+        assert!(
+            !matches!(result, Ok(Ok(_))),
+            "{:?}",
+            result.map(|result| result.map(|response| response.status()))
+        );
+    })
+    .await
+    .expect("transparent HTTP/3 deadline");
 }
 
 #[tokio::test]

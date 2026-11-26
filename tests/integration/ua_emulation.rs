@@ -3,6 +3,9 @@ use rama::graceful::WeakScope;
 use rama::http::Request;
 use rama::http::client::HttpConnectorLayer;
 use rama::http::fingerprint::Ja4H;
+use rama::http::proto::h2::frame::{
+    EarlyFrame, EarlyFrameCapture, EarlyFrameStreamContext, Setting, Settings,
+};
 use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
 use rama::http::{HeaderMap, HeaderName, HeaderValue};
@@ -247,6 +250,23 @@ async fn test_ua_emulation() {
             println!("server receives {description}: ja4: {ja4:?}");
             assert_eq!(ja4.to_string(), expected.ja4, "{description}");
 
+            // The profile's HTTP/2 startup reaches the wire of the connection it was prepared for.
+            let settings = req
+                .extensions()
+                .get_ref::<EarlyFrameCapture>()
+                .and_then(|capture| {
+                    capture.iter().find_map(|frame| match frame {
+                        EarlyFrame::Settings(settings) => settings.observation.clone(),
+                        _ => None,
+                    })
+                })
+                .map(|observation| observation.entries.to_vec())
+                .unwrap_or_default();
+            assert!(
+                settings.contains(&marked_setting()),
+                "{description}: {settings:?}"
+            );
+
             Ok(Response::new(Body::empty()))
         }
 
@@ -259,7 +279,10 @@ async fn test_ua_emulation() {
         let mut row = UserAgentProfileInput::new(user_agent);
         row.h1_settings = Some(Http1Settings::default());
         row.h1_headers_navigate = Some(HeaderMap::default());
-        row.h2_settings = Some(Http2Settings::default());
+        row.h2_settings = Some(Http2Settings {
+            early_frames: Some(marked_early_frames()),
+            ..Http2Settings::default()
+        });
         row.h2_headers_navigate = Some(test_case.h2_headers_navigate);
         row.tls_client_hello = Some(client_hello);
         let profile = row.try_into_profile().expect(description);
@@ -433,9 +456,11 @@ where
         let svc = self.serve_svc.clone();
 
         tokio::spawn(async move {
+            let mut http = HttpServer::auto(WeakScope::detached());
+            http.h2_mut().set_observe_early_frames(true);
             let server = TlsAcceptorLayer::new(TlsServerConfig::default_http().unwrap())
                 .with_store_client_hello(true)
-                .into_layer(HttpServer::auto(WeakScope::detached()).service(svc));
+                .into_layer(http.service(svc));
             server.serve(server_socket).await.unwrap();
         });
 
@@ -447,6 +472,20 @@ where
 }
 
 use rama::net::test_utils::client::MockSocket;
+
+/// A SETTINGS entry no implementation sends on its own.
+fn marked_setting() -> Setting {
+    Setting::new(0xfefe_u16, 99)
+}
+
+fn marked_early_frames() -> EarlyFrameCapture {
+    let mut recorder = EarlyFrameStreamContext::new_recorder();
+    recorder.record_settings_frame(
+        &Settings::from_ordered_entries([Setting::new(1_u16, 65_536), marked_setting()].into())
+            .unwrap(),
+    );
+    recorder.freeze_recorder().unwrap()
+}
 
 fn new_mock_sockets() -> (MockSocket, MockSocket) {
     let (client, server) = duplex(1024);

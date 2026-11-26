@@ -1,11 +1,58 @@
-use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
+use base64::Engine;
 use rama::graceful::WeakScope;
 use rama::net::client::ConnectRequest;
 use rama::{
-    extensions::Extensions,
+    Layer as _,
+    crypto::pki_types::{CertificateDer, PrivateKeyDer},
+    error::{BoxError, ErrorContext as _},
+    futures::StreamExt as _,
     http::{
-        client::EasyHttpWebClient, headers::SecWebSocketProtocol,
-        layer::error_handling::ErrorHandlerLayer, ws::handshake::client::HttpClientWebSocketExt,
+        headers::StrictTransportSecurity,
+        layer::{
+            compression::CompressionLayer, cors, map_response_body::MapResponseBodyLayer,
+            required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
+            trace::TraceLayer,
+        },
+        server::HttpServer,
+        service::web::{
+            Router,
+            extract::{Json, State},
+        },
+        tls::{CertOrderInput, CertOrderOutput},
+        ws::Message,
+    },
+    net::address::{Domain, SocketAddress},
+    proxy::haproxy::server::HaProxyLayer,
+    tcp::server::TcpListener,
+    tls::{
+        boring::{
+            core::{
+                pkey::{PKey, Private},
+                x509::X509,
+            },
+            server::TlsAcceptorLayer,
+        },
+        server::{
+            CertificateIdentity, CertificateSubject, LeafCertConfig, LeafCertRequest,
+            SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+        },
+    },
+    udp::bind_udp_with_address,
+};
+use rama::{
+    Service as _,
+    extensions::{Extensions, ExtensionsRef as _},
+    http::{
+        Body, Request, StatusCode,
+        body::util::BodyExt as _,
+        client::EasyHttpWebClient,
+        conn::HttpOrigin,
+        headers::SecWebSocketProtocol,
+        layer::{
+            alt_svc::{AltSvcCache, SendAltUsed},
+            error_handling::ErrorHandlerLayer,
+        },
+        ws::handshake::client::{ClientWebSocket, HttpClientWebSocketExt},
     },
     layer::ArcLayer,
     net::address::HostWithPort,
@@ -19,6 +66,7 @@ use rama::{
     tls::boring::client::TlsConnector,
     tls::client::{ServerVerifyMode, TlsClientConfig},
 };
+use std::net::IpAddr;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::utils;
@@ -64,9 +112,11 @@ async fn test_http_echo() {
 
     let mut ws = client
         .websocket(format!("ws://127.0.0.1:{port}"))
+        .with_header("user-agent", REPORT_UA)
         .handshake(Extensions::default())
         .await
         .expect("ws handshake to work");
+    assert_fingerprint_report(&ws, "HTTP/1.1", "ge11", None);
     ws.send_message("Cheerios".into())
         .await
         .expect("ws message to be sent");
@@ -316,9 +366,11 @@ async fn test_https_echo() {
 
     let mut ws = client
         .websocket(format!("wss://127.0.0.1:{port}"))
+        .with_header("user-agent", REPORT_UA)
         .handshake(Extensions::default())
         .await
         .expect("ws handshake to work");
+    assert_fingerprint_report(&ws, "HTTP/1.1", "ge11", Some("t13"));
     ws.send_message("Cheerios".into())
         .await
         .expect("ws message to be sent");
@@ -352,13 +404,136 @@ async fn test_https_echo() {
             .expect("echo ws message to be a text message")
             .as_str()
     );
+
+    // Extended CONNECT over HTTP/2 (RFC 8441)
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .without_proxy_support()
+        .with_tls_support_using_boringssl(
+            TlsClientConfig::new()
+                .with_alpn_http_auto()
+                .with_server_verify(ServerVerifyMode::Disable),
+        )
+        .with_default_http_connector()
+        .without_connection_pool()
+        .build_client();
+    let mut ws = client
+        .websocket_h2(format!("wss://127.0.0.1:{port}"))
+        .with_header("user-agent", REPORT_UA)
+        .handshake(Extensions::default())
+        .await
+        .expect("ws over h2 handshake to work");
+    assert_fingerprint_report(&ws, "HTTP/2.0", "co20", Some("t13"));
+    ws.send_message("Cheerios".into())
+        .await
+        .expect("ws message to be sent");
+    assert_eq!(
+        "Cheerios",
+        ws.recv_message()
+            .await
+            .expect("echo ws message to be received")
+            .into_text()
+            .expect("echo ws message to be a text message")
+            .as_str()
+    );
+}
+
+/// A client with an Alt-Svc cache is moved to the advertised HTTP/2 alternative, which
+/// authenticates the origin with the same certificate.
+#[ignore = "spawns rama processes"]
+#[tokio::test]
+async fn test_https_echo_moves_to_h2_alternative() {
+    utils::init_tracing();
+
+    let free_port = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("free port")
+            .port()
+    };
+    // Two listeners: name the origin's port so the harness finds the right one.
+    let (origin_port, alt_port) = (free_port(), free_port());
+    let server = utils::RamaService::serve_echo_with_args(
+        origin_port,
+        utils::EchoMode::Https,
+        &[
+            "--http-version",
+            "h1,h2",
+            "--alt-svc-h2-bind",
+            &format!("127.0.0.1:{alt_port}"),
+        ],
+    );
+    let port = server.port();
+
+    let certificate = X509::from_pem(include_bytes!("./utils/example_tls.crt"))
+        .expect("example certificate")
+        .to_der()
+        .expect("certificate DER");
+    let tls = TlsClientConfig::default_http()
+        .try_with_server_trust_anchors([CertificateDer::from(certificate)])
+        .expect("trust anchor")
+        .with_server_verify(ServerVerifyMode::Auto);
+    let cache = AltSvcCache::default();
+    // The example certificate names plabayo.tech, served here on loopback.
+    let client = EasyHttpWebClient::connector_builder(WeakScope::detached())
+        .with_default_transport_connector()
+        .with_dns_address_resolver(vec![IpAddr::from([127, 0, 0, 1])])
+        .without_proxy_support()
+        .with_tls_support_using_boringssl(tls)
+        .with_default_http_connector()
+        .with_default_connection_pool()
+        .with_alt_svc_cache(cache.clone())
+        .build_client();
+    let origin = HttpOrigin::new(
+        rama::net::Protocol::HTTPS,
+        format!("plabayo.tech:{origin_port}")
+            .parse()
+            .expect("origin"),
+    )
+    .expect("origin");
+
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let request = Request::builder()
+            .uri(format!("https://plabayo.tech:{port}/"))
+            .body(Body::empty())
+            .expect("request");
+        request.extensions().insert(SendAltUsed::new());
+        let response = client.serve(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["alt-svc"],
+            format!("h2=\":{alt_port}\"; ma=86400").as_str()
+        );
+        let report: serde_json::Value = serde_json::from_slice(
+            &response
+                .into_body()
+                .collect()
+                .await
+                .expect("report body")
+                .to_bytes(),
+        )
+        .expect("JSON report");
+        let alt_used = report["http"]["headers"]
+            .as_array()
+            .expect("headers")
+            .iter()
+            .find(|header| header[0] == "alt-used")
+            .map(|header| header[1].as_str().unwrap_or_default().to_owned());
+        seen.push(alt_used);
+        assert!(cache.lookup(&origin).is_some(), "learned the advertisement");
+    }
+    assert_eq!(seen[0], None);
+    assert_eq!(
+        seen[1].as_deref(),
+        Some(format!("plabayo.tech:{alt_port}").as_str())
+    );
 }
 
 #[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_http3_echo() {
-    use rama::{futures::StreamExt as _, graceful::WeakScope, http::ws::Message};
-
     utils::init_tracing();
 
     let mut server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
@@ -401,9 +576,11 @@ async fn test_http3_echo() {
         .build_client();
     let mut ws = client
         .websocket_h3(format!("wss://127.0.0.1:{h3_port}"))
+        .with_header("user-agent", REPORT_UA)
         .handshake(Extensions::default())
         .await
         .expect("ws over h3 handshake to work");
+    assert_fingerprint_report(&ws, "HTTP/3.0", "co30", Some("q13"));
     ws.send_message("Cheerios".into())
         .await
         .expect("ws message to be sent");
@@ -534,44 +711,6 @@ async fn test_https_forced_version() {
 #[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_https_with_remote_tls_cert_issuer() {
-    use ::base64::Engine;
-    use ::rama::{
-        Layer as _,
-        crypto::pki_types::{CertificateDer, PrivateKeyDer},
-        error::{BoxError, ErrorContext as _},
-        graceful::WeakScope,
-        http::{
-            headers::StrictTransportSecurity,
-            layer::{
-                compression::CompressionLayer, cors, map_response_body::MapResponseBodyLayer,
-                required_header::AddRequiredResponseHeadersLayer,
-                set_header::SetResponseHeaderLayer, trace::TraceLayer,
-            },
-            server::HttpServer,
-            service::web::{
-                Router,
-                extract::{Json, State},
-            },
-            tls::{CertOrderInput, CertOrderOutput},
-        },
-        net::address::Domain,
-        proxy::haproxy::server::HaProxyLayer,
-        tcp::server::TcpListener,
-        tls::{
-            boring::{
-                core::{
-                    pkey::{PKey, Private},
-                    x509::X509,
-                },
-                server::TlsAcceptorLayer,
-            },
-            server::{
-                CertificateIdentity, CertificateSubject, LeafCertConfig, LeafCertRequest,
-                SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
-            },
-        },
-    };
-
     const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
     const DOMAIN_TLS_ECHO_CERTS: Domain = Domain::from_static("localhost");
 
@@ -755,3 +894,44 @@ async fn test_https_with_remote_tls_cert_issuer() {
         .unwrap();
     }
 }
+
+/// A fingerprint header of a WebSocket handshake response, if present.
+fn fingerprint<S>(ws: &ClientWebSocket<S>, name: &str) -> Option<String> {
+    ws.response()
+        .headers
+        .get(format!("x-rama-fingerprint-{name}"))
+        .map(|value| value.to_str().expect("ASCII header").to_owned())
+}
+
+/// The headers name this handshake: its version, method, user agent and fingerprints.
+fn assert_fingerprint_report<S>(
+    ws: &ClientWebSocket<S>,
+    version: &str,
+    ja4h: &str,
+    ja4: Option<&str>,
+) {
+    let method = if version == "HTTP/1.1" {
+        "GET"
+    } else {
+        "CONNECT"
+    };
+    assert_eq!(fingerprint(ws, "http-version").as_deref(), Some(version));
+    assert_eq!(fingerprint(ws, "http-method").as_deref(), Some(method));
+    assert_eq!(fingerprint(ws, "ua").as_deref(), Some(REPORT_UA));
+    let hash = fingerprint(ws, "ja4h").expect("ja4h");
+    assert!(hash.starts_with(ja4h), "{hash}");
+    let verbose = fingerprint(ws, "ja4h-verbose").expect("ja4h verbose");
+    assert!(verbose.contains("sec-websocket-version"), "{verbose}");
+    // The test User-Agent names no embedded profile.
+    assert_eq!(fingerprint(ws, "ja4h-profile"), None);
+    assert_eq!(fingerprint(ws, "ja4h-matched"), None);
+    match ja4 {
+        Some(prefix) => {
+            let hash = fingerprint(ws, "ja4").expect("ja4");
+            assert!(hash.starts_with(prefix), "{hash}");
+        }
+        None => assert_eq!(fingerprint(ws, "ja4"), None),
+    }
+}
+
+const REPORT_UA: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";

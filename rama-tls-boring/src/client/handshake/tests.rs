@@ -1,18 +1,20 @@
+use std::net::IpAddr;
+
 use rama_core::{ServiceInput, bytes::Bytes};
 use rama_net::address::{Domain, Host};
 use rama_tls::{
-    ExtensionId,
-    client::{ServerVerifyMode, TlsClientConfig},
+    ExtensionId, ProtocolVersion,
+    client::{ServerVerifyMode, TlsClientConfig, TlsClientSni},
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData,
         TlsServerConfig,
     },
 };
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use rama_utils::octets::kib;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, duplex};
 
 use super::*;
 use crate::{client::BoringClientConfigExt as _, server::TlsAcceptorData};
-use rama_utils::octets::kib;
 
 #[test]
 fn preparation_requires_an_authenticated_identity() {
@@ -31,7 +33,7 @@ fn preparation_requires_an_authenticated_identity() {
 #[test]
 fn preparation_checks_native_shape_before_a_transport_exists() {
     let config = TlsClientConfig::new()
-        .with_server_name(Host::from_static("prepared.test"))
+        .with_server_name(Domain::from_static("prepared.test"))
         .with_extension_bodies(vec![(ExtensionId::SERVER_NAME, Bytes::new())]);
     let error = TlsConnectorData::try_from(&config)
         .and_then(PreparedClient::try_from)
@@ -61,7 +63,7 @@ async fn prepared_session_connects_with_the_configured_trust_and_identity() {
             let auth = server_auth();
             let config = TlsClientConfig::new()
                 .with_server_padding_request(padding)
-                .with_server_name(Host::from_static("prepared.test"))
+                .with_server_name(Domain::from_static("prepared.test"))
                 .try_with_server_trust_anchors([auth.cert_chain.last().unwrap().clone()])
                 .unwrap();
             let data = TlsConnectorData::try_from(&config).unwrap();
@@ -123,7 +125,7 @@ async fn preparation_preserves_peer_authentication_failures() {
     for trust_server in [false, true] {
         let auth = server_auth();
         let mut config =
-            TlsClientConfig::new().with_server_name(Host::from_static(if trust_server {
+            TlsClientConfig::new().with_server_name(Domain::from_static(if trust_server {
                 "other.test"
             } else {
                 "prepared.test"
@@ -160,4 +162,64 @@ async fn preparation_preserves_peer_authentication_failures() {
         .await
         .unwrap();
     }
+}
+
+#[tokio::test]
+async fn failed_handshakes_retain_the_effective_outgoing_sni() {
+    for (host, policy, expected) in [
+        (
+            Host::from_static("192.0.2.1"),
+            TlsClientSni::IncludeIp,
+            Some(ServerName::from(IpAddr::from([192, 0, 2, 1]))),
+        ),
+        (Host::EXAMPLE_NAME, TlsClientSni::Disabled, None),
+    ] {
+        let config = TlsClientConfig::new()
+            .with_server_name(ServerName::try_from(host).unwrap())
+            .with_sni_policy(policy);
+        let prepared =
+            PreparedClient::try_from(TlsConnectorData::try_from(&config).unwrap()).unwrap();
+        let (client, server) = duplex(kib(16));
+        drop(server);
+        let Err(TlsConnectError::Handshake { outgoing_sni, .. }) =
+            prepared.connect(ServiceInput::new(client)).await
+        else {
+            panic!("expected a failed handshake");
+        };
+        assert_eq!(outgoing_sni, expected);
+    }
+}
+
+#[tokio::test]
+async fn a_version_outside_the_offered_list_fails_the_handshake() {
+    let auth = server_auth();
+    let config = TlsClientConfig::new()
+        .with_server_name(Domain::from_static("prepared.test"))
+        .try_with_server_trust_anchors([auth.cert_chain.last().unwrap().clone()])
+        .unwrap();
+    let mut data = TlsConnectorData::try_from(&config).unwrap();
+    // As a server that ignores supported_versions could: the native range allows TLS 1.2.
+    data.offered_versions = Some(Arc::from([0x0304, 0x0302]));
+    let prepared = PreparedClient::try_from(data).unwrap();
+    let server = TlsAcceptorData::try_from(
+        &TlsServerConfig::new()
+            .with_single_cert(auth)
+            .with_supported_versions(vec![ProtocolVersion::TLSv1_2]),
+    )
+    .unwrap()
+    .into_static_acceptor_builder()
+    .unwrap()
+    .build();
+    let (client_io, server_io) = tokio::io::duplex(kib(16));
+    let (client, _server) =
+        tokio::join!(prepared.connect(ServiceInput::new(client_io)), async move {
+            let ssl = Ssl::new(server.context()).unwrap();
+            rama_boring_tokio::SslStreamBuilder::new(ssl, server_io)
+                .accept()
+                .await
+        },);
+    let Err(error) = client else {
+        panic!("TLS 1.2 was never offered")
+    };
+    assert!(error.to_string().contains("did not list"), "{error}");
 }

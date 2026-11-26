@@ -28,7 +28,7 @@ use rama_quic::Endpoint;
 use rama_quic_proto::{
     Version,
     profile::{ConnectionIdProfile, QuicProfile},
-    version::ClientVersionPolicy,
+    version::{ClientVersionPolicy, ServerVersionPolicy},
 };
 use runtime::Identities;
 
@@ -124,8 +124,6 @@ async fn a_client_restarts_in_v2_when_the_server_only_speaks_v2() {
 /// refuses the connection rather than trusting a possibly forged negotiation.
 #[tokio::test]
 async fn a_restart_with_an_empty_server_version_list_is_refused() {
-    use rama_quic_proto::version::ServerVersionPolicy;
-
     let identities = Identities::new();
     let mut config = identities.server_config();
     config.set_versions(
@@ -193,8 +191,6 @@ async fn an_offer_without_a_common_version_ends_the_attempt() {
 /// looks like a downgrade, and the client refuses the connection.
 #[tokio::test]
 async fn a_restart_that_the_servers_deployed_list_contradicts_is_refused() {
-    use rama_quic_proto::version::ServerVersionPolicy;
-
     let identities = Identities::new();
     let mut config = identities.server_config();
     config.set_versions(

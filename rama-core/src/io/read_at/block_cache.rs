@@ -4,15 +4,15 @@ use std::num::NonZeroUsize;
 use ahash::{HashMap, HashMapExt as _};
 use bytes::Bytes;
 use parking_lot::Mutex;
-use rama_utils::{macros::generate_set_and_with, octets::kib};
+use rama_utils::{
+    macros::{generate_set_and_with, nonzero},
+    octets::kib,
+};
 
 use super::ReadAt;
 
 /// Default block size: one page on common platforms.
-const DEFAULT_BLOCK_SIZE: NonZeroUsize = match NonZeroUsize::new(kib(4)) {
-    Some(size) => size,
-    None => NonZeroUsize::MIN,
-};
+const DEFAULT_BLOCK_SIZE: NonZeroUsize = nonzero!(kib(4));
 
 /// Smallest automatic shard, so random block placement cannot thrash one shard.
 const MIN_AUTO_SHARD_BYTES: usize = kib(512);

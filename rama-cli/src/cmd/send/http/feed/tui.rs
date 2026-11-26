@@ -30,7 +30,13 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap},
 };
+#[cfg(not(target_os = "windows"))]
+use std::process::{Command, Stdio};
 use std::time::Duration;
+#[cfg(target_os = "windows")]
+use std::{ffi::OsStr, os::windows::ffi::OsStrExt as _};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
 
 // ---------------------------------------------------------------------------
 // Public entry points
@@ -1025,8 +1031,6 @@ fn open_url(raw_url: &str) {
 
     #[cfg(not(target_os = "windows"))]
     {
-        use std::process::{Command, Stdio};
-
         #[cfg(target_os = "macos")]
         let program = "open";
         #[cfg(all(unix, not(target_os = "macos")))]
@@ -1055,11 +1059,6 @@ fn open_url(raw_url: &str) {
 /// string straight to the default protocol handler.
 #[cfg(target_os = "windows")]
 fn open_url_windows(url: &str) {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
     fn to_wide(s: &str) -> Vec<u16> {
         OsStr::new(s)
             .encode_wide()

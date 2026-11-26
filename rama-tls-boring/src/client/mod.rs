@@ -46,6 +46,7 @@ mod server_answer;
 pub use server_answer::{AnswerMirror, ServerAnswerRecorder};
 
 mod connector_data;
+pub(crate) mod negotiable;
 mod verification;
 pub use verification::BoringServerTrustCache;
 pub(crate) type BoringServerVerification = rama_core::combinators::Either<

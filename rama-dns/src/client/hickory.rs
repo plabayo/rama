@@ -558,6 +558,7 @@ mod tests {
         rdata::svcb::{Alpn, EchConfigList, IpHint, Mandatory, Unknown},
     };
     use rama_core::futures::StreamExt as _;
+    use std::iter;
 
     #[tokio::test]
     async fn negative_service_binding_answers_are_empty_but_lookup_failures_propagate() {
@@ -690,18 +691,16 @@ mod tests {
 
     #[test]
     fn txt_bridge_preserves_record_boundaries_and_validates_input() {
-        let value = TXT::from_bytes(vec![b"first", b"", b"\x00\xff"]);
+        let strings = [b"first".as_slice(), b"".as_slice(), b"\x00\xff".as_slice()];
+        let value = TXT::try_new(strings.into_iter()).expect("valid TXT record");
         let txt = decode_hickory_txt(&value).expect("valid TXT record");
-        assert_eq!(
-            txt.iter().collect::<Vec<_>>(),
-            [b"first".as_slice(), b"".as_slice(), b"\x00\xff".as_slice()],
-        );
+        assert_eq!(txt.iter().collect::<Vec<_>>(), strings);
 
-        decode_hickory_txt(&TXT::from_bytes(Vec::new()))
-            .expect_err("TXT RDATA requires one string");
-        let oversized = vec![0; 256];
-        decode_hickory_txt(&TXT::from_bytes(vec![&oversized]))
-            .expect_err("TXT string is limited to 255 octets");
+        let mut invalid = TXT::try_new(iter::empty::<&[u8]>()).expect("empty TXT record");
+        decode_hickory_txt(&invalid).expect_err("TXT RDATA requires one string");
+        // The constructor refuses such a string; the field does not.
+        invalid.txt_data = Box::new([vec![0; 256].into_boxed_slice()]);
+        decode_hickory_txt(&invalid).expect_err("TXT string is limited to 255 octets");
     }
 
     #[test]

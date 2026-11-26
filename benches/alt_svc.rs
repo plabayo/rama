@@ -20,7 +20,7 @@ use rama::{
         client::{
             ConnectRequest, ConnectionError, ConnectionPolicyScope, EstablishedClientConnection,
         },
-        tls::ApplicationProtocol,
+        tls::{ApplicationProtocol, ServerName},
     },
     service::service_fn,
     tls::{
@@ -117,7 +117,7 @@ fn pooled_dispatch(b: divan::Bencher, discovery: bool) {
     extensions.insert(ConnectionPolicyScope::Connector);
     extensions.insert(TargetHttpVersion(Version::HTTP_2));
     extensions.insert(TlsServerAuthentication(Some(
-        origin.authority().host.clone(),
+        ServerName::try_from(&origin.authority().host).unwrap(),
     )));
     extensions.insert(NegotiatedTlsParameters {
         protocol_version: ProtocolVersion::TLSv1_3,
@@ -181,7 +181,7 @@ fn pooled_selection(b: divan::Bencher, discovery: bool) {
     let extensions = Extensions::new();
     extensions.insert(TargetHttpVersion(Version::HTTP_2));
     extensions.insert(TlsServerAuthentication(Some(
-        origin.authority().host.clone(),
+        ServerName::try_from(&origin.authority().host).unwrap(),
     )));
     extensions.insert(NegotiatedTlsParameters {
         protocol_version: ProtocolVersion::TLSv1_3,

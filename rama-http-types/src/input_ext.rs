@@ -30,7 +30,7 @@ use rama_core::{
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, PathInputExt, Protocol, ProtocolInputExt,
     TargetHttpVersionInputExt, TransportProtocolInputExt, UriInputExt,
-    address::{Domain, Host, HostWithOptPort},
+    address::{Host, HostWithOptPort},
     forwarded::ForwardedClientExt as _,
     http::{FallbackHttpVersion, TargetHttpVersion},
     transport::TransportProtocol,
@@ -41,15 +41,10 @@ use rama_tls::SecureTransport;
 use crate::{HttpRequestParts, Request, Uri, Version, request::Parts};
 
 #[cfg(feature = "tls")]
-fn try_get_sni_from_secure_transport(t: &SecureTransport) -> Option<Domain> {
-    use rama_tls::client::ClientHelloExtension;
-
-    t.client_hello().and_then(|h| {
-        h.extensions().iter().find_map(|e| match e {
-            ClientHelloExtension::ServerName(maybe_domain) => maybe_domain.clone(),
-            _ => None,
-        })
-    })
+fn try_get_sni_from_secure_transport(t: &SecureTransport) -> Option<Host> {
+    t.client_hello()
+        .and_then(|h| h.ext_server_name().cloned())
+        .map(Host::from)
 }
 
 #[cfg(not(feature = "tls"))]
@@ -59,7 +54,7 @@ fn try_get_sni_from_secure_transport(t: &SecureTransport) -> Option<Domain> {
 struct SecureTransport;
 
 #[cfg(not(feature = "tls"))]
-fn try_get_sni_from_secure_transport(_: &SecureTransport) -> Option<Domain> {
+fn try_get_sni_from_secure_transport(_: &SecureTransport) -> Option<Host> {
     None
 }
 
@@ -84,7 +79,7 @@ fn target_authority_from_http_parts(parts: &impl HttpRequestParts) -> Option<Hos
                 .get_ref()
                 .and_then(try_get_sni_from_secure_transport)?;
             tracing::trace!(url.full = %uri, "request target: host {host} from TLS SNI");
-            Some(Host::from(host).into())
+            Some(host.into())
         })
 }
 
@@ -299,29 +294,62 @@ impl PathInputExt for Parts {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tls")]
+    use std::net::IpAddr;
+
     use rama_core::extensions::ExtensionsRef;
+    #[cfg(feature = "tls")]
+    use rama_net::address::Domain;
     use rama_net::{
-        ConnectorTargetInputExt,
-        client::ConnectorTarget,
+        ConnectorTargetInputExt, ConnectorTransportProtocolInputExt,
+        client::{ConnectorTarget, ConnectorTransportProtocol},
         forwarded::{Forwarded, ForwardedElement, ForwardedVersion, NodeId},
+    };
+    #[cfg(feature = "tls")]
+    use rama_tls::{
+        ProtocolVersion,
+        client::{ClientHello, ClientHelloExtension},
     };
 
     use super::*;
     use crate::{Request, header::FORWARDED};
 
     #[cfg(feature = "tls")]
+    #[test]
+    fn ip_server_names_supply_both_authority_views() {
+        for ip in ["192.0.2.1", "2001:db8::1"] {
+            let ip: IpAddr = ip.parse().unwrap();
+            let request = Request::builder()
+                .uri("/")
+                .version(Version::HTTP_10)
+                .body(())
+                .unwrap();
+            request
+                .extensions()
+                .insert(SecureTransport::with_client_hello(ClientHello::new(
+                    ProtocolVersion::TLSv1_3,
+                    Vec::new(),
+                    Vec::new(),
+                    vec![ClientHelloExtension::ServerName(Some(ip.into()))],
+                )));
+            let expected = Some(HostWithOptPort::from(Host::Address(ip)));
+            assert_eq!(request.target_authority(), expected);
+            assert_eq!(request.authority(), expected);
+            let (parts, ()) = request.into_parts();
+            assert_eq!(parts.target_authority(), expected);
+            assert_eq!(parts.authority(), expected);
+        }
+    }
+
+    #[cfg(feature = "tls")]
     fn sni(name: &'static str) -> SecureTransport {
-        use rama_tls::{
-            ProtocolVersion,
-            client::{ClientHello, ClientHelloExtension},
-        };
         SecureTransport::with_client_hello(ClientHello::new(
             ProtocolVersion::TLSv1_3,
             Vec::new(),
             Vec::new(),
-            vec![ClientHelloExtension::ServerName(Some(Domain::from_static(
-                name,
-            )))],
+            vec![ClientHelloExtension::ServerName(Some(
+                Domain::from_static(name).into(),
+            ))],
         ))
     }
 
@@ -330,7 +358,7 @@ mod tests {
     #[cfg(feature = "tls")]
     #[test]
     fn authority_views_resolve_in_order_on_every_target_form() {
-        for (uri, host, with_sni, forwarded, target, contextual) in [
+        for (uri, host, with_sni_policy, forwarded, target, contextual) in [
             // The URI authority (absolute-form, or :authority) wins over Host and SNI.
             (
                 "https://uri.test/path",
@@ -416,7 +444,7 @@ mod tests {
                 builder = builder.header(crate::header::HOST, host);
             }
             let request = builder.body(()).unwrap();
-            if with_sni {
+            if with_sni_policy {
                 request.extensions().insert(sni("sni.test"));
             }
             if forwarded {
@@ -427,7 +455,7 @@ mod tests {
             let target = target.map(|target| HostWithOptPort::try_from(target).unwrap());
             let contextual =
                 (!contextual.is_empty()).then(|| HostWithOptPort::try_from(contextual).unwrap());
-            let case = format!("{uri} Host={host:?} sni={with_sni} forwarded={forwarded}");
+            let case = format!("{uri} Host={host:?} sni={with_sni_policy} forwarded={forwarded}");
             assert_eq!(request.target_authority(), target, "{case}");
             assert_eq!(request.authority(), contextual, "{case}");
             let (parts, ()) = request.into_parts();
@@ -688,8 +716,6 @@ mod tests {
 
     #[test]
     fn connector_transport_overrides_http_version_transport() {
-        use rama_net::{ConnectorTransportProtocolInputExt, client::ConnectorTransportProtocol};
-
         let request = Request::builder()
             .version(Version::HTTP_3)
             .body(())

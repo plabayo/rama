@@ -1,27 +1,21 @@
 use std::{borrow::Cow, error::Error, fmt, sync::Arc};
 
-use ::{
-    rama_core::{
-        bytes::Bytes,
-        extensions::ExtensionsRef as _,
-        telemetry::tracing::{debug, trace, warn},
-    },
-    rama_http_types::{
-        HeaderName,
-        header::{HeaderMap, HeaderValue, MaxSizeReached},
-    },
-    rama_net::uri::util::percent_encoding::{AsciiSet, CONTROLS, percent_decode, percent_encode},
-};
 use base64::Engine as _;
 use rama_core::{
+    bytes::Bytes,
     error::{BoxError, error_chain},
-    extensions::Extension,
-    telemetry::tracing,
+    extensions::{Extension, ExtensionsRef as _},
+    telemetry::tracing::{self, debug, trace, warn},
 };
 use rama_http::headers::{ContentType, HeaderMapExt as _};
+use rama_http_types::{
+    HeaderName,
+    header::{HeaderMap, HeaderValue, MaxSizeReached},
+};
+use rama_net::uri::util::percent_encoding::{AsciiSet, CONTROLS, percent_decode, percent_encode};
 use rama_utils::str::arcstr::ArcStr;
 
-use crate::metadata::{MetadataMap, try_extend_replacing};
+use crate::metadata::MetadataMap;
 
 const ENCODING_SET: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -390,6 +384,7 @@ impl Status {
 
     // FIXME: bubble this into `transport` and expose generic http2 reasons.
     #[cfg(feature = "transport")]
+    /// Translate an HTTP/2 failure into a status.
     fn from_h2_error(err: Box<rama_http_core::h2::Error>) -> Self {
         let code = Self::code_from_h2(&err);
 
@@ -399,6 +394,7 @@ impl Status {
     }
 
     #[cfg(feature = "transport")]
+    /// Choose a status code for an HTTP/2 failure.
     fn code_from_h2(err: &rama_http_core::h2::Error) -> Code {
         // See https://github.com/grpc/grpc/blob/3977c30/doc/PROTOCOL-HTTP2.md#errors
         match err.reason() {
@@ -424,6 +420,7 @@ impl Status {
     }
 
     #[cfg(feature = "transport")]
+    /// Translate this status into an HTTP/2 failure when possible.
     fn to_h2_error(&self) -> rama_http_core::h2::Error {
         // conservatively transform to h2 error codes...
         let reason = match self.code() {
@@ -469,6 +466,7 @@ impl Status {
         None
     }
 
+    /// Translate the supplied service error into a status.
     pub(crate) fn map_error<E>(err: E) -> Self
     where
         E: Into<BoxError>,
@@ -557,18 +555,32 @@ impl Status {
         &mut self.0.metadata
     }
 
+    /// Encode this status as a header map.
     pub(crate) fn to_header_map(&self) -> Result<HeaderMap, Self> {
-        let mut header_map = HeaderMap::try_with_capacity(3 + self.0.metadata.as_ref().keys_len())
-            .map_err(header_limit_reached)?;
-        self.add_header(&mut header_map)?;
+        let mut header_map = self.metadata_headers();
+        self.add_status_headers(&mut header_map)?;
         Ok(header_map)
+    }
+
+    /// Collect the metadata fields eligible for a status response.
+    fn metadata_headers(&self) -> HeaderMap {
+        let mut metadata = self.0.metadata.as_ref().clone();
+        metadata.retain_names(|name| {
+            !MetadataMap::GRPC_RESERVED_HEADERS.contains(name) && *name != Self::GRPC_STATUS_DETAILS
+        });
+        metadata
     }
 
     /// Add headers from this `Status` into `header_map`.
     pub fn add_header(&self, header_map: &mut HeaderMap) -> Result<(), Self> {
-        try_extend_replacing(header_map, self.0.metadata.clone().into_sanitized_headers())
+        header_map
+            .try_insert_map(self.metadata_headers())
             .map_err(header_limit_reached)?;
+        self.add_status_headers(header_map)
+    }
 
+    /// Append the encoded status fields to the supplied headers.
+    fn add_status_headers(&self, header_map: &mut HeaderMap) -> Result<(), Self> {
         header_map
             .try_insert(Self::GRPC_STATUS, self.0.code.to_header_value())
             .map_err(header_limit_reached)?;
@@ -1042,6 +1054,99 @@ mod tests {
         let headers = status.to_header_map().unwrap();
         assert_eq!(headers.get_all("x-a").iter().count(), 24_574);
         assert_eq!(headers.get(Status::GRPC_STATUS).unwrap(), "13");
+    }
+
+    #[test]
+    fn status_metadata_fits_at_the_name_limit() {
+        let mut metadata = HeaderMap::new();
+        for index in 0..24_574 {
+            metadata.insert(
+                HeaderName::from_bytes(format!("x-{index}").as_bytes()).unwrap(),
+                HeaderValue::from_static("v"),
+            );
+        }
+        let status = Status::with_metadata(Code::Internal, "", MetadataMap::from_headers(metadata));
+        let headers = status.to_header_map().unwrap();
+        assert_eq!(headers.keys_len(), 24_575);
+        assert_eq!(headers[Status::GRPC_STATUS], "13");
+    }
+
+    #[test]
+    fn status_metadata_keeps_reserved_positions() {
+        let mut metadata = HeaderMap::new();
+        metadata.insert(
+            HeaderName::from_static("X-A"),
+            HeaderValue::from_static("a"),
+        );
+        metadata.reserve_position(HeaderName::from_static("X-Later"));
+        metadata.insert(
+            HeaderName::from_static("X-B"),
+            HeaderValue::from_static("b"),
+        );
+        let status = Status::with_metadata(Code::Internal, "", MetadataMap::from_headers(metadata));
+        let mut headers = status.to_header_map().unwrap();
+        headers.insert("x-later", HeaderValue::from_static("later"));
+        let names: Vec<_> = headers
+            .ordered_iter()
+            .map(|(name, _)| name.as_original_str())
+            .collect();
+        assert_eq!(names, ["X-A", "x-later", "X-B", "grpc-status"]);
+    }
+
+    #[test]
+    fn add_header_replaces_metadata_names_and_skips_reserved_ones() {
+        let mut metadata = HeaderMap::new();
+        metadata.append(
+            HeaderName::from_bytes(b"X-A").unwrap(),
+            HeaderValue::from_static("1"),
+        );
+        metadata.append(
+            HeaderName::from_bytes(b"X-B").unwrap(),
+            HeaderValue::from_static("2"),
+        );
+        metadata.append(
+            HeaderName::from_bytes(b"x-a").unwrap(),
+            HeaderValue::from_static("3"),
+        );
+        metadata.insert(Status::GRPC_MESSAGE, HeaderValue::from_static("spoofed"));
+        metadata.insert("content-type", HeaderValue::from_static("text/plain"));
+        let status = Status::with_metadata(Code::Internal, "", MetadataMap::from_headers(metadata));
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-b", HeaderValue::from_static("old"));
+        headers.insert("content-type", HeaderValue::from_static("application/grpc"));
+        status.add_header(&mut headers).unwrap();
+
+        let lines: Vec<(Box<str>, &str)> = headers
+            .ordered_iter()
+            .map(|(name, value)| (name.as_original_str().into(), value.to_str().unwrap()))
+            .collect();
+        let expected: Vec<(Box<str>, &str)> = [
+            ("X-B", "2"),
+            ("content-type", "application/grpc"),
+            ("X-A", "1"),
+            ("x-a", "3"),
+            ("grpc-status", "13"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.into(), value))
+        .collect();
+        assert_eq!(lines, expected);
+    }
+
+    #[test]
+    fn metadata_cannot_inject_status_details() {
+        let mut metadata = HeaderMap::new();
+        metadata.insert(
+            Status::GRPC_STATUS_DETAILS,
+            HeaderValue::from_static("YWJj"),
+        );
+        let status = Status::with_metadata(Code::Internal, "", MetadataMap::from_headers(metadata));
+
+        let headers = status.to_header_map().unwrap();
+        assert!(headers.get(Status::GRPC_STATUS_DETAILS).is_none());
+        let received = Status::from_header_map(&headers).unwrap();
+        assert!(received.details().is_empty());
     }
 
     #[test]

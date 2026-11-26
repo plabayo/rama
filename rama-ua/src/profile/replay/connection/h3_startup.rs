@@ -207,11 +207,11 @@ fn stream_preferences(
     Some(preferences)
 }
 
-/// Native preferences to install; `None` keeps a conflicting caller choice.
+/// Native preferences to install.
 pub(super) struct NativeStartup {
-    streams: Option<Preferences>,
+    streams: Preferences,
     encoding: EncoderPreferences,
-    controls: Option<ClientControlPreferences>,
+    controls: ClientControlPreferences,
 }
 
 fn lower(report: &mut ProfilePreservationReport, item: LoweredProfileItem) {
@@ -263,47 +263,25 @@ pub(super) fn prepare(
             streams.ordered_startup = true;
         }
     }
-    // Explicit caller choices take precedence over the capture and are reported.
-    let streams = if input
-        .get_ref::<Preferences>()
-        .is_some_and(|caller| *caller != streams)
-    {
-        lower(report, LoweredProfileItem::CallerHttp3Startup);
-        None
-    } else {
-        Some(streams)
-    };
+    // The current encoder preferences keep the fields the capture does not decide.
     let mut encoding = input
         .get_ref::<EncoderPreferences>()
         .copied()
         .unwrap_or_default();
-    let defer_dynamic = !reference_initial_insertions && sequence.and_then(capacity_only).is_none();
-    match encoding.defer_dynamic_first_section {
-        Some(defer) if defer != defer_dynamic => {
-            lower(report, LoweredProfileItem::CallerQpackEncoding);
-        }
-        // The observed prefix constrains the initial section, not all future traffic.
-        // Peer limits, Huffman defaults and later compression follow native policy.
-        _ => encoding.defer_dynamic_first_section = Some(defer_dynamic),
-    }
+    // The observed prefix constrains the initial section, not all future traffic.
+    // Peer limits, Huffman defaults and later compression follow native policy.
+    encoding.defer_dynamic_first_section =
+        Some(!reference_initial_insertions && sequence.and_then(capacity_only).is_none());
     // A captured capacity-only prefix preceded the first request, after peer SETTINGS.
     if sequence.and_then(capacity_only).is_some() {
-        match encoding.capacity_before_first_section {
-            Some(false) => lower(report, LoweredProfileItem::CallerQpackEncoding),
-            _ => encoding.capacity_before_first_section = Some(true),
-        }
+        encoding.capacity_before_first_section = Some(true);
     }
     if let Some(capacity) = sequence.and_then(capacity_only).or_else(|| {
         bootstrap
             .zip(sequence)
             .and_then(|(bootstrap, sequence)| h3_bootstrap::capacity(bootstrap, sequence))
     }) {
-        match encoding.target_capacity {
-            Some(caller) if caller != capacity => {
-                lower(report, LoweredProfileItem::CallerQpackEncoding);
-            }
-            _ => encoding.target_capacity = Some(capacity),
-        }
+        encoding.target_capacity = Some(capacity);
     }
 
     let controls = ClientControlPreferences {
@@ -318,15 +296,6 @@ pub(super) fn prepare(
             })
             .collect::<Result<_, _>>()?,
     };
-    let controls = if input
-        .get_ref::<ClientControlPreferences>()
-        .is_some_and(|caller| *caller != controls)
-    {
-        lower(report, LoweredProfileItem::CallerHttp3Controls);
-        None
-    } else {
-        Some(controls)
-    };
     Ok(Some(NativeStartup {
         streams,
         encoding,
@@ -336,12 +305,8 @@ pub(super) fn prepare(
 
 impl NativeStartup {
     pub(super) fn apply(self, extensions: &Extensions) {
-        if let Some(streams) = self.streams {
-            extensions.insert(streams);
-        }
+        extensions.insert(self.streams);
         extensions.insert(self.encoding);
-        if let Some(controls) = self.controls {
-            extensions.insert(controls);
-        }
+        extensions.insert(self.controls);
     }
 }

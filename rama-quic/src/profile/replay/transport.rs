@@ -29,6 +29,7 @@ pub(in crate::profile) fn prepare(
     versions: Option<&OrderedProtocolCapture>,
     flight: Option<&QuicFlightCapture>,
     recorded_layout: bool,
+    ech: bool,
 ) -> Result<Option<QuicProfile>, BoxError> {
     parameters.canonical(OrderCaptureLimits::default())?;
     if !matches!(parameters.namespace, OrderNamespace::QuicParameter) {
@@ -75,14 +76,12 @@ pub(in crate::profile) fn prepare(
         };
         policy
     } else {
-        // RFC 9368's parameter is optional. Safari omits it; the Initial
-        // header still supplies an observed version, without a compatible offer.
-        let Some(flight) = flight else {
-            return Ok(unsupported(
-                "QUIC version absent from parameters and flight",
-            ));
-        };
-        let Ok(policy) = ClientVersionPolicy::new(flight.flight.version) else {
+        // Reduced captures use the native Initial version without advertising alternatives.
+        let version = flight.map_or_else(
+            || ClientVersionPolicy::default().original(),
+            |capture| capture.flight.version,
+        );
+        let Ok(policy) = ClientVersionPolicy::new(version) else {
             return Ok(unsupported("captured unsupported QUIC flight version"));
         };
         policy.try_with_version_information(false)?
@@ -97,9 +96,10 @@ pub(in crate::profile) fn prepare(
     let mut ids = ConnectionIdProfile::standard().try_with_local_len(local_cid_len)?;
     if let Some(flight) = flight {
         if chosen.is_some_and(|version| flight.flight.version != version)
-            || flight.flight.chosen_version != chosen
-            || flight.flight.available_versions != available
-            || flight.flight.parameters != order
+            || (!ech
+                && (flight.flight.chosen_version != chosen
+                    || flight.flight.available_versions != available
+                    || flight.flight.parameters != order))
             || flight.flight.scid_len != usize::from(local_cid_len)
         {
             return Err(BoxError::from_static_str(
@@ -125,6 +125,7 @@ pub(in crate::profile) fn prepare(
             ));
         }
     }
+    let split_parameters = ech && flight.is_some_and(|flight| flight.flight.parameters != order);
     let layout = TransportParameterProfile::try_from_sent(&literals)?
         .try_with_order(ParameterOrder::fixed_with_explicit_defaults(order))?;
     let limits = TransportLimits::try_from_sent(&literals)?;
@@ -138,7 +139,7 @@ pub(in crate::profile) fn prepare(
                 .any(|parameter| parameter.id == TransportParameterId::GreaseQuicBit),
         )
         .try_with_limits(limits)?;
-    if let Some(flight) = flight.filter(|_| recorded_layout) {
+    if let Some(flight) = flight.filter(|_| recorded_layout && !split_parameters) {
         match RecordedInitialFlight::try_from(&flight.flight) {
             Ok(layout) => {
                 profile = profile.with_packetization(

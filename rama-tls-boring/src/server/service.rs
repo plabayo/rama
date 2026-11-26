@@ -1,24 +1,32 @@
-use super::TlsAcceptorData;
-use super::acceptor_data::{ConnectionState, bind_connection, prepare_server_cert_issuer};
-use super::config::{BoringServerEchKeys, BoringTlsAcceptorConfig, BoringTlsAuth};
-use crate::{TlsStream, type_conversion::peer_certificate_chain, types::SecureTransport};
+use std::sync::{Arc, OnceLock};
+
 use parking_lot::Mutex;
 use rama_boring::ssl::{Ssl, SslContext, SslOptions, SslSessionCacheMode};
-use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Service,
     conversion::{RamaInto as _, RamaTryInto},
-    error::{BoxError, ErrorContext, ErrorExt},
+    error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt},
     extensions::{Extensions, ExtensionsRef},
     io::Io,
 };
-use rama_net::{client::ConnectorTarget, extensions::StreamTransformed, tls::ApplicationProtocol};
+use rama_net::{
+    address::Host,
+    client::ConnectorTarget,
+    extensions::StreamTransformed,
+    tls::{ApplicationProtocol, ServerName},
+};
 use rama_tls::{
     client::NegotiatedTlsParameters,
-    server::{CertificateIdentity, EchServerObservation, ServerEchAccepted, TlsServerConfig},
+    server::{CertificateIdentity, TlsServerConfig, publish_server_client_hellos},
 };
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
-use std::sync::{Arc, OnceLock};
+
+use super::{
+    TlsAcceptorData,
+    acceptor_data::{ConnectionState, bind_connection, prepare_server_cert_issuer},
+    config::{BoringServerEchKeys, BoringTlsAcceptorConfig, BoringTlsAuth},
+};
+use crate::{TlsStream, type_conversion::peer_certificate_chain, types::SecureTransport};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
@@ -39,11 +47,11 @@ struct Acceptor {
 }
 
 impl<S> TlsAcceptorService<S> {
-    /// Creates a new [`TlsAcceptorService`].
+    /// Creates a new [`TlsAcceptorService`] from a copy of `config`; later changes to it do not apply.
     #[must_use]
     pub fn new(config: TlsServerConfig, inner: S, store_client_hello: bool) -> Self {
         Self {
-            config,
+            config: config.detached(),
             store_client_hello,
             resumption: false,
             shared: Arc::default(),
@@ -157,8 +165,8 @@ where
                         .extensions()
                         .get_ref::<SecureTransport>()
                         .and_then(|t| t.client_hello())
-                        .and_then(|c| c.ext_server_name().cloned())
-                        .map(CertificateIdentity::from)
+                        .and_then(|hello| hello.ext_server_name())
+                        .and_then(|name| CertificateIdentity::try_from(Host::from(name)).ok())
                 })
                 .flatten()
                 .or_else(|| {
@@ -236,7 +244,7 @@ where
                         server_name: stream
                             .ssl()
                             .servername(rama_boring::ssl::NameType::HOST_NAME)
-                            .map(rama_net::address::Domain::try_from)
+                            .map(|name| name.parse::<ServerName>())
                             .transpose()?,
                         resumed: Some(stream.ssl().session_reused()),
                         algorithms: stream.ssl().rama_into(),
@@ -250,28 +258,11 @@ where
                 }
             };
 
-            let secure_transport = maybe_client_hello
-                .and_then(|maybe_client_hello| maybe_client_hello.lock().take())
-                .map(SecureTransport::with_client_hello)
-                .unwrap_or_default();
-
-            let ech_accepted = stream.ssl().ech_accepted();
+            let effective =
+                maybe_client_hello.and_then(|maybe_client_hello| maybe_client_hello.lock().take());
+            let ech_accepted = ech.then(|| stream.ssl().ech_accepted());
             let stream = TlsStream::new(stream);
-            if ech {
-                stream
-                    .extensions()
-                    .insert(ServerEchAccepted::new(ech_accepted));
-            }
-            if ech_accepted
-                && let Some(outer) = stream
-                    .extensions()
-                    .get_ref::<SecureTransport>()
-                    .and_then(SecureTransport::client_hello)
-                    .cloned()
-            {
-                stream.extensions().insert(EchServerObservation::new(outer));
-            }
-            stream.extensions().insert(secure_transport);
+            publish_server_client_hellos(stream.extensions(), ech_accepted, effective);
             stream.extensions().insert(negotiated_tls_params);
             stream.extensions().insert(StreamTransformed {
                 by: "rama-tls-boring::TlsAcceptor",
@@ -301,31 +292,32 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::core::{
-        asn1::Asn1Time,
-        bn::BigNum,
-        hash::MessageDigest,
-        pkey::PKey,
-        rsa::Rsa,
-        x509::{
-            X509, X509NameBuilder,
-            extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
-        },
-    };
-    use crate::{
-        client::BoringClientConfigExt as _,
-        server::{BoringServerConfigExt as _, ServerCertIssuerData},
-    };
     use rama_core::{ServiceInput, service::service_fn};
     use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-    use rama_net::tls::TlsAlpn;
+    use rama_net::{address::Domain, tls::TlsAlpn};
     use rama_tls::{
         client::{ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientConfig},
         server::{
             CertificateIssuanceContext, ClientVerifyMode, DynamicCertIssuer,
             GeneratedServerAuthConfig, SelfSignedCaConfig, ServerAuthData,
         },
+    };
+
+    use super::*;
+    use crate::{
+        client::BoringClientConfigExt as _,
+        core::{
+            asn1::Asn1Time,
+            bn::BigNum,
+            hash::MessageDigest,
+            pkey::PKey,
+            rsa::Rsa,
+            x509::{
+                X509, X509NameBuilder,
+                extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
+            },
+        },
+        server::{BoringServerConfigExt as _, ServerCertIssuerData},
     };
 
     fn client_identity() -> (CertificateDer<'static>, ClientAuthData) {
@@ -396,7 +388,7 @@ mod tests {
                 false,
             );
             let mut client = TlsClientConfig::new()
-                .with_server_name(rama_net::address::Host::from_static("localhost"))
+                .with_server_name(Domain::tld_localhost())
                 .try_with_server_trust_anchors([server_auth.cert_chain.last().unwrap().clone()])
                 .unwrap();
             if let Some(identity) = identity {
@@ -414,10 +406,7 @@ mod tests {
             .expect("client-auth handshake timeout");
             assert_eq!(result.is_ok(), accepted, "server result: {result:?}");
             if let Ok(metadata) = result {
-                assert_eq!(
-                    metadata.server_name,
-                    Some(rama_net::address::Domain::from_static("localhost"))
-                );
+                assert_eq!(metadata.server_name, Some(Domain::tld_localhost().into()));
                 assert_eq!(metadata.resumed, Some(false));
                 let algorithms = metadata.algorithms;
                 assert!(algorithms.cipher_suite.is_some(), "{algorithms:?}");
@@ -462,7 +451,7 @@ mod tests {
                     false,
                 );
                 let client = TlsClientConfig::new()
-                    .with_server_name(rama_net::address::Host::from_static("localhost"))
+                    .with_server_name(Domain::tld_localhost())
                     .with_server_verify(ServerVerifyMode::Disable)
                     .with_ocsp_stapling(request);
                 let data = crate::client::TlsConnectorData::try_from(&client).unwrap();

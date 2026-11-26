@@ -1,32 +1,20 @@
 //! Connection-owned compression and critical-stream state.
 
-use super::{
-    DatagramConfig, Error,
-    control::{Control, Role},
-    frame::{FrameDecoder, FrameEvent},
-    observation::{
-        FirstRequestObservation, H3Observer, Recorder, RequestQpackPrefix, SettingsObservation,
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    pin::pin,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
     },
-    qlog::{self, ControlFrame, Initiator},
-    qpack::{Decoder, DecoderConfig, EncodeField, Encoder, EncoderConfig, FieldPair, QpackError},
-    transport::{
-        self, BoxedStreamHandle, EarlyData, ReadError, SendStream as _, StreamHandle as _,
-        WriteError,
-    },
+    task::{Context, Poll, Waker},
 };
-use crate::{
-    proto::{
-        DEFAULT_MAX_HEADER_LIST_SIZE, DEFAULT_MAX_INFORMATIONAL_RESPONSES,
-        DEFAULT_REFUSED_STREAM_BUDGET,
-        rate_budget::{RateBudget, RefusedStreams},
-    },
-    server::conn::{HeaderReadTimeout, IdleTimeout},
-};
+
 use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::Extensions,
-    futures::FutureExt as _,
+    futures::{FutureExt as _, maybe},
     telemetry::tracing,
 };
 use rama_http::{
@@ -53,18 +41,32 @@ use rama_utils::{
     octets::{kib, kib_u64, mib},
     reactive::{Change, ChangeListener, ChangeSignal},
 };
-use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
-    pin::pin,
-    sync::{
-        Arc, Weak,
-        atomic::{AtomicBool, Ordering},
-    },
-    task::{Context, Poll, Waker},
-};
 use tokio::{
     sync::{Notify, oneshot},
-    time::{Instant, timeout_at},
+    time::{Instant, sleep_until, timeout_at},
+};
+
+use super::{
+    DatagramConfig, Error,
+    control::{Control, Role},
+    frame::{FrameDecoder, FrameEvent},
+    observation::{
+        FirstRequestObservation, H3Observer, Recorder, RequestQpackPrefix, SettingsObservation,
+    },
+    qlog::{self, ControlFrame, Initiator},
+    qpack::{Decoder, DecoderConfig, EncodeField, Encoder, EncoderConfig, FieldPair, QpackError},
+    transport::{
+        self, BoxedStreamHandle, EarlyData, ReadError, SendStream as _, StreamHandle as _,
+        WriteError,
+    },
+};
+use crate::{
+    proto::{
+        DEFAULT_MAX_HEADER_LIST_SIZE, DEFAULT_MAX_INFORMATIONAL_RESPONSES,
+        DEFAULT_REFUSED_STREAM_BUDGET,
+        rate_budget::{RateBudget, RefusedStreams},
+    },
+    server::conn::{HeaderReadTimeout, IdleTimeout},
 };
 
 mod critical_streams;
@@ -1338,10 +1340,7 @@ impl Shared {
             }
             sent.await;
         };
-        match goaway_drain_deadline(sent_at, since, limit) {
-            Some(deadline) => tokio::time::sleep_until(deadline).await,
-            None => std::future::pending().await,
-        }
+        maybe(goaway_drain_deadline(sent_at, since, limit).map(sleep_until)).await;
     }
 
     pub(crate) fn goaway(&self) -> Option<u64> {
@@ -2654,8 +2653,13 @@ impl<C: transport::Connection> Drop for Driver<C> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::h3::{headers, tests::Pair};
+    use std::{
+        future::{Future as _, poll_fn},
+        sync::atomic::{AtomicUsize, Ordering},
+        task::{Context, Wake, Waker},
+        time::Duration,
+    };
+
     use rama_http_types::proto::h3::{
         PseudoHeader,
         control::ClientControlFrame,
@@ -2663,12 +2667,9 @@ mod tests {
         qpack::encoding::{FieldPreferences, HeaderPreferences, Representation},
     };
     use rama_quic_proto::{Side, StreamId};
-    use std::{
-        future::{Future as _, poll_fn},
-        sync::atomic::{AtomicUsize, Ordering},
-        task::{Context, Wake, Waker},
-        time::Duration,
-    };
+
+    use super::*;
+    use crate::h3::{headers, tests::Pair};
 
     #[test]
     fn early_context_covers_every_advertised_setting() {
@@ -3294,17 +3295,19 @@ mod tests {
 
 #[cfg(test)]
 mod observation_tests {
-    use super::*;
+    use std::{
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+
     use rama_http_types::proto::h3::{
         Setting,
         observation::{InsertionFieldMatch, ObservedEncoderInstruction, SettingsStatus},
         qpack::{EncoderInstruction, FieldLine, HeaderPrefix},
     };
-    use std::{
-        future::Future,
-        task::{Context, Poll, Waker},
-    };
     use tokio::time::Duration;
+
+    use super::*;
 
     fn shared(limits: ObservationLimits) -> Arc<Shared> {
         Shared::new(

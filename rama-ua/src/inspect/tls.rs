@@ -1,9 +1,13 @@
+use rama_quic_proto::capture::{
+    CaptureError, CaptureLimits, QuicObservation, transport_parameters_iter_from_hello,
+};
 use rama_tls::{client::ClientHello, server::ServerClientHellos};
 
 use crate::profile::{
     capture::{
         completeness::ProfileCaptureCompleteness,
         joint::{CapturedSlot, CapturedSlotKind},
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
         tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport},
     },
     format::canonical::ProfileDataError,
@@ -54,6 +58,70 @@ pub fn tls_connection_slots(
     Ok(slots)
 }
 
+/// Append the effective QUIC parameter tuple and its distinct wire outer from one hello view.
+pub fn append_quic_parameter_slots(
+    slots: &mut Vec<CapturedSlot>,
+    observed: &QuicObservation,
+    hellos: &ServerClientHellos<'_>,
+    limits: OrderCaptureLimits,
+) -> Result<(), ProfileDataError> {
+    let parameters = if let Some(inner) = hellos.ech_inner() {
+        let reader = transport_parameters_iter_from_hello(inner, &CaptureLimits::default())
+            .map_err(|error| inner_parameter_error(&error))?;
+        OrderedProtocolCapture::try_capture(
+            ProfileCaptureCompleteness::Complete,
+            OrderNamespace::QuicParameter,
+            reader.map(|parameter| {
+                parameter
+                    .map(|(id, body)| (u64::from(id), body))
+                    .map_err(|error| inner_parameter_error(&error))
+            }),
+            limits,
+        )?
+    } else {
+        wire_quic_parameters(observed, limits)?
+    }
+    .canonical(limits)?;
+    if hellos.ech_inner().is_some() {
+        let outer = wire_quic_parameters(observed, limits)?.canonical(limits)?;
+        if outer.bytes != parameters.bytes {
+            slots.push(CapturedSlot {
+                kind: CapturedSlotKind::QuicOuterParameters,
+                value: outer,
+            });
+        }
+    }
+    slots.push(CapturedSlot {
+        kind: CapturedSlotKind::QuicParameters,
+        value: parameters,
+    });
+    Ok(())
+}
+
+fn inner_parameter_error(error: &CaptureError) -> ProfileDataError {
+    match error {
+        CaptureError::LimitExceeded(_) => {
+            ProfileDataError::Incomplete("inner QUIC parameter budget")
+        }
+        _ => ProfileDataError::Invalid("inner QUIC parameters"),
+    }
+}
+
+fn wire_quic_parameters(
+    observed: &QuicObservation,
+    limits: OrderCaptureLimits,
+) -> Result<OrderedProtocolCapture, ProfileDataError> {
+    OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::from_complete(observed.completeness.transport_parameters),
+        OrderNamespace::QuicParameter,
+        observed
+            .transport_parameters
+            .iter()
+            .map(|parameter| (u64::from(parameter.id), parameter.value.as_slice())),
+        limits,
+    )
+}
+
 fn slot(
     kind: CapturedSlotKind,
     hello: &ClientHello,
@@ -75,8 +143,10 @@ fn slot(
 
 #[cfg(test)]
 mod tests {
+    use rama_quic_proto::{VarInt, coding::Codec as _};
     use rama_tls::{
-        CipherSuite, CompressionAlgorithm, ProtocolVersion,
+        CipherSuite, CompressionAlgorithm, ExtensionId, ProtocolVersion,
+        client::ClientHelloExtension,
         server::{EchServerObservation, ServerEchAccepted},
     };
 
@@ -95,6 +165,49 @@ mod tests {
         TlsCapture::from_canonical(&slot.value, limits)
             .unwrap()
             .ciphers[0]
+    }
+
+    #[test]
+    fn accepted_inner_over_capture_budget_is_incomplete_evidence() {
+        let mut bytes = Vec::new();
+        for id in 65536..=65792u64 {
+            VarInt::from_u64(id).unwrap().encode(&mut bytes);
+            bytes.push(0);
+        }
+        let inner = ClientHello::new(
+            ProtocolVersion::TLSv1_2,
+            vec![CipherSuite::from(4865)],
+            vec![CompressionAlgorithm::from(0)],
+            vec![ClientHelloExtension::Opaque {
+                id: ExtensionId::QUIC_TRANSPORT_PARAMETERS,
+                data: bytes,
+            }],
+        );
+        let outer = EchServerObservation::new(hello(4865));
+        let hellos = ServerClientHellos::new(
+            Some(&inner),
+            Some(ServerEchAccepted::new(true)),
+            Some(&outer),
+        );
+        let error = append_quic_parameter_slots(
+            &mut Vec::new(),
+            &QuicObservation {
+                connection_id: Vec::new(),
+                attempt_id: Vec::new(),
+                retry_parent: None,
+                first_flight: None,
+                transport_parameters: Vec::new(),
+                client_hello_message: Vec::new(),
+                completeness: Default::default(),
+            },
+            &hellos,
+            OrderCaptureLimits::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, ProfileDataError::Incomplete(_)),
+            "{error:?}"
+        );
     }
 
     #[test]

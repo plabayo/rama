@@ -1,6 +1,7 @@
 use super::*;
 use parking_lot::Mutex;
 use std::{
+    error::Error as _,
     fmt,
     pin::Pin,
     sync::Arc,
@@ -456,8 +457,6 @@ impl AsyncWrite for FailingWriter {
 
 #[tokio::test]
 async fn retry_exhaustion_keeps_original_error_and_custom_source_chain() {
-    use std::error::Error as _;
-
     for operation in ["write", "flush", "shutdown"] {
         let source = Arc::new(Failure("original writer cause"));
         let mut writer = FailingWriter {
@@ -494,8 +493,6 @@ async fn retry_exhaustion_keeps_original_error_and_custom_source_chain() {
 
 #[tokio::test]
 async fn non_interrupted_writer_errors_preserve_exact_source_without_retry() {
-    use std::error::Error as _;
-
     for kind in [
         io::ErrorKind::PermissionDenied,
         io::ErrorKind::WouldBlock,

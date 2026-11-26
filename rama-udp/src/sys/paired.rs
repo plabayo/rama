@@ -5,7 +5,11 @@ use std::{
     ops::Deref,
 };
 
+use rama_net::ip::icmp::IcmpErrorReport;
 use tokio::net::UdpSocket;
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use super::linux::errqueue;
 
 use super::{RecvMeta, Transmit, UdpSocketState};
 
@@ -63,6 +67,52 @@ impl PairedSocket {
         // the field invariant, borrowed for the call.
         unsafe { self.state.try_send(&(&self.io).into(), transmit) }
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl PairedSocket {
+    /// Hold the error queue on for one more ICMP error receiver.
+    pub(crate) fn acquire_icmp_reports(&self) -> io::Result<()> {
+        self.state.icmp_reports().acquire(&self.io)
+    }
+
+    /// Release what [`Self::acquire_icmp_reports`] took.
+    pub(crate) fn release_icmp_reports(&self) {
+        self.state.icmp_reports().release(&self.io);
+    }
+
+    /// The next queued report, or `WouldBlock`.
+    pub(crate) fn recv_icmp_report(&self) -> io::Result<IcmpErrorReport> {
+        errqueue::recv(&self.io)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[expect(
+    clippy::unused_self,
+    reason = "the same methods as on Linux, where the socket holds the error queue"
+)]
+impl PairedSocket {
+    /// Refused: ICMP error reports need the Linux socket error queue.
+    pub(crate) fn acquire_icmp_reports(&self) -> io::Result<()> {
+        Err(icmp_reports_unsupported())
+    }
+
+    /// Nothing can be acquired, so nothing is released.
+    pub(crate) fn release_icmp_reports(&self) {}
+
+    /// Refused, as [`Self::acquire_icmp_reports`] is.
+    pub(crate) fn recv_icmp_report(&self) -> io::Result<IcmpErrorReport> {
+        Err(icmp_reports_unsupported())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn icmp_reports_unsupported() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "ICMP error reports need the Linux socket error queue",
+    )
 }
 
 impl Deref for PairedSocket {

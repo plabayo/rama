@@ -22,7 +22,10 @@ use rama_net::{
     rate::{ClientIpRateKey, InputToRateKey, RateKey},
     user::UserId,
 };
-use rama_utils::{macros::generate_set_and_with, time::deadline_after};
+use rama_utils::{
+    macros::{generate_set_and_with, nonzero},
+    time::deadline_after,
+};
 use tokio::time::Instant;
 
 use crate::budget::{PrincipalBudget, PrincipalSpend, QuotaWindowState};
@@ -237,7 +240,7 @@ impl TunnelLimits {
         Self {
             max_tunnels: None,
             max_tunnels_per_principal: None,
-            max_principals: const { NonZeroUsize::new(65_536).unwrap() },
+            max_principals: nonzero!(65_536),
             principal_idle_timeout: Duration::from_mins(1),
             principal_budget: None,
             keyer: Arc::new(UserOrClientIpKey::new()),

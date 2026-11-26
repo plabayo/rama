@@ -1,9 +1,8 @@
 //! Validate decoded HTTP fields before normalization can hide malformed input.
 
-use std::{cell::Cell, collections::hash_map::Entry};
+use std::{cell::Cell, collections::hash_map::Entry, iter::once};
 
-use ahash::HashMap;
-
+use ahash::{HashMap, HashSet};
 use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
@@ -13,6 +12,7 @@ use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
     header::{
         self, ValueIter,
+        hop_by_hop::{CONNECTION_SPECIFIC_HEADERS, is_removable_connection_header},
         trailer::{ForbiddenTrailers, is_never_a_trailer, is_sent_in_trailers},
     },
     proto::{
@@ -27,15 +27,20 @@ use rama_http_types::{
     },
 };
 use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
+use rama_utils::bytes::trim_ows;
 
 use super::{
     Error,
     connection::Shared,
     qpack::{EncodeField, FieldPair, LowercaseName},
 };
-use crate::proto::target::{
-    AsteriskHostError, OutgoingHost, asterisk_host, host_is_wire_authority, normalize_received,
-    outgoing_host, received_authority, several_hosts,
+use crate::{
+    headers::{retain_te_trailers, trim_outer_whitespace},
+    proto::target::{
+        AsteriskHostError, OutgoingHost, asterisk_host, host_is_wire_authority,
+        normalize_outgoing_host, normalize_received, normalized_outgoing_host, outgoing_host,
+        received_authority, several_hosts,
+    },
 };
 
 #[derive(Default)]
@@ -132,17 +137,32 @@ static TE_TRAILERS_SENSITIVE: HeaderValue = {
     value
 };
 
+fn outgoing_nominations(headers: &HeaderMap) -> Option<HashSet<HeaderName>> {
+    let mut names = headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .flat_map(|value| value.as_bytes().split(|byte| *byte == b','))
+        .filter_map(|token| HeaderName::from_bytes(token.trim_ascii()).ok());
+    let first = names.next()?;
+    Some(once(first).chain(names).collect())
+}
+
+fn is_nominated(nominations: Option<&HashSet<HeaderName>>, name: &HeaderName) -> bool {
+    nominations.is_some_and(|names| names.contains(name))
+}
+
 /// The fields of an outgoing message that go on the wire.
 ///
 /// HTTP/3, like HTTP/2, carries no connection-specific fields: they are dropped with the
 /// fields a `Connection` field nominates. A request whose `TE` names `trailers` sends exactly
 /// that, once, where its first `TE` line stood; any other `TE` is dropped (RFC 9114 §4.2).
 /// Received messages carrying them stay malformed.
-fn outgoing_fields(
-    headers: &HeaderMap,
+fn outgoing_fields<'a>(
+    headers: &'a HeaderMap,
     kind: Outgoing,
-) -> impl Iterator<Item = (&HeaderName, &HeaderValue)> {
-    let nominated: Vec<HeaderName> = header::hop_by_hop::connection_header_names(headers).collect();
+    nominations: Option<&'a HashSet<HeaderName>>,
+) -> impl Iterator<Item = (&'a HeaderName, &'a HeaderValue)> {
+    let nominated = move |name: &HeaderName| is_nominated(nominations, name);
     let mut te_trailers = kind == Outgoing::Request
         && header::hop_by_hop::te_names_trailers(headers.get_all(header::TE));
     // Never indexed when any of the caller's `TE` lines is sensitive.
@@ -161,7 +181,7 @@ fn outgoing_fields(
                 return Some((name, te_value));
             }
         } else if !header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&name)
-            && (!nominated.contains(name)
+            && (!nominated(name)
                 || kind == Outgoing::Request
                     && !header::hop_by_hop::is_removable_connection_header(name))
         {
@@ -187,20 +207,33 @@ pub(crate) fn outgoing_trailer_fields<'a>(
     })
 }
 
+/// A field as it goes on the wire: without the outer SP and HTAB HTTP/1 allows around a
+/// value, which HTTP/3 refuses (RFC 9114 §4.2).
+pub(crate) fn outgoing_field<'a>(
+    name: &'a HeaderName,
+    value: &'a HeaderValue,
+) -> EncodeField<'a, LowercaseName<'a>, &'a [u8]> {
+    let mut field = EncodeField::from_header(name, value);
+    field.value = trim_ows(field.value);
+    field
+}
+
 /// Applications can construct HeaderValue through its unchecked API: recheck what is sent.
 fn validate_values<'a>(
     fields: impl Iterator<Item = (&'a HeaderName, &'a HeaderValue)>,
 ) -> Result<(), Error> {
     for (_, value) in fields {
-        if !header::is_valid_h2_h3_field_value(value.as_bytes()) {
+        if !header::is_valid_h2_h3_field_value(trim_ows(value.as_bytes())) {
             return Err(malformed("invalid field value"));
         }
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_outgoing(headers: &HeaderMap, kind: Outgoing) -> Result<(), Error> {
-    validate_values(outgoing_fields(headers, kind))?;
+    let nominations = outgoing_nominations(headers);
+    validate_values(outgoing_fields(headers, kind, nominations.as_ref()))?;
     content_length(headers)?;
     Ok(())
 }
@@ -518,6 +551,7 @@ pub(crate) fn encode_request<B>(
 
 /// Which of a request's fields an encoded request block sent.
 pub(crate) struct SentFields {
+    nominations: Option<HashSet<HeaderName>>,
     drop_host: bool,
     unchanged: bool,
 }
@@ -525,25 +559,45 @@ pub(crate) struct SentFields {
 impl SentFields {
     /// The fields sent of the request's `headers`: those themselves, unless some
     /// were left out or rewritten.
-    pub(crate) fn of(self, headers: HeaderMap) -> HeaderMap {
-        if self.unchanged {
-            return headers;
+    pub(crate) fn of(self, mut headers: HeaderMap) -> HeaderMap {
+        if !self.unchanged {
+            retain_sent_request_fields(&mut headers, self.drop_host, self.nominations);
+            trim_outer_whitespace(&mut headers);
+            normalize_outgoing_host(&mut headers);
         }
-        let mut sent = HeaderMap::new();
-        for (name, value) in sent_request_fields(&headers, self.drop_host) {
-            sent.append(name.clone(), value.clone());
+        headers
+    }
+}
+
+/// [`sent_request_fields`] applied to the map itself, so the fields kept keep their
+/// position, casing and sensitivity, and the map its reserved positions.
+fn retain_sent_request_fields(
+    headers: &mut HeaderMap,
+    drop_host: bool,
+    nominated: Option<HashSet<HeaderName>>,
+) {
+    retain_te_trailers(headers);
+    for name in CONNECTION_SPECIFIC_HEADERS {
+        headers.remove(name);
+    }
+    for name in nominated.into_iter().flatten() {
+        if name != header::TE && is_removable_connection_header(&name) {
+            headers.remove(&name);
         }
-        sent
+    }
+    if drop_host {
+        headers.remove(header::HOST);
     }
 }
 
 /// The request fields that go on the wire: not the connection-specific ones, nor
 /// an unusable `Host` next to an authority.
-fn sent_request_fields(
-    headers: &HeaderMap,
+fn sent_request_fields<'a>(
+    headers: &'a HeaderMap,
     drop_host: bool,
-) -> impl Iterator<Item = (&HeaderName, &HeaderValue)> {
-    outgoing_fields(headers, Outgoing::Request)
+    nominations: Option<&'a HashSet<HeaderName>>,
+) -> impl Iterator<Item = (&'a HeaderName, &'a HeaderValue)> {
+    outgoing_fields(headers, Outgoing::Request, nominations)
         .filter(move |(name, _)| !drop_host || *name != header::HOST)
 }
 
@@ -553,14 +607,25 @@ pub(crate) fn encode_request_fields<B>(
     id: u64,
     request: &Request<B>,
 ) -> Result<(Bytes, SentFields), Error> {
-    validate_outgoing(request.headers(), Outgoing::Request)?;
+    let nominations = outgoing_nominations(request.headers());
+    validate_values(outgoing_fields(
+        request.headers(),
+        Outgoing::Request,
+        nominations.as_ref(),
+    ))?;
+    content_length(request.headers())?;
+    let host_eligible = !is_nominated(nominations.as_ref(), &header::HOST);
+    let normalized_host = host_eligible
+        .then(|| normalized_outgoing_host(request.headers()))
+        .flatten();
     let protocol = request.extensions().get_ref::<ext::Protocol>();
     if protocol.is_some() && request.method() != Method::CONNECT {
         return Err(malformed(":protocol requires CONNECT"));
     }
     // Ordinary CONNECT uses authority-form; Extended CONNECT is an ordinary target.
     let connect = request.method() == Method::CONNECT && protocol.is_none();
-    if request.uri().fragment().is_some() || (connect && request.uri().port_u16().is_none()) {
+    // The path written below leaves out the fragment, as on HTTP/1 and HTTP/2.
+    if connect && request.uri().port_u16().is_none() {
         return Err(malformed("invalid request target"));
     }
     // Serialize only components that need wire normalization into one buffer.
@@ -574,14 +639,22 @@ pub(crate) fn encode_request_fields<B>(
     }
     let mut authority_from_host = false;
     let mut drop_host = false;
-    match outgoing_host(request.headers()) {
-        OutgoingHost::Usable(host, parsed_host) => {
+    match if host_eligible {
+        outgoing_host(request.headers())
+    } else {
+        OutgoingHost::Absent
+    } {
+        OutgoingHost::Usable { bytes, parsed, .. } => {
             // Compared with the wire projection, as parsed host and port: `Host: h:02` is port 2.
             authority_from_host = AuthorityRef::parse(&target[..])
-                .is_ok_and(|projected| host_is_wire_authority(projected, parsed_host));
+                .is_ok_and(|projected| host_is_wire_authority(projected, parsed));
             if authority_from_host {
                 target.clear();
-                target.extend_from_slice(host.as_bytes());
+                target.extend_from_slice(
+                    normalized_host
+                        .as_ref()
+                        .map_or(bytes, HeaderValue::as_bytes),
+                );
             }
         }
         // Next to a URI authority it is dropped, so one authority reaches the wire.
@@ -618,8 +691,13 @@ pub(crate) fn encode_request_fields<B>(
             .extensions()
             .get_ref::<Protocol>()
             .ok_or(malformed("missing request scheme"))?;
-        if let Some(host) = request.headers().get(header::HOST) {
-            target.extend_from_slice(host.as_bytes());
+        if host_eligible
+            && let Some(host) = normalized_host
+                .as_ref()
+                .or_else(|| request.headers().get(header::HOST))
+        {
+            target.clear();
+            target.extend_from_slice(trim_ows(host.as_bytes()));
         }
         Some(protocol)
     } else {
@@ -646,7 +724,10 @@ pub(crate) fn encode_request_fields<B>(
     }
     let (authority, path) = target.split_at(authority_len);
     // RFC 9114 §4.3.1: http(s) needs :authority or Host, for Extended CONNECT too.
-    if http_scheme && authority.is_empty() && !request.headers().contains_key(header::HOST) {
+    if http_scheme
+        && authority.is_empty()
+        && (!host_eligible || !request.headers().contains_key(header::HOST))
+    {
         return Err(malformed("HTTP URI requires authority"));
     }
     if protocol.is_some() && http_scheme && path.is_empty() {
@@ -701,18 +782,28 @@ pub(crate) fn encode_request_fields<B>(
     let block = shared.encode(
         id,
         pseudo.chain(
-            sent_request_fields(request.headers(), drop_host)
-                .inspect(|_| sent.set(sent.get() + 1))
+            sent_request_fields(request.headers(), drop_host, nominations.as_ref())
+                .inspect(|(_, value)| {
+                    if !value.has_outer_whitespace() {
+                        sent.set(sent.get() + 1);
+                    }
+                })
                 .map(|(name, value)| {
-                    let mut field = EncodeField::from_header(name, value);
+                    let value = if *name == header::HOST {
+                        normalized_host.as_ref().unwrap_or(value)
+                    } else {
+                        value
+                    };
+                    let mut field = outgoing_field(name, value);
                     field.preferences = encoding.as_mut().and_then(|cursor| cursor.header(name));
                     field
                 }),
         ),
         request.extensions().get_ref::<FieldSectionBase>().copied(),
     )?;
-    // Every field went out, and `TE` only as the `trailers` it is rewritten to.
-    let unchanged = sent.get() == request.headers().len()
+    // Every field went out as is, and `TE` only as the `trailers` it is rewritten to.
+    let unchanged = normalized_host.is_none()
+        && sent.get() == request.headers().len()
         && request
             .headers()
             .get_all(header::TE)
@@ -721,6 +812,7 @@ pub(crate) fn encode_request_fields<B>(
     Ok((
         block,
         SentFields {
+            nominations,
             drop_host,
             unchanged,
         },
@@ -732,7 +824,13 @@ pub(crate) fn encode_response<B>(
     id: u64,
     response: &Response<B>,
 ) -> Result<Bytes, Error> {
-    validate_outgoing(response.headers(), Outgoing::Response)?;
+    let nominations = outgoing_nominations(response.headers());
+    validate_values(outgoing_fields(
+        response.headers(),
+        Outgoing::Response,
+        nominations.as_ref(),
+    ))?;
+    content_length(response.headers())?;
     if response.status() == StatusCode::SWITCHING_PROTOCOLS
         || ((response.status().is_informational() || response.status() == StatusCode::NO_CONTENT)
             && response.headers().contains_key(header::CONTENT_LENGTH))
@@ -753,34 +851,72 @@ pub(crate) fn encode_response<B>(
                 .get_ref::<PseudoHeaderSensitivity>()
                 .is_some_and(|sensitivity| sensitivity.is_sensitive(PseudoHeader::Status)),
         })
-        .chain(outgoing_fields(response.headers(), Outgoing::Response).map(
-            |(name, value)| {
-                let mut field = EncodeField::from_header(name, value);
-                field.preferences = encoding.as_mut().and_then(|cursor| cursor.header(name));
-                field
-            },
-        )),
+        .chain(
+            outgoing_fields(response.headers(), Outgoing::Response, nominations.as_ref()).map(
+                |(name, value)| {
+                    let mut field = outgoing_field(name, value);
+                    field.preferences = encoding.as_mut().and_then(|cursor| cursor.header(name));
+                    field
+                },
+            ),
+        ),
         response.extensions().get_ref::<FieldSectionBase>().copied(),
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use std::mem;
+
     use rama_core::{
         Service as _,
         bytes::{BufMut, BytesMut},
         service::service_fn,
     };
     use rama_http::layer::required_header::AddRequiredRequestHeaders;
-    use rama_http_types::proto::h2::{
-        frame::{self, StreamId},
-        hpack,
+    use rama_http_types::proto::{
+        h2::{
+            frame::{self, StreamId},
+            hpack,
+        },
+        h3::qpack::{FieldLine, HeaderPrefix, encoding::Representation},
     };
-    use rama_http_types::proto::h3::qpack::{FieldLine, HeaderPrefix, encoding::Representation};
-    use rama_net::AuthorityInputExt as _;
+    use rama_net::{AuthorityInputExt as _, address::Domain};
+    use rama_tls::{
+        ProtocolVersion, SecureTransport,
+        client::{ClientHello, ClientHelloExtension},
+    };
 
     use super::*;
-    use crate::{h3::qpack::ErrorScope, proto::h1::test_util as h1};
+    use crate::{
+        h3::{qpack::ErrorScope, stream::encode_trailers},
+        proto::{h1::test_util as h1, target::repair_outgoing_h1_host},
+    };
+
+    #[test]
+    fn a_nominated_host_cannot_supply_an_asterisk_authority() {
+        let request = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("*")
+            .header(header::HOST, "origin.test")
+            .header(header::CONNECTION, "keep-alive")
+            .header(header::CONNECTION, "Host")
+            .body(())
+            .unwrap();
+        request.extensions().insert(Protocol::HTTPS);
+        encode_request(&shared(), 0, &request).unwrap_err();
+    }
+
+    #[test]
+    fn empty_connection_members_need_no_nomination_storage() {
+        let mut headers = HeaderMap::new();
+        headers.append(header::CONNECTION, HeaderValue::from_static(", ,\t, ,"));
+        for _ in 0..4 {
+            headers.append(header::CONNECTION, HeaderValue::from_static(" , "));
+        }
+        let nominations = outgoing_nominations(&headers);
+        assert!(nominations.is_none());
+    }
 
     #[test]
     fn early_data_survives_request_encoding_but_not_outgoing_trailers() {
@@ -845,16 +981,63 @@ mod tests {
     }
 
     #[test]
-    fn field_boundary_whitespace_is_rejected_both_ways() {
-        for value in [" leading", "trailing ", "\tleading", "trailing\t"] {
+    fn field_boundary_whitespace_is_refused_on_receive_and_trimmed_on_send() {
+        for (value, trimmed) in [
+            (" leading", "leading"),
+            ("trailing ", "trailing"),
+            ("\tleading", "leading"),
+            ("trailing\t", "trailing"),
+            (" \t ", ""),
+        ] {
             assert!(
                 parse(fields(&[("x-test", value)]), false).is_err(),
                 "{value:?}"
             );
             let mut headers = HeaderMap::new();
+            headers.insert("X-Before", HeaderValue::from_static("b"));
             headers.insert("x-test", HeaderValue::from_static(value));
-            assert!(validate_outgoing(&headers, Outgoing::Response).is_err());
-            assert!(validate_outgoing_trailers(&headers, None).is_err());
+            headers.insert("x-after", HeaderValue::from_static("a"));
+            validate_outgoing(&headers, Outgoing::Response).unwrap();
+            validate_outgoing_trailers(&headers, None).unwrap();
+
+            let mut outgoing = Request::builder()
+                .uri("https://example.com/")
+                .body(())
+                .unwrap();
+            *outgoing.headers_mut() = headers.clone();
+            let expected = [("x-before", "b"), ("x-test", trimmed), ("x-after", "a")]
+                .map(|(name, value)| (Box::<str>::from(name), Box::<str>::from(value)));
+            let ordered = |map: &HeaderMap| {
+                map.ordered_iter()
+                    .map(|(name, value)| {
+                        (
+                            Box::<str>::from(name.as_original_str()),
+                            Box::<str>::from(value.to_str().unwrap()),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let (encoded, sent) = encode_request_fields(&shared(), 0, &outgoing).unwrap();
+            let received = request(decode(encoded)).unwrap();
+            assert_eq!(ordered(received.headers()), expected, "{value:?}");
+            // The record of sent fields keeps their order and original casing.
+            let recorded = sent.of(headers.clone());
+            assert_eq!(
+                ordered(&recorded),
+                [("X-Before", "b"), ("x-test", trimmed), ("x-after", "a")]
+                    .map(|(name, value)| (Box::<str>::from(name), Box::<str>::from(value))),
+                "{value:?}"
+            );
+
+            let mut outgoing = Response::new(());
+            *outgoing.headers_mut() = headers.clone();
+            let received = response(decode(encode_response(&shared(), 0, &outgoing).unwrap()));
+            assert_eq!(ordered(received.unwrap().headers()), expected, "{value:?}");
+
+            let received = trailers(decode(
+                encode_trailers(&shared(), 0, &headers, None).unwrap(),
+            ));
+            assert_eq!(ordered(&received.unwrap()), expected, "{value:?}");
         }
         for value in ["", "internal \t whitespace", "\"quoted\""] {
             let parsed = parse(fields(&[("x-test", value)]), false).unwrap();
@@ -1589,6 +1772,41 @@ mod tests {
         request
     }
 
+    /// A `Host` with outer whitespace names the authority it holds on every version: what is
+    /// parsed to choose the authority is what is sent, never the URI authority instead.
+    #[test]
+    fn a_padded_host_names_the_wire_authority_on_every_version() {
+        for (host, authority) in [
+            (" tenant.example ", "tenant.example"),
+            ("\ttenant.example:8443 ", "tenant.example:8443"),
+        ] {
+            let uri = "https://gateway.example/";
+            assert_eq!(
+                wire_authority(uri, Some(host)).unwrap(),
+                authority,
+                "h3 {host:?}"
+            );
+            assert_eq!(
+                h2_wire_authority(uri, Some(host)).unwrap(),
+                authority,
+                "h2 {host:?}"
+            );
+            let sent =
+                decode(encode_request(&shared(), 0, &authority_request(uri, Some(host))).unwrap());
+            let hosts: Vec<_> = sent
+                .iter()
+                .filter(|field| field.name == "host")
+                .map(|field| field.value.clone())
+                .collect();
+            assert_eq!(hosts, [authority], "h3 {host:?}");
+
+            let mut outgoing = authority_request(uri, Some(host));
+            let uri = outgoing.uri().clone();
+            assert!(repair_outgoing_h1_host(&uri, outgoing.headers_mut()));
+            assert_eq!(outgoing.headers()[header::HOST], authority, "h1 {host:?}");
+        }
+    }
+
     /// Host is compared with the projected wire authority, not the raw URI.
     #[test]
     fn host_is_compared_with_the_projected_authority() {
@@ -2267,11 +2485,6 @@ mod tests {
     /// also when the connection's TLS SNI names another origin it coalesces.
     #[test]
     fn a_host_only_target_resolves_alike_on_h2_and_h3_whatever_the_sni() {
-        use rama_net::AuthorityInputExt as _;
-        use rama_tls::{
-            ProtocolVersion, SecureTransport,
-            client::{ClientHello, ClientHelloExtension},
-        };
         let mut host = HeaderMap::new();
         host.insert(
             rama_http_types::header::HOST,
@@ -2299,7 +2512,7 @@ mod tests {
                     Vec::new(),
                     Vec::new(),
                     vec![ClientHelloExtension::ServerName(Some(
-                        rama_net::address::Domain::from_static("a.example"),
+                        Domain::from_static("a.example").into(),
                     ))],
                 )));
             let expected = Some(rama_net::address::HostWithOptPort::try_from("b.example").unwrap());
@@ -3688,6 +3901,118 @@ mod tests {
         .unwrap();
         let forwarded = request(decode(encode_request(&shared(), 0, &received).unwrap())).unwrap();
         assert_eq!(forwarded.uri().to_string(), "https://example.com/a?q=x");
+    }
+
+    #[test]
+    fn a_fragment_of_the_request_uri_is_dropped_on_encode() {
+        let wire = |uri: &'static str| {
+            let outgoing = Request::builder()
+                .uri(uri)
+                .header("X-B", "1")
+                .header("x-a", "2")
+                .body(())
+                .unwrap();
+            fields_of(&decode(encode_request(&shared(), 0, &outgoing).unwrap()))
+        };
+        let sent = wire("https://example.com/a?q=x#fragment");
+        // The same field lines, pseudo-headers first, as without a fragment.
+        assert_eq!(sent, wire("https://example.com/a?q=x"));
+        assert_eq!(
+            sent,
+            [
+                (":method", "GET"),
+                (":authority", "example.com"),
+                (":scheme", "https"),
+                (":path", "/a?q=x"),
+                ("x-b", "1"),
+                ("x-a", "2"),
+            ]
+            .map(|(name, value)| (name.into(), value.into()))
+        );
+    }
+
+    #[test]
+    fn the_record_of_sent_fields_is_the_request_map_kept_in_place() {
+        let browser = |rewritten: bool| {
+            let mut request = Request::builder()
+                .uri("https://example.com/p")
+                .body(())
+                .unwrap();
+            let headers = request.headers_mut();
+            headers.append("User-Agent", HeaderValue::from_static("agent"));
+            headers.append("Te", HeaderValue::from_static("gzip, trailers"));
+            // Reserved between fields that are sent, so a lost reservation shows.
+            headers.reserve_position("X-Later");
+            headers.append("accept", HeaderValue::from_static("*/*"));
+            if rewritten {
+                headers.append("Connection", HeaderValue::from_static("keep-alive, X-Hop"));
+                headers.append("X-Hop", HeaderValue::from_static("1"));
+                headers.append("Host", HeaderValue::from_static("not a host"));
+                headers.append("x-padded", HeaderValue::from_static(" v "));
+            }
+            headers.append("x-last", HeaderValue::from_static("l"));
+            request
+        };
+
+        // A plain request is recorded as the map it carried, without a copy.
+        let plain = browser(false);
+        let (_, sent) = encode_request_fields(&shared(), 0, &plain).unwrap();
+        assert!(
+            !sent.unchanged,
+            "a TE other than exactly `trailers` is rewritten"
+        );
+        let mut plain = browser(false);
+        plain
+            .headers_mut()
+            .insert(header::TE, HeaderValue::from_static("trailers"));
+        let (_, sent) = encode_request_fields(&shared(), 0, &plain).unwrap();
+        assert!(sent.unchanged);
+
+        let mut rewritten = browser(true);
+        let (encoded, sent) = encode_request_fields(&shared(), 0, &rewritten).unwrap();
+        let wire: Vec<_> = fields_of(&decode(encoded))
+            .into_iter()
+            .filter(|(name, _)| !name.starts_with(':'))
+            .collect();
+        let mut recorded = sent.of(mem::take(rewritten.headers_mut()));
+        let as_lowercase: Vec<_> = recorded
+            .ordered_iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_ascii_lowercase().into_boxed_str(),
+                    Box::<str>::from(value.to_str().unwrap()),
+                )
+            })
+            .collect();
+        assert_eq!(as_lowercase, wire);
+        recorded.insert("X-Later", HeaderValue::from_static("r"));
+        let ordered: Vec<_> = recorded
+            .ordered_iter()
+            .map(|(name, value)| (name.as_original_str(), value.to_str().unwrap()))
+            .collect();
+        assert_eq!(
+            ordered,
+            [
+                ("User-Agent".into(), "agent"),
+                ("Te".into(), "trailers"),
+                ("X-Later".into(), "r"),
+                ("accept".into(), "*/*"),
+                ("x-padded".into(), "v"),
+                ("x-last".into(), "l"),
+            ]
+        );
+    }
+
+    fn fields_of(fields: &[FieldPair]) -> Vec<(Box<str>, Box<str>)> {
+        fields
+            .iter()
+            .map(|field| {
+                (
+                    String::from_utf8_lossy(&field.name).into(),
+                    String::from_utf8_lossy(&field.value).into(),
+                )
+            })
+            .collect()
     }
 
     #[test]

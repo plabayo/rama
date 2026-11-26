@@ -1,7 +1,8 @@
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, Ipv6Addr},
+    sync::Arc,
+};
 
-#[cfg(feature = "compression")]
-use crate::client::tests::browser_tls_profiles;
 use parking_lot::Mutex;
 #[cfg(feature = "compression")]
 use rama_boring::ssl::UnknownValues;
@@ -20,9 +21,9 @@ use rama_core::{
 };
 use rama_crypto::cert::{CertificateKeyKind, LeafCertConfig};
 use rama_net::{
-    address::{Host, HostWithPort},
+    address::{Domain, Host, HostWithPort},
     client::ConnectorTarget,
-    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
+    tls::{AlpnPolicy, ApplicationProtocol, ServerName, TlsAlpn},
 };
 #[cfg(feature = "compression")]
 use rama_tls::fingerprint::{Ja3, Ja4, PeetPrint};
@@ -33,16 +34,19 @@ use rama_tls::{
         TlsClientConfig,
     },
     server::{
-        CertificateIssuanceContext, DynamicCertIssuer, GeneratedServerAuthConfig, LeafCertRequest,
-        ServerAuthData, TlsServerConfig,
+        CertificateIdentity, CertificateIssuanceContext, DynamicCertIssuer,
+        GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData, TlsServerConfig,
     },
 };
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
+use rama_utils::octets::kib;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, duplex};
 
 use super::{
     BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorData, TlsAcceptorLayer,
     TlsAcceptorService,
 };
+#[cfg(feature = "compression")]
+use crate::client::tests::browser_tls_profiles;
 use crate::{
     TlsStream,
     client::{
@@ -51,7 +55,6 @@ use crate::{
     },
     types::SecureTransport,
 };
-use rama_utils::octets::kib;
 
 /// Handshake `client` with a boring acceptor for `server`.
 ///
@@ -158,6 +161,76 @@ struct FixedIssuer(ServerAuthData);
 impl DynamicCertIssuer for FixedIssuer {
     async fn issue_cert(&self, _: CertificateIssuanceContext) -> Result<ServerAuthData, BoxError> {
         Ok(self.0.clone())
+    }
+}
+
+/// Issues `auth` and records the identity each handshake asked for.
+struct RecordingIssuer(ServerAuthData, Arc<Mutex<Vec<Option<CertificateIdentity>>>>);
+
+impl DynamicCertIssuer for RecordingIssuer {
+    async fn issue_cert(
+        &self,
+        context: CertificateIssuanceContext,
+    ) -> Result<ServerAuthData, BoxError> {
+        self.1.lock().push(context.server_identity);
+        Ok(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn ip_literal_sni_asks_issuers_for_an_address_identity() {
+    for (sni, identity) in [
+        ("::1", IpAddr::from(Ipv6Addr::LOCALHOST)),
+        ("[::1]", IpAddr::from(Ipv6Addr::LOCALHOST)),
+        ("127.0.0.1", IpAddr::from([127, 0, 0, 1])),
+    ] {
+        let requested = Arc::default();
+        let server =
+            TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData::new(RecordingIssuer(
+                server_auth(CertificateKeyKind::EcP256),
+                Arc::clone(&requested),
+            )));
+        let acceptor = TlsAcceptorService::new(
+            server,
+            service_fn(|stream: TlsStream<ServiceInput<DuplexStream>>| async move {
+                Ok::<_, BoxError>(
+                    stream
+                        .extensions()
+                        .get_ref::<NegotiatedTlsParameters>()
+                        .unwrap()
+                        .clone(),
+                )
+            }),
+            false,
+        );
+        let mut ssl = client(SslVersion::TLS1_3)
+            .build()
+            .configure()
+            .unwrap()
+            .into_ssl(None)
+            .unwrap();
+        // Clients should not send an IP literal as SNI, but some do.
+        ssl.set_hostname(sni).unwrap();
+        let (client_io, server_io) = duplex(kib(64));
+        let (client, server) = tokio::join!(
+            SslStreamBuilder::new(ssl, client_io).connect(),
+            acceptor.serve(ServiceInput::new(server_io)),
+        );
+        client.unwrap();
+        assert_eq!(
+            server.unwrap().server_name,
+            Some(ServerName::from(identity)),
+            "{sni}"
+        );
+        assert!(
+            requested
+                .lock()
+                .iter()
+                .all(|requested| *requested == Some(CertificateIdentity::Ip(identity))),
+            "{sni}: {:?}",
+            requested.lock()
+        );
+        assert!(!requested.lock().is_empty());
     }
 }
 
@@ -336,7 +409,7 @@ impl Client {
         connection: impl FnOnce(&Extensions),
     ) -> (Accepted, Vec<String>) {
         let mut data = self.context.configure().unwrap();
-        data.server_name = Some(server_name);
+        data.server_name = Some(ServerName::try_from(server_name).unwrap());
         let mut ssl = data.into_ssl().unwrap();
         if let Some(session) = session {
             session.resume_on(&mut ssl).unwrap();
@@ -372,7 +445,7 @@ impl Client {
         session: Option<&TlsClientSession>,
     ) -> bool {
         let (accepted, _) = self
-            .connect(server, Host::from_static("localhost"), session, |_| {})
+            .connect(server, Domain::tld_localhost().into_host(), session, |_| {})
             .await;
         assert!(
             accepted.client_hello.is_some(),
@@ -422,6 +495,19 @@ async fn acceptors_keep_no_session_state() {
 }
 
 #[tokio::test]
+async fn later_changes_to_a_retained_config_do_not_apply() {
+    let config = static_config();
+    let retained = config.as_extensions().clone();
+    let server = acceptor(config, true);
+    // Applied, this policy would refuse a client that offers no protocol.
+    retained.insert(AlpnPolicy::Require);
+    retained.insert(TlsAlpn::http_2());
+    let client = Client::new(SslVersion::TLS1_3);
+    assert!(!client.resumes(&server, None).await);
+    assert!(client.resumes(&server, Some(&client.latest())).await);
+}
+
+#[tokio::test]
 async fn acceptors_only_resume_their_own_sessions() {
     for version in VERSIONS {
         let client = Client::new(version);
@@ -460,7 +546,7 @@ async fn connections_overriding_the_config_never_resume() {
         let server = acceptor(static_config(), true);
         assert!(!client.resumes(&server, None).await);
         let shared = client.latest();
-        let localhost = || Host::from_static("localhost");
+        let localhost = || Domain::tld_localhost().into_host();
         let (accepted, _) = client
             .connect(&server, localhost(), Some(&shared), http2)
             .await;
@@ -511,7 +597,10 @@ async fn shared_contexts_keep_connection_state_apart() {
             assert_eq!(names, [expected]);
             let stored = accepted.client_hello.expect("every ClientHello is stored");
             assert_eq!(
-                stored.ext_server_name().map(ToString::to_string).as_deref(),
+                stored
+                    .ext_server_domain()
+                    .map(ToString::to_string)
+                    .as_deref(),
                 sni
             );
         }
@@ -771,12 +860,10 @@ async fn browser_profiles_reach_the_acceptor_with_their_fingerprints() {
             .configure()
             .unwrap();
         // An IP identity sends no SNI, as a capture without one did.
-        data.server_name = Some(
-            captured
-                .ext_server_name()
-                .cloned()
-                .map_or(Host::LOCALHOST_IPV4, Host::from),
-        );
+        data.server_name = Some(captured.ext_server_domain().cloned().map_or(
+            ServerName::from(IpAddr::from([127, 0, 0, 1])),
+            ServerName::from,
+        ));
         let ssl = data.into_ssl().unwrap();
         let (client_io, server_io) = tokio::io::duplex(kib(64));
         let (client, observed) = tokio::join!(

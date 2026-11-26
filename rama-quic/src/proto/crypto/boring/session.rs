@@ -5,9 +5,11 @@ use std::{
 };
 
 use parking_lot::Mutex;
+#[cfg(test)]
+use rama_core::conversion::RamaTryFrom as _;
 use rama_core::{
     conversion::RamaFrom as _,
-    error::{ArcError, BoxError},
+    error::{ArcError, BoxError, BoxErrorExt as _},
     telemetry::tracing::debug,
 };
 use rama_crypto::{
@@ -21,7 +23,7 @@ use rama_crypto::{
     },
     pki_types::CertificateDer,
 };
-use rama_net::{address::Domain, tls::ApplicationProtocol};
+use rama_net::tls::{ApplicationProtocol, ServerName};
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, TransportErrorCode, Version,
     crypto::{HeaderKey, PacketKey},
@@ -37,7 +39,6 @@ use super::{
     config::{HandshakeInitializer, handshake_completed_hook},
     packet::{self, Secret, Suite},
 };
-
 use crate::proto::crypto::{
     self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
 };
@@ -114,14 +115,8 @@ impl QuicMethod for Callbacks {
 pub(super) struct TlsSession {
     inner: QuicConnection,
     side: Side,
-    /// The version whose labels protect this connection; compatible negotiation may move it
-    /// once, before any Handshake key exists.
     wire: &'static Wire,
-    /// The version 0-RTT keys are labelled with: the client's first flight version, which
-    /// never changes (RFC 9369 §4.1).
     early_wire: &'static Wire,
-    /// Where a client reports its negotiated version, so its ticket cache files a ticket
-    /// under the version that issued it.
     negotiated: Option<Arc<Mutex<Version>>>,
     callbacks: Arc<Mutex<Output>>,
     output: VecDeque<HandshakeEvent>,
@@ -132,15 +127,12 @@ pub(super) struct TlsSession {
     early_keys: Option<(Arc<dyn HeaderKey>, Arc<dyn PacketKey>)>,
     early_rejected: bool,
     got_handshake_data: bool,
-    /// An asynchronous callback is waiting, so the driver must keep polling this session.
     pending_callback: bool,
-    /// The driver's latest waker, under which a step without a task context resumes work.
     waker: Option<Waker>,
-    server_name: Option<Domain>,
+    server_name: Option<ServerName>,
     certificates: Option<Vec<CertificateDer<'static>>>,
-    /// Put the peer's certificate chain in the handshake summary.
     pub(super) store_peer_chain: bool,
-    /// Whether the handshake-completed hook already ran.
+    pub(super) server_ech: bool,
     completed: bool,
     early_data_context: Option<[u8; 32]>,
     remembered: Option<TransportParameters>,
@@ -216,6 +208,7 @@ impl TlsSession {
             server_name: None,
             certificates: None,
             store_peer_chain: false,
+            server_ech: false,
             completed: false,
             remembered,
             peer_params,
@@ -388,8 +381,11 @@ impl TlsSession {
             && self.server_name.is_none()
             && let Some(name) = ssl.servername(NameType::HOST_NAME)
         {
-            self.server_name =
-                Some(Domain::try_from(name).map_err(|error| crypto_error(error.into()))?);
+            self.server_name = Some(ServerName::parse(name).ok_or_else(|| {
+                crypto_error(BoxError::from_static_str(
+                    "servername is no DNS name or IP literal",
+                ))
+            })?);
         }
         // A resumed session reports its ticket's chain until a full handshake may replace it.
         if self.store_peer_chain && self.certificates.is_none() && ssl.is_init_finished() {
@@ -457,6 +453,9 @@ impl crypto::Session for TlsSession {
         Ok(())
     }
     fn ech_accepted(&self) -> Option<bool> {
+        if self.side.is_server() && !self.server_ech {
+            return None;
+        }
         self.inner
             .ssl()
             .is_init_finished()
@@ -501,7 +500,6 @@ impl crypto::Session for TlsSession {
     }
     #[cfg(test)]
     fn negotiated_key_exchange_group(&self) -> Option<u16> {
-        use rama_core::conversion::RamaTryFrom as _;
         self.inner
             .ssl()
             .curve()

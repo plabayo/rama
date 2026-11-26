@@ -46,6 +46,52 @@ pub(super) fn selected(
         fetch: None,
         connection: ConnectionContext::default(),
     };
+    let database = database(client, capture, None, parameters, flight);
+    let selected = Arc::new(
+        database
+            .select(
+                &SelectionRequest {
+                    client: ProfileSelector::default(),
+                    required: CapabilitySet {
+                        h3: true,
+                        tls_quic: true,
+                        quic: parameters.is_some(),
+                        ..CapabilitySet::default()
+                    },
+                    flow,
+                    pins: VariantPins::default(),
+                },
+                ProfileSeed([4; 32]),
+                DrawKey([5; 32]),
+            )
+            .unwrap(),
+    );
+    let connection = selected
+        .connection(
+            &ConnectionContext::default(),
+            ProfileSeed([4; 32]),
+            DrawKey([6; 32]),
+        )
+        .unwrap();
+    let context =
+        selected.emulation_context(ProfileSeed([4; 32]), DrawKey([6; 32]), DrawKey([7; 32]));
+    (context, connection)
+}
+
+pub(super) fn database(
+    client: &str,
+    capture: &TlsCapture,
+    outer: Option<&TlsCapture>,
+    parameters: Option<&OrderedProtocolCapture>,
+    flight: Option<&QuicFlightCapture>,
+) -> UserAgentDatabase {
+    let flow = FlowKey::Http {
+        version: Version::HTTP_3,
+        method: "GET".parse().unwrap(),
+        initiator: None,
+        fetch: None,
+        connection: ConnectionContext::default(),
+    };
     let mut scopes = Vec::new();
     for level in [CaptureLevel::Connection, CaptureLevel::Request] {
         let observation = ProfileCapture {
@@ -73,6 +119,12 @@ pub(super) fn selected(
                             .unwrap(),
                         },
                     ];
+                    if let Some(outer) = outer {
+                        slots.push(CapturedSlot {
+                            kind: CapturedSlotKind::TlsOuter,
+                            value: outer.canonical(TlsCaptureLimits::default()).unwrap(),
+                        });
+                    }
                     if let Some(parameters) = parameters {
                         slots.push(CapturedSlot {
                             kind: CapturedSlotKind::QuicParameters,
@@ -175,43 +227,8 @@ pub(super) fn selected(
             .unwrap()
             .finish()
             .unwrap();
-    let database = UserAgentDatabase::try_from_archive(
-        &archive,
-        false,
-        100,
-        14,
-        ProfileArchiveLimits::default(),
-    )
-    .unwrap();
-    let selected = Arc::new(
-        database
-            .select(
-                &SelectionRequest {
-                    client: ProfileSelector::default(),
-                    required: CapabilitySet {
-                        h3: true,
-                        tls_quic: true,
-                        quic: parameters.is_some(),
-                        ..CapabilitySet::default()
-                    },
-                    flow,
-                    pins: VariantPins::default(),
-                },
-                ProfileSeed([4; 32]),
-                DrawKey([5; 32]),
-            )
-            .unwrap(),
-    );
-    let connection = selected
-        .connection(
-            &ConnectionContext::default(),
-            ProfileSeed([4; 32]),
-            DrawKey([6; 32]),
-        )
-        .unwrap();
-    let context =
-        selected.emulation_context(ProfileSeed([4; 32]), DrawKey([6; 32]), DrawKey([7; 32]));
-    (context, connection)
+    UserAgentDatabase::try_from_archive(&archive, false, 100, 14, ProfileArchiveLimits::default())
+        .unwrap()
 }
 
 #[tokio::test]

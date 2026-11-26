@@ -10,6 +10,7 @@ use rama::{
             ProfileEvidence, ProfileScopeEvidence,
             window::{DayBucketSnapshot, RetainedBucketsSnapshot},
         },
+        model::identity::ProfileKey,
     },
 };
 use tokio_postgres::IsolationLevel;
@@ -138,7 +139,15 @@ async fn load_budgeted_bucket(
     Ok((stored, budget - left))
 }
 
-/// Ids of at most `maximum` profiles with buckets in the export window, in export order.
+/// One profile with buckets in the export window, in export order.
+pub(in super::super) struct ListedProfile {
+    /// Canonical profile identity.
+    pub id: ValueId,
+    /// The recorded User-Agent, or the client name when none was recorded.
+    pub label: Box<str>,
+}
+
+/// At most `maximum` profiles with buckets in the export window, in export order.
 pub(in super::super) async fn profile_ids(
     client: &Client,
     authorized: bool,
@@ -146,14 +155,15 @@ pub(in super::super) async fn profile_ids(
     horizon: u32,
     analysis_limits: ProfileAnalysisLimits,
     maximum: usize,
-) -> Result<Vec<ValueId>, BoxError> {
+) -> Result<Vec<ListedProfile>, BoxError> {
     let first = analysis_limits
         .window
         .retention
         .first_day(current_day, horizon)?;
     client
         .query(
-            "SELECT p.id FROM fp_v2.profiles p WHERE p.authorized=$1
+            "SELECT p.id, CASE WHEN octet_length(p.canonical)::bigint <= $5 THEN p.canonical END
+         FROM fp_v2.profiles p WHERE p.authorized=$1
          AND EXISTS (SELECT 1 FROM fp_v2.buckets b WHERE b.authorized=p.authorized
           AND b.profile_id=p.id AND b.day BETWEEN $2 AND $3)
          ORDER BY p.id LIMIT $4",
@@ -162,12 +172,42 @@ pub(in super::super) async fn profile_ids(
                 &i64::from(first),
                 &i64::from(current_day),
                 &integer(maximum)?,
+                &integer(analysis_limits.metadata_bytes)?,
             ],
         )
         .await?
         .into_iter()
-        .map(|row| identity(row.try_get(0)?))
+        .map(|row| {
+            listed_profile(
+                row.try_get(0)?,
+                row.try_get(1)?,
+                analysis_limits.metadata_bytes,
+            )
+        })
         .collect()
+}
+
+/// Label of a listed profile whose canonical identity exceeds the metadata bound.
+const OVER_BOUND_LABEL: &str = "(profile identity over the metadata bound)";
+
+/// A profile over the metadata bound stays listed so its load skips and reports it.
+fn listed_profile(
+    id: Vec<u8>,
+    bytes: Option<Vec<u8>>,
+    metadata_bytes: usize,
+) -> Result<ListedProfile, BoxError> {
+    if bytes.is_none() {
+        return Ok(ListedProfile {
+            id: identity(id)?,
+            label: OVER_BOUND_LABEL.into(),
+        });
+    }
+    let profile = canonical(id, bytes)?;
+    let key = ProfileKey::from_canonical(&profile, metadata_bytes)?;
+    Ok(ListedProfile {
+        id: profile.id,
+        label: key.user_agent.unwrap_or(key.client),
+    })
 }
 
 /// One profile's evidence; `None` once it has no bucket left in the export window.
@@ -472,6 +512,19 @@ mod tests {
             }
         })
         .await
+    }
+
+    #[test]
+    fn a_profile_over_the_metadata_bound_stays_listed_for_its_load_to_skip() {
+        let listed = listed_profile(vec![7; 32], None, 16).unwrap();
+        assert_eq!(listed.id, ValueId([7; 32]));
+        assert_eq!(&*listed.label, OVER_BOUND_LABEL);
+
+        let profile = ProfileKey::new("library").canonical(kib(16)).unwrap();
+        let listed =
+            listed_profile(profile.id.0.to_vec(), Some(profile.bytes.to_vec()), kib(16)).unwrap();
+        assert_eq!(listed.id, profile.id);
+        assert_eq!(&*listed.label, "library");
     }
 
     #[test]

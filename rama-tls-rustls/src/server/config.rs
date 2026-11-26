@@ -4,7 +4,7 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, FromExtensions},
 };
-use rama_net::tls::{AlpnPolicy, TlsAlpn};
+use rama_net::tls::{AlpnPolicy, ServerName, TlsAlpn};
 use rama_tls::{
     TlsKeyLog, TlsSupportedVersions,
     server::{TlsClientVerify, TlsServerAuth, TlsStoreClientCertChain},
@@ -101,8 +101,9 @@ impl RustlsDynamicConfig {
     pub async fn get_config(
         &self,
         client_hello: crate::dep::rustls::server::ClientHello<'_>,
+        server_name: Option<&ServerName>,
     ) -> Result<Arc<ServerConfig>, BoxError> {
-        self.0.get_config(client_hello).await
+        self.0.get_config(client_hello, server_name).await
     }
 }
 

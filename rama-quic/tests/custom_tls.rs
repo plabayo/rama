@@ -94,18 +94,27 @@ impl Session for TestSession {
                 .with_cause(std::io::Error::other("custom provider cause")),
         )
     }
+
     fn switch_version(&mut self, _: Version) -> Result<(), UnsupportedVersion> {
         Err(UnsupportedVersion)
     }
+
     fn handshake_summary(&self) -> Option<NegotiatedTlsParameters> {
         None
     }
+
+    fn ech_accepted(&self) -> Option<bool> {
+        None
+    }
+
     fn effective_client_hello(&self) -> Option<rama_tls::client::ClientHello> {
         None
     }
+
     fn negotiated_alpn(&self) -> Option<&[u8]> {
         None
     }
+
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)> {
         None
     }
@@ -117,15 +126,18 @@ impl Session for TestSession {
     fn early_data_accepted(&self) -> Option<bool> {
         None
     }
+
     fn is_handshaking(&self) -> bool {
         true
     }
+
     fn poll_pending_callbacks(
         &mut self,
         _: &mut Context<'_>,
     ) -> Result<Option<bool>, TransportError> {
         Ok(None)
     }
+
     fn cancel_pending_callbacks(&mut self) {}
     fn read_handshake(&mut self, _: EncryptionLevel, _: &[u8]) -> Result<bool, TransportError> {
         Err(TransportError::new(
@@ -133,18 +145,23 @@ impl Session for TestSession {
             "custom peer certificate failure",
         ))
     }
+
     fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError> {
         Ok(None)
     }
+
     fn poll_handshake(&mut self) -> Result<Option<HandshakeEvent>, TransportError> {
         Ok(None)
     }
+
     fn next_1rtt_keys(&mut self) -> Result<Option<KeyPair<Box<dyn PacketKey>>>, TransportError> {
         Ok(None)
     }
+
     fn is_valid_retry(&self, _: &ConnectionId, _: &[u8], _: &[u8]) -> bool {
         false
     }
+
     fn export_keying_material(
         &self,
         _: &mut [u8],

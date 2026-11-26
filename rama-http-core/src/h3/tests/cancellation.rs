@@ -1,15 +1,7 @@
 //! Cancellation across independent HTTP message directions and QPACK state.
 
-use super::{LIMIT, Pair};
-use crate::h3::{
-    body, client,
-    connection::{Config, Shared},
-    control::Role,
-    qpack::{Encoder, EncoderConfig},
-    quic::Writer,
-    server,
-    stream::{Phase, Reader},
-};
+use std::{convert::Infallible, future::poll_fn, sync::Arc, task::Poll, time::Duration};
+
 use rama_core::{
     bytes::{Bytes, BytesMut},
     futures::{FutureExt as _, stream},
@@ -23,8 +15,22 @@ use rama_http_types::{
 };
 use rama_quic_proto::{TransportError, TransportErrorCode, VarInt};
 use rama_utils::octets::kib;
-use std::{convert::Infallible, future::poll_fn, sync::Arc, task::Poll, time::Duration};
-use tokio::sync::{Semaphore, oneshot};
+use tokio::{
+    sync::{Semaphore, oneshot},
+    time::timeout,
+};
+
+use super::{LIMIT, Pair};
+use crate::h3::{
+    body, client,
+    connection::{Config, Shared},
+    control::Role,
+    qpack::{Encoder, EncoderConfig},
+    quic::Writer,
+    server,
+    server::ShutdownNotice,
+    stream::{Phase, Reader},
+};
 
 fn headers_frame(fields: &[u8]) -> Bytes {
     let mut wire = BytesMut::new();
@@ -560,6 +566,42 @@ async fn a_request_that_crossed_the_shutdown_notice_is_served() {
     })
     .await
     .unwrap();
+}
+
+#[test]
+fn a_shutdown_notice_is_built_outside_a_runtime() {
+    for notice in [ShutdownNotice::new(), ShutdownNotice::default()] {
+        assert!(!notice.is_announced());
+        assert!(notice.admits());
+    }
+}
+
+#[test]
+fn a_shutdown_notice_is_announced_outside_a_runtime() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (pair, mut server, server_driver) = runtime.block_on(async {
+        let pair = Pair::in_memory(None, None).await;
+        let (server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let server_driver = spawn(server_driver.run());
+        (pair, server, server_driver)
+    });
+    let mut notice = Box::pin(ShutdownNotice::new());
+    // This thread has no runtime entered while the notice is announced.
+    notice.as_mut().announce(&mut server).unwrap();
+    assert!(notice.is_announced());
+    runtime.block_on(async {
+        timeout(LIMIT, notice.as_mut().elapsed()).await.unwrap();
+        notice.as_mut().shutdown(&mut server).unwrap();
+        assert!(notice.as_mut().elapsed().now_or_never().is_none());
+        drop(server);
+        pair.server.close(0u32, b"done");
+        _ = server_driver.await;
+        pair.close().await;
+    });
 }
 
 #[tokio::test(start_paused = true)]

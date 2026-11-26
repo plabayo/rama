@@ -1,7 +1,4 @@
-use super::{
-    RetryBody,
-    storage::{DEFAULT_MAX_BYTES, MemoryReplay, ReplayStore},
-};
+use super::{RetryBody, storage::ReplayStore};
 use crate::{
     Request,
     body::{CollectOptions, SizeHint},
@@ -10,55 +7,10 @@ use crate::{
 
 /// A "retry policy" to classify if a request should be retried.
 ///
-/// # Example
-///
-/// ```
-/// use rama_http::{Request, body::{CollectOptions, SizeHint}, request::Parts};
-/// use rama_http::layer::retry::{Policy, PolicyResult, RetryBody};
-/// use std::sync::Arc;
-/// use parking_lot::Mutex;
-///
-/// struct Attempts(Arc<Mutex<usize>>);
-///
-/// impl<R, E> Policy< R, E> for Attempts
-///     where
-///         R: Send + 'static,
-///         E: Send + Sync + 'static,
-/// {
-///     fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint)
-///         -> Option<CollectOptions>
-///     {
-///         Some(CollectOptions::new())
-///     }
-///
-///     async fn retry(&self, req: Request<RetryBody>, result: Result<R, E>) -> PolicyResult<R, E> {
-///         match result {
-///             Ok(_) => {
-///                 // Treat all `Response`s as success,
-///                 // so don't retry...
-///                 PolicyResult::Abort(result)
-///             },
-///             Err(_) => {
-///                 // Treat all errors as failures...
-///                 // But we limit the number of attempts...
-///                 let mut attempts = self.0.lock();
-///                 if *attempts > 0 {
-///                     // Try again!
-///                     *attempts -= 1;
-///                     PolicyResult::Retry { req, result }
-///                 } else {
-///                     // Used all our attempts, no retry...
-///                     PolicyResult::Abort(result)
-///                 }
-///             }
-///         }
-///     }
-///
-///     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-///         Some(Request::from_parts(req.clone_parts(), req.body().try_clone()?))
-///     }
-/// }
-/// ```
+/// [`ManagedPolicy`](super::ManagedPolicy) implements this trait from plain
+/// functions. A custom policy that keeps the defaults returns
+/// [`MemoryReplay::DEFAULT`](super::storage::MemoryReplay::DEFAULT) from
+/// [`Self::replay_store`] and `true` from [`Self::next_attempt`].
 pub trait Policy<R, E>: Send + Sync + 'static {
     /// Decide whether to prepare a replay before polling the request body.
     ///
@@ -78,12 +30,10 @@ pub trait Policy<R, E>: Send + Sync + 'static {
 
     /// Select storage for an approved, nonempty body before it is first polled.
     ///
-    /// Override this method to select a store using request metadata. The
-    /// default store keeps up to 64 KiB in memory with a 30-second deadline.
-    fn replay_store(&self, _parts: &Parts) -> &dyn ReplayStore {
-        static MEMORY: MemoryReplay = MemoryReplay::new(DEFAULT_MAX_BYTES);
-        &MEMORY
-    }
+    /// A store can be selected using request metadata.
+    /// [`MemoryReplay::DEFAULT`](super::storage::MemoryReplay::DEFAULT)
+    /// keeps up to 64 KiB in memory with a 30-second deadline.
+    fn replay_store(&self, parts: &Parts) -> &dyn ReplayStore;
 
     /// Classify the result of an attempt and optionally prepare the next request.
     ///
@@ -92,9 +42,9 @@ pub trait Policy<R, E>: Send + Sync + 'static {
     /// outstanding capture before issuing the next request. Supply the current
     /// result as the fallback if the body cannot be recovered. Reading the
     /// candidate body inside this method also requests that capture be finished.
-    /// If the inner service retains an unfinished first reader, the middleware
-    /// returns its result immediately and skips this method. If the reader
-    /// was dropped, the coordinator can drain the remaining upload for replay.
+    /// While the first attempt's reader is still alive, finishing waits up to
+    /// the store's [`handoff_timeout`](super::storage::ReplayStore::handoff_timeout)
+    /// for that reader to be dropped or to reach the end of the upload.
     ///
     /// ## Mutating Requests
     ///
@@ -133,9 +83,7 @@ pub trait Policy<R, E>: Send + Sync + 'static {
     ///
     /// Return `false` to return the candidate outcome to the caller. Keeping
     /// backoff here allows a pending upload to finish before a delay begins.
-    fn next_attempt(&self) -> impl Future<Output = bool> + Send + '_ {
-        std::future::ready(true)
-    }
+    fn next_attempt(&self) -> impl Future<Output = bool> + Send + '_;
 
     /// Tries to clone a request before being passed to the inner service.
     ///

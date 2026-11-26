@@ -1,10 +1,17 @@
 //! Backend compilation before a captured connection is opened.
 
-use rama_core::{error::BoxError, extensions::Extensions};
-
-use crate::profile::{capture::joint::CapturedSlotKind, selection::variants::ConnectionSelection};
+use rama_core::{
+    error::BoxError,
+    extensions::{Extensions, ExtensionsRef},
+};
+use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt, address::HostWithOptPort};
 
 use super::PreparedConnectionComponents;
+use crate::profile::{
+    capture::joint::CapturedSlotKind,
+    model::identity::ConnectionContext,
+    selection::variants::{ConnectionSelection, EmulationContext},
+};
 
 /// Compile backend-specific connection pieces without connection I/O.
 ///
@@ -20,7 +27,7 @@ pub trait ConnectionProfileCompiler<Input>: Send + Sync + 'static {
     type Compiled: CompiledConnectionProfile;
 
     /// Whether endpoint discovery and caller policy permit a matched ECH pair.
-    /// This performs no I/O; late discovery still uses the ordinary captured offer.
+    /// This performs no I/O; native connectors finalize endpoint readiness before TLS.
     /// Missing or invalid endpoint policy returns false. The native connector
     /// remains responsible for reporting policy errors with its usual error kind.
     fn ech_ready(&self, input: &Input) -> bool;
@@ -103,4 +110,59 @@ impl<Input> InstalledConnectionProfile<Input> for () {
     type Bindings = ();
 
     fn apply(self, _extensions: &Extensions) {}
+}
+
+/// Original request inputs retained while a native connector resolves final endpoint facts.
+#[derive(Debug, ExtensionsRef)]
+pub struct ConnectionProfileInput {
+    authority: Option<HostWithOptPort>,
+    protocol: Option<Protocol>,
+    extensions: Extensions,
+}
+
+impl ConnectionProfileInput {
+    /// Snapshot caller inputs before profile settings overwrite them.
+    pub fn new(input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef)) -> Self {
+        Self {
+            authority: input.target_authority(),
+            protocol: input.target_protocol().cloned(),
+            extensions: input.extensions().snapshot(),
+        }
+    }
+
+    /// Re-prepare the same profile and draw for the final endpoint readiness.
+    pub fn selection_for_ech(
+        &self,
+        original: &ConnectionSelection,
+        ech_ready: bool,
+    ) -> Result<ConnectionSelection, BoxError> {
+        if let Some(context) = EmulationContext::of(&self.extensions) {
+            let connection = self
+                .extensions
+                .get_ref::<ConnectionContext>()
+                .cloned()
+                .unwrap_or_default();
+            return Ok(context.selected.connection_with_ech(
+                &connection,
+                context.seed,
+                original.draw,
+                ech_ready,
+            )?);
+        }
+        let mut selection = original.clone();
+        selection.ech_ready = ech_ready;
+        Ok(selection)
+    }
+}
+
+impl AuthorityInputExt for ConnectionProfileInput {
+    fn authority(&self) -> Option<HostWithOptPort> {
+        self.authority.clone()
+    }
+}
+
+impl ProtocolInputExt for ConnectionProfileInput {
+    fn protocol(&self) -> Option<&Protocol> {
+        self.protocol.as_ref()
+    }
 }

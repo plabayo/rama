@@ -12,7 +12,7 @@ use sync_wrapper::SyncWrapper;
 use tokio::sync::oneshot;
 
 use super::{Body, Frame, SizeHint, StreamingBody};
-use crate::HeaderMap;
+use crate::{HeaderMap, header::trailer::merge_trailers};
 
 /// How an observed body stream terminated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -478,7 +478,7 @@ impl BufferState {
             Err(frame) => {
                 if let Ok(trailers) = frame.into_trailers() {
                     if let Some(current) = &mut self.trailers {
-                        current.extend(trailers);
+                        merge_trailers(current, trailers);
                     } else {
                         self.trailers = Some(trailers);
                     }
@@ -589,7 +589,10 @@ mod tests {
     use rama_core::bytes::Bytes;
 
     use super::*;
-    use crate::body::util::{BodyExt as _, StreamBody};
+    use crate::{
+        body::util::{BodyExt as _, StreamBody},
+        header::trailer::merge_fixture,
+    };
 
     async fn wait_for_capture(handle: CaptureHandle) -> CapturedBody {
         tokio::time::timeout(std::time::Duration::from_secs(1), handle.wait())
@@ -662,6 +665,22 @@ mod tests {
 
         assert_matches!(events.recv().await, Some(BodyCaptureEvent::Frame(_)));
         assert!(events.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn buffered_capture_merges_trailer_frames_line_by_line() {
+        let (first, later) = merge_fixture::sections();
+        let source = StreamBody::new(rama_core::futures::stream::iter([
+            Ok::<_, Infallible>(Frame::<Bytes>::trailers(first)),
+            Ok(Frame::trailers(later)),
+        ]));
+        let (mut body, handle) = CaptureBody::buffered(source, CaptureLimit::max_bytes(7));
+        while let Some(frame) = body.frame().await {
+            frame.unwrap();
+        }
+        let captured = wait_for_capture(handle).await;
+        let trailers = captured.trailers().unwrap();
+        assert_eq!(merge_fixture::lines(trailers), merge_fixture::MERGED);
     }
 
     #[tokio::test]

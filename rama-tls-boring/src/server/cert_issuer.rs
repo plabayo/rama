@@ -1,8 +1,5 @@
-use crate::core::{
-    pkey::{PKey, Private},
-    ssl::{SslCredential, SslSignatureAlgorithm},
-    x509::X509,
-};
+use std::{fmt, num::NonZeroU64, ops::Range, pin::Pin, sync::Arc, time::UNIX_EPOCH};
+
 use moka::future::Cache;
 use parking_lot::Mutex;
 use rama_core::{
@@ -16,7 +13,12 @@ use rama_tls::server::{
     LeafCertConfig, SelfSignedCaConfig,
 };
 use rama_utils::time::unix_timestamp_secs;
-use std::{fmt, num::NonZeroU64, ops::Range, pin::Pin, sync::Arc, time::UNIX_EPOCH};
+
+use crate::core::{
+    pkey::{PKey, Private},
+    ssl::{SslCredential, SslSignatureAlgorithm},
+    x509::X509,
+};
 
 /// Configures on-the-fly server certificate issuance and caching.
 ///
@@ -88,7 +90,10 @@ impl ServerCertIssuerData {
             mut self,
             fallback_identity: Option<CertificateIdentity>,
         ) -> Self {
-            self.fallback_identity = fallback_identity;
+            self.fallback_identity = fallback_identity.map(|identity| match identity {
+                CertificateIdentity::Dns(domain) => CertificateIdentity::from(domain),
+                identity @ CertificateIdentity::Ip(_) => identity,
+            });
             self
         }
     }
@@ -412,14 +417,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{
+        assert_matches,
+        time::{Duration, SystemTime},
+    };
+
     use rama_crypto::ocsp::{
         OcspCertId, OcspCertStatus, OcspSignatureAlgorithm, build_ocsp_response,
         sha1_hash_algorithm_der,
     };
     use rama_tls::server::{CertificateKeyKind, LeafCertRequest};
-    use std::assert_matches;
-    use std::time::{Duration, SystemTime};
+
+    use super::*;
 
     struct NormalizingIssuer;
 

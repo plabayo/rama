@@ -58,6 +58,35 @@ t! {
 }
 
 t! {
+    outer_whitespace_of_field_values_is_trimmed_on_send,
+    client:
+        request:
+            uri: "/",
+            headers: {
+                "x-a" => " \tv w\t ",
+            },
+            ;
+        response:
+            status: 200,
+            headers: {
+                "x-b" => "v w",
+            },
+            ;
+    server:
+        request:
+            uri: "/",
+            headers: {
+                "x-a" => "v w",
+            },
+            ;
+        response:
+            headers: {
+                "x-b" => "\t v w \t",
+            },
+            ;
+}
+
+t! {
     get_body,
     client:
         request:

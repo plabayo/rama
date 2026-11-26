@@ -6,7 +6,7 @@ toolchain go1.26.8
 
 require (
 	github.com/gobwas/ws v1.5.0
-	github.com/quic-go/quic-go v0.65.0
+	github.com/quic-go/quic-go v0.66.0
 	golang.org/x/net v0.63.0
 )
 

@@ -1,9 +1,10 @@
 use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
+use rama_core::futures::Stream;
 use rama_core::graceful::WeakScope;
 use rama_core::graceful::attach_scope;
 use rama_core::telemetry::tracing::{self, Instrument};
-use rama_net::conn::AcceptBackoff;
+use rama_net::conn::{AcceptBackoff, PolledAcceptBackoff};
 use std::io;
 use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
@@ -13,8 +14,10 @@ use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::os::unix::net::{UnixDatagram, UnixListener as StdUnixListener};
 use std::path::Path;
 use std::path::PathBuf;
-use std::pin::pin;
+use std::pin::{Pin, pin};
+use std::task::{Context, Poll, ready};
 use tokio::net::UnixListener as TokioUnixListener;
+use tokio::net::UnixStream as TokioUnixStream;
 use tokio::net::unix::SocketAddr;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -231,13 +234,41 @@ impl AsFd for UnixListener {
     }
 }
 
+impl From<TokioUnixListener> for UnixListener {
+    fn from(listener: TokioUnixListener) -> Self {
+        Self::from_tokio_unix_listener(listener, WeakScope::detached())
+    }
+}
+
+/// An accepted connection with its [`UnixSocketInfo`].
+fn accepted(socket: TokioUnixStream, peer_addr: UnixSocketAddress) -> UnixStream {
+    let local_addr: Option<UnixSocketAddress> = socket.local_addr().ok().map(Into::into);
+    let socket = UnixStream::new(socket);
+    socket
+        .extensions()
+        .insert(UnixSocketInfo::new(local_addr, peer_addr));
+    socket
+}
+
 impl UnixListener {
     /// Accept a single connection from this listener,
     /// what you can do with whatever you want.
+    ///
+    /// The connection carries its [`UnixSocketInfo`], as a served one does.
     #[inline]
     pub async fn accept(&self) -> io::Result<(UnixStream, UnixSocketAddress)> {
-        let (stream, addr) = self.inner.accept().await?;
-        Ok((stream.into(), addr.into()))
+        let (stream, peer_addr) = self.inner.accept().await?;
+        let peer_addr: UnixSocketAddress = peer_addr.into();
+        Ok((accepted(stream, peer_addr.clone()), peer_addr))
+    }
+
+    /// Accept connections as a [`Stream`] of what [`Self::accept`] returns.
+    #[must_use]
+    pub fn into_stream(self) -> UnixListenerStream {
+        UnixListenerStream {
+            listener: self,
+            backoff: PolledAcceptBackoff::new(),
+        }
     }
 
     /// Serve connections from this listener with the given service.
@@ -269,19 +300,16 @@ impl UnixListener {
                             accept_backoff.reset();
                             let service = service.clone();
 
-                            let peer_addr: UnixSocketAddress = peer_addr.into();
-                            let local_addr: Option<UnixSocketAddress> = socket.local_addr().ok().map(Into::into);
-
+                            let socket = accepted(socket, peer_addr.into());
+                            let info = socket.extensions().get_ref::<UnixSocketInfo>();
                             let serve_span = tracing::trace_root_span!(
                                 "unix::serve_graceful",
                                 otel.kind = "server",
-                                network.local.address = ?local_addr,
-                                network.peer.address = ?peer_addr,
+                                network.local.address = ?info.and_then(UnixSocketInfo::local_addr),
+                                network.peer.address = ?info.map(UnixSocketInfo::peer_addr),
                                 network.protocol.name = "uds",
                             );
 
-                            let socket = UnixStream::new(socket);
-                            socket.extensions().insert(UnixSocketInfo::new(local_addr, peer_addr));
                             attach_scope(socket.extensions(), &scope);
 
                             // Ended at the hard phase, whatever the service does by then.
@@ -307,6 +335,47 @@ impl UnixListener {
                 }
             }
         }
+    }
+}
+
+/// The connections a [`UnixListener`] accepts, as [`UnixListener::accept`] returns them;
+/// it never ends. After a listener error it pauses as [`UnixListener::serve`] does.
+#[derive(Debug)]
+pub struct UnixListenerStream {
+    listener: UnixListener,
+    backoff: PolledAcceptBackoff,
+}
+
+impl UnixListenerStream {
+    /// The listener, to accept from or serve directly again.
+    #[must_use]
+    pub fn into_inner(self) -> UnixListener {
+        self.listener
+    }
+}
+
+impl Stream for UnixListenerStream {
+    type Item = io::Result<(UnixStream, UnixSocketAddress)>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let Self { listener, backoff } = self.get_mut();
+        let result = ready!(backoff.poll_accept(cx, |cx| listener.inner.poll_accept(cx)));
+        Poll::Ready(Some(result.map(|(stream, peer_addr)| {
+            let peer_addr: UnixSocketAddress = peer_addr.into();
+            (accepted(stream, peer_addr.clone()), peer_addr)
+        })))
+    }
+}
+
+impl AsRef<UnixListener> for UnixListenerStream {
+    fn as_ref(&self) -> &UnixListener {
+        &self.listener
+    }
+}
+
+impl AsMut<UnixListener> for UnixListenerStream {
+    fn as_mut(&mut self) -> &mut UnixListener {
+        &mut self.listener
     }
 }
 
@@ -380,14 +449,78 @@ mod tests {
     use std::{convert::Infallible, time::Duration};
 
     use rama_core::{
+        futures::StreamExt as _,
         graceful::{Cause, Scope},
         service::service_fn,
     };
-    use tokio::{sync::mpsc, time::timeout};
+    use rama_net::stream::{DefaultExtensionsTransfer, NestedConnection};
+    use rama_utils::fs::TempDir;
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        sync::mpsc,
+        time::timeout,
+    };
 
     use super::*;
 
     const LIMIT: Duration = Duration::from_secs(10);
+
+    #[tokio::test]
+    async fn a_connection_nested_on_an_accepted_one_resolves_the_outer_socket_info() {
+        // `UnixSocketInfo` is flow scoped, so the nested connection sees the outer one's.
+        let dir = TempDir::new().await.unwrap();
+        let path = dir.path().join("nested.sock");
+        let mut accepted =
+            UnixListener::from(TokioUnixListener::bind(&path).unwrap()).into_stream();
+        let _client = TokioUnixStream::connect(&path).await.unwrap();
+        let (server, _peer) = timeout(LIMIT, accepted.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let nested = NestedConnection::new(server, &DefaultExtensionsTransfer::new());
+        let info = nested.extensions().get_ref::<UnixSocketInfo>().unwrap();
+        assert_eq!(
+            info.local_addr().and_then(UnixSocketAddress::as_pathname),
+            Some(path.as_path())
+        );
+    }
+
+    #[tokio::test]
+    async fn the_stream_yields_accepted_connections_with_their_socket_info() {
+        let dir = TempDir::new().await.unwrap();
+        let path = dir.path().join("stream.sock");
+        let listener = TokioUnixListener::bind(&path).unwrap();
+        let mut accepted = UnixListener::from(listener).into_stream();
+
+        for byte in [1u8, 2] {
+            let mut client = TokioUnixStream::connect(&path).await.unwrap();
+            client.write_all(&[byte]).await.unwrap();
+            let (mut server, peer) = timeout(LIMIT, accepted.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(peer.is_unnamed());
+            let info = server.extensions().get_ref::<UnixSocketInfo>().unwrap();
+            assert!(info.peer_addr().is_unnamed());
+            assert_eq!(
+                info.local_addr().and_then(UnixSocketAddress::as_pathname),
+                Some(path.as_path())
+            );
+            assert_eq!(server.read_u8().await.unwrap(), byte);
+        }
+
+        assert_eq!(
+            accepted.as_ref().local_addr().unwrap().as_pathname(),
+            Some(path.as_path())
+        );
+        let listener = accepted.into_inner();
+        let _client = TokioUnixStream::connect(&path).await.unwrap();
+        let (server, _peer) = timeout(LIMIT, listener.accept()).await.unwrap().unwrap();
+        assert!(server.extensions().get_ref::<UnixSocketInfo>().is_some());
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rama-unix-{name}-{}", std::process::id()));

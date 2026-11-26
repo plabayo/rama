@@ -3,7 +3,7 @@ use rama_crypto::{
     pki_types::CertificateDer,
     platform_verifier::{PlatformVerifier, PlatformVerifyErrorKind},
 };
-use rama_net::address::Host;
+use rama_net::{address::Domain, tls::ServerName};
 use rama_tls_boring::{
     core::{pkey::PKey, x509::X509},
     server::utils::{MitmLeafOcspStatus, build_mitm_leaf_ocsp_response},
@@ -88,7 +88,7 @@ fn trusted_intermediate_with_staples() -> Result<(), String> {
                 roots.push(root.der().clone());
             }
             let verifier = PlatformVerifier::try_with_extra_roots(roots)?;
-            let host = Host::from_static("leaf.rama.test");
+            let host = ServerName::from(Domain::from_static("leaf.rama.test"));
             verifier.verify_server_chain(leaf.der(), &[], &host, Some(&good), SystemTime::now())?;
             let result = verifier.verify_server_chain(
                 leaf.der(),
@@ -148,7 +148,7 @@ fn trusted_leaf_is_not_revalidated_as_a_path() -> Result<(), String> {
         let chain = verifier.verify_server_chain(
             leaf.der(),
             &[],
-            &Host::from_static("leaf.rama.test"),
+            &ServerName::from(Domain::from_static("leaf.rama.test")),
             Some(&[1, 2, 3]),
             SystemTime::now(),
         )?;

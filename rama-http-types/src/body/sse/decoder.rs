@@ -9,7 +9,7 @@
 use crate::sse::event_data::EventDataLineReader;
 
 use super::parser::{RawEventLine, parse_line};
-use super::{Event, EventBuildError, EventDataRead};
+use super::{Event, EventBuildError, EventDataRead, RETAINED_BUFFER_LEN};
 
 use memchr::{memchr2, memchr2_iter};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
@@ -180,9 +180,6 @@ pub const DEFAULT_MAX_LINE_LEN: usize = rama_utils::octets::mib(16);
 
 /// Default for [`EventDecoder::with_max_event_len`]: one event may use the whole line budget.
 pub const DEFAULT_MAX_EVENT_LEN: usize = rama_utils::octets::mib(16);
-
-/// Buffers that grew past this for one unusually large line are released once empty.
-pub(super) const RETAINED_BUFFER_LEN: usize = rama_utils::octets::kib(256);
 
 /// Incremental SSE decoder state.
 ///

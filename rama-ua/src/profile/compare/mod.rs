@@ -25,7 +25,7 @@ use crate::profile::{
 use rama_utils::octets::mib;
 pub mod mode;
 
-use mode::ComparisonMode;
+use mode::{CaptureComparisonPolicy, ComparisonMode};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -79,7 +79,7 @@ pub struct RetainedCaptureComparison {
 pub fn compare_retained_captures(
     reference: &[CanonicalValue],
     observed: &CanonicalValue,
-    mode: ComparisonMode,
+    policy: impl Into<CaptureComparisonPolicy>,
     limits: CaptureComparisonLimits,
 ) -> Result<RetainedCaptureComparison, ProfileDataError> {
     if reference.is_empty() {
@@ -90,13 +90,15 @@ pub fn compare_retained_captures(
             "comparison candidates or differences",
         ));
     }
+    let policy = policy.into();
+    let mode = policy.mode;
     let domain = observed.domain_tag(limits.bytes)?;
     let actual = decode(observed, limits.bytes)?;
     let mut work = limits
         .work
         .checked_sub(observed.bytes.len())
         .ok_or(ProfileDataError::LimitExceeded("comparison work"))?;
-    let observed_projection = mode.project_observed(observed, limits.bytes)?;
+    let observed_projection = policy.project_observed(observed, limits.bytes)?;
     let mut first_projection = None;
     let mut matched = None;
     for candidate in reference {
@@ -107,7 +109,7 @@ pub fn compare_retained_captures(
         if candidate.validated_domain(limits.bytes)? != domain {
             return Err(ProfileDataError::Invalid("comparison capture domain"));
         }
-        let projected = mode.project(candidate, limits.bytes)?;
+        let projected = policy.project(candidate, limits.bytes)?;
         if projected.bytes == observed_projection.bytes {
             matched = Some(candidate.id);
         }

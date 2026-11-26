@@ -1,13 +1,17 @@
-use super::{ServerVerifyMode, TlsEncryptedClientHello, TlsServerVerify};
+use std::{fmt, sync::Arc};
+
 use rama_core::{
     bytes::Bytes,
     error::{BoxError, BoxErrorExt as _},
-    extensions::{Extension, Extensions},
+    extensions::{Extension, Extensions, ExtensionsRef},
 };
 use rama_net::{
+    ConnectorTargetInputExt, ProtocolInputExt,
     address::HostWithPort,
     tls::{TargetEchConfig, TargetEchServiceBinding},
 };
+
+use super::{ServerVerifyMode, TlsEncryptedClientHello, TlsServerVerify};
 
 /// Caller policy for requiring successful ECH negotiation.
 ///
@@ -39,10 +43,16 @@ impl EchRequirement {
     /// Read the caller requirement and its effective intent from `extensions`.
     ///
     /// Absent policy is [`Self::Optional`]; a conflict fails as [`Self::intent`] does.
+    /// With a [`TlsProfilePreparation`], ECH follows the drawn profile and the target's
+    /// readiness, so a stored [`TlsEncryptedClientHello`] is no intent.
     pub fn effective(extensions: &Extensions) -> Result<(Self, bool), BoxError> {
         let requirement = extensions.get_ref::<Self>().copied().unwrap_or_default();
-        let intent = requirement.intent(extensions.get_ref::<TlsEncryptedClientHello>())?;
-        Ok((requirement, intent))
+        let intent = if extensions.contains::<TlsProfilePreparation>() {
+            None
+        } else {
+            extensions.get_ref::<TlsEncryptedClientHello>()
+        };
+        Ok((requirement, requirement.intent(intent)?))
     }
 }
 
@@ -56,6 +66,88 @@ impl EchRequirement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
 #[extension(tags(tls), scope(connection))]
 pub struct TlsEchAccepted(pub bool);
+
+/// Service selection has finished discovering configurations for this connection.
+/// Required ECH without a matching configuration is a local policy error before dialing.
+#[derive(Debug, Clone, Copy, Extension)]
+#[extension(tags(tls), scope(connection))]
+pub struct EchDiscoveryComplete;
+
+impl EchDiscoveryComplete {
+    /// Check completed discovery without preparing an ECH offer or native session.
+    pub fn check_required(extensions: &Extensions, target: &HostWithPort) -> Result<(), BoxError> {
+        if extensions.contains::<Self>()
+            && extensions.get_ref::<EchRequirement>() == Some(&EchRequirement::Required)
+            && !extensions
+                .get_ref::<TargetEchConfig>()
+                .is_some_and(|config| same_endpoint(config.target(), target))
+        {
+            return Err(BoxError::from_static_str(
+                "required ECH discovery has no matching configuration",
+            ));
+        }
+        Ok(())
+    }
+}
+
+type PrepareProfile = dyn Fn(&TargetEchResolution, &Extensions, &Extensions) -> Result<Extensions, BoxError>
+    + Send
+    + Sync;
+
+/// The profile recipe the final handshake boundary prepares again for its ECH resolution.
+#[derive(Clone, Extension)]
+#[extension(tags(tls), scope(connection))]
+pub struct TlsProfilePreparation {
+    prepare: Arc<PrepareProfile>,
+    facts: Option<Extensions>,
+}
+
+impl fmt::Debug for TlsProfilePreparation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TlsProfilePreparation")
+            .finish_non_exhaustive()
+    }
+}
+
+impl TlsProfilePreparation {
+    /// Retain a recipe for the final ECH resolution.
+    pub fn new(
+        prepare: impl Fn(&TargetEchResolution, &Extensions, &Extensions) -> Result<Extensions, BoxError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            prepare: Arc::new(prepare),
+            facts: None,
+        }
+    }
+
+    /// Prepare the drawn profile for this resolution and publish its effective settings.
+    pub fn apply(
+        resolution: &TargetEchResolution,
+        effective: &Extensions,
+        request: &Extensions,
+    ) -> Result<(), BoxError> {
+        if let Some(profile) = effective.get_ref::<Self>() {
+            let mut profile = profile.clone();
+            profile.facts = Some((profile.prepare)(resolution, effective, request)?);
+            effective.insert(profile.clone());
+            request.insert(profile);
+        }
+        Ok(())
+    }
+
+    /// Publish the final profile selection and preservation facts on its established connection.
+    pub fn publish(request: &Extensions, connection: &Extensions) {
+        if let Some(facts) = request
+            .get_ref::<Self>()
+            .and_then(|profile| profile.facts.as_ref())
+        {
+            connection.extend(facts);
+        }
+    }
+}
 
 /// Resolve caller policy and endpoint discovery facts after final TLS/profile
 /// settings are installed. This does not mutate caller policy or pool identity.
@@ -85,10 +177,8 @@ fn required_for_target(
 ) -> Result<bool, BoxError> {
     let binding = extensions
         .get_ref::<TargetEchServiceBinding>()
-        .filter(|binding| &binding.target == target);
-    let authenticated = extensions
-        .get_ref::<TlsServerVerify>()
-        .is_none_or(|verify| verify.0 != ServerVerifyMode::Disable);
+        .filter(|binding| same_endpoint(&binding.target, target));
+    let authenticated = server_authenticated(extensions);
     if binding.is_some_and(|binding| binding.mandatory)
         && (!intent || !backend_supports_ech || !authenticated)
     {
@@ -103,8 +193,19 @@ fn required_for_target(
             && binding.is_some_and(|binding| binding.reliant || binding.mandatory)))
 }
 
+fn same_endpoint(left: &HostWithPort, right: &HostWithPort) -> bool {
+    left.port == right.port && left.host.canonical_identity() == right.host.canonical_identity()
+}
+
+// Required ECH relies on authenticating the server that holds the ECH key.
+fn server_authenticated(extensions: &Extensions) -> bool {
+    extensions
+        .get_ref::<TlsServerVerify>()
+        .is_none_or(|verify| verify.0 != ServerVerifyMode::Disable)
+}
+
 /// ECH settings resolved for one TLS hop by [`resolve_target_ech`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetEchResolution {
     /// Matching configuration to offer, present only for a capable backend.
     pub config: Option<Bytes>,
@@ -124,11 +225,27 @@ pub fn resolve_target_ech(
     target: &HostWithPort,
     backend_supports_ech: bool,
 ) -> Result<TargetEchResolution, BoxError> {
+    let resolution = resolve_target_ech_for_preparation(extensions, target, backend_supports_ech)?;
+    if resolution.required && resolution.config.is_none() {
+        return Err(BoxError::from_static_str(
+            "required ECH needs a matching configuration and a capable TLS backend",
+        ));
+    }
+    Ok(resolution)
+}
+
+/// Resolve ECH before endpoint discovery, allowing a required configuration to arrive later.
+/// The result must be resolved again with [`resolve_target_ech`] before starting a handshake.
+pub fn resolve_target_ech_for_preparation(
+    extensions: &Extensions,
+    target: &HostWithPort,
+    backend_supports_ech: bool,
+) -> Result<TargetEchResolution, BoxError> {
     let (requirement, intent) = EchRequirement::effective(extensions)?;
     let config = intent
         .then(|| extensions.get_ref::<TargetEchConfig>())
         .flatten()
-        .filter(|config| config.matches_target(target));
+        .filter(|config| same_endpoint(config.target(), target));
     let required = required_for_target(
         extensions,
         target,
@@ -136,9 +253,14 @@ pub fn resolve_target_ech(
         requirement,
         intent,
     )?;
-    if required && (!backend_supports_ech || config.is_none()) {
+    if required && !backend_supports_ech {
         return Err(BoxError::from_static_str(
             "required ECH needs a matching configuration and a capable TLS backend",
+        ));
+    }
+    if required && !server_authenticated(extensions) {
+        return Err(BoxError::from_static_str(
+            "real ECH requires authenticated server verification",
         ));
     }
     Ok(TargetEchResolution {
@@ -147,6 +269,36 @@ pub fn resolve_target_ech(
             .map(|config| config.config_list().clone()),
         required,
     })
+}
+
+/// Whether a secure connection to `input`'s connector target would offer real ECH
+/// under the caller's request overrides on top of the fixed `policy`.
+///
+/// This performs no I/O. Missing or invalid policy returns false: the native
+/// connector remains responsible for reporting policy errors with its usual error kind.
+pub fn target_ech_ready<Input>(input: &Input, policy: &Extensions) -> bool
+where
+    Input: ConnectorTargetInputExt + ProtocolInputExt + ExtensionsRef,
+{
+    if input
+        .target_protocol()
+        .is_none_or(|protocol| !protocol.is_secure())
+    {
+        return false;
+    }
+    let Some(target) = input.connector_target() else {
+        return false;
+    };
+    let effective = input.extensions().with_base(policy);
+    let Ok((requirement, intent)) = EchRequirement::effective(&effective) else {
+        return false;
+    };
+    intent
+        && effective
+            .get_ref::<TargetEchConfig>()
+            .is_some_and(|config| same_endpoint(config.target(), &target))
+        && required_for_target(&effective, &target, true, requirement, intent)
+            .is_ok_and(|required| !required || server_authenticated(&effective))
 }
 
 // Kept separate from configuration identity: optional callers may reuse either
@@ -232,12 +384,202 @@ impl std::error::Error for EchRetryConfig {}
 
 #[cfg(test)]
 mod tests {
+    use rama_core::extensions::NoExtensionsTransfer;
+    use rama_net::{
+        Protocol,
+        address::{Domain, Host},
+        client::{
+            ConnectRequest,
+            pool::{ConnectionReuse, ConnectionReusePolicy as _},
+        },
+    };
+
     use super::*;
 
     #[test]
-    fn acceptance_and_requirement_classify_apart() {
-        use rama_net::client::pool::ConnectionReusePolicy as _;
+    fn endpoint_ech_uses_canonical_host_identity_and_port() {
+        let numeric_dns: HostWithPort = "192.0.2.1.:443".parse().unwrap();
+        let address = HostWithPort::new(Host::Name(Domain::from_static("192.0.2.1")), 443);
+        let extensions = Extensions::new();
+        extensions.insert(TargetEchConfig::new(
+            numeric_dns.clone(),
+            Bytes::from_static(b"config"),
+        ));
+        extensions.insert(TargetEchServiceBinding {
+            target: numeric_dns,
+            reliant: true,
+            mandatory: false,
+        });
+        let resolution = resolve_target_ech(&extensions, &address, true).unwrap();
+        assert!(resolution.config.is_none());
+        assert!(!resolution.required);
+        let target: HostWithPort = "EXAMPLE.test.:443".parse().unwrap();
+        extensions.insert(TargetEchConfig::new(
+            target.clone(),
+            Bytes::from_static(b"config"),
+        ));
+        extensions.insert(TargetEchServiceBinding {
+            target,
+            reliant: true,
+            mandatory: false,
+        });
+        assert!(
+            resolve_target_ech(&extensions, &"example.test:443".parse().unwrap(), true)
+                .unwrap()
+                .required
+        );
+        let resolution =
+            resolve_target_ech(&extensions, &"example.test:8443".parse().unwrap(), true).unwrap();
+        assert!(resolution.config.is_none());
+        assert!(!resolution.required);
+    }
 
+    #[test]
+    fn required_preparation_can_wait_for_configuration_but_handshake_cannot() {
+        let extensions = Extensions::new();
+        let target: HostWithPort = "origin.example:443".parse().unwrap();
+        extensions.insert(EchRequirement::Required);
+        let early = resolve_target_ech_for_preparation(&extensions, &target, true).unwrap();
+        assert!(early.required);
+        assert!(early.config.is_none());
+        resolve_target_ech(&extensions, &target, true).unwrap_err();
+        resolve_target_ech_for_preparation(&extensions, &target, false).unwrap_err();
+        extensions.insert(TargetEchConfig::new(
+            target.clone(),
+            Bytes::from_static(b"config"),
+        ));
+        let late = resolve_target_ech(&extensions, &target, true).unwrap();
+        assert!(late.required);
+        assert!(late.config.is_some());
+        assert_ne!(early, late);
+        assert_eq!(
+            late,
+            resolve_target_ech_for_preparation(&extensions, &target, true).unwrap()
+        );
+        extensions.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        resolve_target_ech_for_preparation(&extensions, &target, true).unwrap_err();
+    }
+
+    #[test]
+    fn completed_discovery_requires_a_matching_config_only_for_this_connection() {
+        let extensions = Extensions::new();
+        let target: HostWithPort = "origin.example:443".parse().unwrap();
+        extensions.insert(EchRequirement::Required);
+        EchDiscoveryComplete::check_required(&extensions, &target).unwrap();
+        extensions.insert(EchDiscoveryComplete);
+        EchDiscoveryComplete::check_required(&extensions, &target).unwrap_err();
+        extensions.insert(TargetEchConfig::new(
+            "other.example:443".parse().unwrap(),
+            Bytes::from_static(b"config"),
+        ));
+        EchDiscoveryComplete::check_required(&extensions, &target).unwrap_err();
+        extensions.insert(TargetEchConfig::new(
+            target.clone(),
+            Bytes::from_static(b"config"),
+        ));
+        EchDiscoveryComplete::check_required(&extensions, &target).unwrap();
+        let child = extensions.fork_connection(&NoExtensionsTransfer::new());
+        assert!(!child.contains::<EchDiscoveryComplete>());
+        extensions.insert(EchRequirement::Optional);
+        EchDiscoveryComplete::check_required(&extensions, &"other.example:443".parse().unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn a_disabled_intent_conflicts_with_required_ech_only_without_a_profile() {
+        let extensions = Extensions::new();
+        extensions.insert(EchRequirement::Required);
+        extensions.insert(TlsEncryptedClientHello(false));
+        EchRequirement::effective(&extensions).unwrap_err();
+
+        extensions.insert(TlsProfilePreparation::new(|_, _, _| Ok(Extensions::new())));
+        assert_eq!(
+            EchRequirement::effective(&extensions).unwrap(),
+            (EchRequirement::Required, true)
+        );
+    }
+
+    #[test]
+    fn final_preparation_inserts_the_profile_value_and_stops_at_connection_boundaries() {
+        let request = Extensions::new();
+        let profile = TlsProfilePreparation::new(|resolution, effective, _| {
+            effective.insert(TlsEncryptedClientHello(resolution.config.is_some()));
+            Ok(Extensions::new())
+        });
+        request.insert(profile);
+        let target: HostWithPort = "origin.example:443".parse().unwrap();
+        request.insert(TargetEchConfig::new(
+            target.clone(),
+            Bytes::from_static(b"config"),
+        ));
+        let resolution = resolve_target_ech(&request, &target, true).unwrap();
+        assert!(resolution.config.is_some());
+        TlsProfilePreparation::apply(&resolution, &request, &request).unwrap();
+        assert_eq!(
+            request
+                .get_ref::<TlsEncryptedClientHello>()
+                .map(|intent| intent.0),
+            Some(true)
+        );
+        let child = request.fork_connection(&NoExtensionsTransfer::new());
+        assert!(!child.contains::<TlsProfilePreparation>());
+    }
+
+    #[test]
+    fn target_ech_ready_needs_a_secure_target_with_a_matching_configuration() {
+        let target: HostWithPort = "origin.example:443".parse().unwrap();
+        let config = |target: &HostWithPort| {
+            TargetEchConfig::new(target.clone(), Bytes::from_static(b"config"))
+        };
+        let input = |protocol: Option<Protocol>| {
+            ConnectRequest::new(target.clone()).maybe_with_application_protocol(protocol)
+        };
+        let policy = Extensions::new();
+        policy.insert(config(&target));
+
+        assert!(target_ech_ready(&input(Some(Protocol::HTTPS)), &policy));
+        assert!(!target_ech_ready(&input(Some(Protocol::HTTP)), &policy));
+        assert!(!target_ech_ready(&input(None), &policy));
+        assert!(!target_ech_ready(
+            &input(Some(Protocol::HTTPS)),
+            &Extensions::new()
+        ));
+
+        let other = ConnectRequest::new("proxy.example:443".parse().unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        assert!(!target_ech_ready(&other, &policy));
+
+        let disabled = input(Some(Protocol::HTTPS));
+        disabled.extensions().insert(TlsEncryptedClientHello(false));
+        assert!(!target_ech_ready(&disabled, &policy));
+        let discovered = input(Some(Protocol::HTTPS));
+        discovered.extensions().insert(config(&target));
+        assert!(target_ech_ready(&discovered, &Extensions::new()));
+
+        // Required ECH is refused without server authentication, as the handshake refuses it.
+        let unauthenticated = input(Some(Protocol::HTTPS));
+        unauthenticated
+            .extensions()
+            .insert(EchRequirement::Required);
+        unauthenticated
+            .extensions()
+            .insert(TlsServerVerify(ServerVerifyMode::Disable));
+        assert!(!target_ech_ready(&unauthenticated, &policy));
+        unauthenticated
+            .extensions()
+            .insert(EchRequirement::Optional);
+        assert!(target_ech_ready(&unauthenticated, &policy));
+
+        let conflicting = input(Some(Protocol::HTTPS));
+        conflicting.extensions().insert(EchRequirement::Required);
+        conflicting
+            .extensions()
+            .insert(TlsEncryptedClientHello(false));
+        assert!(!target_ech_ready(&conflicting, &policy));
+    }
+
+    #[test]
+    fn acceptance_and_requirement_classify_apart() {
         let policy = |accepted, required| EchConnectionReuse { accepted, required };
 
         assert_ne!(
@@ -256,7 +598,6 @@ mod tests {
         );
     }
 
-    use rama_net::client::pool::ConnectionReuse;
     #[test]
     fn required_intent_and_endpoint_capability_matrix() {
         let target: HostWithPort = "origin.example:443".parse().unwrap();

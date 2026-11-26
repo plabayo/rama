@@ -103,6 +103,36 @@ def response_fixture():
     return root
 
 
+LONG_INSERT = b"\x44long\x14" + b"v" * 20
+
+
+def response_fixture_with_split_insert(tail, repeated):
+    """One insert spans two server packets; tshark shows its first part twice."""
+    root = ET.Element("pdml")
+    first = packet(root, 1)
+    native_encoder(first, b"\x02" + CAPACITY, stream=7)
+    encoder(first, CAPACITY)
+    partial = packet(root, 2)
+    split = INSERT + LONG_INSERT[:tail]
+    native_encoder(partial, split, offset=1 + len(CAPACITY), stream=7)
+    encoder(partial, split)
+    # Required Insert Count 2 names the long entry, not yet complete here.
+    head(partial, 0, b"\x03\x00\x80")
+    rest = packet(root, 3)
+    native_encoder(rest, b"\x00\x05", stream=0)
+    native_encoder(rest, LONG_INSERT[tail:], offset=1 + len(CAPACITY) + len(split), stream=7)
+    encoder(rest, repeated)
+    # A QUIC retransmission of the partial encoder bytes; tshark dissects it again.
+    again = deepcopy(partial)
+    again.find("field[@name='frame.number']").set("show", "4")
+    again.remove(again.find("field[@name='http3.frame']"))
+    root.append(again)
+    for item in root.findall("packet"):
+        item.find("field[@name='udp.srcport']").set("show", "443")
+        item.find("field[@name='udp.dstport']").set("show", "50000")
+    return root
+
+
 def resolve(root):
     return resolve_blocked_headers(root.findall("packet"), 443)
 
@@ -228,6 +258,35 @@ class BlockedQpackTests(unittest.TestCase):
         encoder(root.findall("packet")[0], INSERT)
         with self.assertRaisesRegex(ValueError, "precede their native witness"):
             resolve(root)
+
+    def test_desegmented_encoder_tail_repeats_in_the_next_chunk(self):
+        tail = 10
+
+        def capture(*, complete=True, repeated=LONG_INSERT):
+            root = response_fixture_with_split_insert(tail, repeated)
+            if not complete:
+                root.remove(root.findall("packet")[2])
+            return root
+
+        def resolve(root):
+            return resolve_blocked_headers(root.findall("packet"), 443, from_server=True)
+
+        with self.assertRaisesRegex(ValueError, "unresolved"):
+            resolve(capture(complete=False))
+        result = resolve(capture())
+        self.assertEqual(result.recovered, {(2, 7, 0)})
+        self.assertEqual(result.headers[(2, 7, 0)], (("long", "v" * 20),))
+        frames = parse_pdml(ET.tostring(capture()), "h3", 443)
+        self.assertEqual(frames[0].headers, (("long", "v" * 20),))
+
+        changed = bytearray(LONG_INSERT)
+        changed[tail - 1] ^= 1
+        before_chunk = CAPACITY[-1:] + INSERT + LONG_INSERT
+        for repeated in (bytes(changed), before_chunk):
+            with self.subTest(repeated=repeated), self.assertRaisesRegex(
+                ValueError, "precede their native witness"
+            ):
+                resolve(capture(repeated=repeated))
 
     def test_retransmitted_heads_and_encoder_bytes_count_once(self):
         root = fixture()

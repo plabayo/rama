@@ -1,16 +1,19 @@
 #[cfg(feature = "compression")]
-use rama_boring::ssl::SslSignatureAlgorithm;
-#[cfg(feature = "compression")]
 use std::fmt;
-
 use std::{
     collections::BTreeSet,
     io::{self, Read, Write},
 };
 
-use rama_boring::ssl::{HandshakeError, SslCurve, UnknownValues};
+use moka::sync::Cache;
+#[cfg(feature = "compression")]
+use rama_boring::ssl::SslSignatureAlgorithm;
+use rama_boring::ssl::{HandshakeError, SslConnector, SslCurve, UnknownValues};
 use rama_core::conversion::RamaTryInto as _;
-use rama_net::{address::Host, tls::ApplicationProtocol};
+use rama_net::{
+    address::Domain,
+    tls::{ApplicationProtocol, ServerName},
+};
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup,
@@ -27,6 +30,7 @@ use rama_ua::{
 use super::{
     BoringClientConfigExt, BoringRequestedTrustAnchors, BoringTlsConnectorConfig,
     TlsConnectorContext, TlsConnectorContextBuilder, TlsConnectorData,
+    connector_data::shared_security_context_in,
 };
 
 #[test]
@@ -56,7 +60,7 @@ fn permutation_is_per_handshake_and_takes_precedence_over_explicit_order() {
     ] {
         let permuted = permute == Some(true);
         let mut config = TlsClientConfig::new()
-            .with_server_name(Host::try_from("example.test").unwrap())
+            .with_server_name(Domain::from_static("example.test"))
             .with_alpn(vec![ApplicationProtocol::HTTP_2].into())
             .with_grease(true)
             .with_extension_order(if explicit {
@@ -172,7 +176,7 @@ fn an_extension_order_without_grease_keeps_the_native_grease_slots() {
         vec![0x0a0a, 43, 10, 13, 16, 0x1a1a],
     ] {
         let config = TlsClientConfig::new()
-            .with_server_name(Host::try_from("example.test").unwrap())
+            .with_server_name(Domain::from_static("example.test"))
             .with_alpn(vec![ApplicationProtocol::HTTP_2].into())
             .with_grease(true)
             .with_extension_order(order.iter().copied().map(Into::into).collect());
@@ -340,19 +344,13 @@ impl NativeLimits {
             .collect()
     }
 
-    /// Without `Preserve`, finite-field groups (no native implementation) are left out.
+    /// Without `Preserve`, groups BoringSSL does not implement are left out.
     fn supported_groups(captured: &[SupportedGroup]) -> Vec<String> {
         captured
             .iter()
             .filter(|group| {
-                !matches!(
-                    group,
-                    SupportedGroup::FFDHE2048
-                        | SupportedGroup::FFDHE3072
-                        | SupportedGroup::FFDHE4096
-                        | SupportedGroup::FFDHE6144
-                        | SupportedGroup::FFDHE8192
-                )
+                let native: Result<SslCurve, _> = (**group).rama_try_into();
+                group.is_grease() || native.is_ok()
             })
             .map(|group| grease_or(group.is_grease(), group))
             .collect()
@@ -420,7 +418,7 @@ fn browser_profiles_are_mirrored_on_the_wire() {
         let context = TlsConnectorContextBuilder::try_from(&config)
             .unwrap()
             .build();
-        let server_name = captured.ext_server_name().cloned().map(Host::from);
+        let server_name = captured.ext_server_domain().cloned().map(ServerName::from);
         let emitted = first_flight(&context, server_name);
         let ua = profile.ua_str().unwrap_or_default();
 
@@ -507,7 +505,10 @@ fn browser_chromium_profile_emits_per_connection_extension_orders() {
     for _ in 0..20 {
         let hello = first_flight(
             &context,
-            tls.client_hello.ext_server_name().cloned().map(Host::from),
+            tls.client_hello
+                .ext_server_domain()
+                .cloned()
+                .map(ServerName::from),
         );
         let order: Vec<u16> = hello
             .extensions()
@@ -635,7 +636,7 @@ pub(super) fn wire_variant() -> TlsClientConfig {
 }
 
 pub(super) fn hello_from_data(mut data: TlsConnectorData) -> ClientHello {
-    data.server_name = Some(Host::try_from("example.test").unwrap());
+    data.server_name = Some(ServerName::from(Domain::from_static("example.test")));
     let ssl = data.into_ssl().unwrap();
     let Err(HandshakeError::WouldBlock(stream)) = ssl.connect(HelloSink::default()) else {
         panic!("the client must write its first flight before waiting for the server");
@@ -656,27 +657,28 @@ fn ids(hello: &ClientHello) -> Vec<Option<u16>> {
 fn wire_variants_of_one_policy_share_a_context_and_keep_their_own_hellos() {
     let plain = plain_variant();
     let variant = wire_variant();
+    // One native context per security policy, whatever the wire settings. A local
+    // cache: the process-wide one is shared with concurrently running tests.
+    let contexts = Cache::new(8);
+    let context = |config: &TlsClientConfig| {
+        let view = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
+        shared_security_context_in(&contexts, &view, None, None).unwrap()
+    };
+    let same = |a: &SslConnector, b: &SslConnector| {
+        std::ptr::eq(
+            a.configure().unwrap().ssl_context(),
+            b.configure().unwrap().ssl_context(),
+        )
+    };
+    let shared = context(&plain);
+    assert!(same(&shared, &context(&variant)));
+    assert!(same(&shared, &context(&plain)));
+    // A different policy gets its own.
+    let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+    assert!(!same(&shared, &context(&insecure)));
     let first = TlsConnectorData::try_from(&plain).unwrap();
     let second = TlsConnectorData::try_from(&variant).unwrap();
     let third = TlsConnectorData::try_from(&plain).unwrap();
-    // One native context per security policy, whatever the wire settings.
-    assert!(std::ptr::eq(
-        first.config.ssl_context(),
-        second.config.ssl_context()
-    ));
-    assert!(std::ptr::eq(
-        first.config.ssl_context(),
-        third.config.ssl_context()
-    ));
-    // A different policy gets its own.
-    let insecure = TlsConnectorData::try_from(
-        &TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
-    )
-    .unwrap();
-    assert!(!std::ptr::eq(
-        first.config.ssl_context(),
-        insecure.config.ssl_context()
-    ));
 
     let (first, second, third) = (
         hello_from_data(first),
@@ -768,11 +770,11 @@ fn wire_variants_of_one_policy_share_a_context_and_keep_their_own_hellos() {
 
 #[test]
 fn naming_only_unusable_groups_fails_instead_of_offering_defaults() {
-    let config = TlsClientConfig::new().with_supported_groups(vec![SupportedGroup::FFDHE2048]);
+    let config = TlsClientConfig::new().with_supported_groups(vec![SupportedGroup::FFDHE4096]);
     TlsConnectorData::try_from(&config).unwrap_err();
     // One usable group is enough, and is all that is offered.
     let config = TlsClientConfig::new()
-        .with_supported_groups(vec![SupportedGroup::FFDHE2048, SupportedGroup::X25519]);
+        .with_supported_groups(vec![SupportedGroup::FFDHE4096, SupportedGroup::X25519]);
     let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
     let groups = hello
         .extensions()
@@ -786,9 +788,10 @@ fn naming_only_unusable_groups_fails_instead_of_offering_defaults() {
 }
 
 /// Drive a fresh connection until it has written its ClientHello.
-fn first_flight(context: &TlsConnectorContext, server_name: Option<Host>) -> ClientHello {
+fn first_flight(context: &TlsConnectorContext, server_name: Option<ServerName>) -> ClientHello {
     let mut data = context.configure().unwrap();
-    data.server_name = Some(server_name.unwrap_or_else(|| Host::try_from("example.test").unwrap()));
+    data.server_name =
+        Some(server_name.unwrap_or_else(|| ServerName::from(Domain::from_static("example.test"))));
     let ssl = data.into_ssl().unwrap();
     let Err(HandshakeError::WouldBlock(stream)) = ssl.connect(HelloSink::default()) else {
         panic!("the client must write its first flight before waiting for the server");
@@ -1097,9 +1100,7 @@ fn random_hello(seed: u64) -> ClientHello {
     key_share_body.extend_from_slice(&key_share);
 
     let mut extensions = vec![
-        ClientHelloExtension::ServerName(Some(rama_net::address::Domain::from_static(
-            "example.test",
-        ))),
+        ClientHelloExtension::ServerName(Some(Domain::from_static("example.test").into())),
         ClientHelloExtension::SupportedGroups(groups),
         ClientHelloExtension::SignatureAlgorithms(schemes),
         ClientHelloExtension::SupportedVersions(versions),
@@ -1179,4 +1180,5 @@ fn preserved_and_pinned_hellos_round_trip_exactly() {
     }
 }
 
+mod alps;
 mod server_padding;

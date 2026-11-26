@@ -21,6 +21,7 @@ use rama::{
     },
     telemetry::tracing,
 };
+use std::io::IsTerminal as _;
 use tokio::io::AsyncWriteExt as _;
 
 use crate::cmd::send::SendCommand;
@@ -70,7 +71,6 @@ pub(super) fn feed_kind(headers: &HeaderMap) -> Option<FeedKind> {
 /// interactive shell (stdout and stdin are both a TTY), output not redirected
 /// to a file, and not a `--curl` dry-run.
 pub(super) fn tui_gate_open(cfg: &SendCommand) -> bool {
-    use std::io::IsTerminal as _;
     cfg.output.is_none()
         && !cfg.curl
         && std::io::stdout().is_terminal()

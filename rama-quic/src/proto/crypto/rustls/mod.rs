@@ -4,7 +4,6 @@ use ahash::HashMap;
 use parking_lot::Mutex;
 use rama_core::{
     bytes::BytesMut,
-    combinators::Either,
     conversion::RamaFrom as _,
     error::{BoxError, BoxErrorExt as _},
 };
@@ -12,7 +11,6 @@ use rama_core::{
 use rama_crypto::dep::aws_lc_rs::aead;
 #[cfg(feature = "ring")]
 use rama_crypto::dep::ring::aead;
-use rama_crypto::platform_verifier::PlatformVerifier;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, TransportErrorCode,
@@ -20,7 +18,10 @@ use rama_quic_proto::{
     packet::SpaceId,
     transport_parameters::TransportParameters,
 };
-use rama_tls::client::NegotiatedTlsAlgorithms;
+use rama_tls::client::{
+    DEFAULT_CLIENT_HELLO_MAX_SIZE, NegotiatedTlsAlgorithms, client_hello_message_size,
+    parse_client_hello,
+};
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_tls_rustls::dep::rustls::{
     client::danger::ServerCertVerifier,
@@ -28,7 +29,7 @@ use rama_tls_rustls::dep::rustls::{
 };
 use rama_tls_rustls::{
     dep::rustls::{
-        self, CipherSuite, HandshakeKind, RootCertStore,
+        self, CipherSuite, HandshakeKind,
         pki_types::ServerName,
         quic::{Connection, HeaderProtectionKey, KeyChange, PacketKey, Secrets, Suite, Version},
     },
@@ -61,8 +62,6 @@ fn received_server_name(name: &str) -> Result<Domain, TransportError> {
     })
 }
 
-pub(crate) type ServerVerification = Either<Arc<RootCertStore>, Arc<PlatformVerifier>>;
-
 mod config;
 #[cfg(test)]
 pub(crate) use config::TlsOptions;
@@ -75,12 +74,11 @@ pub(crate) use super::config::NoInitialCipherSuite;
 pub(crate) struct TlsSession {
     early_data_context: Option<[u8; 32]>,
     alpn_policy: AlpnPolicy,
-    /// Put the peer's certificate chain in the handshake summary.
     store_peer_chain: bool,
     version: Version,
     got_handshake_data: bool,
-    /// The name the peer asked for, converted once when the backend first has it.
-    server_name: Option<Domain>,
+    server_name: Option<rama_net::tls::ServerName>,
+    client_hello: Option<Vec<u8>>,
     next_secrets: Option<Secrets>,
     write_level: SpaceId,
     output: std::collections::VecDeque<HandshakeEvent>,
@@ -170,6 +168,10 @@ impl crypto::Session for TlsSession {
             .map(|group| u16::from(group.name()))
     }
 
+    fn ech_accepted(&self) -> Option<bool> {
+        None
+    }
+
     fn effective_client_hello(&self) -> Option<rama_tls::client::ClientHello> {
         None
     }
@@ -243,6 +245,18 @@ impl crypto::Session for TlsSession {
     fn cancel_pending_callbacks(&mut self) {}
 
     fn read_handshake(&mut self, _level: SpaceId, buf: &[u8]) -> Result<bool, TransportError> {
+        if let Some(hello) = &mut self.client_hello {
+            let remaining = DEFAULT_CLIENT_HELLO_MAX_SIZE.saturating_sub(hello.len());
+            hello.extend_from_slice(&buf[..buf.len().min(remaining)]);
+            if let Ok(Some(size)) = client_hello_message_size(hello, DEFAULT_CLIENT_HELLO_MAX_SIZE)
+                && hello.len() >= size
+            {
+                self.server_name = parse_client_hello(&hello[4..size])
+                    .ok()
+                    .and_then(|hello| hello.ext_server_name().cloned());
+                self.client_hello = None;
+            }
+        }
         self.inner.read_hs(buf).map_err(|e| {
             if let Some(alert) = self.inner.alert() {
                 TransportError::new(TransportErrorCode::crypto(alert.into()), e.to_string())
@@ -279,7 +293,7 @@ impl crypto::Session for TlsSession {
                 if let Connection::Server(ref session) = self.inner
                     && let Some(name) = session.server_name()
                 {
-                    self.server_name = Some(received_server_name(name)?);
+                    self.server_name = Some(received_server_name(name)?.into());
                 }
                 self.got_handshake_data = true;
                 return Ok(true);
@@ -556,6 +570,7 @@ impl crypto::ClientConfig for QuicClientConfig {
             version,
             got_handshake_data: false,
             server_name: None,
+            client_hello: None,
             next_secrets: None,
             write_level: SpaceId::Initial,
             output: Default::default(),
@@ -859,6 +874,7 @@ impl QuicServerConfig {
             version,
             got_handshake_data: false,
             server_name: None,
+            client_hello: Some(Vec::new()),
             next_secrets: None,
             write_level: SpaceId::Initial,
             output: Default::default(),
@@ -1004,7 +1020,13 @@ impl QuicDynamicServerConfig {
             .accept()
             .map_err(|(error, _alert)| error)?
             .ok_or_else(|| BoxError::from_static_str("incomplete ClientHello"))?;
-        let native = self.dynamic.get_config(accepted.client_hello()).await?;
+        let native = self
+            .dynamic
+            .get_config(
+                accepted.client_hello(),
+                client_hello.client_hello().ext_server_name(),
+            )
+            .await?;
         if let Some((_, config)) = self
             .resolved
             .lock()
@@ -1175,18 +1197,15 @@ fn session_error(error: rustls::Error) -> TransportError {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
+    use std::{assert_matches, error::Error as _};
 
     use rama_tls_rustls::dep::rustls::pki_types::DnsName;
 
     use super::*;
+    use crate::proto::crypto::ClientConfig as _;
 
     #[test]
     fn handshake_error_without_alert_preserves_its_source() {
-        use std::error::Error as _;
-
-        use crate::proto::crypto::ClientConfig as _;
-
         let native = rustls::ClientConfig::builder_with_provider(configured_provider())
             .with_protocol_versions(&[&rustls::version::TLS13])
             .unwrap()

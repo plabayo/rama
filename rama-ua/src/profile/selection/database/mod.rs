@@ -1,19 +1,23 @@
 mod index;
 
+use std::{ptr, sync::Arc};
+
+use ahash::HashMap;
+use index::ProfileVersionIndex;
+pub use index::{ProfileCandidate, ProfileCandidateFilter, ProfileCapabilities, ProfileVersion};
+use rama_core::error::BoxError;
+
+#[cfg(feature = "tls")]
+use crate::profile::selection::variants::derived::DatabaseEvidence;
+
 use crate::profile::{
     format::{
         archive::{ProfileArchiveLimits, load_profile_archive},
         canonical::ProfileDataError,
     },
+    model::ua::UserAgentProfile,
     selection::variants::shapes::RequestShapeCache,
 };
-use ahash::HashMap;
-use index::ProfileVersionIndex;
-pub use index::{ProfileCandidate, ProfileCandidateFilter, ProfileCapabilities, ProfileVersion};
-use rama_core::error::BoxError;
-use std::{ptr, sync::Arc};
-
-use crate::profile::model::ua::UserAgentProfile;
 
 #[derive(Debug, Default)]
 /// In-memory catalogue of captured user-agent profiles.
@@ -23,6 +27,8 @@ use crate::profile::model::ua::UserAgentProfile;
 pub struct UserAgentDatabase {
     profiles: Vec<UserAgentProfile>,
     request_shapes: Vec<Option<Arc<RequestShapeCache>>>,
+    #[cfg(feature = "tls")]
+    pub(crate) derived_evidence: Arc<DatabaseEvidence>,
     version_index: ProfileVersionIndex,
     map_ua_string: HashMap<Box<str>, Vec<usize>>,
 }
@@ -68,12 +74,30 @@ impl UserAgentDatabase {
         &self,
         filter: ProfileCandidateFilter<'_>,
     ) -> Result<Box<[ProfileCandidate<'_>]>, ProfileDataError> {
+        // An exact User-Agent names its few profiles directly, in database order.
+        match filter.user_agent {
+            Some(user_agent) => self.candidates_of(
+                self.map_ua_string
+                    .get(user_agent)
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+                filter,
+            ),
+            None => self.candidates_of(0..self.profiles.len(), filter),
+        }
+    }
+
+    fn candidates_of(
+        &self,
+        indices: impl Iterator<Item = usize>,
+        filter: ProfileCandidateFilter<'_>,
+    ) -> Result<Box<[ProfileCandidate<'_>]>, ProfileDataError> {
         let latest = filter
             .latest_versions
             .map(|maximum| self.version_index.latest(filter, maximum));
-        self.profiles
-            .iter()
-            .enumerate()
+        indices
+            .filter_map(|index| self.profiles.get(index).map(|profile| (index, profile)))
             .filter(|(index, profile)| {
                 filter
                     .user_agent
@@ -127,6 +151,10 @@ impl UserAgentDatabase {
     /// Insert a new [`UserAgentProfile`] into the database,
     /// also indexing it by its User-Agent header value.
     pub fn insert(&mut self, profile: UserAgentProfile) {
+        #[cfg(feature = "tls")]
+        if let Some(analysis) = &profile.captured {
+            Arc::make_mut(&mut self.derived_evidence).insert(Arc::clone(analysis));
+        }
         let index = self.profiles.len();
         self.version_index.insert(&profile.key, index);
         if let Some(ua_header) = profile.ua_str() {
@@ -146,11 +174,24 @@ impl UserAgentDatabase {
         &self,
         profile: &UserAgentProfile,
     ) -> Option<Arc<RequestShapeCache>> {
-        self.profiles
-            .iter()
-            .zip(&self.request_shapes)
-            .find(|(candidate, _)| ptr::eq(*candidate, profile))
-            .and_then(|(_, cache)| cache.clone())
+        // A profile's User-Agent names its few database entries; others are searched.
+        let named = profile
+            .ua_str()
+            .and_then(|user_agent| self.map_ua_string.get(user_agent))
+            .into_iter()
+            .flatten()
+            .copied()
+            .find(|&index| {
+                self.profiles
+                    .get(index)
+                    .is_some_and(|candidate| ptr::eq(candidate, profile))
+            });
+        let index = named.or_else(|| {
+            self.profiles
+                .iter()
+                .position(|candidate| ptr::eq(candidate, profile))
+        })?;
+        self.request_shapes.get(index).cloned().flatten()
     }
 
     /// Every [`UserAgentProfile`] observed with exactly this User-Agent header value.

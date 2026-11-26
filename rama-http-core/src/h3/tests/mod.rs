@@ -1,4 +1,7 @@
 //! Real QUIC round trips complement deterministic framing/cancellation tests.
+use rama_net::uri::Uri;
+use tokio::{sync::oneshot::channel, time::timeout};
+mod authority;
 mod cancellation;
 mod close;
 mod credit;
@@ -21,14 +24,24 @@ mod settings_profile;
 mod timeouts;
 mod transport;
 
-use std::{assert_matches, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    assert_matches,
+    num::NonZeroUsize,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use rama_core::{
     bytes::Bytes,
     extensions::{Extension, ExtensionsRef as _},
     graceful::WeakScope,
+    io::AbortIo,
     rt::spawn,
 };
+use rama_http::io::upgrade::handle_upgrade;
 use rama_http_types::{
     Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Version,
     body::{Frame, util::BodyExt},
@@ -48,6 +61,7 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::test_utils::{MemoryDatagramControl, MemoryDatagramSocket};
+use tokio::io::AsyncReadExt as _;
 
 use super::{client, connection::Config, server};
 
@@ -1053,6 +1067,91 @@ async fn connect_upstream_failure_resets_with_connect_error() {
             Code::H3_CONNECT_ERROR
         );
         serve.await.unwrap();
+        drop(tunnel);
+        pair.client.close(0u32, b"done");
+        _ = client_driver.await;
+        _ = server_driver.await;
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn tunnel_abort_resets_its_stream_and_not_the_carrier() {
+    timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let carrier_aborted = Arc::new(AtomicBool::new(false));
+        let carrier_abort = Arc::new(AbortIo::new({
+            let carrier_aborted = carrier_aborted.clone();
+            move || carrier_aborted.store(true, Ordering::SeqCst)
+        }));
+        pair.server.extensions().insert_arc(carrier_abort.clone());
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::detached(),
+        )
+        .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let (ready, acknowledged) = channel();
+        let serve = spawn(async move {
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            let upgrade = handle_upgrade(request);
+            response
+                .send_response(Response::new(Body::empty()))
+                .await
+                .unwrap();
+            let tunnel = upgrade.await.unwrap();
+            acknowledged.await.unwrap();
+            let abort = tunnel.extensions().get_arc::<AbortIo>().unwrap();
+            assert!(!Arc::ptr_eq(&abort, &carrier_abort));
+            abort.abort();
+            drop(tunnel);
+            // A sibling request on the same connection is still served.
+            let (_request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            response
+                .send_response(Response::new(Body::empty()))
+                .await
+                .unwrap();
+            server
+        });
+        let response = client
+            .send_request(
+                Request::builder()
+                    .method("CONNECT")
+                    .uri(Uri::parse_http_request_target("localhost:443", true).unwrap())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut tunnel = handle_upgrade(response).await.unwrap();
+        ready.send(()).unwrap();
+        let error = tunnel.read_u8().await.unwrap_err();
+        assert_eq!(
+            error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<super::Error>())
+                .unwrap()
+                .code(),
+            Code::H3_CONNECT_ERROR
+        );
+        let sibling = client
+            .send_request(
+                Request::builder()
+                    .uri("https://localhost/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sibling.status(), 200);
+        let _server = serve.await.unwrap();
+        assert!(!carrier_aborted.load(Ordering::SeqCst));
         drop(tunnel);
         pair.client.close(0u32, b"done");
         _ = client_driver.await;

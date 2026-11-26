@@ -81,8 +81,8 @@ rand = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
 slab = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["macros", "fs", "io-std", "rt", "rt-multi-thread", "sync", "time"], optional = true }
-tokio-stream = { workspace = true, features = ["full"], optional = true }
+tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "rt", "rt-multi-thread", "signal", "sync", "time"], optional = true }
+tokio-stream = { workspace = true, features = ["sync", "time", "io-util", "fs", "signal", "rt"], optional = true }
 tokio-util = { workspace = true, features = ["codec", "io", "io-util"], optional = true }
 tracing = { workspace = true, default-features = false, features = ["attributes"] }
 tracing-appender = { workspace = true, features = ["parking_lot"], optional = true }

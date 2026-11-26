@@ -48,11 +48,10 @@ use std::{
 };
 
 use rama_core::error::BoxError;
-use rama_net::address::Host;
+use rama_net::tls::ServerName;
 
 use crate::pki_types::CertificateDer;
 
-#[cfg(any(target_os = "android", test))]
 mod name;
 
 #[cfg(target_vendor = "apple")]
@@ -168,7 +167,7 @@ impl PlatformVerifier {
         &self,
         end_entity: &CertificateDer<'_>,
         intermediates: &[CertificateDer<'_>],
-        server_name: &Host,
+        server_name: &ServerName,
         ocsp_response: Option<&[u8]>,
         now: SystemTime,
     ) -> Result<Vec<CertificateDer<'static>>, PlatformVerifyError> {
@@ -178,10 +177,32 @@ impl PlatformVerifier {
                 PlatformVerifyErrorKind::BadEncoding,
             ));
         }
-        let server_name = server_name_str(server_name);
+        if !Self::IS_AVAILABLE {
+            return Err(PlatformVerifyError::new(
+                PlatformVerifyErrorKind::Unavailable,
+            ));
+        }
+        let matched = if cfg!(target_os = "android") {
+            name::leaf_matches(end_entity, server_name)
+        } else {
+            name::native_leaf_matches(end_entity, server_name)
+        };
+        match matched {
+            Some(true) => (),
+            Some(false) => {
+                return Err(PlatformVerifyError::new(
+                    PlatformVerifyErrorKind::NotValidForName,
+                ));
+            }
+            None => {
+                return Err(PlatformVerifyError::new(
+                    PlatformVerifyErrorKind::BadEncoding,
+                ));
+            }
+        }
         let ocsp_response = ocsp_response.filter(|response| !response.is_empty());
         self.0
-            .verify_server_chain(end_entity, intermediates, &server_name, ocsp_response, now)
+            .verify_server_chain(end_entity, intermediates, server_name, ocsp_response, now)
     }
 }
 
@@ -191,16 +212,33 @@ impl Default for PlatformVerifier {
     }
 }
 
+#[cfg(any(target_vendor = "apple", windows, target_os = "android", test))]
+enum ServerNameText<'a> {
+    Borrowed(&'a str),
+    Owned(Box<str>),
+}
+
+#[cfg(any(target_vendor = "apple", windows, target_os = "android", test))]
+impl AsRef<str> for ServerNameText<'_> {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Borrowed(text) => text,
+            Self::Owned(text) => text,
+        }
+    }
+}
+
 /// Platform verifiers compare names exactly, so a trailing root label would
 /// fail an otherwise equivalent match.
-fn server_name_str(server_name: &Host) -> String {
-    if let Ok(ip) = server_name.try_as_ip() {
-        return ip.to_string();
-    }
-    let name = server_name.to_string();
-    match name.strip_suffix('.') {
-        Some(stripped) => stripped.to_owned(),
-        None => name,
+#[cfg(any(target_vendor = "apple", windows, target_os = "android", test))]
+fn server_name_str(server_name: &ServerName) -> ServerNameText<'_> {
+    match (server_name.as_domain(), server_name.as_ip()) {
+        (Some(domain), _) => {
+            let text = domain.as_str();
+            ServerNameText::Borrowed(text.strip_suffix('.').unwrap_or(text))
+        }
+        (None, Some(ip)) => ServerNameText::Owned(ip.to_string().into_boxed_str()),
+        (None, None) => ServerNameText::Owned(server_name.to_string().into_boxed_str()),
     }
 }
 
@@ -291,7 +329,25 @@ impl std::error::Error for PlatformVerifyError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(
+        any(target_vendor = "apple", windows),
+        any(feature = "boring", feature = "aws-lc", feature = "ring")
+    ))]
+    use {
+        crate::cert::{
+            CertificateAuthorityData, CertificateIdentity, LeafCertRequest, SelfSignedCaConfig,
+        },
+        std::net::{IpAddr, Ipv6Addr},
+    };
+
+    use rama_net::address::Domain;
+
     use super::*;
+    #[cfg(all(
+        any(target_vendor = "apple", windows),
+        any(feature = "aws-lc", feature = "ring")
+    ))]
+    use crate::dep::rcgen::{CertificateParams, DistinguishedName, Issuer, KeyPair, SanType};
 
     #[test]
     #[cfg(not(any(target_vendor = "apple", windows, target_os = "android")))]
@@ -300,7 +356,7 @@ mod tests {
             .verify_server_chain(
                 &CertificateDer::from(vec![0x30]),
                 &[],
-                &Host::EXAMPLE_NAME,
+                &ServerName::from(Domain::example()),
                 None,
                 SystemTime::now(),
             )
@@ -316,7 +372,7 @@ mod tests {
             .verify_server_chain(
                 &certificate,
                 &intermediates,
-                &Host::EXAMPLE_NAME,
+                &ServerName::from(Domain::example()),
                 None,
                 SystemTime::now(),
             )
@@ -325,12 +381,84 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(
+        any(target_vendor = "apple", windows),
+        any(feature = "boring", feature = "aws-lc", feature = "ring")
+    ))]
+    fn address_identities_match_only_their_ip_address_names() {
+        let v4 = IpAddr::from([127, 0, 0, 1]);
+        let v6 = IpAddr::from(Ipv6Addr::LOCALHOST);
+        let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+        let verifier =
+            PlatformVerifier::try_with_extra_roots(ca.certificate_chain().iter().cloned()).unwrap();
+        let verify = |identity: CertificateIdentity, target: IpAddr| {
+            let (chain, _) = ca
+                .issue_leaf(LeafCertRequest {
+                    config: Default::default(),
+                    identities: vec![identity],
+                })
+                .unwrap();
+            verifier
+                .verify_server_chain(
+                    &chain[0],
+                    &chain[1..],
+                    &ServerName::from(target),
+                    None,
+                    SystemTime::now(),
+                )
+                .is_ok()
+        };
+        assert!(verify(CertificateIdentity::Ip(v4), v4));
+        assert!(verify(CertificateIdentity::Ip(v6), v6));
+        assert!(!verify(CertificateIdentity::Ip(v4), v6));
+        assert!(!verify(
+            CertificateIdentity::Ip(IpAddr::from([127, 0, 0, 2])),
+            v4
+        ));
+        assert!(!verify(
+            CertificateIdentity::Dns(Domain::tld_localhost()),
+            v4
+        ));
+    }
+
+    #[cfg(all(
+        any(target_vendor = "apple", windows),
+        any(feature = "aws-lc", feature = "ring")
+    ))]
+    #[test]
+    fn numeric_dns_san_does_not_authenticate_an_ip_identity() {
+        let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+        let issuer_key = KeyPair::try_from(ca.private_key()).unwrap();
+        let issuer = Issuer::from_ca_cert_der(&ca.certificate_chain()[0], issuer_key).unwrap();
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::default();
+        params.distinguished_name = DistinguishedName::new();
+        params.subject_alt_names = vec![SanType::DnsName("127.0.0.1".try_into().unwrap())];
+        let leaf = params.signed_by(&key, &issuer).unwrap();
+        let verifier =
+            PlatformVerifier::try_with_extra_roots(ca.certificate_chain().iter().cloned()).unwrap();
+        let error = verifier
+            .verify_server_chain(
+                leaf.der(),
+                &[],
+                &ServerName::from(IpAddr::from([127, 0, 0, 1])),
+                None,
+                SystemTime::now(),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), PlatformVerifyErrorKind::NotValidForName);
+    }
+
+    #[test]
     fn server_names_are_normalized_for_platform_matching() {
         assert_eq!(
-            server_name_str(&"example.com.".parse().unwrap()),
+            server_name_str(&"example.com.".parse().unwrap()).as_ref(),
             "example.com"
         );
-        assert_eq!(server_name_str(&"[::1]".parse().unwrap()), "::1");
-        assert_eq!(server_name_str(&"127.0.0.1".parse().unwrap()), "127.0.0.1");
+        assert_eq!(server_name_str(&"[::1]".parse().unwrap()).as_ref(), "::1");
+        assert_eq!(
+            server_name_str(&"127.0.0.1".parse().unwrap()).as_ref(),
+            "127.0.0.1"
+        );
     }
 }

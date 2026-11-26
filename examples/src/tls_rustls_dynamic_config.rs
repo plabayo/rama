@@ -62,6 +62,7 @@ use rama::{
     graceful::Scope,
     http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
+    net::tls::ServerName,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -69,12 +70,12 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::rustls::{
-        dep::rustls::ServerConfig,
-        server::{DynamicConfigProvider, RustlsServerConfigExt, TlsAcceptorLayer},
-    },
     tls::{
         KeyLogIntent,
+        rustls::{
+            dep::rustls::ServerConfig,
+            server::{DynamicConfigProvider, RustlsServerConfigExt, TlsAcceptorLayer},
+        },
         server::{ServerAuthData, TlsServerConfig},
     },
 };
@@ -131,9 +132,13 @@ struct DynamicConfig;
 impl DynamicConfigProvider for DynamicConfig {
     async fn get_config(
         &self,
-        client_hello: rama::tls::rustls::dep::rustls::server::ClientHello<'_>,
+        _client_hello: rama::tls::rustls::dep::rustls::server::ClientHello<'_>,
+        server_name: Option<&ServerName>,
     ) -> Result<Arc<rama::tls::rustls::dep::rustls::ServerConfig>, BoxError> {
-        let (cert_chain, private_key) = match client_hello.server_name() {
+        let (cert_chain, private_key) = match server_name
+            .and_then(|name| name.as_domain())
+            .map(|name| name.as_str())
+        {
             Some(name) => match name {
                 "example" => load_example_certificate().await,
                 "second.example" => load_second_example_certificate().await,

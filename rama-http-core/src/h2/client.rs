@@ -137,35 +137,55 @@
 //! [`Builder`]: struct.Builder.html
 //! [`Error`]: ../struct.Error.html
 
-use crate::h2::codec::{Codec, SendError, UserError};
-use crate::h2::proto::{self, Error};
-use crate::h2::{FlowControl, PingPong, RateBudget, RecvStream, SendStream};
-use crate::proto::{
-    DEFAULT_MAX_HEADERS, DEFAULT_MAX_INFORMATIONAL_RESPONSES, DEFAULT_REFUSED_STREAM_BUDGET,
-    target::{OutgoingHost, host_is_wire_authority, outgoing_host},
+use std::{
+    fmt,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
 };
-use rama_core::bytes::{Buf, Bytes};
-use rama_core::error::{BoxError, BoxErrorExt};
-use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_core::telemetry::tracing::{self, Instrument, debug, warn};
-use rama_http::proto::HeaderByteLength;
-use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
-use rama_http_types::conn::H2SettingsLimits;
-use rama_http_types::proto::ext::Protocol;
-use rama_http_types::proto::h2::frame::StreamDependency;
-use rama_http_types::proto::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
-use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
-use rama_http_types::proto::h2::hpack::BytesStr;
-use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity};
-use rama_http_types::request;
-use rama_http_types::{HeaderMap, Method, Request, Response, Version};
-use rama_net::address::AuthorityRef;
-use rama_net::extensions::StreamTransformed;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use std::time::Duration;
-use std::{fmt, sync::Arc};
+
+use rama_core::{
+    bytes::{Buf, Bytes},
+    error::{BoxError, BoxErrorExt},
+    extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing::{self, Instrument, debug, warn},
+};
+use rama_http::proto::{
+    HeaderByteLength,
+    h2::frame::{EarlyFrame, EarlyFrameStreamContext},
+};
+use rama_http_types::{
+    HeaderMap, Method, Request, Response, Version,
+    conn::H2SettingsLimits,
+    header,
+    proto::{
+        ext::Protocol,
+        h2::{
+            PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity,
+            frame::{
+                Headers, Pseudo, Reason, SettingOrder, Settings, SettingsConfig, StreamDependency,
+                StreamId,
+            },
+            hpack::BytesStr,
+        },
+    },
+    request::Parts,
+};
+use rama_net::{address::AuthorityRef, extensions::StreamTransformed};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+
+use crate::{
+    h2::{
+        FlowControl, PingPong, RateBudget, RecvStream, SendStream,
+        codec::{Codec, SendError, UserError},
+        proto::{self, Error},
+    },
+    proto::{
+        DEFAULT_MAX_HEADERS, DEFAULT_MAX_INFORMATIONAL_RESPONSES, DEFAULT_REFUSED_STREAM_BUDGET,
+        target::{OutgoingHost, host_is_wire_authority, normalized_outgoing_host, outgoing_host},
+    },
+};
 
 /// Initializes new HTTP/2 streams on a connection by sending a request.
 ///
@@ -2009,32 +2029,47 @@ impl PushedResponseFuture {
 // ===== impl Peer =====
 
 /// A single valid `Host` becomes `:authority` when [`host_is_wire_authority`] says so,
-/// keeping its sensitivity; the `Host` line itself is sent unchanged. Any other `Host` next to
+/// keeping its sensitivity and the `Host` field's original slot. Any other `Host` next to
 /// `:authority` is dropped, so one authority reaches the wire. An ordinary CONNECT's final
 /// authority must name a port (RFC 9113 §8.5).
+/// An asterisk target takes its authority from its `Host`.
 fn host_as_authority(
     pseudo: &mut Pseudo,
     headers: &mut HeaderMap,
     ordinary_connect: bool,
+    asterisk: bool,
 ) -> Result<(), UserError> {
     let mut drop_host = false;
+    let mut normalized_host = None;
     match outgoing_host(headers) {
-        OutgoingHost::Usable(host, parsed) => {
+        OutgoingHost::Usable {
+            bytes,
+            value: host,
+            parsed,
+        } => {
             let projected = pseudo
                 .authority
                 .as_deref()
                 .map(str::as_bytes)
                 .map(AuthorityRef::parse);
-            if let Some(Ok(projected)) = projected
-                && host_is_wire_authority(projected, parsed)
-                && let Ok(value) = BytesStr::try_from(Bytes::copy_from_slice(host.as_bytes()))
-            {
-                let sensitive = host.is_sensitive();
-                pseudo.set_authority(value);
-                if sensitive {
-                    pseudo
-                        .sensitivity
-                        .set_sensitive(PseudoHeader::Authority, true);
+            let use_host = match projected {
+                Some(Ok(projected)) => host_is_wire_authority(projected, parsed),
+                _ => asterisk && pseudo.authority.is_none(),
+            };
+            if use_host {
+                let normalized = normalized_outgoing_host(headers);
+                let (bytes, host) = match normalized.as_ref() {
+                    Some(host) => (host.as_bytes(), host),
+                    None => (bytes, host),
+                };
+                if let Ok(value) = BytesStr::try_from(Bytes::from(host.clone()).slice_ref(bytes)) {
+                    pseudo.set_authority(value);
+                    if host.is_sensitive() {
+                        pseudo
+                            .sensitivity
+                            .set_sensitive(PseudoHeader::Authority, true);
+                    }
+                    normalized_host = normalized;
                 }
             }
         }
@@ -2046,7 +2081,11 @@ fn host_as_authority(
         OutgoingHost::Absent => {}
     }
     if drop_host {
-        headers.remove(rama_http_types::header::HOST);
+        headers.remove(header::HOST);
+    } else if let Some(host) = normalized_host
+        && let Some(value) = headers.get_mut(header::HOST)
+    {
+        *value = host;
     }
     // RFC 9113 §8.5: an ordinary CONNECT names a host and port, whichever field supplied them.
     if ordinary_connect
@@ -2070,8 +2109,6 @@ impl Peer {
         headers_pseudo_order: Option<PseudoHeaderOrder>,
         headers_priority: Option<StreamDependency>,
     ) -> Result<(Headers, Extensions), SendError> {
-        use request::Parts;
-
         let (
             Parts {
                 method,
@@ -2104,28 +2141,18 @@ impl Peer {
             .get_ref::<PseudoHeaderSensitivity>()
             .copied()
             .unwrap_or_default();
-        host_as_authority(&mut pseudo, &mut headers, ordinary_connect)?;
-        // An asterisk URI holds neither scheme nor authority: a decoder keeps the scheme beside
-        // the request and the authority as `Host`. The target's authority is that `Host`
-        // (RFC 9112 §3.3), so it is sent as `:authority` (RFC 9113 §8.3.1), as on HTTP/3.
-        if uri.is_asterisk() {
-            if pseudo.scheme.is_none()
-                && let Some(scheme) = extensions.get_ref::<rama_net::Protocol>()
-            {
-                pseudo.set_scheme(scheme);
-            }
-            if pseudo.authority.is_none()
-                && let OutgoingHost::Usable(host, _) = outgoing_host(&headers)
-                && let Ok(value) = BytesStr::try_from(Bytes::copy_from_slice(host.as_bytes()))
-            {
-                let sensitive = host.is_sensitive();
-                pseudo.set_authority(value);
-                if sensitive {
-                    pseudo
-                        .sensitivity
-                        .set_sensitive(PseudoHeader::Authority, true);
-                }
-            }
+        host_as_authority(
+            &mut pseudo,
+            &mut headers,
+            ordinary_connect,
+            uri.is_asterisk(),
+        )?;
+        // An asterisk target carries its scheme beside the URI.
+        if uri.is_asterisk()
+            && pseudo.scheme.is_none()
+            && let Some(scheme) = extensions.get_ref::<rama_net::Protocol>()
+        {
+            pseudo.set_scheme(scheme);
         }
 
         if pseudo.scheme.is_none() {
@@ -2225,8 +2252,45 @@ impl proto::Peer for Peer {
 
 #[cfg(test)]
 mod pseudo_sensitivity_tests {
+    use rama_http_types::{HeaderValue, StatusCode, header, proto::h2::PseudoHeader};
+    use rama_net::Protocol;
+    use rama_utils::bytes::trim_ows;
+
     use super::*;
-    use rama_http_types::{StatusCode, proto::h2::PseudoHeader};
+
+    #[test]
+    fn a_host_derived_authority_shares_its_header_bytes() {
+        for (method, uri) in [
+            (Method::GET, "https://gateway.example/"),
+            (Method::OPTIONS, "*"),
+        ] {
+            let mut request = Request::builder().method(method).uri(uri).body(()).unwrap();
+            request.extensions().insert(Protocol::HTTPS);
+            let mut host = HeaderValue::from_bytes(b"\t tenant.example:8443 ").unwrap();
+            host.set_sensitive(true);
+            let bytes = trim_ows(host.as_bytes());
+            let start = bytes.as_ptr();
+            let len = bytes.len();
+            request.headers_mut().insert(header::HOST, host);
+
+            let (frame, _) =
+                Peer::convert_send_message(StreamId::from(1), request, None, true, None, None)
+                    .unwrap();
+            let authority = frame.pseudo().authority.as_deref().unwrap();
+            assert_eq!(
+                authority.as_bytes(),
+                trim_ows(frame.fields()[header::HOST].as_bytes())
+            );
+            assert_eq!(authority.as_ptr(), start);
+            assert_eq!(authority.len(), len);
+            assert!(
+                frame
+                    .pseudo()
+                    .sensitivity
+                    .is_sensitive(PseudoHeader::Authority)
+            );
+        }
+    }
 
     #[test]
     fn a_host_naming_another_authority_is_the_http2_authority() {
@@ -2309,10 +2373,11 @@ mod pseudo_sensitivity_tests {
 
 #[cfg(test)]
 mod observation_tests {
-    use super::*;
     use rama_core::ServiceInput;
     use rama_utils::octets::kib;
     use tokio::io::AsyncWriteExt;
+
+    use super::*;
 
     #[tokio::test]
     async fn peer_settings_wire_order_requires_explicit_client_opt_in() {

@@ -1,17 +1,20 @@
-use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions, client::ClientHello};
 use rama_core::{
     error::BoxError,
     extensions::{Extension, Extensions},
 };
-use rama_crypto::cert::generate_server_auth;
 pub use rama_crypto::cert::{
     CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
     CertificateValidity, GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest,
     SelfSignedCaConfig,
 };
-use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
+use rama_crypto::{
+    cert::generate_server_auth,
+    pki_types::{CertificateDer, PrivateKeyDer},
+};
 use rama_net::tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
+
+use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions, client::ClientHello};
 
 /// A backend agnostic TLS server config
 ///
@@ -165,8 +168,17 @@ impl TlsServerConfig {
         }
     }
 
+    /// Borrow this configuration as extensions.
     pub fn as_extensions(&self) -> &Extensions {
         &self.0
+    }
+
+    /// Own this configuration: later changes through other handles to its extensions do not apply.
+    #[must_use]
+    pub fn detached(self) -> Self {
+        let detached = Self::new();
+        detached.as_extensions().extend_chain(self.as_extensions());
+        detached
     }
 
     /// Insert any config piece (newest-wins override).

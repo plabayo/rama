@@ -300,7 +300,7 @@ pub async fn rama_server_side(run: &CaseRun<StreamScenario>) -> (Endpoint, Socke
             );
             assert_eq!(
                 settled.server_name,
-                Some(Domain::from_static(SERVER_NAME)),
+                Some(Domain::from_static(SERVER_NAME).into()),
                 "{}: and the name the client asked for, as a domain",
                 run.what
             );

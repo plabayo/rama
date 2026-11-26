@@ -4,6 +4,8 @@
 //! that certificate against the public name, then fails with `ECH_REJECTED`
 //! so the caller can retry with the server's fresh ECH configs.
 
+use parking_lot::Mutex;
+
 use rama_boring::{
     hpke::HpkeKey,
     pkey::PKey,
@@ -22,12 +24,12 @@ use rama_crypto::{
     pki_types::CertificateDer,
 };
 use rama_net::{
-    address::{Domain, Host, HostWithPort},
+    address::{Domain, HostWithPort},
     client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorTarget,
         EstablishedClientConnection, pool::ConnectionReuse,
     },
-    tls::TargetEchConfig,
+    tls::{ServerName, TargetEchConfig},
 };
 use rama_tls::client::{
     DistrustedServerKeys, DynTlsServerCertChainPolicy, EchRequirement, ServerCertChain,
@@ -43,7 +45,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, DuplexStream, duplex};
 
 /// An ECHConfigList with public name `ech.com` (config id 0).
 const ECH_CONFIG_LIST: &[u8] = &[
@@ -102,7 +104,7 @@ where
     let acceptor = acceptor.build();
 
     let mut data = TlsConnectorData::try_from(
-        &make_config(&chain[0], &chain[1]).with_server_name(Host::from_static(ORIGIN)),
+        &make_config(&chain[0], &chain[1]).with_server_name(Domain::from_static(ORIGIN)),
     )
     .unwrap();
     data.config.set_ech_config_list(ECH_CONFIG_LIST).unwrap();
@@ -166,7 +168,7 @@ async fn origin_pins_do_not_apply_to_the_ech_public_name() {
 }
 
 #[derive(Debug, Clone, Default)]
-struct RecordingServerName(std::sync::Arc<std::sync::OnceLock<Option<Host>>>);
+struct RecordingServerName(std::sync::Arc<std::sync::OnceLock<Option<ServerName>>>);
 
 impl TlsServerCertChainPolicy for RecordingServerName {
     fn check(&self, chain: &ServerCertChain<'_>) -> Result<(), rama_core::error::BoxError> {
@@ -195,7 +197,7 @@ async fn chain_policies_judge_the_ech_public_name() {
         );
         assert_eq!(
             recorder.0.get(),
-            Some(&Some(Host::from_static("ech.com"))),
+            Some(&Some(ServerName::from(Domain::from_static("ech.com")))),
             "platform={platform}"
         );
 
@@ -225,7 +227,7 @@ async fn pin_only_rejected_ech_cannot_authenticate_retry_configs() {
             let error = rejected_ech_handshake(|_, _| {
                 let set = rama_tls::client::TlsServerCertPinSet::new(pin.clone());
                 let set = if scoped {
-                    set.with_server_name(Host::from_static("origin.example"))
+                    set.with_server_name(Domain::from_static("origin.example"))
                 } else {
                     set
                 };
@@ -260,7 +262,7 @@ async fn inapplicable_pins_preserve_explicitly_disabled_ech_verification() {
             .with_server_verify(rama_tls::client::ServerVerifyMode::Disable)
             .with_server_cert_pins(TlsServerCertPins::new(
                 rama_tls::client::TlsServerCertPinSet::new(pin)
-                    .with_server_name(Host::from_static("elsewhere.example")),
+                    .with_server_name(Domain::from_static("elsewhere.example")),
             ))
     })
     .await;
@@ -376,15 +378,22 @@ async fn endpoint_ech_is_accepted_and_required_pool_reuse_works() {
 }
 
 #[tokio::test]
-async fn required_ech_missing_or_disabled_fails_before_transport() {
+async fn required_ech_waits_for_discovery_without_emitting_a_clear_hello() {
     for disabled in [false, true] {
-        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let peer = Arc::new(Mutex::new(None));
         let transport = service_fn({
             let calls = calls.clone();
+            let peer = peer.clone();
             move |input: ConnectRequest| {
-                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                calls.fetch_add(1, Ordering::SeqCst);
+                let peer = peer.clone();
                 async move {
-                    let (io, _) = tokio::io::duplex(64);
+                    let (io, mut remote) = duplex(64);
+                    *peer.lock() = Some(tokio::spawn(async move {
+                        let mut byte = [0];
+                        remote.read(&mut byte).await.unwrap()
+                    }));
                     Ok::<_, ConnectionError>(EstablishedClientConnection {
                         input,
                         conn: ServiceInput::new(io),
@@ -401,11 +410,12 @@ async fn required_ech_missing_or_disabled_fails_before_transport() {
             .serve(input)
             .await
             .unwrap_err();
-        assert_eq!(
-            error.kind(),
-            rama_net::client::ConnectionErrorKind::InvalidInput
-        );
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+        assert_eq!(calls.load(Ordering::SeqCst), usize::from(!disabled));
+        let remote = peer.lock().take();
+        if let Some(remote) = remote {
+            assert_eq!(remote.await.unwrap(), 0);
+        }
     }
 }
 
@@ -416,7 +426,7 @@ async fn required_unsupported_configs_emit_no_clienthello() {
     for explicit in [false, true] {
         let config = TlsClientConfig::new()
             .with_encrypted_client_hello(true)
-            .with_server_name(Host::from_static(ORIGIN));
+            .with_server_name(Domain::from_static(ORIGIN));
         if explicit {
             config.as_extensions().insert(EchRequirement::Required);
         } else {
@@ -437,13 +447,21 @@ async fn required_unsupported_configs_emit_no_clienthello() {
         data.configure_target_ech(config.as_extensions(), &target)
             .unwrap();
         let (client, mut server) = tokio::io::duplex(65536);
-        drop(
-            tls_connect(ServiceInput::new(client), Some(data))
-                .await
-                .unwrap_err(),
-        );
-        let mut first = [0u8; 1];
-        assert_eq!(server.read(&mut first).await.unwrap(), 0);
+        let connect = async {
+            drop(
+                tls_connect(ServiceInput::new(client), Some(data))
+                    .await
+                    .unwrap_err(),
+            );
+        };
+        let read = async {
+            let mut first = [0u8; 1];
+            let count = server.read(&mut first).await.unwrap();
+            drop(server);
+            count
+        };
+        let (_, count) = tokio::join!(connect, read);
+        assert_eq!(count, 0);
     }
 }
 
@@ -549,7 +567,7 @@ async fn connector_retries_authenticated_rejection_once_on_fresh_transport() {
 }
 
 #[tokio::test]
-async fn mirrored_final_intent_controls_bare_endpoint_reliance_before_dial() {
+async fn mirrored_intent_keeps_endpoint_discovery_inside_transport() {
     for ech in [false, true] {
         let calls = Arc::new(AtomicUsize::new(0));
         let transport = service_fn({
@@ -557,16 +575,9 @@ async fn mirrored_final_intent_controls_bare_endpoint_reliance_before_dial() {
             move |_: ConnectRequest| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 async {
-                    Err::<
-                        EstablishedClientConnection<
-                            ServiceInput<tokio::io::DuplexStream>,
-                            ConnectRequest,
-                        >,
-                        _,
-                    >(ConnectionError::local(
-                        "test transport",
-                        ConnectionErrorKind::Unavailable,
-                    ))
+                    Err::<EstablishedClientConnection<ServiceInput<DuplexStream>, ConnectRequest>, _>(
+                        ConnectionError::local("test transport", ConnectionErrorKind::Unavailable),
+                    )
                 }
             }
         });
@@ -578,7 +589,6 @@ async fn mirrored_final_intent_controls_bare_endpoint_reliance_before_dial() {
                 reliant: true,
                 mandatory: false,
             });
-        // The profile compiler runs after discovery and installs ordinary TLS settings.
         let captured = crate::client::tests::emitted_with(
             &TlsClientConfig::new().with_encrypted_client_hello(ech),
         );
@@ -588,7 +598,7 @@ async fn mirrored_final_intent_controls_bare_endpoint_reliance_before_dial() {
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
-        assert_eq!(calls.load(Ordering::SeqCst), usize::from(!ech));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
 
@@ -629,12 +639,12 @@ async fn relay_consumes_endpoint_ech_and_enforces_required_before_io() {
             TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
                 .unwrap()
                 .with_egress_server_auth(
-                    TlsMitmEgressServerAuth::new().with_server_name(Host::from_static(ORIGIN)),
+                    TlsMitmEgressServerAuth::new().with_server_name(Domain::from_static(ORIGIN)),
                 );
         if authenticated {
             relay = relay.with_egress_server_auth(
                 TlsMitmEgressServerAuth::new()
-                    .with_server_name(Host::from_static(ORIGIN))
+                    .with_server_name(Domain::from_static(ORIGIN))
                     .with_server_verify(ServerVerifyMode::Auto)
                     .try_with_server_trust_anchors([chain[1].clone()])
                     .unwrap(),
@@ -680,7 +690,7 @@ async fn relay_consumes_endpoint_ech_and_enforces_required_before_io() {
         });
         let client_data = TlsConnectorData::try_from(
             &TlsClientConfig::new()
-                .with_server_name(Host::from_static(ORIGIN))
+                .with_server_name(Domain::from_static(ORIGIN))
                 .with_server_verify(ServerVerifyMode::Disable),
         )
         .unwrap();
@@ -690,7 +700,7 @@ async fn relay_consumes_endpoint_ech_and_enforces_required_before_io() {
             if let Some(ech) = mirrored {
                 let capture = crate::client::tests::emitted_with(
                     &TlsClientConfig::new()
-                        .with_server_name(Host::from_static(ORIGIN))
+                        .with_server_name(Domain::from_static(ORIGIN))
                         .with_encrypted_client_hello(ech),
                 );
                 let service = relay.into_layer(service_fn(
@@ -734,7 +744,7 @@ fn prepared_endpoint_ech_retains_scope_and_rejects_conflicting_overrides() {
     let target: HostWithPort = format!("{ORIGIN}:443").parse().unwrap();
     for changed_target in [false, true] {
         for disabled in [false, true] {
-            let policy = TlsClientConfig::new().with_server_name(Host::from_static(ORIGIN));
+            let policy = TlsClientConfig::new().with_server_name(Domain::from_static(ORIGIN));
             let mut data = TlsConnectorData::try_from(&policy).unwrap();
             let original = Extensions::new();
             original.insert(TargetEchConfig::new(
@@ -768,7 +778,7 @@ async fn relay_rejection_ends_the_single_stream_without_retry() {
         .unwrap()
         .with_egress_server_auth(
             TlsMitmEgressServerAuth::new()
-                .with_server_name(Host::from_static(ORIGIN))
+                .with_server_name(Domain::from_static(ORIGIN))
                 .with_server_verify(ServerVerifyMode::Auto)
                 .try_with_server_trust_anchors([ca])
                 .unwrap(),

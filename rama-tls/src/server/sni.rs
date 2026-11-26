@@ -17,9 +17,8 @@ use rama_core::{
     },
     service::RejectService,
 };
+use rama_net::{address::Domain, tls::ServerName};
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
-
-use rama_net::address::Domain;
 
 use super::{
     InputWithClientHello, MalformedTlsPolicy, NoTlsRejectError, PeekTlsClientHelloService,
@@ -181,7 +180,15 @@ pin_project! {
     pub struct SniRequest<S> {
         #[pin]
         pub stream: S,
-        pub sni: Option<Domain>,
+        pub sni: Option<ServerName>,
+    }
+}
+
+impl<S> SniRequest<S> {
+    /// Borrow the DNS server name, if the received SNI names a domain.
+    #[must_use]
+    pub fn sni_domain(&self) -> Option<&Domain> {
+        self.sni.as_ref().and_then(ServerName::as_domain)
     }
 }
 
@@ -329,28 +336,35 @@ where
 
 #[cfg(test)]
 mod test {
-    use rama_core::{
-        ServiceInput,
-        error::error_chain,
-        extensions::ExtensionsRef,
-        graceful::{Scope, attach_scope},
-        io::peek::{DEFAULT_EGRESS_PEEK_MAX_SIZE, PeekCutoff, PeekCutoffError, PeekPrefixedIo},
-        service::{RejectError, service_fn},
-    };
     use std::{
         collections::VecDeque,
         convert::Infallible,
+        io::Cursor,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
     };
+
+    use rama_core::{
+        ServiceInput,
+        error::error_chain,
+        extensions::ExtensionsRef,
+        graceful::{Scope, attach_scope},
+        io::{
+            BridgeIo, Io,
+            peek::{
+                DEFAULT_EGRESS_PEEK_MAX_SIZE, PeekCutoff, PeekCutoffError, PeekPrefixedIo,
+                PeekStopReason,
+            },
+        },
+        service::{RejectError, service_fn},
+    };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-    use rama_core::io::{BridgeIo, Io};
-
-    use super::*;
+    use super::{super::ClientHelloPeekStatus, *};
+    use crate::client::test_support::{fragments, hello, hello_for, record};
 
     const CH_ONE_ONE_ONE_ONE: &[u8] = &[
         0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc, 0x03, 0x03, 0x02, 0x15, 0xfd, 0xe2,
@@ -429,6 +443,35 @@ mod test {
     ];
 
     #[tokio::test]
+    async fn ip_literal_sni_is_distinguished_from_absent_sni() {
+        let router = SniRouter::new(service_fn(async |req: SniRequest<_>| {
+            Ok::<_, Infallible>(req.sni)
+        }))
+        .with_fallback(service_fn(async || {
+            Ok::<_, Infallible>(ServerName::parse("fallback.test"))
+        }))
+        .with_malformed_tls_policy(MalformedTlsPolicy::Reject);
+        for name in [Some("example.com"), Some("10.20.30.40"), None] {
+            let mut message = hello_for(name.unwrap_or("example.com"), 0);
+            if name.is_none() {
+                message.truncate(4 + 41);
+                message[1..4].copy_from_slice(&[0, 0, 41]);
+            }
+            let wire = record(&message);
+            let response = router
+                .serve(ServiceInput::new(Cursor::new(wire)))
+                .await
+                .unwrap();
+            assert_eq!(response, name.and_then(ServerName::parse));
+        }
+        let encoded_ip = record(&hello_for("%3a%3a1", 0));
+        router
+            .serve(ServiceInput::new(Cursor::new(encoded_ip)))
+            .await
+            .unwrap_err();
+    }
+
+    #[tokio::test]
     async fn test_sni_router() {
         let tls_service = service_fn(async |req: SniRequest<_>| {
             let sni = req.sni.map(|sni| sni.to_string());
@@ -482,7 +525,10 @@ mod test {
             _ = stream.read_to_end(&mut v).await?;
             assert_eq!(CH_ONE_ONE_ONE_ONE, v);
             assert!(sni.is_some());
-            assert_eq!("one.one.one.one", sni.unwrap());
+            assert_eq!(
+                "one.one.one.one",
+                sni.unwrap().as_domain().unwrap().as_str()
+            );
             Ok("ok")
         }
         let tls_service = service_fn(tls_service_fn);
@@ -559,13 +605,12 @@ mod test {
 
     #[tokio::test]
     async fn record_fragmentation_selects_strict_sni_route_and_replays_wire_bytes() {
-        use crate::client::test_support::{fragments, hello};
         for (padding, chunk_size) in [(0, 1), (60_000, rama_utils::octets::kib(16))] {
             let mut wire = fragments(&hello(padding), chunk_size);
             wire.extend_from_slice(b"following bytes");
             let router = SniRouter::new(service_fn(
                 async |mut req: SniRequest<SniPrefixedIo<ServiceInput<ScriptedReader>>>| {
-                    assert_eq!(req.sni.as_ref().unwrap().as_str(), "x.com");
+                    assert_eq!(req.sni_domain().unwrap().as_str(), "x.com");
                     let mut replay = Vec::new();
                     tokio::io::AsyncReadExt::read_to_end(&mut req, &mut replay)
                         .await
@@ -581,7 +626,6 @@ mod test {
 
     #[tokio::test]
     async fn sni_router_propagates_configured_limits() {
-        use crate::client::test_support::{fragments, hello};
         let message = hello(400);
         let wire = fragments(&message, 1);
         let router = SniRouter::new(service_fn(async |req: SniRequest<_>| {
@@ -708,9 +752,6 @@ mod test {
 
     #[tokio::test]
     async fn sni_default_fallback_receives_failure_marker_and_original_bytes() {
-        use super::super::ClientHelloPeekStatus;
-        use crate::client::test_support::{fragments, hello};
-        use rama_core::io::peek::PeekStopReason;
         for wire in [vec![0x16, 3], vec![0x16, 3, 5], fragments(&hello(400), 1)] {
             let router = SniRouter::new(service_fn(async || Ok::<_, Infallible>(Vec::<u8>::new())))
                 .with_fallback(service_fn(
@@ -783,7 +824,11 @@ mod test {
                 tokio::io::AsyncReadExt::read_to_end(&mut ingress, &mut replay)
                     .await
                     .unwrap();
-                let route = match sni.as_ref().map(Domain::as_str) {
+                let route = match sni
+                    .as_ref()
+                    .and_then(ServerName::as_domain)
+                    .map(Domain::as_str)
+                {
                     Some("one.one.one.one") => "one",
                     Some(_) => "other",
                     None => "no-sni",

@@ -16,7 +16,7 @@ use rama_crypto::{
     pki_types::CertificateDer,
     platform_verifier::{PlatformVerifier, PlatformVerifyErrorKind},
 };
-use rama_net::address::{Domain, Host};
+use rama_net::{address::Domain, tls::ServerName};
 use rama_tls::client::{
     DynTlsServerCertChainPolicy, ServerCertChain, ServerCertChainKind, ServerChainCertificate,
     ServerVerifyMode, TlsServerCertPinCheck, TlsServerCertPins,
@@ -35,7 +35,7 @@ pub(super) struct ServerVerification {
 pub(super) fn configure_server_verification(
     config: &mut ConnectConfiguration,
     verification: ServerVerification,
-    server_name: Option<&Host>,
+    server_name: Option<&ServerName>,
 ) {
     let ServerVerification {
         mode,
@@ -143,7 +143,7 @@ pub(super) fn configure_server_verification(
 struct PostVerifyChecks {
     pins: Option<TlsServerCertPins>,
     chain_policy: Option<DynTlsServerCertChainPolicy>,
-    server_name: Option<Host>,
+    server_name: Option<ServerName>,
 }
 
 impl PostVerifyChecks {
@@ -152,7 +152,7 @@ impl PostVerifyChecks {
     }
 
     /// Whether any check applies to this server, and therefore needs its certificate.
-    fn need_certificate(&self, ech_public_name: Option<&Host>) -> bool {
+    fn need_certificate(&self, ech_public_name: Option<&ServerName>) -> bool {
         self.chain_policy.is_some()
             || (ech_public_name.is_none()
                 && self
@@ -167,7 +167,7 @@ impl PostVerifyChecks {
         &self,
         kind: ServerCertChainKind,
         chain: &[CertificateDer<'static>],
-        ech_public_name: Option<&Host>,
+        ech_public_name: Option<&ServerName>,
     ) -> Result<(), SslAlert> {
         let Some(leaf) = chain.first() else {
             return Err(SslAlert::BAD_CERTIFICATE);
@@ -204,18 +204,18 @@ impl PostVerifyChecks {
 
 /// The ECH public name to verify against, set only when the server rejected
 /// ECH: such a handshake never completes and only authenticates retry configs.
-fn ech_public_name(ssl: &SslRef) -> Result<Option<Host>, SslAlert> {
+fn ech_public_name(ssl: &SslRef) -> Result<Option<ServerName>, SslAlert> {
     match ssl.get_ech_name_override() {
         None | Some([]) => Ok(None),
         Some(name) => std::str::from_utf8(name)
             .ok()
             .and_then(|name| Domain::try_from(name).ok())
-            .map(|name| Some(Host::from(name)))
+            .map(|name| Some(ServerName::from(name)))
             .ok_or(SslAlert::BAD_CERTIFICATE),
     }
 }
 
-fn store_ech_public_name(store_ctx: &X509StoreContextRef) -> Result<Option<Host>, SslAlert> {
+fn store_ech_public_name(store_ctx: &X509StoreContextRef) -> Result<Option<ServerName>, SslAlert> {
     let index = X509StoreContext::ssl_idx().map_err(|_no_index| SslAlert::INTERNAL_ERROR)?;
     let ssl = store_ctx.ex_data(index).ok_or(SslAlert::INTERNAL_ERROR)?;
     ech_public_name(ssl)
@@ -243,7 +243,7 @@ fn der_chain(chain: &StackRef<X509>) -> Result<Vec<CertificateDer<'static>>, Ssl
 async fn verify_with_platform(
     platform: Arc<PlatformVerifier>,
     presented: Vec<CertificateDer<'static>>,
-    server_name: Host,
+    server_name: ServerName,
     ocsp_response: Option<Vec<u8>>,
 ) -> Result<Vec<CertificateDer<'static>>, SslAlert> {
     let verify = move || {

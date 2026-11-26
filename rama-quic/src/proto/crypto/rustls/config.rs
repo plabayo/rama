@@ -1,17 +1,19 @@
 use std::sync::Arc;
 
-use rama_net::tls::AlpnPolicy;
-
+use rama_net::{client::ConnectorTarget, tls::AlpnPolicy};
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
-    client::{ClientHandshake, TlsClientConfig},
+    client::{ClientHandshake, TlsClientConfig, TlsProfilePreparation, resolve_target_ech},
     server::TlsServerConfig,
 };
-use rama_tls_rustls::{client::RustlsTlsConnectorConfig, server::RustlsTlsAcceptorConfig};
+use rama_tls_rustls::{
+    client::{RustlsServerVerification, RustlsTlsConnectorConfig},
+    server::RustlsTlsAcceptorConfig,
+};
 
-use super::rustls::client::Resumption;
 use super::{
-    QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, ServerVerification, rustls,
+    QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls,
+    rustls::{client::Resumption, crypto::CryptoProvider},
 };
 use crate::proto::ServerCrypto;
 pub(crate) use crate::proto::crypto::config::{
@@ -55,7 +57,25 @@ impl QuicClientConfig {
         config: &TlsClientConfig,
         provider: Arc<rustls::crypto::CryptoProvider>,
         options: TlsOptions,
-        verification: Option<&ServerVerification>,
+        verification: Option<&RustlsServerVerification>,
+    ) -> Result<Self, TlsConfigError> {
+        let config = config.clone();
+        let extensions = config.as_extensions();
+        let resolution = extensions
+            .get_ref::<ConnectorTarget>()
+            .map(|target| resolve_target_ech(extensions, &target.0, false))
+            .transpose()?;
+        if let Some(resolution) = &resolution {
+            TlsProfilePreparation::apply(resolution, extensions, extensions)?;
+        }
+        Self::from_rama_with_resolved_ech(&config, provider, options, verification)
+    }
+
+    pub(crate) fn from_rama_with_resolved_ech(
+        config: &TlsClientConfig,
+        provider: Arc<CryptoProvider>,
+        options: TlsOptions,
+        verification: Option<&RustlsServerVerification>,
     ) -> Result<Self, TlsConfigError> {
         // Initial packets always use AES-128-GCM, independently of the TLS cipher
         // suites an application's native hook chooses to offer.
@@ -212,14 +232,18 @@ mod tests {
         time::Duration,
     };
 
-    use super::rustls::{
-        NamedGroup,
-        client::{ClientSessionStore, Tls12ClientSessionValue, Tls13ClientSessionValue},
-        pki_types::ServerName,
-    };
-    use rama_core::{error::BoxError, graceful::WeakScope};
+    use rama_core::extensions::Extensions;
+    use rama_core::{error::BoxError, extensions::ExtensionsRef as _, graceful::WeakScope};
+    use rama_net::tls::TargetEchServiceBinding;
     use rama_net::tls::{ApplicationProtocol, TlsAlpn};
+    #[cfg(feature = "boring")]
+    use rama_quic_proto::{ConnectionId, packet::SpaceId};
     use rama_quic_proto::{Side, VarInt, Version, transport_parameters::TransportParameters};
+    #[cfg(feature = "boring")]
+    use rama_tls::client::{
+        ClientHelloHandshakePrefix, ServerVerifyMode, TlsClientSni,
+        parse_client_hello_message_prefix,
+    };
     use rama_tls::{
         client::{ClientAuth, ClientAuthData, TlsServerCertPins},
         keylog::KeyLogSink,
@@ -230,13 +254,24 @@ mod tests {
         server::{DynamicConfigProvider, RustlsServerConfigExt},
     };
 
-    use super::*;
-    use crate::proto::crypto::{HandshakeEvent, Session, config::application_context};
+    use super::{
+        rustls::{
+            NamedGroup,
+            client::{ClientSessionStore, Tls12ClientSessionValue, Tls13ClientSessionValue},
+            pki_types::ServerName,
+        },
+        *,
+    };
+    #[cfg(feature = "boring")]
+    use crate::proto::crypto::ClientHelloMessage;
     use crate::{
         driver::Endpoint,
         proto::{
             ClientConfig, ConnectError, ServerConfig,
-            crypto::{ClientConfig as _, ServerConfig as _, rustls::configured_provider},
+            crypto::{
+                ClientConfig as _, HandshakeEvent, ServerConfig as _, Session,
+                config::application_context, rustls::configured_provider,
+            },
         },
     };
 
@@ -286,6 +321,51 @@ mod tests {
                 .with_server_auth(auth)
                 .with_alpn(alpn()),
         )
+    }
+
+    #[test]
+    fn native_builds_prepare_in_an_independent_overlay() {
+        let (client, _) = configs();
+        client
+            .as_extensions()
+            .insert(ConnectorTarget("localhost:443".parse().unwrap()));
+        client
+            .as_extensions()
+            .insert(TlsProfilePreparation::new(|_, effective, request| {
+                effective.insert(ClientHandshake::Full);
+                request.insert(ClientHandshake::Full);
+                Ok(Extensions::new())
+            }));
+        let entries = client.as_extensions().self_iter_all().count();
+        for _ in 0..3 {
+            QuicClientConfig::from_rama(&client, configured_provider(), TlsOptions::default())
+                .unwrap();
+            assert_eq!(client.as_extensions().self_iter_all().count(), entries);
+            assert!(
+                client
+                    .as_extensions()
+                    .get_ref::<ClientHandshake>()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_native_session_rejects_required_ech() {
+        let (client, _) = configs();
+        QuicClientConfig::from_rama(&client, configured_provider(), TlsOptions::default()).unwrap();
+        client
+            .as_extensions()
+            .insert(ConnectorTarget("localhost:443".parse().unwrap()));
+        client.as_extensions().insert(TargetEchServiceBinding {
+            target: "localhost:443".parse().unwrap(),
+            reliant: false,
+            mandatory: true,
+        });
+        assert!(matches!(
+            QuicClientConfig::from_rama(&client, configured_provider(), TlsOptions::default()),
+            Err(TlsConfigError::InvalidConfiguration(_))
+        ));
     }
 
     #[test]
@@ -709,11 +789,99 @@ mod tests {
         validate_alpn(&vec![vec![0; 255]; 255], AlpnPolicy::Require).unwrap();
     }
 
+    #[cfg(feature = "boring")]
+    struct ObservedNameConfig {
+        config: Arc<rustls::ServerConfig>,
+        expected: Option<rama_net::tls::ServerName>,
+    }
+
+    #[cfg(feature = "boring")]
+    impl DynamicConfigProvider for ObservedNameConfig {
+        async fn get_config(
+            &self,
+            native: rustls::server::ClientHello<'_>,
+            server_name: Option<&rama_net::tls::ServerName>,
+        ) -> Result<Arc<rustls::ServerConfig>, BoxError> {
+            assert!(native.server_name().is_none());
+            assert_eq!(server_name, self.expected.as_ref());
+            Ok(self.config.clone())
+        }
+    }
+
+    #[cfg(feature = "boring")]
+    #[tokio::test]
+    async fn dynamic_resolution_receives_ip_literal_sni_and_absence() {
+        for literal in [None, Some("192.0.2.1"), Some("2001:db8::1")] {
+            let (client, server) = configs();
+            let client = client
+                .with_sni_policy(if literal.is_some() {
+                    TlsClientSni::IncludeIp
+                } else {
+                    TlsClientSni::Disabled
+                })
+                .with_server_verify(ServerVerifyMode::Disable);
+            let client = Arc::new(
+                crate::proto::crypto::boring::QuicClientConfig::from_rama(
+                    &client,
+                    TlsOptions::default(),
+                )
+                .unwrap(),
+            );
+            let provider = configured_provider();
+            let native =
+                QuicServerConfig::from_rama(&server, provider.clone(), TlsOptions::default())
+                    .unwrap();
+            let server = TlsServerConfig::new().with_dynamic_config(Arc::new(ObservedNameConfig {
+                config: native.inner,
+                expected: literal.map(|name| name.parse().unwrap()),
+            }));
+            let dynamic = RustlsTlsAcceptorConfig::from_extensions(server.as_extensions())
+                .dynamic
+                .unwrap()
+                .clone();
+            let resolver = Arc::new(
+                QuicDynamicServerConfig::new(dynamic, &provider, TlsOptions::default(), false)
+                    .unwrap(),
+            );
+            let params = TransportParameters {
+                initial_src_cid: Some(ConnectionId::new(&[1])),
+                ..TransportParameters::default()
+            };
+            let mut client = client
+                .start_session(Version::V1, literal.unwrap_or("localhost"), &params)
+                .unwrap();
+            let mut message = Vec::new();
+            while let Some(event) = client.poll_handshake().unwrap() {
+                let HandshakeEvent::Data(_, bytes) = event else {
+                    panic!("the initial flight contains only handshake bytes");
+                };
+                message.extend_from_slice(&bytes);
+            }
+            let ClientHelloHandshakePrefix::Complete(hello) =
+                parse_client_hello_message_prefix(&message)
+            else {
+                panic!("the client emitted a complete hello");
+            };
+            let config = resolver
+                .native_config(ClientHelloMessage::new(message.clone().into(), hello))
+                .await
+                .unwrap();
+            let mut server = config.start_session(Version::V1, &params).unwrap();
+            server.read_handshake(SpaceId::Initial, &message).unwrap();
+            handshake(&mut *client, &mut *server).unwrap();
+            assert_eq!(
+                server.handshake_summary().unwrap().server_name,
+                literal.map(|name| name.parse().unwrap())
+            );
+        }
+    }
+
     struct Dynamic;
     impl DynamicConfigProvider for Dynamic {
         async fn get_config(
             &self,
             _: rustls::server::ClientHello<'_>,
+            _: Option<&rama_net::tls::ServerName>,
         ) -> Result<Arc<rustls::ServerConfig>, BoxError> {
             panic!("resolution happens only for an accepted ClientHello");
         }
@@ -896,7 +1064,6 @@ mod tests {
 
     #[tokio::test]
     async fn chacha_only_hook_preserves_initial_encryption_and_negotiates_chacha() {
-        use rama_core::extensions::ExtensionsRef as _;
         tokio::time::timeout(Duration::from_secs(5), async {
             let (mut client_tls, server_tls) = configs();
             let policy = client_tls.clone();

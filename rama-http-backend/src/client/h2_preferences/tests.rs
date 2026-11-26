@@ -4,6 +4,7 @@ use rama_http_types::proto::h2::{
     PseudoHeader,
     frame::{EarlyFrameStreamContext, Head, Kind, Setting, SettingId, SettingsConfig, StreamId},
 };
+use rama_net::stream::DefaultExtensionsTransfer;
 use std::collections::hash_map::DefaultHasher;
 
 fn identity(
@@ -232,4 +233,20 @@ fn empty_and_runtime_only_params_do_not_partition_but_wire_knobs_do() {
         assert_eq!(left, right);
         assert_eq!(hash(left.as_ref()), hash(right.as_ref()));
     }
+}
+
+#[test]
+fn connection_inputs_stop_at_a_child_connection() {
+    let parent = Extensions::new();
+    parent.insert(H2ClientContextParams {
+        max_frame_size: Some(32_768),
+        ..Default::default()
+    });
+    assert!(parent.get_arc::<H2ClientContextParams>().is_some());
+    assert!(H2WirePreferences::from_extensions(&parent).is_some());
+
+    // A connection forked from another one, such as a relay's egress or the one to a proxy.
+    let child = parent.fork_connection(&DefaultExtensionsTransfer::new());
+    assert!(child.get_arc::<H2ClientContextParams>().is_none());
+    assert!(H2WirePreferences::from_extensions(&child).is_none());
 }

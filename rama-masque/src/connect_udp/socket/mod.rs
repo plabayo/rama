@@ -22,6 +22,7 @@ use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::{Extensions, ExtensionsRef, ExtensionsTransfer, SharedExtensionsTransfer},
     graceful::Scope,
+    rt::{IdleActivity, IdleGuard},
     telemetry::tracing,
 };
 use rama_http::{
@@ -34,14 +35,13 @@ use rama_http::{
 };
 use rama_net::{
     address::{SocketAddress, ip::IntoCanonicalIpAddr as _},
-    proxy::{IdleActivity, IdleGuard},
     stream::{DefaultExtensionsTransfer, Socket},
 };
 use rama_udp::{
     DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
     SendDatagram,
 };
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::{generate_set_and_with, nonzero};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::{Notify, futures::OwnedNotified, mpsc},
@@ -111,7 +111,7 @@ pub struct ConnectUdpSocketConfig {
 impl Default for ConnectUdpSocketConfig {
     fn default() -> Self {
         Self {
-            queue: NonZeroUsize::new(256).unwrap_or(NonZeroUsize::MIN),
+            queue: nonzero!(256),
             // RFC 9298 §3.1: idle closes SHOULD NOT use less than two minutes.
             idle_timeout: Duration::from_mins(2),
             close_grace: CLOSE_GRACE,

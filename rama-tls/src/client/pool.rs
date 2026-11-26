@@ -11,23 +11,23 @@ use ahash::RandomState;
 use rama_core::extensions::{Extension, Extensions};
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::{
-    address::Host,
     client::{
         ConnectionPolicyScope,
         pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
     },
-    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn, TlsRequired},
+    tls::{AlpnPolicy, ApplicationProtocol, ServerName, TlsAlpn, TlsRequired},
 };
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
-use crate::client::{
-    ClientAuth, ServerVerifyMode, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider,
-    TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
-    TlsStoreServerHello,
-};
 use crate::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, KeyLogIntent, ProtocolVersion,
-    SignatureScheme, SupportedGroup, TlsKeyLog, TlsSupportedVersions, keylog::KeyLogSink,
+    SignatureScheme, SupportedGroup, TlsKeyLog, TlsSupportedVersions,
+    client::{
+        ClientAuth, ServerVerifyMode, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider,
+        TlsServerCertPins, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
+        TlsStoreServerHello,
+    },
+    keylog::KeyLogSink,
 };
 
 /// Reuse rules published by the connector that performed a TLS handshake.
@@ -37,7 +37,7 @@ use crate::{
 /// extensions; callers need not configure the provider on the pool.
 /// Connector defaults, including credentials and hooks, remain fixed for the
 /// lifetime of its pool. Custom components supply stable value or instance identities.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TlsConnectionReuse<P> {
     provider: P,
     scope: ConnectionPolicyScope,
@@ -477,7 +477,7 @@ struct Overrides<'a> {
     versions: Option<&'a TlsSupportedVersions>,
     verify: Option<&'a TlsServerVerify>,
     keylog: Option<&'a TlsKeyLog>,
-    server_name: Option<&'a TlsServerName>,
+    server_name: Option<&'a ServerName>,
     store_chain: Option<&'a TlsStoreServerCertChain>,
     store_server_hello: Option<&'a TlsStoreServerHello>,
     client_auth: Option<&'a TlsClientAuth>,
@@ -578,7 +578,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
 
     generate_set_and_with! {
         /// Explicit server-name override.
-        pub fn server_name(mut self, value: Option<&'a TlsServerName>) -> Self {
+        pub fn server_name(mut self, value: Option<&'a ServerName>) -> Self {
             self.overrides.server_name = value;
             self
         }
@@ -875,7 +875,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
             versions: versions.map(|value| value.0.as_slice()),
             verify: verify.map(|value| value.0),
             keylog,
-            server_name: server_name.map(|value| &value.0),
+            server_name,
             store_chain: store_chain.map(|value| value.0),
             store_server_hello: store_server_hello.map(|value| value.0),
             server_cert_pins,
@@ -909,7 +909,7 @@ struct ComparableOverrides<'a> {
     versions: Option<&'a [ProtocolVersion]>,
     verify: Option<ServerVerifyMode>,
     keylog: Option<ComparableKeyLog<'a>>,
-    server_name: Option<&'a Host>,
+    server_name: Option<&'a ServerName>,
     store_chain: Option<bool>,
     store_server_hello: Option<bool>,
     server_cert_pins: Option<&'a TlsServerCertPins>,
@@ -953,13 +953,14 @@ pub(crate) fn policy_digest(domain: &[u8], settings: &impl Hash) -> PolicyDigest
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::client::{
-        ClientAuth, ClientAuthData, EchRequirement, TlsEchAccepted, TlsEncryptedClientHello,
-        TlsServerAuthentication, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins,
-        TlsServerTrustAnchors,
+    use std::{
+        convert::Infallible,
+        hash::Hasher,
+        net::IpAddr,
+        ptr,
+        sync::atomic::{AtomicU64, Ordering},
     };
-    use crate::keylog::NoopKeyLogSink;
+
     use rama_core::{
         ServiceInput,
         extensions::{ExtensionsRef, NoExtensionsTransfer},
@@ -967,7 +968,7 @@ mod tests {
     };
     use rama_crypto::pki_types::PrivatePkcs8KeyDer;
     use rama_net::{
-        address::{Host, ProxyAddress},
+        address::{Domain, Host, ProxyAddress},
         client::{
             ConnectRequest, ConnectorService as _, EstablishedClientConnection,
             ProxyConnectionExtensions, ProxyDialRequest, ProxyDialer, ProxyRoute, proxy_request,
@@ -975,12 +976,32 @@ mod tests {
         stream::DefaultExtensionsTransfer,
     };
     use rama_utils::octets::kib;
-    use std::{
-        convert::Infallible,
-        hash::Hasher,
-        ptr,
-        sync::atomic::{AtomicU64, Ordering},
+
+    use super::*;
+    use crate::{
+        client::{
+            ClientAuth, ClientAuthData, EchRequirement, TlsEchAccepted, TlsEncryptedClientHello,
+            TlsServerAuthentication, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins,
+            TlsServerTrustAnchors,
+        },
+        keylog::NoopKeyLogSink,
     };
+
+    #[test]
+    fn pool_keys_use_the_same_canonical_identity_as_pin_matching() {
+        let key = |host: Host| {
+            let name = ServerName::try_from(host).unwrap();
+            TlsPoolId::builder()
+                .with_server_name(&name)
+                .build()
+                .unwrap()
+        };
+        let address = key(Host::from(IpAddr::from([192, 0, 2, 1])));
+        let literal = key(Host::Name(Domain::from_static("192.0.2.1")));
+        let dotted = key(Host::Name(Domain::from_static("192.0.2.1.")));
+        assert_eq!(address, literal);
+        assert_ne!(literal, dotted);
+    }
 
     #[test]
     fn request_requirement_does_not_become_connection_policy() {
@@ -989,7 +1010,7 @@ mod tests {
         let connection = Extensions::new();
         connection.insert(super::super::TlsEchAccepted(true));
         connection.insert(super::super::TlsServerAuthentication(Some(
-            Host::from_static("example.com"),
+            ServerName::from(Domain::from_static("example.com")),
         )));
         TlsConnectionReuse::new(TestProvider, &request).publish(&connection, None);
         assert!(!connection.contains::<super::super::EchRequirement>());
@@ -1024,8 +1045,8 @@ mod tests {
         let origin = proxy.fork_connection(&NoExtensionsTransfer::new());
         assert_eq!(origin.get_ref::<TlsEchAccepted>(), None);
 
-        origin.insert(TlsServerAuthentication(Some(Host::from_static(
-            "example.com",
+        origin.insert(TlsServerAuthentication(Some(ServerName::from(
+            Domain::from_static("example.com"),
         ))));
         let defaults = TlsClientConfig::new().with_ech_requirement(EchRequirement::Required);
         TlsConnectionReuse::new(TestProvider, &Extensions::new()).publish(&origin, Some(&defaults));
@@ -1054,8 +1075,8 @@ mod tests {
                 let defaults = TlsClientConfig::new().with_ech_requirement(default);
                 let connection = Extensions::new();
                 connection.insert(TlsEchAccepted(accepted));
-                connection.insert(TlsServerAuthentication(Some(Host::from_static(
-                    "example.com",
+                connection.insert(TlsServerAuthentication(Some(ServerName::from(
+                    Domain::from_static("example.com"),
                 ))));
                 TlsConnectionReuse::new(TestProvider, &Extensions::new())
                     .publish(&connection, Some(&defaults));
@@ -1120,7 +1141,7 @@ mod tests {
             TlsPoolId::builder()
                 .maybe_with_verify(extensions.get_ref::<TlsServerVerify>())
                 .maybe_with_client_auth(extensions.get_ref::<TlsClientAuth>())
-                .maybe_with_server_name(extensions.get_ref::<TlsServerName>())
+                .maybe_with_server_name(extensions.get_ref::<ServerName>())
                 .build()
         }
 
@@ -1169,7 +1190,7 @@ mod tests {
         assert!(!insecure_policy.matches(&plain));
         assert!(!insecure_policy.matches(&explicit_default));
 
-        equivalent.insert(TlsServerName(Host::from_static("other.example")));
+        equivalent.insert(ServerName::from(Domain::from_static("other.example")));
         assert!(!insecure_policy.matches(&equivalent));
     }
 
@@ -1734,7 +1755,7 @@ mod tests {
         // The origin's own TLS inputs configure the origin's handshake and
         // cannot change which connection to the proxy serves it.
         let noisy = origin.fork();
-        noisy.insert(TlsServerName(Host::from_static("origin.example")));
+        noisy.insert(ServerName::from(Domain::from_static("origin.example")));
         assert!(hop.matches(&noisy));
 
         // A request asking for other hop settings is a different connection to the proxy.
@@ -2014,7 +2035,7 @@ mod tests {
         let scoped = |name: &str| {
             TlsServerCertPins::new(
                 TlsServerCertPinSet::new(TlsServerCertPin::SpkiSha256([1; 32]))
-                    .with_server_name(name.parse::<Host>().unwrap()),
+                    .with_server_name(name.parse::<ServerName>().unwrap()),
             )
         };
         let lower = scoped("example.test");

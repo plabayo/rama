@@ -82,9 +82,63 @@ pub fn drop_never_trailers(trailers: &mut HeaderMap) {
     }
 }
 
+/// Merge a `later` trailer section into `trailers`: a name `later` carries replaces its earlier
+/// values, and every line keeps its own position and spelling.
+pub(crate) fn merge_trailers(trailers: &mut HeaderMap, later: HeaderMap) {
+    if let Err(err) = trailers.try_insert_map(later) {
+        tracing::debug!(%err, "trailer section past the map's capacity: keeping the lines that fit");
+    }
+}
+
+/// Trailer sections for the tests of each place that merges them.
+#[cfg(test)]
+pub(crate) mod merge_fixture {
+    use crate::{HeaderMap, HeaderName, HeaderValue};
+
+    /// Two sections to merge: the later one replaces a name in place and repeats another,
+    /// split by a third, in mixed casing.
+    pub(crate) fn sections() -> (HeaderMap, HeaderMap) {
+        let section = |lines: &[(&'static str, &'static str)]| {
+            let mut map = HeaderMap::new();
+            for &(name, value) in lines {
+                map.append(
+                    HeaderName::from_static(name),
+                    HeaderValue::from_static(value),
+                );
+            }
+            map
+        };
+        (
+            section(&[("X-Kept", "1"), ("x-Replaced", "old"), ("X-Kept", "2")]),
+            section(&[("X-Twice", "a"), ("X-REPLACED", "new"), ("x-twice", "b")]),
+        )
+    }
+
+    /// The lines of [`sections`] merged.
+    pub(crate) const MERGED: &str =
+        "X-Kept: 1\nX-REPLACED: new\nX-Kept: 2\nX-Twice: a\nx-twice: b\n";
+
+    /// The lines of `trailers` in order, each in its own spelling.
+    pub(crate) fn lines(trailers: &HeaderMap) -> String {
+        trailers
+            .ordered_iter()
+            .map(|(name, value)| {
+                format!("{}: {}\n", name.display_original(), value.to_str().unwrap())
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merging_trailers_keeps_each_line_in_place_and_in_its_spelling() {
+        let (mut trailers, later) = merge_fixture::sections();
+        merge_trailers(&mut trailers, later);
+        assert_eq!(merge_fixture::lines(&trailers), merge_fixture::MERGED);
+    }
 
     #[test]
     fn early_data_is_tolerated_on_receipt_but_never_sent_in_trailers() {

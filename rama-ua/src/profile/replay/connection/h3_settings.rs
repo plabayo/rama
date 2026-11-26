@@ -8,7 +8,10 @@ use crate::profile::{
         capture::{CaptureOrderPath, CountedCaptureAnalysis},
         order::{AnalyzedOrderElement, DerivedOrderRule},
     },
-    capture::order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProtocolValue},
+    capture::{
+        joint::{CapturedSlotKind, JointCapture},
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProtocolValue},
+    },
     format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
     selection::ProfileDraw,
 };
@@ -302,10 +305,8 @@ impl H3SettingsReplayEvidence {
     pub(crate) fn for_profile(
         analysis: &crate::profile::analysis::profile::AnalyzedProfile,
         selected_scope: &crate::profile::analysis::profile::AnalyzedProfileScope,
-        selected: &CanonicalValue,
+        joint: &JointCapture,
     ) -> Result<Option<Self>, ProfileDataError> {
-        use crate::profile::capture::joint::{CapturedSlotKind, JointCapture, JointCaptureLimits};
-        let joint = JointCapture::from_canonical(selected, JointCaptureLimits::default())?;
         let Some(slot) = joint
             .slots
             .iter()

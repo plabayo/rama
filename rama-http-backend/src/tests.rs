@@ -36,7 +36,10 @@ use rama_http_types::{
     Body, Request, Response, StatusCode, Version,
     conn::{H2ClientContextParams, PeerH2Settings, TargetHttpVersion},
     proto::h1::ext::ConnectionClose,
-    proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext, Setting, Settings},
+    proto::h2::{
+        PseudoHeader, PseudoHeaderOrder,
+        frame::{EarlyFrame, EarlyFrameCapture, EarlyFrameStreamContext, Setting, Settings},
+    },
 };
 use rama_net::{
     TargetHttpVersionInputExt,
@@ -1467,6 +1470,166 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
     drop(conn);
     cancel_drop_guard.disarm().cancel();
     graceful.join().await.expect("graceful shutdown");
+}
+
+#[tokio::test]
+async fn h2_mitm_relay_eager_handshake_sends_the_egress_io_settings_upstream() {
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
+
+    let token = CancellationToken::new();
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+    let seen_tx = Arc::new(parking_lot::Mutex::new(Some(seen_tx)));
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        let mut server = HttpServer::auto(WeakScope::from(guard));
+        server.h2_mut().set_observe_early_frames(true);
+        server
+            .service(service_fn(move |request: Request| {
+                let settings = request
+                    .extensions()
+                    .get_ref::<EarlyFrameCapture>()
+                    .and_then(|capture| {
+                        capture.iter().find_map(|frame| match frame {
+                            EarlyFrame::Settings(settings) => settings.observation.clone(),
+                            _ => None,
+                        })
+                    })
+                    .map(|observation| observation.entries.to_vec())
+                    .unwrap_or_default();
+                if let Some(seen) = seen_tx.lock().take() {
+                    let _sent = seen.send(settings);
+                }
+                server_svc_fn(request)
+            }))
+            .serve(MockSocket::new(server_stream))
+            .await
+            .unwrap();
+    });
+
+    // The relay's own egress connection, stamped as a relay does before its eager handshake.
+    let egress = MockSocket::new(relay_egress_stream);
+    egress
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_2));
+    egress.extensions().insert(H2ClientContextParams {
+        initial_settings: Some(Arc::new(
+            Settings::from_ordered_entries(
+                [Setting::new(0xfefe_u16, 99), Setting::new(1_u16, 8_192)].into(),
+            )
+            .unwrap(),
+        )),
+        ..Default::default()
+    });
+
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
+            .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
+            .await
+            .unwrap();
+    });
+
+    let conn = http_connect(
+        MockSocket::new(client_stream),
+        create_test_request(Version::HTTP_2),
+        graceful.clone_weak(),
+    )
+    .await
+    .unwrap()
+    .conn;
+    let response = conn
+        .serve(create_test_request(Version::HTTP_2))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let upstream = timeout(Duration::from_secs(5), seen_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        upstream,
+        [Setting::new(0xfefe_u16, 99), Setting::new(1_u16, 8_192)],
+        "the upstream connection starts with the SETTINGS stamped on the egress IO"
+    );
+
+    drop(conn);
+    cancel_drop_guard.disarm().cancel();
+    graceful.join().await.expect("graceful shutdown");
+}
+
+#[tokio::test]
+async fn h2_mitm_relay_passes_the_client_pseudo_header_order_upstream() {
+    for eager in [false, true] {
+        let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+        let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
+
+        let token = CancellationToken::new();
+        let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
+        let cancel_drop_guard = token.drop_guard();
+
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let seen_tx = Arc::new(parking_lot::Mutex::new(Some(seen_tx)));
+        let guard = graceful.clone();
+        graceful.spawn_task(async move {
+            HttpServer::auto(WeakScope::from(guard))
+                .service(service_fn(move |request: Request| {
+                    let order = request.extensions().get_ref::<PseudoHeaderOrder>().cloned();
+                    if let Some(seen) = seen_tx.lock().take() {
+                        let _sent = seen.send(order);
+                    }
+                    server_svc_fn(request)
+                }))
+                .serve(MockSocket::new(server_stream))
+                .await
+                .unwrap();
+        });
+
+        let egress = MockSocket::new(relay_egress_stream);
+        if eager {
+            egress
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_2));
+        }
+        let guard = graceful.clone();
+        graceful.spawn_task(async move {
+            HttpMitmRelay::new(WeakScope::from(guard))
+                .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
+                .await
+                .unwrap();
+        });
+
+        let order = PseudoHeaderOrder::from_iter([
+            PseudoHeader::Path,
+            PseudoHeader::Authority,
+            PseudoHeader::Scheme,
+            PseudoHeader::Method,
+        ]);
+        let conn = http_connect(
+            MockSocket::new(client_stream),
+            create_test_request(Version::HTTP_2),
+            graceful.clone_weak(),
+        )
+        .await
+        .unwrap()
+        .conn;
+        let request = create_test_request(Version::HTTP_2);
+        request.extensions().insert(order.clone());
+        let response = conn.serve(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let upstream = timeout(Duration::from_secs(5), seen_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(upstream, Some(order), "eager: {eager}");
+
+        drop(conn);
+        cancel_drop_guard.disarm().cancel();
+        graceful.join().await.expect("graceful shutdown");
+    }
 }
 
 #[tokio::test]

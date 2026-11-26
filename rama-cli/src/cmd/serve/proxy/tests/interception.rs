@@ -1,9 +1,9 @@
 use super::*;
+use serde_json::json;
 use std::assert_matches;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_interception_holds_upgrade_and_websocket_data_but_not_control_frames() {
-    use serde_json::json;
     let (origin, origin_task) = spawn_websocket_origin().await;
     let address = loopback_bind_address();
     let cli = TestCli::parse_from([

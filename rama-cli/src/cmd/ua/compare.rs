@@ -42,7 +42,7 @@ pub(super) struct CompareCommand {
     /// QPACK dynamic reference indexes. Bootstrap stream IDs remain exact.
     #[arg(long, conflicts_with = "native_replay")]
     replay: bool,
-    /// Compare Rama native replay, rebinding only the reference bootstrap to stream 0.
+    /// Compare native replay with its single-version TCP offer and stream-zero HTTP/3 bootstrap.
     #[arg(long)]
     native_replay: bool,
     /// Read the authorized partition in both archives.
@@ -219,6 +219,10 @@ fn compare_with_coverage(
     };
     let mut budget = CaptureComparisonLimits::default().work;
     for profile in observed {
+        let policy = reference
+            .iter()
+            .find(|candidate| candidate.id == profile.id)
+            .map_or_else(|| mode.into(), |source| mode.for_reference(source));
         if profile.scopes.is_empty() {
             return Err(BoxError::from_static_str("empty observed profile"));
         }
@@ -266,7 +270,7 @@ fn compare_with_coverage(
                     let comparison = compare_retained_captures(
                         candidates,
                         &read,
-                        mode,
+                        policy,
                         CaptureComparisonLimits {
                             work: budget,
                             ..Default::default()
@@ -332,10 +336,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::{Cli, CliCommands, cmd::ua::UaSubcommand};
+    use clap::Parser as _;
     use rama::ua::profile::{
         capture::{
             CAPTURE_REVISION,
             completeness::ProfileCaptureCompleteness,
+            http2::{H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting},
             joint::{
                 CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
             },
@@ -356,10 +363,6 @@ mod tests {
     };
     #[test]
     fn cli_requires_one_explicit_comparison_mode() {
-        use crate::cmd::ua::UaSubcommand;
-        use crate::{Cli, CliCommands};
-        use clap::Parser as _;
-
         for (flag, mode) in [
             ("--literal", ComparisonMode::Literal),
             ("--replay", ComparisonMode::Replay),
@@ -404,9 +407,6 @@ mod tests {
     }
     #[test]
     fn replay_mode_uses_the_same_coverage_gate_and_reports_its_exclusions() {
-        use rama::ua::profile::capture::http2::{
-            H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting,
-        };
         let archive = |ack| {
             let mut frames = vec![H2CapturedFrame::Settings {
                 ack: false,

@@ -4,7 +4,6 @@
 )]
 
 use std::{sync::Arc, time::Duration};
-use tokio::time::Instant;
 
 use rama::{
     error::{BoxError, ErrorContext},
@@ -46,6 +45,7 @@ use rama::{
     ua::{UserAgent, profile::model::http::Http2Settings},
 };
 use serde::Serialize;
+use tokio::time::Instant;
 
 use super::State;
 
@@ -395,22 +395,20 @@ fn multi<T: ToString>(v: &[T]) -> Option<TlsDisplayInfoExtensionData> {
     ))
 }
 
-pub(super) async fn get_tls_display_info(
+pub(super) fn tls_display_views(
     extensions: &Extensions,
-) -> Result<Option<TlsDisplayInfo>, BoxError> {
-    ServerClientHellos::from_extensions(extensions)
-        .wire()
-        .map(|hello| tls_display_info(extensions, hello))
-        .transpose()
-}
-
-pub(super) async fn get_tls_inner_display_info(
-    extensions: &Extensions,
-) -> Result<Option<TlsDisplayInfo>, BoxError> {
-    ServerClientHellos::from_extensions(extensions)
-        .ech_inner()
-        .map(|hello| tls_display_info(extensions, hello))
-        .transpose()
+    hellos: &ServerClientHellos<'_>,
+) -> Result<(Option<TlsDisplayInfo>, Option<TlsDisplayInfo>), BoxError> {
+    Ok((
+        hellos
+            .wire()
+            .map(|hello| tls_display_info(extensions, hello))
+            .transpose()?,
+        hellos
+            .ech_inner()
+            .map(|hello| tls_display_info(extensions, hello))
+            .transpose()?,
+    ))
 }
 
 fn tls_display_info(
@@ -458,11 +456,11 @@ fn tls_display_info(
             .extensions()
             .iter()
             .map(|extension| match extension {
-                ClientHelloExtension::ServerName(domain) => TlsDisplayInfoExtension {
+                ClientHelloExtension::ServerName(server_name) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: domain
+                    data: server_name
                         .as_ref()
-                        .map(|d| TlsDisplayInfoExtensionData::Single(d.to_string())),
+                        .map(|name| TlsDisplayInfoExtensionData::Single(name.to_string())),
                 },
                 ClientHelloExtension::SignatureAlgorithms(v)
                 | ClientHelloExtension::DelegatedCredentials(v) => TlsDisplayInfoExtension {
@@ -537,7 +535,13 @@ fn tls_display_info(
 
 #[cfg(test)]
 mod observation_tests {
-    use super::*;
+    use std::{
+        future::{Future as _, poll_fn},
+        num::NonZeroUsize,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+
     use rama::{
         Service as _,
         bytes::BytesMut,
@@ -563,12 +567,8 @@ mod observation_tests {
         },
         udp::test_utils::MemoryDatagramSocket,
     };
-    use std::{
-        future::{Future as _, poll_fn},
-        num::NonZeroUsize,
-        pin::pin,
-        task::{Context, Poll, Waker},
-    };
+
+    use super::*;
 
     #[tokio::test(start_paused = true)]
     async fn observation_fp_waits_for_settings_and_echo_and_fp_report_ja4_quic() {
@@ -698,7 +698,9 @@ mod observation_tests {
                 .unwrap();
             assert_eq!(negotiated.version, native.version);
             assert_eq!(negotiated.original_version, native.original_version);
-            let tls = get_tls_display_info(&ext).await.unwrap().unwrap();
+            let (tls, _) =
+                tls_display_views(&ext, &ServerClientHellos::from_extensions(&ext)).unwrap();
+            let tls = tls.unwrap();
             assert!(tls.ja4.hash.starts_with('q'), "{}", tls.ja4.hash);
             let echo_request = Request::builder()
                 .uri("https://localhost/")
@@ -761,5 +763,34 @@ mod observation_tests {
         })
         .await
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::IpAddr;
+
+    use rama::{
+        net::tls::ServerName,
+        tls::{CipherSuite, CompressionAlgorithm, ProtocolVersion},
+    };
+
+    use super::*;
+
+    #[test]
+    fn an_ip_literal_server_name_is_displayed_as_its_address() {
+        let hello = ClientHello::new(
+            ProtocolVersion::TLSv1_2,
+            vec![CipherSuite::from(0x1301)],
+            vec![CompressionAlgorithm::from(0)],
+            vec![ClientHelloExtension::ServerName(Some(ServerName::from(
+                IpAddr::from([10, 20, 30, 40]),
+            )))],
+        );
+        let info = tls_display_info(&Extensions::new(), &hello).unwrap();
+        assert!(matches!(
+            &info.extensions[0].data,
+            Some(TlsDisplayInfoExtensionData::Single(ip)) if ip == "10.20.30.40"
+        ));
     }
 }

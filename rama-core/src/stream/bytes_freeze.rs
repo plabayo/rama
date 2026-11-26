@@ -21,24 +21,6 @@ use futures::{Sink, Stream};
 ///
 /// Cheap zero-copy: [`BytesMut::freeze`] converts in place. The sink path
 /// is a direct pass-through.
-///
-/// # Example
-///
-/// ```no_run
-/// use rama_core::stream::BytesFreeze;
-/// use rama_core::stream::codec::{Framed, LengthDelimitedCodec};
-/// use tokio::net::TcpStream;
-///
-/// # async fn _example(tcp: TcpStream) {
-/// let framed = Framed::new(tcp, LengthDelimitedCodec::builder()
-///     .length_field_type::<u16>()
-///     .new_codec());
-/// // `framed`'s Stream yields BytesMut, its Sink takes Bytes.
-/// // BytesFreeze unifies both onto Bytes.
-/// let aligned = BytesFreeze::new(framed);
-/// # let _ = aligned;
-/// # }
-/// ```
 #[derive(Debug)]
 pub struct BytesFreeze<S> {
     inner: S,

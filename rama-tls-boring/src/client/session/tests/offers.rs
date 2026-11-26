@@ -55,7 +55,7 @@ async fn full_offers_retain_tickets_without_reading_the_store() {
 #[test]
 fn unsupported_required_tcp_offer_does_not_fall_back() {
     let config = trusting_config()
-        .with_server_name(Host::from_static("a.test"))
+        .with_server_name(Domain::from_static("a.test"))
         .with_client_handshake(ClientHandshake::Resumed);
     let data = TlsConnectorData::try_from(&config).unwrap();
     let error = PreparedClient::try_from(data).unwrap_err();

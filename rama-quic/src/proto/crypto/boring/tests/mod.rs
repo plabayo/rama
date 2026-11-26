@@ -5,32 +5,58 @@ mod prepared_sessions;
 
 use std::{
     assert_matches,
+    net::UdpSocket,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Wake, Waker},
+    time::Duration,
 };
 
-use crate::proto::crypto::config::TlsConfigError;
-use rama_core::{bytes::BytesMut, extensions::ExtensionsRef as _};
-use rama_crypto::dep::boring::ssl::{BoxCustomVerifyFinish, SslAlert, SslRef, SslVerifyMode};
-use rama_net::tls::AlpnPolicy;
-use rama_quic_proto::{ConnectionId, Side, Version, transport_parameters::TransportParameters};
-use rama_tls::{
-    ExtensionId,
-    client::{
-        ClientHelloHandshakePrefix, NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig,
-        TlsServerCertPins, TlsSessionProfileScope, TlsStoreServerHello,
-        parse_client_hello_message_prefix,
+use crate::{ClientConfig, Endpoint, ServerConfig, proto::crypto::config::TlsConfigError};
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    extensions::ExtensionsRef as _,
+    graceful::WeakScope,
+};
+use rama_crypto::{
+    dep::boring::{
+        asn1::Asn1Time,
+        bn::BigNum,
+        ec::{EcGroup, EcKey},
+        hash::MessageDigest,
+        nid::Nid,
+        pkey::PKey,
+        ssl::{BoxCustomVerifyFinish, SslAlert, SslRef, SslVerifyMode},
+        x509::{
+            X509, X509NameBuilder,
+            extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
+        },
     },
+    pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+};
+use rama_net::tls::AlpnPolicy;
+use rama_quic_proto::{
+    ConnectionId, Side, VarInt, Version, transport_parameters::TransportParameters,
+};
+use rama_tls::{
+    ExtensionId, ProtocolVersion, TlsSupportedVersions,
+    client::{
+        ClientAuth, ClientAuthData, ClientHelloExtension, ClientHelloHandshakePrefix,
+        NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerCertPins,
+        TlsSessionProfileScope, TlsStoreServerHello, parse_client_hello_message_prefix,
+    },
+    fingerprint::Ja4S,
     server::{
-        CertificateIdentity, GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest,
-        SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+        CertificateIdentity, ClientVerifyMode, GeneratedServerAuthConfig, LeafCertConfig,
+        LeafCertRequest, SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
     },
 };
 
 use super::*;
+#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+use crate::proto::crypto::rustls;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use crate::{proto::crypto::rustls::configured_provider, tls::RustlsTlsProvider};
 use crate::{
@@ -401,7 +427,6 @@ fn a_peer_chain_is_reported_without_a_repeated_leaf() {
 /// handshake data; one that did not reports none.
 #[test]
 fn a_client_reports_the_server_hello_it_was_asked_to_store() {
-    use rama_tls::fingerprint::Ja4S;
     let options = TlsOptions::default();
     for store in [false, true] {
         let (client_tls, server_tls) = configs();
@@ -533,10 +558,6 @@ fn a_client_reports_its_handshake_data_before_the_handshake_finishes() {
 /// TLS 1.3 itself, and is therefore accepted.
 #[test]
 fn boring_requires_tls13() {
-    use rama_tls::{ProtocolVersion, TlsSupportedVersions};
-
-    use crate::proto::crypto::config::TlsConfigError;
-
     let (client, server) = configs();
     let options = TlsOptions::default();
     QuicClientConfig::from_rama(&client, options).unwrap();
@@ -570,8 +591,6 @@ fn boring_requires_tls13() {
 /// TLS 1.3 alone. BoringSSL enforces this for QUIC connections itself.
 #[test]
 fn a_quic_client_hello_offers_only_tls13() {
-    use rama_tls::{ProtocolVersion, TlsSupportedVersions, client::ClientHelloExtension};
-
     let (client, _) = configs();
     client.insert(TlsSupportedVersions(vec![
         ProtocolVersion::TLSv1_2,
@@ -740,23 +759,6 @@ fn boring_requires_explicit_alpn() {
 
 /// A self-signed client certificate for `name`.
 fn client_identity(name: &str) -> rama_tls::client::ClientAuthData {
-    use rama_crypto::{
-        dep::boring::{
-            asn1::Asn1Time,
-            bn::BigNum,
-            ec::{EcGroup, EcKey},
-            hash::MessageDigest,
-            nid::Nid,
-            pkey::PKey,
-            x509::{
-                X509, X509NameBuilder,
-                extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
-            },
-        },
-        pki_types::{CertificateDer, PrivatePkcs8KeyDer},
-    };
-    use rama_tls::client::ClientAuthData;
-
     let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
     let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
     let mut subject = X509NameBuilder::new().unwrap();
@@ -788,8 +790,6 @@ fn client_identity(name: &str) -> rama_tls::client::ClientAuthData {
 
 #[test]
 fn client_authentication_is_verified_and_retained_on_resumption() {
-    use rama_tls::{client::ClientAuth, server::ClientVerifyMode};
-
     let identity = client_identity;
     let trusted = identity("trusted client");
     let stranger = identity("untrusted client");
@@ -868,8 +868,6 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
 
 #[test]
 fn peer_chains_are_in_the_summary_only_when_stored() {
-    use rama_tls::{client::ClientAuth, server::ClientVerifyMode};
-
     let client_auth = client_identity("client");
     for (client_backend, server_backend) in [
         (
@@ -933,7 +931,6 @@ fn peer_chains_are_in_the_summary_only_when_stored() {
 #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
 #[test]
 fn both_directions_interoperate_with_rustls() {
-    use crate::proto::crypto::rustls;
     for boring_client in [true, false] {
         let (client, server) = configs();
         let options = TlsOptions::default()
@@ -981,13 +978,6 @@ fn both_directions_interoperate_with_rustls() {
 
 #[tokio::test]
 async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
-    use std::{net::UdpSocket, time::Duration};
-
-    use rama_core::{bytes::Bytes, graceful::WeakScope};
-    use rama_quic_proto::VarInt;
-
-    use crate::{ClientConfig, Endpoint, ServerConfig};
-
     let pairs = [
         (
             &BoringTlsProvider::new() as &dyn TestTlsProvider,
@@ -1277,4 +1267,42 @@ fn a_callback_finishing_after_a_packet_read_still_wakes_the_driver() {
     );
     assert!(c.poll_pending_callbacks(&mut cx).unwrap().is_some());
     handshake(&mut *c, &mut *s).unwrap();
+}
+
+#[test]
+fn an_ip_literal_servername_completes_without_a_dns_server_name() {
+    for (literal, dns) in [
+        ("127.0.0.1", None),
+        ("::1", None),
+        ("localhost", Some("localhost")),
+    ] {
+        let (client, server) = configs();
+        client
+            .as_extensions()
+            .insert(HandshakeInitializer(Arc::new(move |ssl| {
+                ssl.set_hostname(literal)?;
+                Ok(())
+            })));
+        let client: Arc<dyn crypto::ClientConfig> =
+            Arc::new(QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap());
+        let server: Arc<dyn crypto::ServerConfig> =
+            Arc::new(QuicServerConfig::from_rama(&server, TlsOptions::default()).unwrap());
+        let mut c = client
+            .start_session(Version::V1, "localhost", &params(Side::Client))
+            .unwrap();
+        let mut s = server
+            .start_session(Version::V1, &params(Side::Server))
+            .unwrap();
+        handshake(&mut *c, &mut *s).unwrap_or_else(|error| panic!("{literal}: {error}"));
+        let server_name = s.handshake_summary().unwrap().server_name;
+        assert_eq!(server_name, Some(literal.parse().unwrap()));
+        assert_eq!(
+            server_name
+                .as_ref()
+                .and_then(|name| name.as_domain())
+                .map(|name| name.as_str()),
+            dns,
+            "{literal}"
+        );
+    }
 }

@@ -64,13 +64,16 @@ mod maybe_proxied;
 mod packet_socket;
 pub use packet_socket::{UdpPacketSender, UdpPacketSocket};
 
+mod icmp;
+pub use icmp::IcmpErrorReceiver;
+
 mod service;
 pub use service::{UdpSocketConfig, UdpSocketFactory};
 
 mod sys;
 
 mod log {
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", windows))]
     pub(crate) use rama_core::telemetry::tracing::debug;
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) use rama_core::telemetry::tracing::{debug, info, warn};

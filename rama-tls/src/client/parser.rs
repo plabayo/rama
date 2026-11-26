@@ -3,25 +3,28 @@
 //!
 //! src and attribution: <https://github.com/rusticata/tls-parser>
 
-use super::hello::{ECHClientHello, ECHClientHelloOuter, HpkeSymmetricCipherSuite};
-use super::{ClientHello, ClientHelloExtension};
-use crate::{CipherSuite, ExtensionId, enums::CompressionAlgorithm};
+use std::{borrow::Cow, str};
+
 use nom::{
     IResult, Parser,
     bytes::streaming::take,
     combinator::{all_consuming, complete, cond, map, map_opt, map_parser, verify},
     error::{ErrorKind, make_error},
-    multi::{length_data, many0},
+    multi::length_data,
     number::streaming::{be_u8, be_u16},
 };
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorExt as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
 use rama_net::{
-    address::{Domain, Host},
-    tls::ApplicationProtocol,
+    address::Domain,
+    tls::{ApplicationProtocol, ServerName},
 };
 use rama_utils::octets::kib;
-use std::{borrow::Cow, str};
+
+use super::{
+    ClientHello, ClientHelloExtension,
+    hello::{ECHClientHello, ECHClientHelloOuter, HpkeSymmetricCipherSuite},
+};
+use crate::{CipherSuite, ExtensionId, enums::CompressionAlgorithm};
 
 /// Parse a [`ClientHello`] from the raw "wire" bytes.
 ///
@@ -369,7 +372,7 @@ fn parse_client_hello_message_prefix_inner(i: &[u8]) -> IResult<&[u8], ClientHel
 ///
 /// Same as [`extract_sni_from_client_hello_record`] but handles the full handshake bytes, meaning
 /// the client hello record itself and the handshake header bytes in front of it.
-pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Option<Domain>, BoxError> {
+pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Option<ServerName>, BoxError> {
     extract_sni_from_client_hello_handshake_with_config(i, ClientHelloReassemblyConfig::default())
 }
 
@@ -380,7 +383,7 @@ pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Option<Domain
 pub fn extract_sni_from_client_hello_handshake_with_config(
     i: &[u8],
     config: ClientHelloReassemblyConfig,
-) -> Result<Option<Domain>, BoxError> {
+) -> Result<Option<ServerName>, BoxError> {
     let (_, message) = reassemble_client_hello(i, config).map_err(|err| {
         BoxError::from_static_str("reassemble client hello handshake to find SNI")
             .context_debug_field("err", err.to_owned())
@@ -397,7 +400,7 @@ pub fn extract_sni_from_client_hello_handshake_with_config(
 /// This validates the encountered SNI payload and stops once it finds a host name.
 /// Other extensions are skipped, so a successful lookup does not establish a complete
 /// ClientHello observation. It returns `None` when no SNI host name is present.
-pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Option<Domain>, BoxError> {
+pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Option<ServerName>, BoxError> {
     parse_client_hello_record_sni_inner(i)
         .map(|(_, domain)| domain)
         .map_err(|err| {
@@ -406,7 +409,28 @@ pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Option<Domain>, 
         })
 }
 
-fn parse_client_hello_record_sni_inner(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
+/// Extract only a DNS server name from TLS records, discarding any IP-literal SNI.
+pub fn extract_sni_domain_from_client_hello_handshake(
+    i: &[u8],
+) -> Result<Option<Domain>, BoxError> {
+    extract_sni_from_client_hello_handshake(i).map(|name| name.and_then(ServerName::into_domain))
+}
+
+/// Extract only a DNS server name from TLS records with explicit reassembly bounds.
+pub fn extract_sni_domain_from_client_hello_handshake_with_config(
+    i: &[u8],
+    config: ClientHelloReassemblyConfig,
+) -> Result<Option<Domain>, BoxError> {
+    extract_sni_from_client_hello_handshake_with_config(i, config)
+        .map(|name| name.and_then(ServerName::into_domain))
+}
+
+/// Extract only a DNS server name, discarding any IP-literal SNI.
+pub fn extract_sni_domain_from_client_hello_record(i: &[u8]) -> Result<Option<Domain>, BoxError> {
+    extract_sni_from_client_hello_record(i).map(|name| name.and_then(ServerName::into_domain))
+}
+
+fn parse_client_hello_record_sni_inner(i: &[u8]) -> IResult<&[u8], Option<ServerName>> {
     // skip version and random
     let (i, _) = take(34usize)(i)?;
 
@@ -434,9 +458,9 @@ fn parse_client_hello_record_sni_inner(i: &[u8]) -> IResult<&[u8], Option<Domain
     let (after_len, ext_len) = be_u16(i)?;
     let (_, mut ext_payload) = take(ext_len as usize).parse(after_len)?;
     while !ext_payload.is_empty() {
-        let (next, domain) = parse_tls_client_hello_extension_sni_host_or_skip(ext_payload)?;
-        if let Some(domain) = domain {
-            return Ok((next, Some(domain)));
+        let (next, name) = parse_tls_client_hello_extension_sni_host_or_skip(ext_payload)?;
+        if name.is_some() {
+            return Ok((next, name));
         }
         ext_payload = next;
     }
@@ -521,14 +545,16 @@ fn parse_compressions_algs(i: &[u8], len: usize) -> IResult<&[u8], Vec<Compressi
     Ok((&i[len..], v))
 }
 
-fn parse_tls_client_hello_extension_sni_host_or_skip(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
+fn parse_tls_client_hello_extension_sni_host_or_skip(
+    i: &[u8],
+) -> IResult<&[u8], Option<ServerName>> {
     let (i, ext_type) = be_u16(i)?;
     let id = ExtensionId::from(ext_type);
     let (i, ext_data) = length_data(be_u16).parse(i)?;
 
     if id == ExtensionId::SERVER_NAME {
         let (_, name) = all_consuming(parse_tls_extension_sni).parse(ext_data)?;
-        Ok((i, name))
+        Ok((i, Some(name)))
     } else {
         Ok((i, None))
     }
@@ -539,7 +565,7 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
     let id = ExtensionId::from(ext_type);
     let (i, ext_data) = length_data(be_u16).parse(i)?;
 
-    let (remaining, ext) = match id {
+    let typed = match id {
         ExtensionId::SERVER_NAME => parse_tls_extension_sni_content(ext_data),
         ExtensionId::SUPPORTED_GROUPS => parse_tls_extension_elliptic_curves_content(ext_data),
         ExtensionId::EC_POINT_FORMATS => parse_tls_extension_ec_point_formats_content(ext_data),
@@ -554,63 +580,90 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
             parse_tls_extension_certificate_compression_content(ext_data)
         }
         ExtensionId::DELEGATED_CREDENTIAL => parse_tls_extension_delegated_credentials(ext_data),
-        ExtensionId::RECORD_SIZE_LIMIT => {
-            let (i, v) = be_u16(ext_data)?;
-            Ok((i, ClientHelloExtension::RecordSizeLimit(v)))
-        }
-        ExtensionId::SERVER_PADDING_REQUEST => {
-            let (i, bytes) = be_u16(ext_data)?;
-            Ok((i, ClientHelloExtension::ServerPaddingRequest(bytes)))
-        }
-        ExtensionId::ENCRYPTED_CLIENT_HELLO => {
-            let (i, ech) = parse_ech_client_hello(ext_data)?;
-            Ok((i, ClientHelloExtension::EncryptedClientHello(ech)))
-        }
+        // TLS stacks that do not implement these accept any body, so an odd one is kept raw.
+        ExtensionId::RECORD_SIZE_LIMIT => Ok((
+            &[][..],
+            u16_body(ext_data).map_or_else(
+                || opaque(id, ext_data),
+                ClientHelloExtension::RecordSizeLimit,
+            ),
+        )),
+        ExtensionId::SERVER_PADDING_REQUEST => Ok((
+            &[][..],
+            u16_body(ext_data).map_or_else(
+                || opaque(id, ext_data),
+                ClientHelloExtension::ServerPaddingRequest,
+            ),
+        )),
+        ExtensionId::ENCRYPTED_CLIENT_HELLO => parse_ech_client_hello(ext_data)
+            .map(|(i, ech)| (i, ClientHelloExtension::EncryptedClientHello(ech))),
         ExtensionId::APPLICATION_SETTINGS => {
             parse_tls_extension_application_settings_content(ext_data, true)
         }
         ExtensionId::OLD_APPLICATION_SETTINGS => {
             parse_tls_extension_application_settings_content(ext_data, false)
         }
-        _ => Ok((
-            &[][..],
-            ClientHelloExtension::Opaque {
-                id,
-                data: ext_data.to_vec(),
-            },
-        )),
-    }?;
-    if !remaining.is_empty() {
-        return Err(nom::Err::Error(make_error(remaining, ErrorKind::Eof)));
+        _ => Ok((&[][..], opaque(id, ext_data))),
+    };
+    match typed {
+        Ok(([], ext)) => Ok((i, ext)),
+        // A body the TLS library leaves unparsed in some handshakes is kept raw.
+        _ if body_may_be_ignored(id, ext_data) => Ok((i, opaque(id, ext_data))),
+        Ok((remaining, _)) => Err(nom::Err::Error(make_error(remaining, ErrorKind::Eof))),
+        // The body is complete, so more input cannot repair it.
+        Err(nom::Err::Incomplete(_)) => Err(nom::Err::Error(make_error(ext_data, ErrorKind::Eof))),
+        Err(error) => Err(error),
     }
-    Ok((i, ext))
+}
+
+/// Whether an established TLS server can accept the hello without parsing this body:
+/// point formats are unused in TLS 1.3, delegated credentials before TLS 1.3, ALPN and
+/// ALPS without a configured protocol, and an ECH outer without ECH keys.
+fn body_may_be_ignored(id: ExtensionId, data: &[u8]) -> bool {
+    match id {
+        ExtensionId::EC_POINT_FORMATS
+        | ExtensionId::DELEGATED_CREDENTIAL
+        | ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
+        | ExtensionId::APPLICATION_SETTINGS
+        | ExtensionId::OLD_APPLICATION_SETTINGS => true,
+        // Only the outer type byte defers its body; an inner or unknown type is rejected.
+        ExtensionId::ENCRYPTED_CLIENT_HELLO => data.first() == Some(&0),
+        _ => false,
+    }
+}
+
+fn opaque(id: ExtensionId, data: &[u8]) -> ClientHelloExtension {
+    ClientHelloExtension::Opaque {
+        id,
+        data: data.to_vec(),
+    }
+}
+
+fn u16_body(data: &[u8]) -> Option<u16> {
+    let [high, low] = *data else {
+        return None;
+    };
+    Some(u16::from_be_bytes([high, low]))
 }
 
 // struct {
 //     ServerName server_name_list<1..2^16-1>
 // } ServerNameList;
 fn parse_tls_extension_sni_content(i: &[u8]) -> IResult<&[u8], ClientHelloExtension> {
-    let (i, domain) = parse_tls_extension_sni(i)?;
-    Ok((i, ClientHelloExtension::ServerName(domain)))
+    let (i, name) = parse_tls_extension_sni(i)?;
+    Ok((i, ClientHelloExtension::ServerName(Some(name))))
 }
 
 // struct {
 //     ServerName server_name_list<1..2^16-1>
 // } ServerNameList;
-fn parse_tls_extension_sni(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
-    let (i, list_len) = be_u16(i)?;
-    let (i, mut v) = map_parser(
-        take(list_len),
-        all_consuming(many0(complete(parse_tls_extension_sni_hostname))),
+fn parse_tls_extension_sni(i: &[u8]) -> IResult<&[u8], ServerName> {
+    let (i, name) = map_parser(
+        length_data(be_u16),
+        all_consuming(complete(parse_tls_extension_sni_hostname)),
     )
     .parse(i)?;
-    if v.len() != 1 {
-        return Err(nom::Err::Error(nom::error::Error::new(
-            i,
-            ErrorKind::TooLarge,
-        )));
-    }
-    Ok((i, v.pop()))
+    Ok((i, name))
 }
 
 // struct {
@@ -625,24 +678,17 @@ fn parse_tls_extension_sni(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
 // } NameType;
 //
 // opaque HostName<1..2^16-1>;
-fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Domain> {
+fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], ServerName> {
     let (i, nt) = be_u8(i)?;
     if nt != 0 {
         return Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::IsNot)));
     }
     let (i, v) = length_data(be_u16).parse(i)?;
-    let host: Host = str::from_utf8(v)
-        .map_err(|_e| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?
-        .parse()
+    let name = str::from_utf8(v)
         .map_err(|_e| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?;
-
-    // TLS SNI carries a DNS-shaped name (RFC 6066 §3). Anything that
-    // can promote to a Domain is accepted — including pct-encoded
-    // reg-names — via `try_into_domain`. IP literals and
-    // non-promotable bytes (sub-delim, IPvFuture) are rejected.
-    match host.try_into_domain() {
-        Ok(domain) => Ok((i, domain)),
-        Err(_) => Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not))),
+    match ServerName::parse(name) {
+        Some(name) => Ok((i, name)),
+        None => Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not))),
     }
 }
 
@@ -805,11 +851,9 @@ fn parse_ech_client_hello(input: &[u8]) -> IResult<&[u8], ECHClientHello> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::IpAddr;
     #[test]
     fn shared_header_validation_is_incremental_and_bounded() {
-        use super::{
-            ClientHelloMessageError, MAX_CLIENT_HELLO_MESSAGE_SIZE, client_hello_message_size,
-        };
         for size in [
             5usize,
             rama_utils::octets::kib(256),
@@ -840,19 +884,20 @@ mod tests {
         );
     }
 
+    use std::assert_matches;
+
+    use rama_net::address::Domain;
+
     use super::*;
     use crate::{
         CertificateCompressionAlgorithm, ECPointFormat, ExtensionId, ProtocolVersion,
         SignatureScheme, SupportedGroup,
+        client::test_support::{fragments, hello, record},
+        fingerprint::{Ja3, Ja4},
     };
-    use rama_net::address::Domain;
-    use std::assert_matches;
-
-    use crate::client::test_support::{fragments, hello, record};
 
     #[test]
     fn record_fragmentation_preserves_hello_and_fingerprints_at_every_split() {
-        use crate::fingerprint::{Ja3, Ja4};
         let message = hello(0);
         let expected = parse_client_hello_handshake(&record(&message)).unwrap();
         let expected_json = serde_json::to_value(&expected).unwrap();
@@ -908,6 +953,8 @@ mod tests {
         assert_eq!(
             extract_sni_from_client_hello_handshake_with_config(&wire, config)
                 .unwrap()
+                .unwrap()
+                .as_domain()
                 .unwrap()
                 .as_str(),
             "x.com"
@@ -1030,7 +1077,7 @@ mod tests {
         let message = hello(60_000);
         let wire = fragments(&message, kib(16));
         let parsed = parse_client_hello_handshake(&wire).unwrap();
-        assert_eq!(parsed.ext_server_name().unwrap().as_str(), "x.com");
+        assert_eq!(parsed.ext_server_domain().unwrap().as_str(), "x.com");
         assert_eq!(parsed.ext_alpn().unwrap(), &[ApplicationProtocol::HTTP_2]);
     }
 
@@ -1044,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn server_padding_request_requires_its_complete_u16_body() {
+    fn size_extensions_read_a_complete_u16_body() {
         for bytes in [0u16, 32, 16_384, u16::MAX] {
             let hello = parse_client_hello(&body_with_extension(
                 ExtensionId::SERVER_PADDING_REQUEST.into(),
@@ -1055,30 +1102,85 @@ mod tests {
                 hello.extensions(),
                 [ClientHelloExtension::ServerPaddingRequest(actual)] if *actual == bytes
             ));
-        }
-        for body in [vec![], vec![0], vec![0, 1, 2]] {
-            parse_client_hello(&body_with_extension(
-                ExtensionId::SERVER_PADDING_REQUEST.into(),
-                &body,
+            let hello = parse_client_hello(&body_with_extension(
+                ExtensionId::RECORD_SIZE_LIMIT.into(),
+                &bytes.to_be_bytes(),
             ))
-            .unwrap_err();
+            .unwrap();
+            assert!(matches!(
+                hello.extensions(),
+                [ClientHelloExtension::RecordSizeLimit(actual)] if *actual == bytes
+            ));
+        }
+    }
+
+    #[test]
+    fn odd_bodies_of_unimplemented_size_extensions_are_kept_raw() {
+        for id in [
+            ExtensionId::RECORD_SIZE_LIMIT,
+            ExtensionId::SERVER_PADDING_REQUEST,
+        ] {
+            for value in [vec![], vec![0], vec![0x40, 0, 0xff]] {
+                let hello = parse_client_hello(&body_with_extension(id.into(), &value)).unwrap();
+                assert!(
+                    matches!(
+                        hello.extensions(),
+                        [ClientHelloExtension::Opaque { id: actual, data }]
+                            if *actual == id && *data == value
+                    ),
+                    "{id:?} {value:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bodies_a_server_may_leave_unparsed_are_kept_raw_when_odd() {
+        // Valid body first, then one the typed parser cannot read entirely.
+        let cases: &[(u16, &[u8], &[u8])] = &[
+            (11, &[1, 0], &[2, 0]),
+            (16, &[0, 3, 2, b'h', b'2'], &[0, 3, 2, b'h', b'2', 0xff]),
+            (34, &[0, 2, 8, 4], &[0, 3, 8, 4, 0]),
+            (17513, &[0, 3, 2, b'h', b'2'], &[0, 3, 2, b'h']),
+            (17613, &[0, 3, 2, b'h', b'2'], &[0, 9]),
+            (65037, &[0, 0, 1, 0, 1, 0, 0, 0, 0, 0], &[0, 0, 1]),
+        ];
+        for &(id, valid, odd) in cases {
+            let hello = parse_client_hello(&body_with_extension(id, valid)).unwrap();
+            assert!(
+                !matches!(hello.extensions(), [ClientHelloExtension::Opaque { .. }]),
+                "extension {id}"
+            );
+            let body = body_with_extension(id, odd);
+            let hello = parse_client_hello(&body).unwrap();
+            assert!(
+                matches!(
+                    hello.extensions(),
+                    [ClientHelloExtension::Opaque { id: actual, data }]
+                        if u16::from(*actual) == id && data == odd
+                ),
+                "extension {id}"
+            );
+            assert!(matches!(
+                parse_client_hello_handshake_prefix(&wrap_client_hello_handshake(&body)),
+                ClientHelloHandshakePrefix::Complete(_)
+            ));
+        }
+        // An inner or unknown ECH type is rejected, as the TLS server rejects it.
+        for odd in [&[1, 0][..], &[2][..]] {
+            parse_client_hello(&body_with_extension(65037, odd)).unwrap_err();
         }
     }
 
     #[test]
     fn typed_client_hello_extensions_reject_discarded_trailing_bytes() {
+        // A TLS server parses each of these whenever the extension is present.
         let cases: &[(u16, &[u8])] = &[
             (0, b"\0\x08\0\0\x05x.com"),
             (10, &[0, 2, 0, 29]),
-            (11, &[1, 0]),
             (13, &[0, 2, 8, 4]),
-            (16, &[0, 3, 2, b'h', b'2']),
             (27, &[2, 0, 1]),
-            (28, &[0x40, 0]),
-            (34, &[0, 2, 8, 4]),
             (43, &[2, 3, 4]),
-            (17513, &[0, 3, 2, b'h', b'2']),
-            (17613, &[0, 3, 2, b'h', b'2']),
             (65037, &[1]),
         ];
         for &(id, value) in cases {
@@ -1171,30 +1273,220 @@ mod tests {
         ));
     }
 
+    /// One host_name entry: name_type 0 and a length-prefixed name.
+    fn sni_hostname_entry(name: &str) -> Vec<u8> {
+        let mut entry = vec![0];
+        entry.extend_from_slice(&u16::try_from(name.len()).unwrap().to_be_bytes());
+        entry.extend_from_slice(name.as_bytes());
+        entry
+    }
+
     #[test]
     fn test_parse_tls_extension_sni_hostname() {
+        enum Expected {
+            Domain(&'static str),
+            Ip(&'static str),
+            Invalid,
+        }
         let test_cases = [
-            ("", None),
-            ("\x00", None),
-            ("\x00\x00\x05x.com", Some(Domain::from_static("x.com"))),
+            ("", Expected::Invalid),
+            ("\x00", Expected::Invalid),
+            ("\x00\x00\x05x.com", Expected::Domain("x.com")),
             (
                 "\x00\x00\x10fp.ramaproxy.org",
-                Some(Domain::from_static("fp.ramaproxy.org")),
+                Expected::Domain("fp.ramaproxy.org"),
             ),
-            ("\x00\x00\x11fp.ramaproxy.org", None),
-            ("\x01\x00\x10fp.ramaproxy.org", None),
-            ("\x00\x00\x09127.0.0.1", None),
-            ("\x00\x00\x276670:2e72:616d:6170:726f:7879:2e6f:7267", None),
+            ("\x00\x00\x11fp.ramaproxy.org", Expected::Invalid),
+            ("\x01\x00\x10fp.ramaproxy.org", Expected::Invalid),
+            ("\x00\x00\x09127.0.0.1", Expected::Ip("127.0.0.1")),
+            (
+                "\x00\x00\x276670:2e72:616d:6170:726f:7879:2e6f:7267",
+                Expected::Ip("6670:2e72:616d:6170:726f:7879:2e6f:7267"),
+            ),
         ];
-        for (input, expected_output) in test_cases {
+        for (input, expected) in test_cases {
             let result = parse_tls_extension_sni_hostname(input.as_bytes());
-            match expected_output {
-                Some(domain) => assert_eq!(domain, result.unwrap().1),
-                None => {
-                    result.unwrap_err();
+            match (expected, result) {
+                (Expected::Domain(domain), Ok((_, actual))) if actual.as_domain().is_some() => {
+                    assert_eq!(actual.as_domain(), Some(&Domain::from_static(domain)));
                 }
+                (Expected::Ip(ip), Ok((_, actual))) if actual.as_ip().is_some() => {
+                    assert_eq!(actual.as_ip().unwrap(), ip.parse::<IpAddr>().unwrap());
+                }
+                (Expected::Invalid, Err(_)) => {}
+                (_, _) => panic!("unexpected outcome for {input:?}"),
             }
         }
+    }
+
+    // RFC 6066 section 3 forbids IP literals in HostName; RFC 3986 section 3.2.2 defines
+    // IPv4address by dec-octet ("first-match-wins") and its IPv6 literal without zone ids.
+    #[test]
+    fn sni_host_names_have_a_defined_outcome_for_every_literal_form() {
+        enum Expected {
+            Domain,
+            Ip(&'static str),
+            Invalid,
+        }
+        let cases = [
+            ("10.20.30.40", Expected::Ip("10.20.30.40")),
+            ("2001:db8::1", Expected::Ip("2001:db8::1")),
+            ("[2001:db8::1]", Expected::Ip("2001:db8::1")),
+            ("::ffff:10.20.30.40", Expected::Ip("::ffff:10.20.30.40")),
+            ("fe80::1%eth0", Expected::Invalid),
+            ("fe80::1%25eth0", Expected::Invalid),
+            ("[fe80::1%25eth0]", Expected::Invalid),
+            ("example.com.", Expected::Domain),
+            ("10.20.30.40.", Expected::Domain),
+            ("1.2.3.256", Expected::Domain),
+            ("010.020.030.040", Expected::Domain),
+            ("1.2.3", Expected::Domain),
+            ("bad name", Expected::Invalid),
+        ];
+        for (name, expected) in cases {
+            let entry = sni_hostname_entry(name);
+            let result = parse_tls_extension_sni_hostname(&entry);
+            match (expected, result) {
+                (Expected::Domain, Ok((_, domain))) if domain.as_domain().is_some() => {
+                    assert_eq!(domain.as_domain().unwrap().as_str(), name);
+                }
+                (Expected::Ip(ip), Ok((_, actual))) if actual.as_ip().is_some() => {
+                    assert_eq!(
+                        actual.as_ip().unwrap(),
+                        ip.parse::<IpAddr>().unwrap(),
+                        "{name}"
+                    );
+                }
+                (Expected::Invalid, Err(_)) => {}
+                (_, _) => panic!("unexpected outcome for {name:?}"),
+            }
+        }
+    }
+
+    /// A ClientHello body with one server_name extension listing `entries`, then ALPN h2.
+    fn sni_hello_body(entries: &[&str]) -> Vec<u8> {
+        let list: Vec<u8> = entries
+            .iter()
+            .flat_map(|name| sni_hostname_entry(name))
+            .collect();
+        let mut sni = u16::try_from(list.len()).unwrap().to_be_bytes().to_vec();
+        sni.extend_from_slice(&list);
+        let alpn = [0x00, 0x03, 0x02, b'h', b'2'];
+        let mut extensions = Vec::new();
+        for (id, data) in [(0u16, sni.as_slice()), (16, alpn.as_slice())] {
+            extensions.extend_from_slice(&id.to_be_bytes());
+            extensions.extend_from_slice(&u16::try_from(data.len()).unwrap().to_be_bytes());
+            extensions.extend_from_slice(data);
+        }
+        let mut body = ch_record_body_prefix();
+        body.extend_from_slice(&u16::try_from(extensions.len()).unwrap().to_be_bytes());
+        body.extend_from_slice(&extensions);
+        body
+    }
+
+    #[test]
+    fn ip_literal_sni_is_a_complete_hello_without_a_dns_server_name() {
+        // Equal-length names, so the hellos differ only in the host_name bytes.
+        for (name, domain, ip) in [
+            ("example.com", Some(Domain::example()), None),
+            ("10.20.30.40", None, Some(IpAddr::from([10, 20, 30, 40]))),
+            ("2001:db8::1", None, "2001:db8::1".parse().ok()),
+        ] {
+            let body = sni_hello_body(&[name]);
+            let framed = wrap_client_hello_handshake(&body);
+            let check = |hello: &ClientHello| {
+                assert_eq!(hello.ext_server_domain(), domain.as_ref(), "{name}");
+                assert_eq!(
+                    hello.ext_server_name().and_then(|name| name.as_ip()),
+                    ip,
+                    "{name}"
+                );
+                let ids: Vec<_> = hello.extensions().iter().map(|ext| ext.id()).collect();
+                assert_eq!(
+                    ids,
+                    [
+                        ExtensionId::SERVER_NAME,
+                        ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
+                    ]
+                );
+                assert_eq!(
+                    hello.ext_alpn(),
+                    Some([ApplicationProtocol::HTTP_2].as_slice())
+                );
+            };
+            check(&parse_client_hello(&body).unwrap());
+            check(&parse_client_hello_handshake(&framed).unwrap());
+            let ClientHelloHandshakePrefix::Complete(hello) =
+                parse_client_hello_handshake_prefix(&framed)
+            else {
+                panic!("{name}: record-framed prefix is not complete");
+            };
+            check(&hello);
+            let ClientHelloHandshakePrefix::Complete(hello) =
+                parse_client_hello_message_prefix(&framed[5..])
+            else {
+                panic!("{name}: handshake prefix is not complete");
+            };
+            check(&hello);
+            assert_eq!(
+                extract_sni_from_client_hello_record(&body).unwrap(),
+                ServerName::parse(name)
+            );
+            assert_eq!(
+                extract_sni_from_client_hello_handshake(&framed).unwrap(),
+                ServerName::parse(name)
+            );
+            assert_eq!(
+                extract_sni_domain_from_client_hello_record(&body).unwrap(),
+                domain
+            );
+            assert_eq!(
+                extract_sni_domain_from_client_hello_handshake(&framed).unwrap(),
+                domain
+            );
+            assert_eq!(
+                extract_sni_domain_from_client_hello_handshake_with_config(
+                    &framed,
+                    ClientHelloReassemblyConfig::default()
+                )
+                .unwrap(),
+                domain
+            );
+
+            // A prefix that more bytes could complete stays incomplete.
+            assert!(matches!(
+                parse_client_hello_handshake_prefix(&framed[..framed.len() - 1]),
+                ClientHelloHandshakePrefix::Incomplete
+            ));
+            assert!(matches!(
+                parse_client_hello_message_prefix(&framed[5..framed.len() - 1]),
+                ClientHelloHandshakePrefix::Incomplete
+            ));
+        }
+    }
+
+    #[test]
+    fn invalid_server_name_lists_still_fail_with_ip_literals() {
+        for entries in [
+            vec!["10.20.30.40", "10.20.30.41"],
+            vec!["10.20.30.40", "example.com"],
+            vec!["fe80::1%eth0"],
+            vec!["bad name"],
+            vec!["%3a%3a1"],
+        ] {
+            let body = sni_hello_body(&entries);
+            parse_client_hello(&body).unwrap_err();
+            extract_sni_from_client_hello_record(&body).unwrap_err();
+            assert!(matches!(
+                parse_client_hello_handshake_prefix(&wrap_client_hello_handshake(&body)),
+                ClientHelloHandshakePrefix::Invalid
+            ));
+        }
+        // A server_name list length beyond its extension is invalid too.
+        let mut body = sni_hello_body(&["10.20.30.40"]);
+        let offset = ch_record_body_prefix().len() + 6;
+        body[offset + 1] += 1;
+        parse_client_hello(&body).unwrap_err();
     }
 
     #[test]
@@ -1575,8 +1867,11 @@ mod tests {
         expected_domain: Option<&Domain>,
     ) {
         match ext {
-            ClientHelloExtension::ServerName(domain) => {
-                assert_eq!(domain.as_ref(), expected_domain);
+            ClientHelloExtension::ServerName(server_name) => {
+                assert_eq!(
+                    server_name.as_ref().and_then(ServerName::as_domain),
+                    expected_domain
+                );
             }
             other => {
                 panic!("unexpected extension: {other:?}");
@@ -1713,8 +2008,8 @@ mod tests {
             ],
             Domain::from_static("one.one.one.one"),
         )] {
-            let domain = extract_sni_from_client_hello_handshake(content).unwrap();
-            assert_eq!(Some(expected_sni), domain);
+            let server_name = extract_sni_from_client_hello_handshake(content).unwrap();
+            assert_eq!(Some(ServerName::from(expected_sni)), server_name);
         }
     }
 
@@ -1763,8 +2058,8 @@ mod tests {
             ],
             Domain::from_static("init.itunes.apple.com"),
         )] {
-            let domain = extract_sni_from_client_hello_record(content).unwrap();
-            assert_eq!(Some(expected_sni), domain);
+            let server_name = extract_sni_from_client_hello_record(content).unwrap();
+            assert_eq!(Some(ServerName::from(expected_sni)), server_name);
         }
     }
 

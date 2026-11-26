@@ -192,14 +192,14 @@ training, or custom integrations, see [ramaproxy.com](https://ramaproxy.com).
   `echo`, `ipv4`, `http-test` and `fp` services at `ramaproxy.org` speak HTTP/3.
 * **MASQUE**: `rama serve proxy --bind 127.0.0.1:8443 --protocol masque` serves
   a CONNECT-UDP proxy, and
-  `rama send --http3 -x masque://127.0.0.1:8443 --proxy-insecure <URL>` sends an
+  `rama send --http3 -x h3+udp://127.0.0.1:8443 --proxy-insecure <URL>` sends an
   HTTP/3 request through it. `--proxy-insecure` is only needed because that
   local proxy generates its own certificate; use `--proxy-cacert FILE` or a
   trusted certificate otherwise. In Rust, start from
   `rama::proxy::masque::connect_udp` (`ConnectUdpService` to serve,
-  `ConnectUdpConnector` to open tunnels as UDP sockets) or
-  `DefaultHttpWebClient::default_masque_with_scope` for web requests through a
-  `masque://` proxy.
+  `HttpConnectUdpProxyConnector` to open tunnels as UDP sockets). For web
+  requests nothing extra is needed: `DefaultHttpWebClient::default_with_scope`
+  speaks every proxy method, CONNECT-UDP included.
 * **ECH**: the default client with BoringSSL offers real ECH when the HTTPS
   record of an origin carries a configuration, and reports the outcome as
   `TlsEchAccepted`. Use `EchRequirement::Required` to fail instead of connecting
@@ -398,13 +398,28 @@ stays at 1.96 and the edition at 2024.
   `PeekIoProvider` implementations expose both sides (`peek_ios_mut`) (#1324,
   #1331, #1355).
 * **Connection-scoped extensions**: a CONNECT, SOCKS5 or CONNECT-UDP tunnel is
-  a nested connection, on clients and servers. Values scoped to a connection,
-  such as `SecureTransport`, `NegotiatedTlsParameters`, `TargetHttpVersion`,
-  `MaxConcurrency` and `EstablishedProxyRoute`, no longer resolve from inside
-  the tunnel, so facts about the proxy hop stop answering for the tunnelled
-  connection. Read the hop with `Extensions::outer_connection()`, or carry a
-  value across with `with_nested_connection_transfer(..)`. Your own types opt in
-  with `#[extension(scope(connection))]` (#1351, by Brecht Stamper; #1355).
+  a child connection of the one it runs over, on clients and servers, and so
+  is the connection a client dials to a proxy on behalf of a request. Values
+  scoped to a connection, such as `SecureTransport`, `NegotiatedTlsParameters`,
+  `TargetHttpVersion`, `MaxConcurrency` and `EstablishedProxyRoute`, no longer
+  resolve across that boundary, so facts about the proxy hop stop answering
+  for the tunnelled connection. The same holds for what configures one
+  connection: every TLS input on clients and servers (server name, trust,
+  pins, client auth, ECH, ALPN, the BoringSSL and Rustls knobs), `QuicProfile`,
+  the HTTP/3 settings, `H2ClientContextParams`, `H2ServerContextParams`,
+  `Http1ClientContextParams` and `PseudoHeaderOrder` are connection-scoped, so
+  a setting for the origin, an emulated HTTP/2 startup included, never reaches
+  the connection or the request to a proxy, or the other way around (a
+  request's own pseudo-header order still travels with the request). Settings
+  for the connection to a proxy go in `ProxyConnectionExtensions`. Read the
+  hop with `Extensions::parent_connection()` (or `parent_connections()`), and
+  carry a value across with an `ExtensionsTransfer`: every connector that
+  starts a child connection takes one in `extensions_transfer(..)`, starting
+  from `DefaultExtensionsTransfer` (reuse rules as a restriction, and the
+  `ConnectionAttempt`). `Extensions::with_base` applies connection-scoped
+  defaults behind a boundary, and `extend_chain` copies a bag with the levels
+  it was forked from. Your own types opt in with
+  `#[extension(scope(connection))]` (#1346, #1351, by Brecht Stamper; #1355).
 * **`Forwarded` client information**: the `Forwarded::client_*` accessors
   became the `ForwardedClientExt` extension trait (`forwarded_client_ip()`,
   `forwarded_client_socket_addr()`, ...) available on anything with extensions,
@@ -475,7 +490,9 @@ stays at 1.96 and the edition at 2024.
   values placed in `HttpUpgradeMitmRelayExtensions`. Upgrade `Parts` gained a
   `read_err` field that callers of `Upgraded::downcast` should check, and
   `Rewind`/`PrefixedIo` may return replayed and inner bytes in one read. The
-  `IoBufMut::as_uninit` method was replaced by `as_mut_slice` and `spare_mut`
+  `IoBufMut::as_uninit` method was replaced by `as_mut_slice` and `spare_mut`.
+  `WebSocketRequestBuilder::new` and `new_with_service` are now `new_h1` and
+  `new_h1_with_service`; use `new_auto` to let the client pick the version
   (#1169, #1216, #1291).
 * **Strict and case-sensitive values**: closed-set enums built with
   `enum_builder!` can now be strict. `CrossOriginEmbedderPolicyValue`,
@@ -501,28 +518,68 @@ stays at 1.96 and the edition at 2024.
   unless a request-level resolver override is set; `RetryBody::into_bytes`
   returns a `Result`; the HTML tokenizer returns `TokenizerError`, and the
   rewriter fails a body when a single construct exceeds 4 MiB
-  (`with_max_buffered_bytes`, `MemoryLimitPolicy`); SOCKS5 `write_to_buf` and
-  the OpenTelemetry exporter's `HeaderBag::merge` return a `Result` (#1132,
-  #1140, #1143, #1301, #1304, #1321, #1355).
+  (`with_max_buffered_bytes`, `MemoryLimitPolicy`); `rama::stream::wrappers`
+  no longer has `TcpListenerStream` and `UnixListenerStream`, use
+  `TcpListener::into_stream()` and `UnixListener::into_stream()`;
+  `rama::net::proxy::IdleGuard` moved to `rama::rt::IdleGuard` and its `tick()`
+  is awaited directly; the `JsonLines` extractor's rejection is no longer
+  `Infallible`; TLS acceptors read their configuration once, when built; a TLS
+  server name is a `rama::net::tls::ServerName` (a domain or an IP address)
+  in `ClientHello::ext_server_name()`, `NegotiatedTlsParameters::server_name`,
+  `SniRequest::sni` and the Rustls dynamic configuration providers'
+  `get_config`, with `ext_server_domain()` for the DNS name alone, and it
+  replaces the `TlsServerName` extension and the `Host` in
+  `TlsConnectorData::server_name`; the ACME
+  `Identifier` is built with `Identifier::dns(..)` or `Identifier::ip(..)`
+  instead of its former variant;
+  `rama::crypto::cert::boring::signing_digest_for` is removed, as its EdDSA
+  result was a digest safe code must not use; SOCKS5
+  `write_to_buf` and the OpenTelemetry exporter's `HeaderBag::merge` return a
+  `Result` (#1132, #1140, #1143, #1301, #1304, #1321, #1355).
 * **HTTP retries stream the first attempt**: `RetryLayer` no longer buffers
   the whole request body. The first attempt streams while the body is captured
   for replay, by default up to 64 KiB in memory within 30 s; a larger or slower
   body is sent once and not retried. `PolicyResult::Retry` gained a `result`
   field, returned when the body cannot be replayed or the policy declines
-  another attempt. `Policy` gained `replay_store` and `next_attempt`, and
-  `ManagedPolicy` applies its backoff in `next_attempt`, so a delay only starts
-  once the upload was captured. `ManagedPolicy` gained a store type parameter
-  (`with_replay_store`).
-* **`TlsTunnel`** gained `application_protocol` and `alpn`, so the TLS spoken
-  with an intermediary is configured apart from the final origin's TLS. Add
-  `application_protocol: None, alpn: None` to existing literals to keep the
-  tunnel connector's base policy, or set the intermediary's protocol and ALPN
-  explicitly. Custom tunnel connectors should read `TlsTunnel::from_extensions`,
-  so settings chosen by routing (`TlsTunnelRoute`) override request settings
-  (#1142, #1158).
+  another attempt. `Policy` gained the required `replay_store` and
+  `next_attempt` (return `MemoryReplay::DEFAULT` and `true` for the defaults),
+  and `ManagedPolicy` applies its backoff in `next_attempt`, so a delay only
+  starts once the upload was captured. A retry waits at most the store's
+  `handoff_timeout` (1 s by default) for a first attempt that still reads the
+  body. `ManagedPolicy` gained a store type parameter (`with_replay_store`).
+* **Proxies run on one connector stack**: a client reaches proxies over
+  connections of their own. `ProxyConnector` has its own transport, DNS, TLS,
+  HTTP and pool stages and one slot per proxy method (HTTP CONNECT, HTTP
+  forward, SOCKS5, CONNECT-UDP); a method that is not enabled refuses its
+  routes instead of connecting around them. Build one with
+  `ProxyConnector::builder(scope)` and pass it to the web client's
+  `with_proxy_support(..)`, or use `with_default_proxy_support()`. This
+  replaces `with_tls_proxy_support_*`, `with_http_proxy_support`,
+  `with_socks5_proxy_support`, `with_custom_proxy_connector`,
+  `with_http3_masque_support` and the `default_masque_*` constructors.
+  `HttpProxyConnector(Layer)` is now `HttpConnectProxyConnector(Layer)`,
+  `Socks5ProxyConnector(Layer)` is `Socks5ConnectProxyConnector(Layer)` and
+  `ConnectUdpConnector(Layer)` is `HttpConnectUdpProxyConnector(Layer)`.
+  A `ProxyAddress` names its protocol with a `ProxyProtocol` and its scheme
+  says how to reach the proxy: `http`, `h2c`, `https`, `h1`, `h2`, `h3`,
+  `socks5` and `socks5h`, with `+udp`, `+tcp` and `+tls` options;
+  `masque://` is gone, use `h3+udp://` (or a path as URI template). TLS to a
+  proxy follows its address and comes from the proxy stack, so `TlsTunnel`,
+  `TlsTunnelRoute` and the tunnel TLS connectors are removed; a client without
+  TLS support refuses a secure proxy (`PlaintextProxyOnly`), and `TlsRequired`
+  in `ProxyConnectionExtensions` asks for TLS to any proxy. Pools reuse a
+  tunnel only when the connection to the proxy under it fits the request and
+  reaches the same proxy. A
+  connection to a proxy is shared across credentials; a `PoolPartition` in
+  `ProxyConnectionExtensions` keeps them apart for a proxy that binds
+  authentication to the connection. Plaintext requests are forwarded only when
+  the proxy can carry the requested version and no endpoint was chosen, and
+  are tunnelled otherwise. See
+  [Migrating Proxy Connectors](#migrating-proxy-connectors) (#1142, #1158,
+  #1346, by Brecht Stamper).
 * **Struct literals and exhaustive matches**: several public structs gained
-  fields, such as `ProxyAddress` (`template`, for MASQUE URI templates),
-  `NegotiatedTlsParameters`, the Boring and Rustls connector and acceptor
+  fields, such as `NegotiatedTlsParameters`, the Boring and Rustls connector
+  and acceptor
   configs, `SocketOptions`, `H2ClientContextParams`, `H2ServerContextParams`,
   Datastar `PatchElements` and the RSS feed and item extensions. Enums such as
   `HttpMatcherKind`, `HttpProxyError`, `WebSocketRelayEvent`,
@@ -554,7 +611,7 @@ stays at 1.96 and the edition at 2024.
   `with_dial9_attach_options`, and `--cfg tokio_unstable` is optional (#1147, by
   Julián Montes de Oca). The OpenTelemetry re-exports moved to `opentelemetry`
   0.33 and `tracing-opentelemetry` 0.34, and `rama::tls::boring::core`
-  re-exports rama-boring 0.7, a breaking release with soundness fixes.
+  re-exports rama-boring 0.8, a breaking release with soundness fixes.
 * **Network and CLI defaults**: `TCP_NODELAY` is on for TCP sockets Rama
   creates (set `tcp_no_delay` in `SocketOptions` to change it). The proxy
   started by `rama serve proxy` serves HTTP and SOCKS5 on `--bind` by default
@@ -569,6 +626,54 @@ stays at 1.96 and the edition at 2024.
   default; use `--cacert`, `--proxy-cacert` or `SSL_CERT_EXTRA_FILE` for private
   CAs. No 0.4 subcommand or flag was removed (#1135, #1143, #1198, #1232, #1276,
   #1317, #1318, #1350).
+
+### Migrating Proxy Connectors
+
+Until now a client connector stack carried its proxies inline: a tunnel TLS
+stage, an HTTP proxy connector and a SOCKS5 connector sat in the same stack as
+the origin's stages, and shared DNS, TLS settings and the pool with
+connections to origins. Proxies are now reached through a connector stack of
+their own, the `ProxyConnector`, and the origin stack only decides whether a
+request is proxied.
+
+* **Web client users**: drop the proxy stages from the builder and add one
+  call. `with_default_proxy_support()` gives every proxy method this build of
+  rama has; `with_proxy_support(proxies)` takes a `ProxyConnector` you built;
+  `without_proxy_support()` refuses proxied routes. The default clients
+  (`DefaultHttpWebClient::default_with_scope` and friends) already include
+  proxy support, HTTP/3 through CONNECT-UDP among it.
+* **Building a `ProxyConnector`**: `ProxyConnector::builder(scope)` walks the
+  same stages as the web client builder (transport, DNS, TLS, HTTP, pool) and
+  ends with the methods to serve: `with_all_proxy_protocols()`, or a subset
+  with `with_socks5()`, `with_http_connect()`, `with_http_forward()` and
+  `with_http_connect_udp()`. What used to be a custom transport or TLS
+  connector for proxies is a stage of this builder (`with_custom_tcp_connector`,
+  `with_custom_tls_connector`, `map_connector(..)`).
+* **Custom proxy connectors**: a proxy method is a connector over a
+  `ProxyDialer`, which dials the connection to the proxy for an origin
+  request (`ConnectorService<ProxyDialRequest>`). `::new(connector)` and the
+  layers add the dialer for you, `::from_dialer(..)` takes your own. Build the
+  request to the proxy with `proxy_request(..)`: its TLS and reuse follow the
+  route, never the origin's inputs. Publish `EstablishedProxyRoute` on the
+  established connection as before.
+* **Settings for the proxy hop**: anything meant for the connection to the
+  proxy (TLS inputs, `TlsRequired`, a `PoolPartition` of its own, a
+  `ProxyRoute` to reach it through another proxy) goes in
+  `ProxyConnectionExtensions`, per request or per route of a `ProxyRoutes`
+  plan. A TLS setting placed on the request applies to the origin only; it
+  used to reach the proxy hop as well.
+* **Tunnel boundaries**: `fork_nested_connection` is `fork_connection`,
+  `outer_connection` is `parent_connection`, and `NestedConnectionTransfer`
+  is `ExtensionsTransfer` with `transfer(parent, child)`. A connector that
+  establishes an endpoint over an existing stream wraps it in
+  `NestedConnection::new(stream, &transfer)` and exposes its transfer with
+  `extensions_transfer(..)`, starting from `DefaultExtensionsTransfer`.
+* **Proxy addresses**: replace `masque://host:port` with `h3+udp://host:port`,
+  and pick the scheme for the hop you want: `https://` negotiates (HTTP/3 when
+  the proxy advertises it, else ALPN over TCP), `h1://`, `h2://` and `h3://`
+  pin a version, `socks5+tls://` secures a SOCKS5 control connection. Match
+  on `ProxyAddress::protocol` (`ProxyProtocol`) instead of an optional
+  protocol.
 
 ### Migrating from User-Agent Emulation to Profiles
 
@@ -638,9 +743,12 @@ as a compiled, compressed binary, so loading it only decodes.
   picks the profile from proxy-auth labels (`ProfileSelectorUsernameParser`).
 * **Behaviour to know about**: without a user agent and without a fallback, 0.5
   draws any profile weighted by observations, where 0.4 selected nothing. A
-  request whose kind the profile never captured replays the nearest captured
-  flow and keeps the caller's `Sec-Fetch-*` headers. An invalid input header
-  order is ignored instead of failing the request. `is_optional(true)` also
+  profile is never swapped for another identity: with a detected User-Agent
+  only "no profile has this User-Agent" relaxes selection, and other misses
+  fail unless a `ProfileSelectFallback` is set. A request whose kind the
+  profile never captured replays the nearest captured flow and keeps the
+  caller's `Sec-Fetch-*` headers. An invalid input header order is ignored
+  instead of failing the request. `is_optional(true)` also
   covers connection preparation, which then connects natively.
 * **CLI and your own profiles**: `rama send --emulate` takes an optional
   profile file (`--emulate=profiles.json`), defaults to the embedded set and
@@ -696,6 +804,14 @@ as a compiled, compressed binary, so loading it only decodes.
     with the Capsule Protocol (RFC 9297) on HTTP/1.1, HTTP/2 and HTTP/3
     (`rama::http::datagram`); a relay can move capsules onto the next hop's
     native datagrams (#1228, #1231; #1339 by Brecht Stamper).
+  * Added `WebSocketRequestBuilder::new_auto`, `new_auto_with_service` and
+    `websocket_auto()` on `HttpClientWebSocketExt` and
+    `BlockingHttpClientWebSocketExt`: the client stack picks the handshake, an
+    upgrade when ALPN selects HTTP/1.1 and Extended CONNECT over HTTP/2.
+    `websocket()` stays on HTTP/1.1, `websocket_with_request` with an HTTP/1.x
+    request and no `TargetHttpVersion` is the auto form, and a `wss`
+    connection without configured ALPN still offers only `http/1.1`.
+    `rama send --ws-alpn` opts into the same choice.
   * Added HTTP early data with `425 Too Early` recovery: per-request
     `EarlyDataPermit`/`ForbidEarlyData`, client retry helpers, server and
     gateway gates, a typed `Early-Data` header, and exposure preserved across
@@ -705,10 +821,11 @@ as a compiled, compressed binary, so loading it only decodes.
     relayed across versions (#1263).
 * **MASQUE** (`rama-masque`, feature `masque`, `rama::proxy::masque`):
   * Added CONNECT-UDP (RFC 9298) over HTTP/1.1, HTTP/2 and HTTP/3, with native
-    QUIC datagrams or capsules: `ConnectUdpService`, `ConnectUdpConnector`, URI
-    templates, `masque://` proxy addresses, the typed `Proxy-Status` header, and
-    `DefaultHttpWebClient::default_masque_with_scope` to run HTTP/3 through a
-    tunnel. The proxy denies private and special-purpose destinations by
+    QUIC datagrams or capsules: `ConnectUdpService`,
+    `HttpConnectUdpProxyConnector`, URI templates, `+udp` proxy addresses such
+    as `h3+udp://`, the typed `Proxy-Status` header, and HTTP/3 through a
+    tunnel in the default web client. The proxy denies private and
+    special-purpose destinations by
     default (NAT64-aware) and has tunnel and per-principal limits, traffic
     budgets, audit events that never log identities, and OpenTelemetry metrics
     (#1274, #1287, #1340).
@@ -719,13 +836,16 @@ as a compiled, compressed binary, so loading it only decodes.
   * Added a MITM relay for a client's own CONNECT-UDP sessions on every HTTP
     version (`connect_udp::mitm`) (#1277).
   * Added `rama serve proxy --protocol masque` with its `--masque-*` options,
-    MASQUE upstream chaining, and `rama send -x masque://...` (#1274).
+    MASQUE upstream chaining, and `rama send -x h3+udp://...` (#1274, #1346).
 * **UDP and networking** (`rama-udp`, `rama-net`, `rama-tcp`):
   * Added packet-oriented datagram sockets (`DatagramSocket`,
     `UdpPacketSocket`) with ECN, packet info, batching and segmentation,
     adapted from quinn-udp, plus forwarding, demultiplexing, peeking and bounded
     socket-group building blocks and an in-memory test backend (#1152, #1258,
-    #1345).
+    #1345). `UdpPacketSocket::icmp_error_receiver()` reports ICMP errors for a
+    socket's datagrams (`IcmpErrorReport`, on Linux and Android) instead of
+    failing its receives, and on Windows an ICMP time-exceeded reply no longer
+    fails a later receive with a connection reset.
   * Added network availability tracking (`rama::net::availability`) and opt-in
     recovery of UDP forwarding after a network change (`DatagramRecovery`)
     (#1345, #1355).
@@ -741,7 +861,20 @@ as a compiled, compressed binary, so loading it only decodes.
     report the outcome as `TlsEchAccepted`, and retry once after an
     authenticated rejection. Servers install reloadable keys
     (`ReloadableEchServerKeys`, `with_ech_keys`), and the TLS MITM relay offers
-    ECH upstream when it has a configuration (#1350, #1354).
+    ECH upstream when it has a configuration. A profile's captured ECH offer is
+    replayed with GREASE ECH toward a target without a configuration when the
+    profile's ordinary captures show that hello, and otherwise with an offer
+    derived from the pair, so a drawn profile also connects to targets without
+    ECH (#1350, #1354).
+  * Added IP addresses as TLS server names: a ClientHello whose SNI carries an
+    IP literal is inspected, routed, relayed and answered instead of refused,
+    clients keep sending no SNI for an IP target unless
+    `TlsClientSni::IncludeIp` asks for it (BoringSSL), and the ACME client
+    orders certificates for IP identifiers (RFC 8738).
+  * Rustls clients reuse their configuration across identical TCP connections,
+    so sessions resume (with an operating system verifier only when its policy
+    has a reload trigger), and Rustls acceptors share one configuration and
+    resume sessions with `with_session_resumption(true)`.
   * Added the operating system's certificate verifier for BoringSSL and Rustls
     clients (`TlsClientConfig::with_platform_verifier`), extra roots through
     `SSL_CERT_EXTRA_FILE` and `SSL_CERT_EXTRA_DIR`, and reject-only chain
@@ -752,7 +885,9 @@ as a compiled, compressed binary, so loading it only decodes.
     `ChannelReloadTrigger`, or any stream) and a `max_age`. New handshakes on
     BoringSSL, Rustls and QUIC use the refreshed roots while established
     connections keep theirs, and connectors cache the derived trust stores
-    (`server_trust_cache_capacity`). The root crate has a `native-certs` feature
+    (`server_trust_cache_capacity`). With an operating system verifier, every
+    reload event also ends resumption of earlier sessions. The root crate has a
+    `native-certs` feature
     for these APIs, enabled by `boring` and `rustls` (#1367).
   * Added staged client authentication to the BoringSSL `TlsMitmRelay`: a
     per-connection `TlsMitmClientAuthPolicy` verifies the ingress client and then
@@ -764,6 +899,18 @@ as a compiled, compressed binary, so loading it only decodes.
     GREASE, per-handshake extension permutation, requested trust anchors and
     TLS 1.2 tickets, and opt-in TLS session resumption for clients and servers
     (#1234, building on #1196 by Yann).
+  * Profile replay and the BoringSSL MITM relay reproduce legacy hellos: TLS
+    1.1 and 1.0 when the captured or mirrored hello lists them (other clients
+    and servers keep TLS 1.2 as minimum), the 3DES and CBC cipher suites and
+    RFC 7919 FFDHE groups that rama-boring 0.8 adds (off by default), and
+    `extended_master_secret` without `renegotiation_info`
+    (`BoringExtensionPresence::omit_renegotiation_info`), also through
+    `TlsClientConfig::new_from_client_hello`. Values the backend cannot
+    negotiate are left out of each list, GREASE and the renegotiation SCSV
+    kept. The TLS and QUIC `ConnectionProfileCompiler` accepts a per-list
+    `NonNegotiableValues` policy. `RetainLegacy` also keeps recognized legacy
+    values, and `Retain` keeps all captured values. A captured or configured ALPN and ALPS pair is
+    sent as configured.
 * **Profiles, emulation and fingerprinting** (`rama-ua`, `rama-fp`):
   * Added the profile system: capture, counted evidence, analysis, variant
     selection with seeds and pins, and replay for TLS over TCP and QUIC, QUIC
@@ -783,7 +930,10 @@ as a compiled, compressed binary, so loading it only decodes.
   * The echo and fp services report HTTP/3 SETTINGS, QPACK and pseudo-header
     order, the QUIC first flight and transport parameters, TLS over QUIC, ECH
     acceptance, and how JA3, JA4 and PeetPrint compare with the recorded
-    profile for that user agent (#1258, #1281, #1286, #1354).
+    profile for that user agent (#1258, #1281, #1286, #1354). With
+    `rama serve echo --ws`, WebSocket handshake responses carry the
+    `x-rama-fingerprint-*` headers on HTTP/1.1, HTTP/2 and HTTP/3, and
+    `--alt-svc-h2-bind` advertises an extra HTTP/2 listener through Alt-Svc.
   * Added typed `Sec-Fetch-Dest`, `Sec-Fetch-Mode`, `Sec-Fetch-User`,
     `Sec-Purpose` and `X-Requested-With` headers and a `FetchMetadata`
     extractor (#1289, #1290).
@@ -845,6 +995,8 @@ as a compiled, compressed binary, so loading it only decodes.
     at a time with a per-element limit of 32 KiB by default
     (`ArrayParseConfig`), through `Body::into_json_array_stream`,
     `Response::into_json_array_stream` or the `JsonArrayItems<T>` extractor.
+    A `JsonContentTypePolicy` extension sets which `Content-Type` the JSON
+    extractors accept.
   * Added a sans-IO `multipart/form-data` codec
     (`rama::http::protocols::multipart`) that replaces `multer` and lets a proxy
     rewrite a form in flight without buffering it (#1328, #1336).
@@ -869,6 +1021,11 @@ as a compiled, compressed binary, so loading it only decodes.
     (`redirect_to_trailing_slash`, `ignore_multi_range_requests`,
     `with_enforce_not_acceptable`) and a Rama-owned HTTP-date formatter and
     parser (`rama::http::utils::http_date`) (#1139, #1321, #1355).
+  * Added `rama::http::utils::request_signals_upgrade` and
+    `request_adaptable_upgrade`, and `HttpServiceConnector::with_http3_upgrades`
+    (`set_http3_upgrades` in the web client's `configure_http_service`) to let
+    an upgrade without a target version follow an HTTP/3 alternative, which
+    it does not by default.
   * Added the encode-only `DateNow` typed header, which writes the current
     `Date` from bytes shared per second per thread, and `Server::default()`.
 * **Core, errors and utilities**:
@@ -877,10 +1034,15 @@ as a compiled, compressed binary, so loading it only decodes.
     `rama::rt::spawn`. HTTP/1.1, HTTP/2, HTTP/3 and ttRPC drain in the graceful
     phase, relays run until the hard phase, and pooled connections are drained
     rather than reused once their scope is cancelled (#1317).
-  * Added connection-scoped extensions and nested connections
-    (`#[extension(scope(connection))]`, `Extensions::fork_nested_connection`,
-    `outer_connection`, `NestedConnectionTransfer`) (#1351, by Brecht Stamper;
-    #1355).
+  * Added one idle-timeout primitive, `rama::rt::{IdleGuard, IdleActivity,
+    IdleProgress}`, whose timer is only re-armed when it fires, and
+    `HeaderMap::try_insert_map`, `try_insert_lines` and `try_append_map` for
+    fallible merges, with `retain_names` and `retain_values` for removals, that
+    keep header order, casing and reserved positions.
+  * Added connection-scoped extensions and child connections
+    (`#[extension(scope(connection))]`, `Extensions::fork_connection`,
+    `parent_connection`, `ExtensionsTransfer`, `DefaultExtensionsTransfer`,
+    `NestedConnection`) (#1346, #1351, by Brecht Stamper; #1355).
   * Added `CauseExt` (typed cause lookup, root cause, context fields),
     `ErrorList`, `CollectErrors`, caller locations on error context, and a
     runtime-independent `TimeoutError`; address races and DNS chains now keep
@@ -945,6 +1107,22 @@ as a compiled, compressed binary, so loading it only decodes.
 * The embedded user-agent profiles are a compiled, compressed set that is
   analysed at export time, so loading only decodes it. The set was refreshed
   throughout the cycle (#1258, #1282, #1286, #1310, #1329, #1355, #1364).
+  `rama ua export --embed` reads every profile and reports what it leaves out
+  and why (`-v` lists them).
+* Profile emulation offers a secure TCP request without a target version or
+  caller ALPN the HTTP versions captured for its kind of request (ordinary,
+  tunnel or WebSocket). It follows an Alt-Svc or HTTPS
+  record alternative (such as HTTP/3) when the profile holds data for that
+  version instead of staying on TCP, and prefers a captured hello offering
+  only `http/1.1` when HTTP/2 is not required.
+* The web client no longer pins a WebSocket handshake without a target
+  version to HTTP/1.1, so it follows ALPN, and keeps every other request that
+  signals an upgrade on its own version instead of sending it over HTTP/2
+  with the upgrade stripped. Such requests do not move to an HTTP/3
+  alternative unless `http3_upgrades` is set, `wss` URIs use the Alt-Svc and
+  HTTPS records of their `https` origin, `HttpUpgradeMitmRelay` forwards an
+  upgrade on the ingress HTTP version, and an HTTP/1 WebSocket upgrade that
+  is not a `GET` fails instead of becoming Extended CONNECT.
 * The BoringSSL acceptor only issues session tickets with
   `with_session_resumption(true)` (#1234).
 * Apple Network Extension: provider-side refusals fail open by default, egress
@@ -967,7 +1145,8 @@ as a compiled, compressed binary, so loading it only decodes.
   longer copied, gRPC messages decode without copying, WebSocket payloads are
   written without a copy, small files are served from one blocking call, SSE
   decoding and encoding were rewritten, the HTML rewriter streams text-mode
-  element bodies, MITM certificates are issued off the runtime, and the
+  element bodies, MITM certificates are issued off the runtime, HTTP/3 request
+  heads and user-agent profile selection, draws and connects cost less, and the
   in-memory proxy database filters by transport without scanning every match
   (#1140, #1176, #1184, #1301, #1325, #1328, #1336, #1348; #1240 by Abdelkader
   Boudih; #1268 by Brecht Stamper).
@@ -981,7 +1160,7 @@ as a compiled, compressed binary, so loading it only decodes.
   http-body, http-body-util, hyper-util, headers, h3, tower-http, axum, tonic,
   tungstenite, lol-html, quinn, quinn-udp and rustls-native-certs (#1139,
   #1239, #1241, #1298, #1318, #1368).
-* Raised `rama-boring` to 0.7 and OpenTelemetry to 0.33, unpinned `time`
+* Raised `rama-boring` to 0.8 and OpenTelemetry to 0.33, unpinned `time`
   (#1220, by Abdelkader Boudih), and refreshed dependencies, including venndb
   0.7.1 for the in-memory proxy database (#1310, #1369).
 * Release workflows separate build and test jobs from privileged signing and
@@ -1009,9 +1188,11 @@ as a compiled, compressed binary, so loading it only decodes.
   malformed on every version, bare LF in chunked framing is rejected, an HPACK
   table can no longer desynchronise on a self-dependent stream, `100 Continue`
   no longer stalls a pipelined response, and oversized field counts, gRPC
-  metadata, HAR headers and FastCGI records fail instead of panicking. HTTP/2
-  refuses to send field values that HTTP/2 forbids, such as ones with leading
-  or trailing whitespace (#1321, #1355, #1366).
+  metadata, HAR headers, FastCGI records and HTTP/1 trailers fail instead of
+  panicking. HTTP/2 and HTTP/3 trim leading and trailing whitespace from the
+  field values they send and refuse values they forbid (#1321, #1355, #1366).
+* Fixed HTTP/1, HTTP/2 and HTTP/3 clients adding `content-length: 0` to
+  `OPTIONS` and `TRACE` requests without a body.
 * Fixed HTTP/2 adaptive flow control (`adaptive_window`) stopping after the
   first bandwidth sample, which left the receive window at its 65,535-byte
   default (#1362, by Kai).
@@ -1035,6 +1216,9 @@ as a compiled, compressed binary, so loading it only decodes.
   (#1321).
 * Fixed forward-proxy credentials reaching an origin after route fallback or
   connection reuse onto a direct or tunnelled connection (#1158).
+* Fixed certificate pins scoped to an IP address being skipped when the target
+  was spelled as a name, and certificates issued for a domain spelling an IP
+  address carrying a DNS name instead of an IP address name.
 * Fixed ClientHellos fragmented across TLS records evading inspection: they are
   reassembled, so a client can no longer dodge strict SNI routing that way
   (#1303).
@@ -1058,12 +1242,17 @@ as a compiled, compressed binary, so loading it only decodes.
   client's wait for the server to end its transport after the close handshake
   (`close_drain_timeout`, default 2 s).
 * Fixed empty frames resetting streaming compression and gRPC-Web responses
-  losing trailers (#1165).
+  losing trailers (#1165), gRPC-Web bodies repeating a decode error instead of
+  ending, `CorsLayer` keeping only the first line of a multi-valued header, and
+  HTTP/1 trailers losing the order and per-line name casing of a repeated
+  field when written or when two trailer sections merge.
 * Fixed the SOCKS5 peek router rejecting valid greetings (#1144), and the
   SOCKS5 UDP relay forwarding oversized datagrams truncated (#1355).
 * Fixed proxy address formatting for Basic credentials containing reserved
   characters (#1296), and an unbracketed IPv6 authority such as `::1` now
-  parses as a host without a port (#1355).
+  parses as a host without a port, except in strict parsing, which requires
+  brackets (#1355). `Forwarded` pair names and unquoted values must be tokens,
+  and a parameter may occur once per element.
 * Fixed Apple Network Extension upload corruption: Network.framework can read
   send buffers after the send completion fires, so payloads now stay alive until
   it releases them. Also fixed close and FIN ordering, stranded UDP read demand,

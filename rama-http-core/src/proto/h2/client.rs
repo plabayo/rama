@@ -40,7 +40,7 @@ use rama_utils::octets::{kib_u32, mib_u32};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
-    PipeToSendStream, SendBuf,
+    MessageKind, PipeToSendStream, SendBuf,
     admission::AdmissionOwner,
     ping,
     ping::{Ponger, Recorder},
@@ -972,7 +972,7 @@ where
                     let checkout = self.admission.checkout(req.extensions());
                     let (head, body) = req.into_parts();
                     let mut req = Request::from_parts(head, ());
-                    super::strip_connection_headers(req.headers_mut(), super::MessageKind::Request);
+                    super::sanitize_outgoing_headers(req.headers_mut(), MessageKind::Request);
                     let eos = body.is_end_stream();
                     if eos {
                         headers::drop_undeliverable_content_length(req.headers_mut());

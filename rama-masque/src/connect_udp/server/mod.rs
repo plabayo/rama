@@ -32,7 +32,10 @@ use rama_udp::{
         DatagramForwardError, DatagramForwardService, EcnPolicy, PacketErrorPolicy, UdpConnector,
     },
 };
-use rama_utils::{macros::generate_set_and_with, octets::kib};
+use rama_utils::{
+    macros::{generate_set_and_with, nonzero},
+    octets::kib,
+};
 
 use super::{
     ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRequestError, ConnectUdpRequestMatcher,
@@ -45,7 +48,7 @@ use super::{
 };
 
 /// Receive buffer per relay direction: the largest UDP payload fits.
-const RELAY_BUFFER: NonZeroUsize = NonZeroUsize::new(kib(64)).unwrap();
+const RELAY_BUFFER: NonZeroUsize = nonzero!(kib(64));
 
 /// A CONNECT-UDP proxy ([RFC 9298]) for every HTTP version.
 ///

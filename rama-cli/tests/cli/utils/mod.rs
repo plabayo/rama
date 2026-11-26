@@ -329,8 +329,13 @@ impl RamaService {
     }
 
     /// Start the rama echo service with the given port.
-    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn serve_echo(port: u16, mode: EchoMode) -> Self {
+        Self::serve_echo_with_args(port, mode, &[])
+    }
+
+    /// Start the rama echo service with the given port and extra arguments.
+    #[allow(clippy::needless_pass_by_value)]
+    pub(super) fn serve_echo_with_args(port: u16, mode: EchoMode, args: &[&str]) -> Self {
         let mut builder = rama_command();
 
         const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
@@ -396,6 +401,7 @@ impl RamaService {
         if http {
             builder.arg("--ws");
         }
+        builder.args(args);
         if matches!(mode, EchoMode::Udp) {
             enable_service_ready_log(&mut builder, "rama::cmd::serve::echo");
         }

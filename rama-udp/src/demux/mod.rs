@@ -2,11 +2,9 @@
 
 use std::{
     fmt,
-    future::Future,
     io::{self, IoSliceMut},
     net::IpAddr,
     num::NonZeroUsize,
-    pin::Pin,
     sync::{Arc, atomic::AtomicUsize},
     task::{Context, Poll, ready},
     time::Duration,
@@ -21,6 +19,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     graceful::WeakScope,
     layer::IntoErr,
+    rt::IdleGuard,
     service::BoxService,
     telemetry::tracing,
 };
@@ -33,11 +32,7 @@ use rama_net::{
     socket::local_addresses,
     stream::Socket,
 };
-use rama_utils::time::deadline_after;
-use tokio::{
-    sync::mpsc,
-    time::{Instant, Sleep, sleep},
-};
+use tokio::{sync::mpsc, time::Instant};
 
 use crate::{
     DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
@@ -447,8 +442,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 capabilities,
                 addresses,
                 listening,
-                idle: Box::pin(sleep(self.config.idle_timeout)),
-                idle_timeout: self.config.idle_timeout,
+                idle: IdleGuard::new(self.config.idle_timeout),
                 release: Release {
                     registry: self.registry.clone(),
                     addresses,
@@ -516,15 +510,12 @@ impl Drop for Release {
 #[derive(ExtensionsRef)]
 pub struct DemuxedSocket<T> {
     receiver: mpsc::Receiver<Queued>,
-    /// Cloned for each send handle; never sends itself.
     sender: Mutex<T>,
     capabilities: DatagramCapabilities,
     addresses: Addresses,
     listening: SocketAddress,
-    idle: Pin<Box<Sleep>>,
-    idle_timeout: Duration,
+    idle: IdleGuard,
     release: Release,
-    /// The socket bound at this association's destination, when replies leave from there.
     reply: Option<ReplyLease<T>>,
     extensions: Extensions,
 }
@@ -589,7 +580,7 @@ impl<T: DatagramSender + Clone> DatagramSocket for DemuxedSocket<T> {
         let Some(buffer) = buffers.first_mut() else {
             return Poll::Ready(Err(DatagramError::EmptyReceiveBatch));
         };
-        if self.idle.as_mut().poll(cx).is_ready() {
+        if self.idle.poll_tick(cx).is_ready() {
             self.release.release();
             self.receiver.close();
             return Poll::Ready(Err(DatagramError::Closed));
@@ -606,9 +597,7 @@ impl<T: DatagramSender + Clone> DatagramSocket for DemuxedSocket<T> {
         }
         buffer[..datagram.payload.len()].copy_from_slice(&datagram.payload);
         metadata[0] = datagram.metadata;
-        self.idle
-            .as_mut()
-            .reset(deadline_after(Instant::now(), self.idle_timeout));
+        self.idle.reset();
         Poll::Ready(Ok(1))
     }
 

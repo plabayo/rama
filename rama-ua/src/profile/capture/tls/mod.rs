@@ -84,6 +84,7 @@ pub enum TlsCapturedExtensionValue {
     },
     EchInner,
     ConnectionLength(u16),
+    IpServerName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -290,11 +291,17 @@ impl TlsCapture {
                 ClientHelloExtension::ServerName(name) => {
                     let size = name
                         .as_ref()
-                        .map(|name| length(name.as_str().len()))
+                        .map(|name| {
+                            length(name.as_domain().map_or(0, |domain| domain.as_str().len()))
+                        })
                         .transpose()?;
                     budget.take(0, usize::from(size.unwrap_or(0)))?;
-                    TlsCapturedExtensionValue::ServerName {
-                        present: name.is_some(),
+                    if name.as_ref().is_some_and(|name| name.as_ip().is_some()) {
+                        TlsCapturedExtensionValue::IpServerName
+                    } else {
+                        TlsCapturedExtensionValue::ServerName {
+                            present: name.is_some(),
+                        }
                     }
                 }
                 ClientHelloExtension::SupportedGroups(values) => {

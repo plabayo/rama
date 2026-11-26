@@ -309,7 +309,7 @@ async fn static_initial_navigation_survives_capture_export_and_bootstrap_binding
                     .unwrap()
                     .unwrap();
             admitted.apply_http(&input).unwrap();
-            let encoding = input.get_ref::<EncoderPreferences>().unwrap();
+            let encoding = input.get_arc::<EncoderPreferences>().unwrap();
             assert_eq!(
                 encoding.defer_dynamic_first_section,
                 Some(!capacity_only),

@@ -92,7 +92,7 @@ pub use export::{ProfileExport, export_profiles};
 #[cfg(feature = "tls")]
 mod tls;
 #[cfg(feature = "tls")]
-pub use tls::tls_connection_slots;
+pub use tls::{append_quic_parameter_slots, tls_connection_slots};
 
 fn fill_profile(
     profile: &mut UserAgentProfileInput,

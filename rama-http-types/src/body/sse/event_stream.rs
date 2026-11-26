@@ -1,5 +1,4 @@
-use super::decoder::RETAINED_BUFFER_LEN;
-use super::{Event, EventDataRead, EventDecoder, OnIncompleteLine};
+use super::{Event, EventDataRead, EventDecoder, OnIncompleteLine, RETAINED_BUFFER_LEN};
 
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
@@ -313,7 +312,7 @@ mod tests {
         let waker = Waker::from(Arc::new(WakeCounter::default()));
         let mut cx = Context::from_waker(&waker);
         while stream.as_mut().poll_next(&mut cx).is_pending() {}
-        assert!(stream.overflow.capacity() <= rama_utils::octets::kib(256));
+        assert!(stream.overflow.capacity() <= RETAINED_BUFFER_LEN);
     }
 
     #[test]

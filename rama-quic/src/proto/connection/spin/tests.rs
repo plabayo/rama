@@ -1,6 +1,7 @@
 use super::*;
 use crate::proto::{
     Endpoint, EndpointConfig, Instant,
+    cid_generator::RandomConnectionIdGenerator,
     connection::migration::PreviousPath,
     endpoint::ConnectionHandle,
     tests::{
@@ -486,7 +487,6 @@ fn spin_server_keys_include_current_previous_and_preferred_local_paths() {
 
 #[test]
 fn spin_local_rebind_without_a_cid_and_late_old_socket_packets() {
-    use crate::proto::cid_generator::RandomConnectionIdGenerator;
     for seed in 0u8..=255 {
         let mut endpoint = EndpointConfig::try_with_rand_key()
             .unwrap()

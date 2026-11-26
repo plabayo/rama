@@ -25,6 +25,30 @@ mod tls_close_notify;
 ))]
 mod native_trust_reload;
 
+#[cfg(all(
+    feature = "boring",
+    feature = "rustls",
+    any(feature = "ring", feature = "aws-lc")
+))]
+mod tls_ip_identity;
+
+#[cfg(all(
+    feature = "quic",
+    feature = "boring",
+    feature = "rustls",
+    feature = "aws-lc"
+))]
+mod quic_ip_identity;
+
+#[cfg(all(
+    feature = "acme",
+    feature = "http",
+    feature = "boring",
+    feature = "rustls",
+    feature = "aws-lc"
+))]
+mod acme_ip_identifier;
+
 #[cfg(all(feature = "dns", feature = "tcp"))]
 mod localhost;
 

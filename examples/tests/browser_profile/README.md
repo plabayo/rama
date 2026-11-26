@@ -202,6 +202,12 @@ auxiliary requests separately; they cannot replace required flow coverage. Reque
 values come from the owned wire fixture, never browser history or body bytes stored
 in a profile.
 
+The original TLS capture is checked exactly against the browser wire evidence.
+For a reference profile with a single captured TCP HTTP version, native replay
+must offer exactly that ALPN when narrowing a multi-protocol offer. Application
+settings for protocols removed from the offer drop with them. A profile with
+both TCP HTTP versions keeps its captured offer and application settings.
+
 `--literal` remains available for byte-exact retained tuples and can report a
 legitimate peer-ACK timing difference.
 

@@ -1,4 +1,7 @@
-use std::sync::{Arc, LazyLock};
+use std::{
+    borrow::Cow,
+    sync::{Arc, LazyLock},
+};
 
 use moka::future::Cache;
 use parking_lot::Mutex;
@@ -6,9 +9,11 @@ use rama_boring::{
     error::ErrorStack,
     ex_data::Index,
     ssl::{
-        AlpnError, ClientHello, ExtensionType, NameType, SelectCertError, Ssl, SslAcceptorBuilder,
-        SslCurve, SslOptions, SslRef, SslSignatureAlgorithm,
+        AlpnError, ClientHello, ExtensionType, NameType, SelectCertError, Ssl, SslAcceptor,
+        SslAcceptorBuilder, SslCurve, SslMethod, SslOptions, SslRef, SslSignatureAlgorithm,
+        SslVerifyMode,
     },
+    x509::{store::X509StoreBuilder, verify::X509VerifyFlags},
 };
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
 use rama_core::{
@@ -18,12 +23,13 @@ use rama_core::{
 };
 use rama_crypto::dep::x509_parser::nom::AsBytes;
 use rama_net::{
-    address::Domain,
-    tls::{AlpnPolicy, ApplicationProtocol},
+    address::Host,
+    tls::{AlpnPolicy, ApplicationProtocol, ServerName},
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, KeyLogIntent, ProtocolVersion,
     client::ClientHello as RamaClientHello,
+    keylog::{KeyLogSink, open_intent_sink},
     server::{
         CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext,
         ClientVerifyMode, LeafCertConfig, LeafCertRequest, ServerAuthData,
@@ -36,12 +42,14 @@ use super::{
     },
     config::BoringTlsAuth,
 };
-use crate::certificate_compression::add_certificate_compressors;
-use crate::core::{
-    pkey::{PKey, Private},
-    x509::X509,
+use crate::{
+    certificate_compression::add_certificate_compressors,
+    core::{
+        pkey::{PKey, Private},
+        x509::X509,
+    },
+    type_conversion::{native_unique, openssl_cipher_list_str_from_cipher_list},
 };
-use crate::type_conversion::{native_unique, openssl_cipher_list_str_from_cipher_list};
 
 pub(super) async fn prepare_server_cert_issuer(
     issuer_data: ServerCertIssuerData,
@@ -87,21 +95,32 @@ async fn issue_blocking(
         .context("join certificate issuance task")?
 }
 
+fn canonical_identity(identity: &CertificateIdentity) -> Cow<'_, CertificateIdentity> {
+    match identity {
+        CertificateIdentity::Dns(domain) => match domain.as_str().parse() {
+            Ok(ip) => Cow::Owned(CertificateIdentity::Ip(ip)),
+            Err(_) => Cow::Borrowed(identity),
+        },
+        CertificateIdentity::Ip(_) => Cow::Borrowed(identity),
+    }
+}
+
 /// Concurrent misses for one identity share a single issuance.
 async fn get_or_issue_cached(
     cert_cache: &Cache<CertificateIdentity, IssuedCert>,
     identity: &CertificateIdentity,
     issue: impl Future<Output = Result<IssuedCert, BoxError>>,
 ) -> Result<IssuedCert, BoxError> {
-    if let Some(cached) = cert_cache.get(identity).await {
+    let identity = canonical_identity(identity);
+    if let Some(cached) = cert_cache.get(identity.as_ref()).await {
         if cached.is_valid() {
             return Ok(cached);
         }
-        cert_cache.invalidate(identity).await;
+        cert_cache.invalidate(identity.as_ref()).await;
     }
 
     cert_cache
-        .try_get_with_by_ref(identity, async {
+        .try_get_with_by_ref(identity.as_ref(), async {
             issue.await.map_err(ArcError::from_box_error)
         })
         .await
@@ -113,7 +132,10 @@ async fn valid_cached(
     cert_cache: &Cache<CertificateIdentity, IssuedCert>,
     identity: &CertificateIdentity,
 ) -> Option<IssuedCert> {
-    cert_cache.get(identity).await.filter(IssuedCert::is_valid)
+    cert_cache
+        .get(canonical_identity(identity).as_ref())
+        .await
+        .filter(IssuedCert::is_valid)
 }
 
 #[derive(Debug, Clone)]
@@ -274,11 +296,6 @@ pub(super) struct TlsConfig {
 
 impl TlsConfig {
     pub(super) fn acceptor_builder(&self) -> Result<SslAcceptorBuilder, BoxError> {
-        use rama_boring::{
-            ssl::{SslAcceptor, SslMethod, SslVerifyMode},
-            x509::{store::X509StoreBuilder, verify::X509VerifyFlags},
-        };
-        use rama_tls::keylog::{KeyLogSink, open_intent_sink};
         let mut builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())?;
         if self.require_alpn {
             // The ALPN selection only runs for a client that offers protocols.
@@ -407,10 +424,10 @@ impl TlsCertSource {
 
     /// The identity a handshake asks a certificate for: its server name, else the fallback.
     fn identity_for(&self, client_hello: &RamaClientHello) -> Option<CertificateIdentity> {
-        match client_hello.ext_server_name() {
-            Some(name) => Some(CertificateIdentity::from(name.clone())),
-            None => self.fallback_identity().cloned(),
-        }
+        client_hello
+            .ext_server_name()
+            .and_then(|name| CertificateIdentity::try_from(Host::from(name)).ok())
+            .or_else(|| self.fallback_identity().cloned())
     }
 
     /// The certificate [`Self::issue_for`] returns for `identity` without issuing one.
@@ -829,13 +846,9 @@ fn to_opt_identity(
 ) -> Result<Option<CertificateIdentity>, BoxError> {
     let identity = match (ssl_ref.servername(NameType::HOST_NAME), fallback) {
         (Some(sni), _) => {
-            tracing::trace!("boring: use client DNS SNI as certificate identity: {sni}");
-            Some(CertificateIdentity::from(sni.parse::<Domain>().map_err(
-                |err| {
-                    tracing::warn!("boring: invalid servername received in callback: {err:?}");
-                    err.into_box_error().context("sni parse failed")
-                },
-            )?))
+            tracing::trace!("boring: use client SNI as certificate identity: {sni}");
+            let name = sni.parse::<ServerName>()?;
+            Some(CertificateIdentity::try_from(Host::from(name))?)
         }
         (_, Some(identity)) => {
             tracing::trace!(?identity, "boring: no SNI; use target certificate identity");
@@ -936,7 +949,11 @@ mod tests {
         time::Duration,
     };
 
-    use rama_crypto::cert::CertificateValidity;
+    use rama_crypto::cert::{
+        CertificateValidity,
+        boring::{generate_certificate_authority_x509, issue_leaf_certificate},
+    };
+    use rama_net::address::Domain;
     use rama_tls::{
         client::ClientHelloExtension,
         server::{DynamicCertIssuer, SelfSignedCaConfig, TlsServerConfig},
@@ -965,6 +982,26 @@ mod tests {
         }
 
         assert_eq!(generated_ca_der(first), generated_ca_der(second));
+    }
+
+    #[tokio::test]
+    async fn certificate_cache_keys_classify_numeric_dns_spellings() {
+        let (ca, key) =
+            generate_certificate_authority_x509(&SelfSignedCaConfig::default()).unwrap();
+        let (cert, leaf_key) =
+            issue_leaf_certificate(&LeafCertRequest::default(), &ca, &key).unwrap();
+        let issued = IssuedCert::try_new(&[cert], &leaf_key).unwrap();
+        let bare = CertificateIdentity::Dns(Domain::from_static("192.0.2.1"));
+        let dotted = CertificateIdentity::Dns(Domain::from_static("192.0.2.1."));
+        let address = CertificateIdentity::Ip([192, 0, 2, 1].into());
+        let cache = Cache::new(4);
+        get_or_issue_cached(&cache, &bare, async { Ok(issued) })
+            .await
+            .unwrap();
+        assert!(valid_cached(&cache, &address).await.is_some());
+        assert!(valid_cached(&cache, &dotted).await.is_none());
+        let fallback = ServerCertIssuerData::default().with_fallback_identity(bare);
+        assert_eq!(fallback.fallback_identity(), Some(&address));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1017,9 +1054,9 @@ mod tests {
             ProtocolVersion::TLSv1_3,
             Vec::new(),
             Vec::new(),
-            vec![ClientHelloExtension::ServerName(Some(Domain::from_static(
-                name,
-            )))],
+            vec![ClientHelloExtension::ServerName(Some(
+                Domain::from_static(name).into(),
+            ))],
         )
     }
 

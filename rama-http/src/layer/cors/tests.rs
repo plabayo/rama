@@ -3,19 +3,19 @@
     reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
 )]
 
-use crate::headers::Vary;
-use crate::layer::cors::CorsLayer;
-use crate::{
-    Body, HeaderValue, Method, Request, Response,
-    body::{OptionalBody, util::BodyExt},
-    header,
-};
-use rama_core::bytes::Bytes;
-use rama_core::service::service_fn;
-use rama_core::{Layer, Service};
+use std::convert::Infallible;
+
+use rama_core::{Layer, Service, bytes::Bytes, service::service_fn};
 use rama_http_headers::{AccessControlAllowHeaders, AccessControlAllowMethods};
 use rama_utils::collections::non_empty_vec;
-use std::convert::Infallible;
+
+use crate::{
+    Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode,
+    body::{OptionalBody, util::BodyExt},
+    header,
+    headers::Vary,
+    layer::cors::{CorsLayer, merge_cors_headers},
+};
 
 /// `permissive` configures every allow_* as a fixed `Any`/`Const` value,
 /// so no `Vary` header should be added (no field of the response varies
@@ -384,4 +384,193 @@ async fn disallowed_preflight_is_answered_by_default() {
         .await
         .unwrap();
     assert!(body_bytes(res).await.is_empty());
+}
+
+/// Every line of a multi-valued CORS header reaches the response, in order and with its
+/// casing, while a header the handler set keeps the handler's value.
+#[test]
+fn merge_keeps_every_line_of_a_multi_valued_header() {
+    let mut response = HeaderMap::new();
+    response.insert(named("X-Handler"), HeaderValue::from_static("h"));
+    response.insert(
+        named("Access-Control-Allow-Origin"),
+        HeaderValue::from_static("https://handler.example"),
+    );
+
+    let mut cors = HeaderMap::new();
+    cors.insert(
+        named("Access-Control-Allow-Origin"),
+        HeaderValue::from_static("*"),
+    );
+    cors.insert(
+        named("Access-Control-Expose-Headers"),
+        HeaderValue::from_static("x-a"),
+    );
+    cors.append(
+        named("ACCESS-CONTROL-EXPOSE-HEADERS"),
+        HeaderValue::from_static("x-b"),
+    );
+    cors.insert(header::VARY, HeaderValue::from_static("origin"));
+
+    assert!(merge_cors_headers(&mut response, cors));
+
+    assert_eq!(
+        ordered_lines(&response),
+        [
+            ("X-Handler", "h"),
+            ("Access-Control-Allow-Origin", "https://handler.example"),
+            ("Access-Control-Expose-Headers", "x-a"),
+            ("ACCESS-CONTROL-EXPOSE-HEADERS", "x-b"),
+            ("vary", "origin"),
+        ]
+        .map(|(name, value)| (name.into(), value.into()))
+    );
+}
+
+#[test]
+fn merge_keeps_credentials_before_vary_and_preserves_reservations() {
+    let mut cors = HeaderMap::new();
+    cors.append(
+        header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+        HeaderValue::from_static("true"),
+    );
+    cors.reserve_position(named("X-Later"));
+    cors.append(named("Vary"), HeaderValue::from_static("origin"));
+    let mut response = HeaderMap::new();
+    assert!(merge_cors_headers(&mut response, cors));
+    response.insert("x-later", HeaderValue::from_static("later"));
+    assert_eq!(
+        ordered_lines(&response),
+        [
+            ("access-control-allow-credentials", "true"),
+            ("x-later", "later"),
+            ("Vary", "origin")
+        ]
+        .map(|(name, value)| (name.into(), value.into()))
+    );
+}
+
+#[test]
+fn full_response_with_existing_vary_keeps_its_origin_variation() {
+    let mut response = full_header_map();
+    response.remove("x-fill-0");
+    response.insert(named("Vary"), HeaderValue::from_static("accept-encoding"));
+    let mut cors = HeaderMap::new();
+    cors.append(header::VARY, HeaderValue::from_static("origin"));
+    assert!(merge_cors_headers(&mut response, cors));
+    let vary: Vec<_> = response
+        .get_all(header::VARY)
+        .iter()
+        .map(|value| value.to_str().unwrap())
+        .collect();
+    assert_eq!(vary, ["accept-encoding", "origin"]);
+}
+
+fn ordered_lines(headers: &HeaderMap) -> Vec<(Box<str>, Box<str>)> {
+    headers
+        .ordered_iter()
+        .map(|(name, value)| {
+            (
+                name.as_original_str().into(),
+                value.to_str().unwrap().into(),
+            )
+        })
+        .collect()
+}
+
+/// A response map that cannot hold one more header name.
+fn full_header_map() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    let mut n = 0_usize;
+    loop {
+        let name = HeaderName::from_bytes(format!("x-fill-{n}").as_bytes()).unwrap();
+        if headers
+            .try_insert(name, HeaderValue::from_static("1"))
+            .is_err()
+        {
+            return headers;
+        }
+        n += 1;
+    }
+}
+
+#[tokio::test]
+async fn full_response_map_returns_an_uncacheable_error() {
+    let svc = CorsLayer::new()
+        .with_allow_origin_mirror_request()
+        .into_layer(service_fn(|_: Request| async {
+            let mut response = Response::new(Body::from("inner"));
+            *response.headers_mut() = full_header_map();
+            response.headers_mut().remove("x-fill-0");
+            response.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("https://example.test"),
+            );
+            Ok::<_, Infallible>(response)
+        }));
+    let res = svc
+        .serve(
+            Request::builder()
+                .header(header::ORIGIN, "https://example.test")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(res.headers()[header::CACHE_CONTROL], "no-store");
+    assert!(body_bytes(res).await.is_empty());
+}
+
+#[tokio::test]
+async fn forwarded_preflight_with_a_full_response_map_returns_an_uncacheable_error() {
+    let svc = CorsLayer::new()
+        .with_allow_origin_if(|origin, _| origin == "https://allowed.example")
+        .with_forward_disallowed_preflights(true)
+        .into_layer(service_fn(|_: Request| async {
+            let mut response = Response::new(Body::from("inner"));
+            *response.headers_mut() = full_header_map();
+            Ok::<_, Infallible>(response)
+        }));
+    let res = svc
+        .serve(preflight(Some("https://other.example")))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(res.headers()[header::CACHE_CONTROL], "no-store");
+    assert!(body_bytes(res).await.is_empty());
+}
+
+#[tokio::test]
+async fn forwarded_preflight_appends_vary_after_the_inner_headers() {
+    let svc = CorsLayer::new()
+        .with_allow_origin_if(|origin, _| origin == "https://allowed.example")
+        .with_allow_methods_mirror_request()
+        .with_forward_disallowed_preflights(true)
+        .into_layer(service_fn(|_: Request| async {
+            let mut response = Response::new(Body::from("inner"));
+            let headers = response.headers_mut();
+            headers.insert(named("X-First"), HeaderValue::from_static("1"));
+            headers.insert(named("Vary"), HeaderValue::from_static("accept-encoding"));
+            headers.insert(named("x-LAST"), HeaderValue::from_static("2"));
+            Ok::<_, Infallible>(response)
+        }));
+    let res = svc
+        .serve(preflight(Some("https://other.example")))
+        .await
+        .unwrap();
+    assert_eq!(
+        ordered_lines(res.headers()),
+        [
+            ("X-First", "1"),
+            ("Vary", "accept-encoding"),
+            ("x-LAST", "2"),
+            ("vary", "origin, access-control-request-method"),
+        ]
+        .map(|(name, value)| (name.into(), value.into()))
+    );
+}
+
+fn named(name: &str) -> HeaderName {
+    HeaderName::from_bytes(name.as_bytes()).unwrap()
 }

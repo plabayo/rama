@@ -9,7 +9,7 @@ use std::{
 
 use rama_core::{
     ServiceInput,
-    extensions::{Extension, Extensions, ExtensionsRef},
+    extensions::{Extension, Extensions, ExtensionsRef, NoExtensionsTransfer},
     service::service_fn,
 };
 use rama_http::{
@@ -19,7 +19,10 @@ use rama_http::{
         HttpServiceSource, TargetHttpVersion,
     },
     layer::alt_svc::{AltSvc, SendAltUsed},
-    proto::h3::{ClientSettingsProfile, SettingId, Settings},
+    proto::{
+        h2::frame::EarlyFrame,
+        h3::{ClientSettingsProfile, SettingId, Settings},
+    },
 };
 use rama_net::{
     Protocol,
@@ -81,6 +84,8 @@ mod embedded;
 mod parity;
 mod preserve;
 mod qpack;
+#[cfg(feature = "tls")]
+mod readiness;
 
 fn counts(total: u64) -> CounterSnapshot {
     CounterSnapshot {
@@ -310,7 +315,7 @@ fn request_capabilities_follow_real_transport_and_alpn_inputs() {
         .body(())
         .unwrap();
     assert_eq!(
-        required_capabilities(&automatic).unwrap(),
+        required_capabilities(&automatic, None).unwrap(),
         CapabilitySet {
             h1: true,
             h2: true,
@@ -325,7 +330,7 @@ fn request_capabilities_follow_real_transport_and_alpn_inputs() {
         .body(())
         .unwrap();
     assert_eq!(
-        required_capabilities(&clear_h2).unwrap(),
+        required_capabilities(&clear_h2, None).unwrap(),
         CapabilitySet {
             h2: true,
             ..CapabilitySet::default()
@@ -338,7 +343,7 @@ fn request_capabilities_follow_real_transport_and_alpn_inputs() {
         .body(())
         .unwrap();
     assert_eq!(
-        required_capabilities(&h3).unwrap(),
+        required_capabilities(&h3, None).unwrap(),
         CapabilitySet {
             h3: true,
             tls_quic: true,
@@ -352,7 +357,7 @@ fn request_capabilities_follow_real_transport_and_alpn_inputs() {
         .extensions()
         .insert(TlsAlpn([ApplicationProtocol::HTTP_3].into_iter().collect()));
     assert!(matches!(
-        required_capabilities(&incompatible),
+        required_capabilities(&incompatible, None),
         Err(crate::profile::selection::variants::SelectionError::IncompatibleTransport)
     ));
 }
@@ -394,16 +399,11 @@ async fn connect_modifier_prepares_before_connect_and_publishes_reuse() {
                 .extensions()
                 .contains::<PreparedConnectionComponents>()
         );
-        assert!(
-            input
-                .extensions()
-                .get_ref::<H2ClientContextParams>()
-                .is_some_and(|params| params.replay_early_frames.is_some())
-        );
         let params = input
             .extensions()
-            .get_ref::<H2ClientContextParams>()
+            .get_arc::<H2ClientContextParams>()
             .unwrap();
+        assert!(params.replay_early_frames.is_some());
         assert_eq!(params.keep_alive_interval, Some(Duration::from_secs(30)));
         assert_eq!(params.max_send_buf_size, Some(kib(128) as u32));
         assert!(matches!(
@@ -712,7 +712,7 @@ async fn modifiers_do_no_profile_work_without_an_emulation_context() {
 }
 
 #[tokio::test]
-async fn repeated_connect_keeps_its_own_replay_but_reports_caller_replacement() {
+async fn a_repeated_connect_installs_the_profile_replay_again() {
     let inner = service_fn(|input: ConnectRequest| async move {
         let conn = ServiceInput::new(());
         conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
@@ -735,24 +735,30 @@ async fn repeated_connect_keeps_its_own_replay_but_reports_caller_replacement() 
             .is_exact()
     );
 
-    let mut params = input
+    let mut params = (*input
+        .extensions()
+        .get_arc::<H2ClientContextParams>()
+        .unwrap())
+    .clone();
+    let later: Arc<[EarlyFrame]> = Vec::new().into();
+    params.replay_early_frames = Some(later.clone());
+    input.extensions().insert(params);
+    // The connect prepares again, so the profile's replay is the newest again.
+    let input = modifier.serve(input).await.unwrap().input;
+    let replay = input
         .extensions()
         .get_ref::<H2ClientContextParams>()
         .unwrap()
-        .clone();
-    params.replay_early_frames = Some(Vec::new().into());
-    input.extensions().insert(params);
-    let input = modifier.serve(input).await.unwrap().input;
-    assert_eq!(
+        .replay_early_frames
+        .clone()
+        .unwrap();
+    assert!(!Arc::ptr_eq(&replay, &later));
+    assert!(
         input
             .extensions()
             .get_ref::<ProfilePreservationReport>()
             .unwrap()
-            .differences
-            .as_ref(),
-        [ProfilePreservationDifference::RetainedH2ClientParameter {
-            parameter: H2ClientParameter::ReplayEarlyFrames
-        }]
+            .is_exact()
     );
 }
 
@@ -1008,15 +1014,21 @@ fn h3_emulation_context_with_slots(
 #[tokio::test]
 async fn connect_modifier_applies_selected_h3_settings_before_connect() {
     for caller_profile in [false, true] {
-        let inner = service_fn(|input: ConnectRequest| async move {
+        let inner = service_fn(move |input: ConnectRequest| async move {
             let settings = input
                 .extensions()
-                .get_ref::<ClientSettingsProfile>()
+                .get_arc::<ClientSettingsProfile>()
                 .unwrap();
             assert_eq!(settings.0.entries().len(), 1);
             assert!(settings.0.entries()[0].id.is_reserved());
             assert_eq!(settings.0.entries()[0].id, SettingId::FIRST_RESERVED);
             assert_eq!(settings.0.entries()[0].value, 17);
+            // A child connection keeps neither this connection's profile nor its caller's
+            // settings: both configure this connection only.
+            let child = input
+                .extensions()
+                .fork_connection(&NoExtensionsTransfer::new());
+            assert!(child.get_arc::<ClientSettingsProfile>().is_none());
             let conn = ServiceInput::new(());
             conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
             Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
@@ -1053,7 +1065,7 @@ async fn connect_modifier_applies_selected_h3_settings_before_connect() {
 }
 
 #[tokio::test]
-async fn connect_modifier_retains_and_reports_conflicting_caller_h3_settings() {
+async fn connect_modifier_replaces_earlier_h3_settings_with_the_profile_ones() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let inner = service_fn({
         let attempts = attempts.clone();
@@ -1064,17 +1076,7 @@ async fn connect_modifier_retains_and_reports_conflicting_caller_h3_settings() {
                     input
                         .extensions()
                         .get_ref::<ClientSettingsProfile>()
-                        .is_some_and(|settings| settings.0.entries().is_empty())
-                );
-                assert!(
-                    input
-                        .extensions()
-                        .get_ref::<ProfilePreservationReport>()
-                        .unwrap()
-                        .differences
-                        .contains(&ProfilePreservationDifference::LoweredProfileItem {
-                            item: LoweredProfileItem::CallerHttp3Settings
-                        })
+                        .is_some_and(|settings| !settings.0.entries().is_empty())
                 );
                 let conn = ServiceInput::new(());
                 conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
@@ -1173,14 +1175,24 @@ fn a_published_context_always_carries_its_partition() {
 #[tokio::test]
 async fn request_variant_pins_override_only_the_current_selection() {
     let configured = VariantPins {
-        connection: Some(ValueId([17; 32])),
-        request: Some(ValueId([23; 32])),
+        connection: Some(variant(CaptureLevel::Connection, 1).id),
+        request: Some(variant(CaptureLevel::Request, 2).id),
     };
     let requested = VariantPins {
-        connection: Some(ValueId([31; 32])),
+        connection: Some(variant(CaptureLevel::Connection, 3).id),
         request: None,
     };
-    let service = ProfileEmulateLayer::new(database())
+    let mut profile = database().iter().next().unwrap().clone();
+    let analysis = Arc::make_mut(profile.captured.as_mut().unwrap());
+    let scope = &mut analysis.scopes[0];
+    let mut variants = scope.observations.variants.to_vec();
+    variants.push(AnalyzedCaptureVariant {
+        value: variant(CaptureLevel::Connection, 3).into(),
+        weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1)),
+    });
+    scope.observations.variants = variants.into();
+    let database: UserAgentDatabase = [profile].into_iter().collect();
+    let service = ProfileEmulateLayer::new(Arc::new(database))
         .with_pins(configured)
         .into_layer(service_fn(|request: Request<()>| async move {
             Ok::<_, Infallible>(EmulationContext::of(request.extensions()).unwrap().pins)

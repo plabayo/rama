@@ -11,7 +11,7 @@ use rama_core::{
 use rama_tls::{ExtensionId, client::TlsClientConfig};
 use rama_tls_boring::client::{
     BoringTlsConnectorConfig,
-    profile::wire::{self, TransportShape},
+    profile::wire::{self, NonNegotiableValues, TransportShape},
 };
 use rama_ua::profile::{
     capture::tls::{TlsCapture, TlsCaptureTransport, TlsCapturedExtensionValue},
@@ -26,6 +26,7 @@ use crate::tls::ClientHandshake;
 pub(crate) fn compile(
     policy: &TlsClientConfig,
     capture: &TlsCapture,
+    retention: NonNegotiableValues,
     report: &mut ProfilePreservationReport,
 ) -> Result<TlsClientConfig, BoxError> {
     if !matches!(capture.transport, TlsCaptureTransport::Quic) {
@@ -33,26 +34,21 @@ pub(crate) fn compile(
             "QUIC TLS replay requires a QUIC capture",
         ));
     }
-    let parameters_len = capture
-        .extensions
-        .iter()
-        .find_map(
-            |extension| match (ExtensionId::from(extension.id), &extension.value) {
-                (
-                    ExtensionId::QUIC_TRANSPORT_PARAMETERS,
-                    TlsCapturedExtensionValue::ConnectionLength(length),
-                ) => Some(usize::from(*length)),
-                _ => None,
-            },
-        )
-        .ok_or_else(|| BoxError::from_static_str("QUIC TLS capture has no parameter shape"))?;
+    // A QUIC ClientHello always carries transport parameters (RFC 9001 §8.2).
+    if !capture.extensions.iter().any(|extension| {
+        extension.id == u16::from(ExtensionId::QUIC_TRANSPORT_PARAMETERS)
+            && matches!(
+                extension.value,
+                TlsCapturedExtensionValue::ConnectionLength(_)
+            )
+    }) {
+        return Err(BoxError::from_static_str(
+            "QUIC TLS capture has no parameter shape",
+        ));
+    }
     let current = BoringTlsConnectorConfig::from_extensions(policy.as_extensions());
-    let wire = wire::compile_for_policy(
-        TransportShape::Quic { parameters_len },
-        capture,
-        &current,
-        report,
-    )?;
+    let wire =
+        wire::compile_for_policy(TransportShape::Quic, capture, &current, retention, report)?;
     Ok(wire.with_client_handshake(captured_handshake(capture, report)))
 }
 

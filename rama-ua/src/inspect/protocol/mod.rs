@@ -2,8 +2,12 @@
 
 mod bootstrap;
 
-use bootstrap::H3ProfileBootstrap;
+use std::{
+    mem,
+    sync::{Arc, OnceLock},
+};
 
+use bootstrap::H3ProfileBootstrap;
 use parking_lot::Mutex;
 use rama_core::extensions::Extension;
 use rama_http::{
@@ -15,10 +19,8 @@ use rama_http::{
     request::Parts,
 };
 use rama_quic_proto::capture::QuicObservation;
-use std::{
-    mem,
-    sync::{Arc, OnceLock},
-};
+#[cfg(feature = "tls")]
+use rama_tls::server::{ServerClientHellos, ServerHandshakeHellos};
 
 use crate::profile::{
     capture::{
@@ -53,8 +55,13 @@ struct PendingConnection {
 }
 
 impl H3ProfileConnection {
-    fn capture(parts: &Parts) -> Self {
-        Self(Mutex::new(match connection(parts) {
+    /// Capture the supplied protocol observations.
+    fn capture(parts: &Parts, #[cfg(feature = "tls")] hellos: ServerClientHellos<'_>) -> Self {
+        #[cfg(feature = "tls")]
+        let captured = connection(parts, hellos);
+        #[cfg(not(feature = "tls"))]
+        let captured = connection(parts);
+        Self(Mutex::new(match captured {
             Ok(pending) => ConnectionState::Pending(pending),
             Err(error) => ConnectionState::Failed(error),
         }))
@@ -66,6 +73,7 @@ impl H3ProfileConnection {
         matches!(&*self.0.lock(), ConnectionState::Pending(_))
     }
 
+    /// Read the retained protocol facts.
     pub(super) fn facts(&self) -> Result<Arc<ConnectionFacts>, ProfileDataError> {
         let mut state = self.0.lock();
         let first_request = match &*state {
@@ -119,6 +127,11 @@ pub(super) struct ConnectionFacts {
 pub(super) struct H3ProfileRequest(pub Result<Box<[CapturedSlot]>, ProfileDataError>);
 
 pub(super) fn capture(parts: &Parts, metadata: &CaptureMetadata) {
+    #[cfg(feature = "tls")]
+    let hellos = metadata
+        .connection
+        .get_or_insert(|| ServerHandshakeHellos::capture(&parts.extensions))
+        .hellos();
     let request = metadata
         .exchange
         .get_or_insert(|| H3ProfileRequest(request(parts)));
@@ -139,9 +152,11 @@ pub(super) fn capture(parts: &Parts, metadata: &CaptureMetadata) {
     }
     // Retain the first request's native publication handle. A pending boundary
     // is resolved at export; collection never needs another request to retry it.
-    metadata
-        .connection
-        .get_or_insert(|| H3ProfileConnection::capture(parts));
+    #[cfg(feature = "tls")]
+    let connection = || H3ProfileConnection::capture(parts, hellos);
+    #[cfg(not(feature = "tls"))]
+    let connection = || H3ProfileConnection::capture(parts);
+    metadata.connection.get_or_insert(connection);
 }
 
 fn bounded(
@@ -158,7 +173,10 @@ fn bounded(
     Ok(joint.slots)
 }
 
-fn connection(parts: &Parts) -> Result<PendingConnection, ProfileDataError> {
+fn connection(
+    parts: &Parts,
+    #[cfg(feature = "tls")] hellos: ServerClientHellos<'_>,
+) -> Result<PendingConnection, ProfileDataError> {
     let quic = parts
         .extensions
         .get_ref::<QuicObservation>()
@@ -177,24 +195,25 @@ fn connection(parts: &Parts) -> Result<PendingConnection, ProfileDataError> {
         bytes: bounds.value_bytes,
         ..OrderCaptureLimits::default()
     };
-    let parameters = OrderedProtocolCapture::capture(
-        ProfileCaptureCompleteness::from_complete(quic.completeness.transport_parameters),
-        OrderNamespace::QuicParameter,
-        quic.transport_parameters
-            .iter()
-            .map(|parameter| (u64::from(parameter.id), parameter.value.as_slice())),
-        orders,
-    )?;
-    let slots = vec![
-        CapturedSlot {
-            kind: CapturedSlotKind::QuicFirstFlight,
-            value: flight.canonical(flight_limits)?,
-        },
-        CapturedSlot {
-            kind: CapturedSlotKind::QuicParameters,
-            value: parameters.canonical(orders)?,
-        },
-    ];
+    let mut slots = vec![CapturedSlot {
+        kind: CapturedSlotKind::QuicFirstFlight,
+        value: flight.canonical(flight_limits)?,
+    }];
+    #[cfg(feature = "tls")]
+    super::append_quic_parameter_slots(&mut slots, quic, &hellos, orders)?;
+    #[cfg(not(feature = "tls"))]
+    slots.push(CapturedSlot {
+        kind: CapturedSlotKind::QuicParameters,
+        value: OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::from_complete(quic.completeness.transport_parameters),
+            OrderNamespace::QuicParameter,
+            quic.transport_parameters
+                .iter()
+                .map(|parameter| (u64::from(parameter.id), parameter.value.as_slice())),
+            orders,
+        )?
+        .canonical(orders)?,
+    });
     Ok(PendingConnection {
         slots: bounded(slots, CaptureLevel::Connection)?,
         token_present: flight.flight.token_len != 0,

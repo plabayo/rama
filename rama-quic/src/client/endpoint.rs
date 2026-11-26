@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, fmt, net::SocketAddr, sync::Arc};
+use std::{collections::VecDeque, fmt, io, net::SocketAddr, sync::Arc};
 
 use rama_core::{
     Service,
@@ -17,41 +17,70 @@ use rama_net::{
 };
 use rama_quic_proto::profile::QuicProfile;
 use rama_udp::{DatagramError, DatagramSocket};
-use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
-use crate::{Endpoint, EndpointBuilder, EndpointConfig, SocketCapacityError};
+use crate::{
+    Endpoint, EndpointBuilder, EndpointConfig, SocketCapacityError, client::HandshakePreparation,
+    driver::Socket,
+};
 
 pub(super) const MAX_CACHED_PROFILE_ENDPOINTS: usize = 8;
 
 /// A QUIC endpoint to open one client connection from, as an endpoint connector hands it out
 /// to a [`QuicConnector`](super::QuicConnector).
 ///
-/// Its extensions are the facts of the path below the endpoint, such as the
+/// [`ready`](Self::ready) turns it into the endpoint for the final transport profile of a
+/// request: an endpoint on a datagram socket is built then, and a managed endpoint is
+/// replaced when that profile needs other endpoint-wide settings. Before that it holds the
+/// facts of the path below the endpoint: its [`peer`](Self::peer), its
+/// [`local_addr`](Self::local_addr) and its extensions, such as the
 /// [`EstablishedProxyRoute`](rama_net::client::EstablishedProxyRoute) of a proxy tunnel.
 #[derive(ExtensionsRef)]
 pub struct ClientEndpoint {
-    endpoint: Endpoint,
+    source: EndpointSource,
     peer: Option<SocketAddr>,
     extensions: Extensions,
     // An endpoint that serves one connection at a time is held for one attempt.
     _exclusive: Option<OwnedSemaphorePermit>,
 }
 
+#[derive(Debug)]
+enum EndpointSource {
+    // Used as is, whatever the transport profile.
+    Fixed(Endpoint),
+    // Selected for the endpoint-wide settings of a transport profile.
+    Managed {
+        endpoint: Endpoint,
+        owner: ManagedSource,
+        key: Option<EndpointProfileKey>,
+    },
+    // The mutex only makes the socket shareable; it is taken out whole to build the endpoint.
+    Socket {
+        socket: parking_lot::Mutex<Socket>,
+        scope: WeakScope,
+    },
+}
+
 impl fmt::Debug for ClientEndpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientEndpoint")
-            .field("endpoint", &self.endpoint)
+            .field("source", &self.source)
             .field("peer", &self.peer)
             .finish_non_exhaustive()
     }
 }
 
 impl ClientEndpoint {
-    /// An endpoint that can reach any remote.
+    /// An endpoint that can reach any remote, used whatever the transport profile.
     #[must_use]
     pub fn new(endpoint: Endpoint) -> Self {
+        Self::from_source(EndpointSource::Fixed(endpoint))
+    }
+
+    /// An endpoint from `source`, with no path facts yet.
+    fn from_source(source: EndpointSource) -> Self {
         Self {
-            endpoint,
+            source,
             peer: None,
             extensions: Extensions::new(),
             _exclusive: None,
@@ -66,6 +95,86 @@ impl ClientEndpoint {
         self
     }
 
+    /// The only remote this endpoint reaches, when its socket is fixed to one.
+    #[must_use]
+    pub fn peer(&self) -> Option<SocketAddr> {
+        self.peer
+    }
+
+    /// The local address of the endpoint's socket.
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        match &self.source {
+            EndpointSource::Fixed(endpoint) | EndpointSource::Managed { endpoint, .. } => {
+                endpoint.local_addr()
+            }
+            EndpointSource::Socket { socket, .. } => Ok(socket.lock().local_addr()),
+        }
+    }
+
+    /// The endpoint the connection of `input` is opened from, fitting its final transport
+    /// profile.
+    pub async fn ready(
+        self,
+        input: &ConnectRequest,
+    ) -> Result<ReadyClientEndpoint, ConnectionError> {
+        let Self {
+            source,
+            peer,
+            extensions,
+            _exclusive: exclusive,
+        } = self;
+        let endpoint = match source {
+            EndpointSource::Fixed(endpoint) => endpoint,
+            EndpointSource::Managed {
+                endpoint,
+                owner,
+                key,
+            } => {
+                let profile = input.extensions().get_arc::<QuicProfile>();
+                if profile.as_deref().map(EndpointProfileKey::of) == key {
+                    endpoint
+                } else {
+                    owner
+                        .select(profile.as_deref())
+                        .await
+                        .map_err(binding_error)?
+                }
+            }
+            EndpointSource::Socket { socket, scope } => {
+                let profile = input.extensions().get_arc::<QuicProfile>();
+                build_on_socket(socket.into_inner(), scope, profile.as_deref())?
+            }
+        };
+        Ok(ReadyClientEndpoint {
+            endpoint,
+            peer,
+            extensions,
+            _exclusive: exclusive,
+        })
+    }
+}
+
+/// The endpoint a [`ClientEndpoint`] became for the final transport profile of one request,
+/// to open that request's connection from.
+#[derive(ExtensionsRef)]
+pub struct ReadyClientEndpoint {
+    endpoint: Endpoint,
+    peer: Option<SocketAddr>,
+    extensions: Extensions,
+    // An endpoint that serves one connection at a time is held for one attempt.
+    _exclusive: Option<OwnedSemaphorePermit>,
+}
+
+impl fmt::Debug for ReadyClientEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReadyClientEndpoint")
+            .field("endpoint", &self.endpoint)
+            .field("peer", &self.peer)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReadyClientEndpoint {
     /// The endpoint.
     #[must_use]
     pub fn endpoint(&self) -> &Endpoint {
@@ -85,8 +194,9 @@ impl ClientEndpoint {
 /// A managed endpoint is bound on first use (dual-stack, falling back to IPv4) and rebound if
 /// its driver was lost with its runtime. A [`QuicProfile`] on the request selects an endpoint
 /// for its endpoint-wide properties (connection-ID length, QUIC-bit greasing, receive size);
-/// at most eight such endpoints are cached. Zero-length local connection IDs get a fresh
-/// endpoint per connection. A supplied endpoint is used as is and never replaced; with
+/// at most eight such endpoints are cached. [`ClientEndpoint::ready`] selects again when the
+/// final profile needs other endpoint-wide properties. Zero-length local connection IDs get a
+/// fresh endpoint per connection. A supplied endpoint is used as is and never replaced; with
 /// zero-length connection IDs it serves one connection attempt at a time.
 #[derive(Debug, Clone)]
 pub struct SharedQuicEndpoint {
@@ -100,13 +210,20 @@ enum Source {
         endpoint: Endpoint,
         exclusive: Arc<Semaphore>,
     },
-    Managed(AsyncMutex<ManagedEndpoints>),
+    Managed(Arc<Mutex<ManagedEndpoints>>),
 }
 
 #[derive(Debug, Default)]
 struct ManagedEndpoints {
     default: Option<Endpoint>,
     profiles: VecDeque<(EndpointProfileKey, Endpoint)>,
+}
+
+// The managed endpoints of a shared endpoint, which a handed out endpoint selects from again.
+#[derive(Debug, Clone)]
+struct ManagedSource {
+    endpoints: Arc<Mutex<ManagedEndpoints>>,
+    scope: WeakScope,
 }
 
 // Only endpoint-wide wire properties determine socket compatibility. Packet
@@ -134,9 +251,7 @@ impl SharedQuicEndpoint {
     pub fn managed(scope: impl Into<WeakScope>) -> Self {
         let scope = scope.into();
         Self {
-            source: Arc::new(Source::Managed(
-                AsyncMutex::new(ManagedEndpoints::default()),
-            )),
+            source: Arc::new(Source::Managed(Arc::default())),
             scope,
         }
     }
@@ -163,7 +278,7 @@ impl SharedQuicEndpoint {
         &self,
         profile: Option<&QuicProfile>,
     ) -> Result<ClientEndpoint, BoxError> {
-        let managed = match self.source.as_ref() {
+        match self.source.as_ref() {
             Source::Supplied {
                 endpoint,
                 exclusive,
@@ -173,29 +288,46 @@ impl SharedQuicEndpoint {
                     // Without connection IDs the endpoint tells connections apart by nothing.
                     client._exclusive = Some(exclusive.clone().acquire_owned().await?);
                 }
-                return Ok(client);
+                Ok(client)
             }
-            Source::Managed(managed) => managed,
-        };
+            Source::Managed(endpoints) => {
+                let owner = ManagedSource {
+                    endpoints: endpoints.clone(),
+                    scope: self.scope.clone(),
+                };
+                let endpoint = owner.select(profile).await?;
+                Ok(ClientEndpoint::from_source(EndpointSource::Managed {
+                    endpoint,
+                    owner,
+                    key: profile.map(EndpointProfileKey::of),
+                }))
+            }
+        }
+    }
+}
+
+impl ManagedSource {
+    /// The endpoint fitting the endpoint-wide properties of `profile`, bound when none is.
+    async fn select(&self, profile: Option<&QuicProfile>) -> Result<Endpoint, BoxError> {
         if self.scope.is_cancelled() {
             return Err(BoxError::from_static_str("QUIC connector is shutting down"));
         }
         let Some(profile) = profile else {
-            let mut managed = managed.lock().await;
+            let mut managed = self.endpoints.lock().await;
             if let Some(endpoint) = managed.default.as_ref().filter(|e| !e.is_closed()) {
-                return Ok(ClientEndpoint::new(endpoint.clone()));
+                return Ok(endpoint.clone());
             }
             // A driver lost with its runtime is recreated in the requesting runtime;
             // the configured graceful scope still controls its shutdown lifetime.
             let endpoint = self.bind(None).await?;
             managed.default = Some(endpoint.clone());
-            return Ok(ClientEndpoint::new(endpoint));
+            return Ok(endpoint);
         };
         if profile.connection_ids().local_len() == 0 {
-            return Ok(ClientEndpoint::new(self.bind(Some(profile)).await?));
+            return self.bind(Some(profile)).await;
         }
         let key = EndpointProfileKey::of(profile);
-        let mut managed = managed.lock().await;
+        let mut managed = self.endpoints.lock().await;
         if let Some(index) = managed
             .profiles
             .iter()
@@ -204,7 +336,7 @@ impl SharedQuicEndpoint {
             && !endpoint.is_closed()
         {
             managed.profiles.push_back((key, endpoint.clone()));
-            return Ok(ClientEndpoint::new(endpoint));
+            return Ok(endpoint);
         }
         let endpoint = self.bind(Some(profile)).await?;
         if managed.profiles.len() == MAX_CACHED_PROFILE_ENDPOINTS {
@@ -213,7 +345,7 @@ impl SharedQuicEndpoint {
             managed.profiles.pop_front();
         }
         managed.profiles.push_back((key, endpoint.clone()));
-        Ok(ClientEndpoint::new(endpoint))
+        Ok(endpoint)
     }
 
     /// Reuse QUIC's dual-stack client socket policy, including IPv4 fallback.
@@ -264,25 +396,27 @@ impl Service<ConnectRequest> for SharedQuicEndpoint {
     type Error = ConnectionError;
 
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
+        HandshakePreparation::before_endpoint(&input).await?;
         let profile = input.extensions.get_arc::<QuicProfile>();
         let conn = self
             .endpoint_for(profile.as_deref())
             .await
-            .map_err(|error| {
-                ConnectionError::local(error, ConnectionErrorKind::Unavailable)
-                    .context("binding QUIC endpoint")
-            })?;
+            .map_err(binding_error)?;
         Ok(EstablishedClientConnection { input, conn })
     }
 }
 
-/// Builds one QUIC endpoint on each datagram socket its inner connector establishes, such as
-/// a connected UDP socket or a UDP tunnel through a proxy: one socket and endpoint per
-/// connection.
+fn binding_error(error: BoxError) -> ConnectionError {
+    ConnectionError::local(error, ConnectionErrorKind::Unavailable).context("binding QUIC endpoint")
+}
+
+/// Gives each connection its own QUIC endpoint, on a datagram socket its inner connector
+/// establishes, such as a connected UDP socket or a UDP tunnel through a proxy.
 ///
-/// The endpoint applies the request's [`QuicProfile`], keeps its packets within what the
-/// socket carries, and opens its connection to the socket's peer. The socket's extensions,
-/// such as an established proxy route, become the endpoint's.
+/// The [`ClientEndpoint`] it hands out holds the socket: [`ClientEndpoint::ready`] builds
+/// the endpoint on it for the request's final [`QuicProfile`], keeping its packets within
+/// what the socket carries. Connections from it are opened to the socket's peer, and the
+/// socket's extensions, such as an established proxy route, become the endpoint's.
 #[derive(Debug, Clone, ExtensionsRef)]
 pub struct QuicEndpointConnector<C> {
     inner: C,
@@ -311,30 +445,44 @@ where
         } = self.inner.connect(input).await?;
         let peer = socket.peer_addr().ok().map(SocketAddr::from);
         let extensions = socket.extensions().clone();
-        let mut config = EndpointConfig::try_with_rand_key()
-            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::Internal))?;
-        if let Some(profile) = input.extensions.get_arc::<QuicProfile>() {
-            config.apply_quic_profile(&profile).map_err(|error| {
-                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-            })?;
-        }
-        let endpoint = EndpointBuilder::new(self.scope.clone())
-            .with_config(config)
-            .with_datagram_socket(socket)
-            .map_err(|error| {
-                // A socket too small for QUIC is the path's limit, not a local fault.
-                let too_small = matches!(&error, DatagramError::Io(io)
-                    if io.get_ref().is_some_and(|inner| inner.is::<SocketCapacityError>()));
-                if too_small {
-                    ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
-                } else {
-                    ConnectionError::local(error, ConnectionErrorKind::Internal)
-                }
-                .context("building the QUIC endpoint on the socket")
-            })?;
-        let mut conn = ClientEndpoint::new(endpoint);
+        let socket =
+            Socket::new(socket).map_err(|error| socket_build_error(DatagramError::from(error)))?;
+        let mut conn = ClientEndpoint::from_source(EndpointSource::Socket {
+            socket: parking_lot::Mutex::new(socket),
+            scope: self.scope.clone(),
+        });
         conn.peer = peer;
         conn.extensions = extensions;
         Ok(EstablishedClientConnection { input, conn })
     }
+}
+
+fn build_on_socket(
+    socket: Socket,
+    scope: WeakScope,
+    profile: Option<&QuicProfile>,
+) -> Result<Endpoint, ConnectionError> {
+    let mut config = EndpointConfig::try_with_rand_key()
+        .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::Internal))?;
+    if let Some(profile) = profile {
+        config
+            .apply_quic_profile(profile)
+            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
+    }
+    EndpointBuilder::new(scope)
+        .with_config(config)
+        .on_socket(socket)
+        .map_err(socket_build_error)
+}
+
+fn socket_build_error(error: DatagramError) -> ConnectionError {
+    // A socket too small for QUIC is the path's limit, not a local fault.
+    let too_small = matches!(&error, DatagramError::Io(io)
+        if io.get_ref().is_some_and(|inner| inner.is::<SocketCapacityError>()));
+    if too_small {
+        ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+    } else {
+        ConnectionError::local(error, ConnectionErrorKind::Internal)
+    }
+    .context("building the QUIC endpoint on the socket")
 }

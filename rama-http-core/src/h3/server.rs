@@ -20,6 +20,7 @@ use rama_core::{
     bytes::BytesMut,
     error::BoxError,
     extensions::ExtensionsRef,
+    futures::maybe,
     telemetry::tracing::{debug, warn},
 };
 use rama_http::{
@@ -40,7 +41,7 @@ use rama_quic_proto::{Side, VarInt, coding::Codec as _};
 use rama_utils::guard::DropGuard;
 use tokio::{
     sync::{Notify, Semaphore},
-    time::{Instant, Sleep, sleep, timeout},
+    time::{Instant, Sleep, sleep_until, timeout},
 };
 
 use super::{
@@ -246,10 +247,11 @@ pin_project! {
     /// [`Self::shutdown`] then stops admission.
     #[derive(Debug)]
     pub struct ShutdownNotice {
-        announced: bool,
         draining: bool,
+        deadline: Option<Instant>,
+        // Created when first awaited, so a notice is built and announced outside a runtime.
         #[pin]
-        notice: Sleep,
+        notice: Option<Sleep>,
     }
 }
 
@@ -258,16 +260,16 @@ impl ShutdownNotice {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            announced: false,
             draining: false,
-            notice: sleep(Duration::ZERO),
+            deadline: None,
+            notice: None,
         }
     }
 
     /// Whether the peer was told to stop.
     #[must_use]
     pub fn is_announced(&self) -> bool {
-        self.announced
+        self.deadline.is_some()
     }
 
     /// Whether new request streams are still admitted.
@@ -281,23 +283,25 @@ impl ShutdownNotice {
         self: Pin<&mut Self>,
         connection: &mut Connection<C>,
     ) -> Result<(), Error> {
-        let this = self.project();
-        if *this.announced {
+        if self.is_announced() {
             return Ok(());
         }
         let period = connection.announce_shutdown()?;
-        this.notice.reset(Instant::now() + period);
-        *this.announced = true;
+        *self.project().deadline = Some(Instant::now() + period);
         Ok(())
     }
 
     /// Complete once an announced notice period ended; pending before the
     /// announcement and after [`Self::shutdown`].
     pub async fn elapsed(self: Pin<&mut Self>) {
-        if !self.announced || self.draining {
-            return pending().await;
+        let mut this = self.project();
+        let deadline = this.deadline.filter(|_| !*this.draining);
+        if let Some(deadline) = deadline
+            && this.notice.is_none()
+        {
+            this.notice.set(Some(sleep_until(deadline)));
         }
-        self.project().notice.await;
+        maybe(this.notice.as_pin_mut().filter(|_| deadline.is_some())).await;
     }
 
     /// Stop admitting requests; see [`Connection::shutdown`].

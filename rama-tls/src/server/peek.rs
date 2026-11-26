@@ -323,6 +323,8 @@ mod test {
         ServiceInput,
         service::{RejectError, service_fn},
     };
+    #[cfg(feature = "http")]
+    use rama_net::http::server::HttpPeekRouter;
     use std::{
         collections::VecDeque,
         convert::Infallible,
@@ -582,8 +584,6 @@ mod test {
     #[tokio::test]
     #[cfg(feature = "http")]
     async fn fail_closed_tls_cancel_does_not_cascade_to_http_or_raw_fallbacks() {
-        use rama_net::http::server::HttpPeekRouter;
-
         let http_calls = Arc::new(AtomicUsize::new(0));
         let http_calls_for_service = Arc::clone(&http_calls);
         let http = service_fn(move || {

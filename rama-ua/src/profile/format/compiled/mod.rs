@@ -30,7 +30,8 @@ use self::{
 };
 use crate::profile::{
     analysis::profile::{AnalyzedProfile, PROFILE_CLASSIFIER_REVISION},
-    format::canonical::ProfileDataError,
+    capture::joint::has_ech_outer,
+    format::canonical::{CanonicalDomain, ProfileDataError},
     model::ua::UserAgentProfile,
 };
 
@@ -69,20 +70,8 @@ pub fn encode_compiled_profiles(profiles: &[AnalyzedProfile]) -> Result<Vec<u8>,
     }
     let profiles: Vec<_> = profiles.iter().map(retained).collect();
     let mut output = frame(&compile_set(&profiles)?)?;
-    for scope in profiles
-        .iter()
-        .flat_map(|profile| &profile.scopes)
-        .filter(|scope| {
-            scope.observations.domain == crate::profile::format::canonical::CanonicalDomain::Joint
-        })
-    {
-        if let Some(variant) = scope.observations.variants.first() {
-            let value = variant.value.canonical()?;
-            if crate::profile::capture::joint::has_ech_outer(value.as_ref())? {
-                output[MAGIC.len()] = ECH_FORMAT_VERSION;
-                break;
-            }
-        }
+    if has_paired_ech(&profiles)? {
+        output[MAGIC.len()] = ECH_FORMAT_VERSION;
     }
     // Ids not stored are recomputed at load, so export proves they come back exactly.
     let loaded = decode_compiled_profiles(&output)?;
@@ -128,7 +117,8 @@ pub fn decode_compiled_profiles(bytes: &[u8]) -> Result<Vec<AnalyzedProfile>, Bo
         return Err(
             BoxError::from_static_str("unsupported compiled profile set format version")
                 .context_field("version", version)
-                .context_field("supported", FORMAT_VERSION),
+                .context_field("supported", FORMAT_VERSION)
+                .context_field("supported", ECH_FORMAT_VERSION),
         );
     }
     // One pass into an exactly sized buffer: a streaming decoder would also keep
@@ -162,7 +152,29 @@ pub fn decode_compiled_profiles(bytes: &[u8]) -> Result<Vec<AnalyzedProfile>, Bo
     if set.profiles.is_empty() {
         return Err(ProfileDataError::Incomplete("compiled profile set profiles").into());
     }
-    load_set(set)
+    let profiles = load_set(set)?;
+    // Readers of the baseline version do not know paired ECH slots.
+    if version == FORMAT_VERSION && has_paired_ech(&profiles)? {
+        return Err(ProfileDataError::Invalid("paired ECH slots in a baseline profile set").into());
+    }
+    Ok(profiles)
+}
+
+/// Whether any connection capture pairs an ECH inner with its wire outer.
+fn has_paired_ech(profiles: &[AnalyzedProfile]) -> Result<bool, ProfileDataError> {
+    for value in profiles
+        .iter()
+        .flat_map(|profile| &profile.scopes)
+        .filter(|scope| scope.observations.domain == CanonicalDomain::Joint)
+        .flat_map(|scope| &scope.observations.variants)
+        // Compact values are request captures, which never hold TLS slots.
+        .filter_map(|variant| variant.value.as_canonical())
+    {
+        if has_ech_outer(value)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Decode a precompiled profile set into emulation profiles.

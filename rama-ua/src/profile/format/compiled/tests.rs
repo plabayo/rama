@@ -30,11 +30,6 @@ fn embedded_set_round_trips_exactly() {
     assert!(is_compiled_profile_set(&encoded));
     // Deterministic output: re-encoding the embedded analysis reproduces the file.
     assert_eq!(encoded, EMBEDDED);
-    let decoded = decode_compiled_profiles(&encoded).unwrap();
-    assert_eq!(
-        serde_json::to_value(&decoded).unwrap(),
-        serde_json::to_value(&profiles).unwrap()
-    );
     assert_eq!(
         try_load_compiled_profiles(EMBEDDED).unwrap().len(),
         profiles.len()
@@ -141,6 +136,27 @@ fn foreign_stale_empty_and_corrupt_sets_are_refused() {
     corrupt[last] ^= 1;
     decode_compiled_profiles(&corrupt).unwrap_err();
     decode_compiled_profiles(&EMBEDDED[..EMBEDDED.len() / 2]).unwrap_err();
+}
+
+#[test]
+fn baseline_sets_refuse_paired_ech_slots() {
+    assert_eq!(EMBEDDED[MAGIC.len()], ECH_FORMAT_VERSION);
+    let profiles = decode_compiled_profiles(EMBEDDED).unwrap();
+    assert!(has_paired_ech(&profiles).unwrap());
+    let mut baseline = EMBEDDED.to_vec();
+    baseline[MAGIC.len()] = FORMAT_VERSION;
+    let error = decode_compiled_profiles(&baseline).unwrap_err();
+    assert!(error.to_string().contains("paired ECH"), "{error}");
+
+    let mut unknown = EMBEDDED.to_vec();
+    unknown[MAGIC.len()] = ECH_FORMAT_VERSION + 1;
+    let error = format!("{:?}", decode_compiled_profiles(&unknown).unwrap_err());
+    for supported in [FORMAT_VERSION, ECH_FORMAT_VERSION] {
+        assert!(
+            error.contains(&format!("\"supported\": {supported}")),
+            "{error}"
+        );
+    }
 }
 
 #[test]

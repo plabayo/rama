@@ -28,24 +28,9 @@ const CONTENT_ENCODING: &str = "content-encoding";
 
 impl HeaderBag for HeaderMap {
     fn merge(&mut self, other: Self) -> Result<(), OtelExporterConfigError> {
-        let mut last_key: Option<HeaderName> = None;
-        for (key, value) in other {
-            let result = match key {
-                Some(key) => {
-                    let result = self.try_insert(key.clone(), value).map(drop);
-                    last_key = Some(key);
-                    result
-                }
-                None => match last_key.as_ref() {
-                    Some(key) => self.try_append(key, value).map(drop),
-                    None => Ok(()),
-                },
-            };
-            result.map_err(|_size_limit| {
-                OtelExporterConfigError::new("merged headers exceed header limit")
-            })?;
-        }
-        Ok(())
+        self.try_insert_map(other).map_err(|_size_limit| {
+            OtelExporterConfigError::new("merged headers exceed header limit")
+        })
     }
 
     fn from_env(raw: &str, var: &'static str) -> Result<Self, OtelExporterConfigError> {

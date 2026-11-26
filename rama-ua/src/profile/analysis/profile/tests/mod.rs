@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "tls")]
+use crate::profile::capture::tls::{TlsCapturedExtension, TlsCapturedExtensionValue};
 use crate::profile::{
     analysis::order::AnalyzedOrderWeight,
     capture::{
@@ -11,6 +13,8 @@ use crate::profile::{
     format::{archive::ProfileArchiveEntry, canonical::CanonicalWriter},
     model::identity::{ConnectionContext, ResumptionContext},
 };
+#[cfg(feature = "tls")]
+use TlsCaptureTransport::{Quic, Tcp};
 use rama_http::{
     HeaderMap, HeaderValue, Method,
     proto::{
@@ -107,7 +111,6 @@ fn evidence_of_revision(connections: Vec<Vec<CapturedSlot>>, revision: u16) -> P
 
 #[cfg(feature = "tls")]
 fn tls_slot(transport: TlsCaptureTransport, resumed: bool) -> CapturedSlot {
-    use crate::profile::capture::tls::{TlsCapturedExtension, TlsCapturedExtensionValue};
     let mut extensions = vec![
         TlsCapturedExtension {
             id: 43,
@@ -304,7 +307,6 @@ fn analyze(connections: Vec<Vec<CapturedSlot>>) -> AnalyzedProfile {
 #[cfg(feature = "tls")]
 #[test]
 fn tls_counts_only_with_a_full_handshake_on_its_transport() {
-    use TlsCaptureTransport::{Quic, Tcp};
     let h3 = |number| CapturedSlot {
         kind: CapturedSlotKind::Http3Settings,
         value: setting(number),

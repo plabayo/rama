@@ -8,8 +8,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use rama_net::socket::core::{SockAddr, SockAddrStorage, socklen_t};
-use windows_sys::Win32::Networking::WinSock;
+use rama_net::socket::core::{SockAddr, SockAddrStorage, SockRef, socklen_t};
+use windows_sys::Win32::{Foundation::FALSE, Networking::WinSock};
 
 use super::{
     EcnCodepoint, RecvMeta, SocketCapabilities, Transmit, UdpSockRef,
@@ -94,6 +94,7 @@ impl UdpSocketState {
         }
 
         socket.set_nonblocking(true)?;
+        stop_unattributable_reports(&*socket);
         let addr = socket.local_addr()?;
         let is_ipv6 = addr.as_socket_ipv6().is_some();
         let v6only = if is_ipv6 {
@@ -618,6 +619,61 @@ unsafe fn send(
     }
 }
 
+/// Stop Winsock from failing a later receive of any socket over a time-exceeded reply
+/// (`WSAENETRESET`), which Unix does not report either; port-unreachable reports stay on.
+///
+/// A provider without the control (older Windows, Wine) keeps reporting; [`receive_failure`]
+/// then still classifies the error as about one datagram.
+pub(crate) fn stop_time_exceeded_reports(socket: &impl AsSocket) {
+    disable_report_or_log(socket, WinSock::SIO_UDP_NETRESET, "SIO_UDP_NETRESET");
+}
+
+/// For a packet socket: [`stop_time_exceeded_reports`], and on an unconnected socket also the
+/// port-unreachable reports (`WSAECONNRESET`), which name no datagram or destination there.
+///
+/// A connected socket keeps them: a fast "peer port closed" signal, as `ECONNREFUSED` is on
+/// Unix. Whether the socket is connected is read once, here.
+fn stop_unattributable_reports(socket: &impl AsSocket) {
+    stop_time_exceeded_reports(socket);
+    if SockRef::from(socket).peer_addr().is_err() {
+        disable_report_or_log(socket, WinSock::SIO_UDP_CONNRESET, "SIO_UDP_CONNRESET");
+    }
+}
+
+fn disable_report_or_log(socket: &impl AsSocket, control: u32, name: &str) {
+    if let Err(error) = disable_report(socket, control) {
+        crate::log::debug!("udp socket keeps ICMP reports: {name} refused: {error}");
+    }
+}
+
+/// Turn off one boolean UDP report control (`SIO_UDP_CONNRESET`, `SIO_UDP_NETRESET`).
+fn disable_report(socket: &impl AsSocket, control: u32) -> io::Result<()> {
+    let value = FALSE;
+    let mut returned = 0;
+    // SAFETY: `WSAIoctl` without an overlapped structure or completion routine completes
+    // before returning; it reads `cbInBuffer` bytes at `lpvInBuffer`, writes nothing to the
+    // null zero-length output buffer, and writes the count at `lpcbBytesReturned`. Those are
+    // the live locals `value` (a `BOOL`, the input both controls document) with its own size,
+    // and `returned`. The handle is open for the borrow of `socket` (`BorrowedSocket`).
+    let rc = unsafe {
+        WinSock::WSAIoctl(
+            socket.as_socket().as_raw_socket() as _,
+            control,
+            (&raw const value).cast(),
+            size_of_val(&value) as u32,
+            ptr::null_mut(),
+            0,
+            &raw mut returned,
+            ptr::null_mut(),
+            None,
+        )
+    };
+    match rc == 0 {
+        true => Ok(()),
+        false => Err(io::Error::last_os_error()),
+    }
+}
+
 fn set_socket_option(socket: &impl AsSocket, level: i32, name: i32, value: u32) -> io::Result<()> {
     // SAFETY: `setsockopt` reads `optlen` bytes at `optval`: the live local `value`, with its
     // own size. The handle is open for the borrow of `socket` (`BorrowedSocket`).
@@ -855,6 +911,96 @@ mod tests {
             send_through(&connected, peer_addr, Some(refuse_all)),
             (refused, vec![true, false])
         );
+    }
+
+    /// A closed loopback port: one a socket was bound to and released.
+    fn closed_port() -> std::net::SocketAddr {
+        UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+    }
+
+    /// Receive one datagram on `socket` through `state`, blocking for at most five seconds.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `state` was created for `socket`.
+    unsafe fn receive_blocking(
+        state: &UdpSocketState,
+        socket: &UdpSocket,
+        buffer: &mut [u8],
+    ) -> io::Result<RecvMeta> {
+        socket.set_nonblocking(false).unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut bufs = [IoSliceMut::new(buffer)];
+        let mut meta = [RecvMeta::default()];
+        // SAFETY: `recv` needs the open socket `state` was created for: `socket` is open for
+        // its borrow, and this function's contract makes it that socket.
+        unsafe { state.recv(&UdpSockRef::from(socket), &mut bufs, &mut meta) }?;
+        Ok(meta[0])
+    }
+
+    /// A port-unreachable reply to an earlier send leaves the next receive of an unconnected
+    /// socket to the datagram waiting for it.
+    #[test]
+    fn an_unconnected_receive_is_not_failed_by_an_earlier_unreachable_send() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let state = UdpSocketState::new((&receiver).into(), false).unwrap();
+        let closed = closed_port();
+        receiver.send_to(b"void", closed).unwrap();
+
+        // Loopback replies arrive in order: once the witness sees its own, the receiver's is in.
+        let witness = UdpSocket::bind("127.0.0.1:0").unwrap();
+        witness
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        witness.send_to(b"void", closed).unwrap();
+        let error = witness.recv_from(&mut [0; 8]).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            io::ErrorKind::ConnectionReset,
+            "Winsock reports a port-unreachable on loopback: {error}"
+        );
+
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        peer.send_to(b"hello", receiver.local_addr().unwrap())
+            .unwrap();
+        let mut buffer = [0; 16];
+        // SAFETY: `state` was created for `receiver` above.
+        let meta = unsafe { receive_blocking(&state, &receiver, &mut buffer) }
+            .expect("the receive returns the waiting datagram");
+        assert_eq!(&buffer[..meta.len], b"hello");
+        assert_eq!(meta.addr, peer.local_addr().unwrap());
+    }
+
+    /// A connected socket keeps reporting its peer's closed port, as Unix does.
+    #[test]
+    fn a_connected_receive_reports_the_peer_port_closed() {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.connect(closed_port()).unwrap();
+        let state = UdpSocketState::new((&socket).into(), false).unwrap();
+        socket.send(b"void").unwrap();
+        // SAFETY: `state` was created for `socket` above.
+        let error = unsafe { receive_blocking(&state, &socket, &mut [0; 8]) }.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset, "{error}");
+    }
+
+    /// A plain socket connected after binding still reports its peer's closed port: only
+    /// packet sockets turn port-unreachable reports off.
+    #[test]
+    fn a_plain_socket_connected_after_binding_reports_the_peer_port_closed() {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        stop_time_exceeded_reports(&socket);
+        socket.connect(closed_port()).unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        socket.send(b"void").unwrap();
+        let error = socket.recv(&mut [0; 8]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset, "{error}");
     }
 
     #[test]

@@ -1,30 +1,34 @@
 #![deny(warnings)]
 #![warn(rust_2018_idioms)]
 
-use std::convert::Infallible;
-use std::fmt;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener};
-use std::pin::Pin;
-use std::thread;
-use std::time::Duration;
-
-use rama::ServiceInput;
-use rama::extensions::{Extension, ExtensionsRef};
-use rama::http::body::util::{BodyExt, StreamBody};
-use rama::http::core::body::Frame;
-use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
-use rama::http::{Method, Request, StatusCode, StreamingBody, Version};
-use rama::net::stream::Socket;
-use rama::net::uri::Uri;
-use rama_net::address::SocketAddress;
-
-use super::support;
+use std::{
+    convert::Infallible,
+    fmt,
+    io::{Read, Write},
+    net::{SocketAddr, TcpListener},
+    pin::Pin,
+    thread,
+    time::Duration,
+};
 
 use futures_channel::oneshot;
-use rama::bytes::Bytes;
-use rama::futures::future::{self, FutureExt, TryFuture, TryFutureExt};
+use rama::{
+    ServiceInput,
+    bytes::{BufMut, Bytes, BytesMut},
+    extensions::{Extension, ExtensionsRef},
+    futures::future::{self, FutureExt, TryFuture, TryFutureExt, poll_fn},
+    http::{
+        Method, Request, StatusCode, StreamingBody, Version,
+        body::util::{BodyExt, StreamBody},
+        core::body::Frame,
+        header::{HeaderMap, HeaderName, HeaderValue},
+    },
+    net::{stream::Socket, uri::Uri},
+};
+use rama_net::address::SocketAddress;
 use tokio::net::TcpStream;
+
+use super::{support, support::trailers::StreamBodyWithTrailers};
 
 fn s(buf: &[u8]) -> &str {
     std::str::from_utf8(buf).expect("from_utf8")
@@ -37,9 +41,6 @@ async fn concat<B>(b: B) -> Result<Bytes, B::Error>
 where
     B: StreamingBody,
 {
-    use rama::bytes::{BufMut, BytesMut};
-    use rama::futures::future::poll_fn;
-
     let mut b = std::pin::pin!(b);
     let mut acc = BytesMut::new();
     while let Some(frame) = poll_fn(|cx| b.as_mut().poll_frame(cx)).await {
@@ -54,9 +55,6 @@ async fn concat_with_trailers<B>(b: B) -> Result<(Bytes, Option<HeaderMap>), B::
 where
     B: StreamingBody,
 {
-    use rama::bytes::{BufMut, BytesMut};
-    use rama::futures::future::poll_fn;
-
     let mut b = std::pin::pin!(b);
     let mut acc = BytesMut::new();
     let mut trailers: Option<HeaderMap> = None;
@@ -475,7 +473,6 @@ macro_rules! __client_req_prop {
     }};
 
     ($req_builder:ident, $body:ident, $addr:ident, body_stream_with_trailers: $body_e:expr) => {{
-        use support::trailers::StreamBodyWithTrailers;
         let (body, trailers) = $body_e;
         $body = BodyExt::boxed(StreamBodyWithTrailers::with_trailers(
             rama::futures::TryStreamExt::map_ok(body, Frame::data),
@@ -743,37 +740,54 @@ test! {
             body: None,
 }
 
+// Each line keeps its spelling, with the first letter of every word uppercased; trailers keep
+// their order, a repeated name split by others included.
 test! {
     name: client_post_req_body_chunked_with_trailer_titlecase,
 
     server:
         expected: "\
             POST / HTTP/1.1\r\n\
-            trailer: Chunky-Trailer\r\n\
+            Trailer: chunky-Trailer, x-zeta\r\n\
+            X-MIxEd-Case: 1\r\n\
             Host: {addr}\r\n\
-            transfer-encoding: chunked\r\n\
+            Transfer-Encoding: chunked\r\n\
             \r\n\
             5\r\n\
             hello\r\n\
             0\r\n\
-            chunky-trailer: header data\r\n\
+            Chunky-Trailer: header data\r\n\
+            X-Zeta: 1\r\n\
+            Foo: bar\r\n\
+            X-ZETA: 2\r\n\
             \r\n\
             ",
         reply: REPLY_OK,
 
     client:
+        options: {
+            set_title_case_headers: true,
+        },
         request: {
             method: POST,
             url: "http://{addr}/",
             headers: {
-                "trailer" => "Chunky-Trailer",
+                "Trailer" => "chunky-Trailer, x-zeta",
+                "x-mIxEd-case" => "1",
             },
             body_stream_with_trailers: (
                 (rama::futures::stream::once(async { Ok::<_, Infallible>(Bytes::from("hello"))})),
-                HeaderMap::from_iter(vec![(
-                    HeaderName::from_static("chunky-trailer"),
-                    HeaderValue::from_static("header data")
-                )].into_iter())),
+                HeaderMap::from_iter([
+                    ("chunky-trailer", "header data"),
+                    ("X-zeta", "1"),
+                    // Invalid trailer field that should not be sent
+                    ("Host", "www.example.com"),
+                    // Not declared in `Trailer`, still sent: declaring is only a SHOULD
+                    ("foo", "bar"),
+                    ("x-ZETA", "2"),
+                ].map(|(name, value)| {
+                    (HeaderName::from_static(name), HeaderValue::from_static(value))
+                }))),
         },
         response:
             status: OK,
@@ -1627,42 +1641,62 @@ test! {
 }
 
 mod conn {
-    use std::assert_matches;
-    use std::convert::Infallible;
-    use std::io::{self, Read, Write};
-    use std::net::{SocketAddr, TcpListener};
-    use std::pin::Pin;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        assert_matches,
+        convert::Infallible,
+        io::{self, Read, Write},
+        net::{SocketAddr, TcpListener},
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Poll},
+        thread,
+        time::Duration,
     };
-    use std::task::{Context, Poll};
-    use std::thread;
-    use std::time::Duration;
 
     use futures_channel::{mpsc, oneshot};
-    use rama::ServiceInput;
-    use rama::bytes::{Buf, Bytes};
-    use rama::extensions::{Extensions, ExtensionsRef};
-    use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
-    use rama_http::body::util::Full;
-    use rama_http::body::util::combinators::BoxBody;
-    use rama_http::proto::h1::ext::ReasonPhrase;
-    use rama_http::proto::h1::ext::informational::OnInformational;
-    use rama_http::{Body, StreamingBody};
-    use tokio::io::{
-        AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream, ReadBuf,
+    use rama::{
+        ServiceInput,
+        bytes::{Buf, Bytes},
+        error::BoxError,
+        extensions::{Extensions, ExtensionsRef},
+        futures::{
+            future::{self, FutureExt, TryFutureExt, poll_fn},
+            stream::iter,
+        },
+        graceful::WeakScope,
+        http::{
+            Method, Request, Response, StatusCode, Version,
+            body::util::{BodyExt, Empty, StreamBody},
+            core::{body::Frame, client::conn, server::conn::http2, service::RamaHttpService},
+            proto::ext::Protocol,
+        },
+        io::AbortIo,
+        net::uri::Uri,
+        service::service_fn,
     };
-    use tokio::net::{TcpListener as TkTcpListener, TcpStream};
-
-    use rama::error::BoxError;
-    use rama::graceful::WeakScope;
-    use rama::http::body::util::{BodyExt, Empty, StreamBody};
-    use rama::http::core::body::Frame;
-    use rama::http::core::client::conn;
-    use rama::http::core::service::RamaHttpService;
-    use rama::http::{Method, Request, Response, StatusCode};
-    use rama::net::uri::Uri;
+    use rama_http::{
+        Body, StreamingBody,
+        body::{
+            SizeHint,
+            util::{Full, combinators::BoxBody},
+        },
+        header::{HeaderMap, HeaderName, HeaderValue},
+        proto::h1::ext::{ReasonPhrase, informational::OnInformational},
+    };
+    use rama_http_core::h2::Reason;
+    use rama_net::{
+        address::{HostWithPort, ProxyAddress, ProxyProtocol},
+        client::EstablishedProxyRoute,
+    };
+    use tokio::{
+        io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream, ReadBuf},
+        net::{TcpListener as TkTcpListener, TcpStream},
+        task::spawn,
+        time::timeout,
+    };
 
     use super::{FutureExpectMsgExt, concat, s, support, tcp_connect};
 
@@ -1732,6 +1766,101 @@ mod conn {
         };
 
         future::join(server, client).await;
+    }
+
+    /// The request head a client sends for `lines`, each name sent with its own spelling.
+    async fn sent_head(lines: &[(&'static str, &'static str)]) -> Box<str> {
+        let (client_io, mut server_io, _addr) = setup_duplex_test_server();
+
+        let server = async move {
+            let mut buf = [0; 4096];
+            let n = server_io.read(&mut buf).await.expect("read 1");
+            server_io
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            Box::<str>::from(s(&buf[..n]))
+        };
+
+        let mut req = Request::builder()
+            .uri("http://example.test/a")
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+        for (name, value) in lines {
+            req.headers_mut().append(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static(value),
+            );
+        }
+        let client = async move {
+            let (mut client, conn) = conn::http1::handshake(ServiceInput::new(client_io))
+                .await
+                .expect("handshake");
+            tokio::task::spawn(async move {
+                conn.await.expect("http conn");
+            });
+            let res = client.send_request(req).await.expect("send_request");
+            assert_eq!(res.status(), StatusCode::OK);
+        };
+
+        future::join(server, client).await.0
+    }
+
+    // A nominated Host would be stripped by the next intermediary, so it is never sent nominated.
+    #[tokio::test]
+    async fn host_is_never_sent_as_a_connection_option() {
+        for (lines, expected) in [
+            (
+                &[
+                    ("Host", "example.test"),
+                    ("Connection", "Host"),
+                    ("X-End", "1"),
+                ][..],
+                "GET /a HTTP/1.1\r\nHost: example.test\r\nX-End: 1\r\n\r\n",
+            ),
+            (
+                &[("Connection", "keep-alive, Host"), ("Host", "example.test")],
+                "GET /a HTTP/1.1\r\nConnection: keep-alive\r\nHost: example.test\r\n\r\n",
+            ),
+            (
+                &[
+                    ("Connection", "keep-alive"),
+                    ("Host", "example.test"),
+                    ("CONNECTION", "HOST"),
+                    ("X-End", "1"),
+                ],
+                "GET /a HTTP/1.1\r\nConnection: keep-alive\r\nHost: example.test\r\nX-End: 1\r\n\r\n",
+            ),
+            (
+                &[
+                    ("connection", "Keep-Alive"),
+                    ("Host", "example.test"),
+                    ("Connection", "Host , X-Hop"),
+                    ("X-Hop", "1"),
+                ],
+                "GET /a HTTP/1.1\r\nconnection: Keep-Alive\r\nHost: example.test\r\nConnection: X-Hop\r\nX-Hop: 1\r\n\r\n",
+            ),
+            (
+                &[
+                    ("Connection", "Host"),
+                    ("Host", "example.test"),
+                    ("X-Mid", "1"),
+                    ("connection", "keep-alive"),
+                    ("X-End", "1"),
+                ],
+                "GET /a HTTP/1.1\r\nHost: example.test\r\nX-Mid: 1\r\nconnection: keep-alive\r\nX-End: 1\r\n\r\n",
+            ),
+            (
+                &[
+                    ("Connection", "keep-alive, X-Hop"),
+                    ("Host", "example.test"),
+                    ("X-Hop", "1"),
+                ],
+                "GET /a HTTP/1.1\r\nConnection: keep-alive, X-Hop\r\nHost: example.test\r\nX-Hop: 1\r\n\r\n",
+            ),
+        ] {
+            assert_eq!(&*sent_head(lines).await, expected, "{lines:?}");
+        }
     }
 
     #[tokio::test]
@@ -1947,9 +2076,6 @@ mod conn {
 
     #[test]
     fn uri_absolute_form() {
-        use rama_net::address::{HostWithPort, ProxyAddress, ProxyProtocol};
-        use rama_net::client::EstablishedProxyRoute;
-
         let (server, addr) = setup_std_test_server();
         let rt = support::runtime();
 
@@ -2051,6 +2177,57 @@ mod conn {
         let rx = rx1.expect("thread panicked");
         let rx = rx.then(|_| tokio::time::sleep(Duration::from_millis(200)));
         rt.block_on(future::join(res, rx).map(|r| r.0)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn http1_conn_coerces_http2_request_with_a_streamed_body_to_chunked() {
+        let (client_io, mut server_io, _addr) = setup_duplex_test_server();
+
+        let server = async move {
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                head.push(server_io.read_u8().await.expect("read head"));
+            }
+            // HTTP/1.1 framing, so the body of unknown length is chunked rather than dropped.
+            assert_eq!(
+                s(&head),
+                "POST /a HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n"
+            );
+            let expected = "5\r\nhello\r\n0\r\n\r\n";
+            let mut body = vec![0; expected.len()];
+            server_io.read_exact(&mut body).await.expect("read body");
+            assert_eq!(s(&body), expected);
+
+            server_io
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        };
+
+        let client = async move {
+            let io = ServiceInput::new(client_io);
+            let (mut client, conn) = conn::http1::handshake(io).await.expect("handshake");
+
+            spawn(async move {
+                conn.await.expect("http conn");
+            });
+
+            let body = StreamBody::new(iter([Ok::<_, Infallible>(Frame::data(
+                Bytes::from_static(b"hello"),
+            ))]));
+            let req = Request::builder()
+                .method(Method::POST)
+                .uri("/a")
+                .version(Version::HTTP_2)
+                .body(body)
+                .unwrap();
+            let res = client.send_request(req).await.expect("send_request");
+            assert_eq!(res.status(), StatusCode::OK);
+        };
+
+        timeout(Duration::from_secs(5), future::join(server, client))
+            .await
+            .expect("request exchanged");
     }
 
     #[test]
@@ -2378,8 +2555,6 @@ mod conn {
 
     #[tokio::test]
     async fn client_on_informational_ext() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         let (server, addr) = setup_std_test_server();
 
         thread::spawn(move || {
@@ -2509,15 +2684,10 @@ mod conn {
 
     #[tokio::test]
     async fn http2_detect_conn_eof() {
-        use rama::futures::future;
-
         let (listener, addr) = setup_tk_test_server().await;
 
         let (shdn_tx, mut shdn_rx) = tokio::sync::watch::channel(false);
         tokio::task::spawn(async move {
-            use rama::http::core::server::conn::http2;
-            use rama::service::service_fn;
-
             loop {
                 tokio::select! {
                     res = listener.accept() => {
@@ -2595,14 +2765,10 @@ mod conn {
     async fn http2_connect_detect_close() {
         // Regression test for failure to fully close connections when using HTTP2 CONNECT
         // We send 2 requests and then drop them. We should see the connection gracefully close.
-        use rama::futures::future;
         let (listener, addr) = setup_tk_test_server().await;
         let (tx, rxx) = oneshot::channel::<()>();
 
         tokio::task::spawn(async move {
-            use rama::http::core::server::conn::http2;
-            use rama::service::service_fn;
-
             let res = listener.accept().await;
             let (stream, _) = res.unwrap();
 
@@ -2924,11 +3090,6 @@ mod conn {
     async fn http2_responds_before_consuming_request_body_with_trailers() {
         // Test that a early-response from server works correctly (request body wasn't fully consumed).
         // https://github.com/hyperium/hyper/issues/2872
-        use rama::http::Response;
-        use rama::http::core::service::RamaHttpService;
-        use rama_core::service::service_fn;
-        use rama_http::body::SizeHint;
-        use rama_http::header::{HeaderMap, HeaderValue};
 
         let (listener, addr) = setup_tk_test_server().await;
 
@@ -3152,9 +3313,6 @@ mod conn {
     /// with CANCEL for Extended CONNECT (RFC 8441 §5).
     #[tokio::test]
     async fn h2_connect_tunnel_aborts_with_the_code_of_its_kind() {
-        use rama::http::core::h2::Reason;
-        use rama::http::proto::ext::Protocol;
-        use rama::io::AbortIo;
         for extended in [false, true] {
             let (client_io, server_io, _) = setup_duplex_test_server();
             let server = tokio::spawn(async move {
@@ -3596,6 +3754,63 @@ mod conn {
 
         let got_rst = rst_rx.await.expect("server task should complete");
         assert!(got_rst, "server should receive RST_STREAM");
+    }
+
+    #[tokio::test]
+    async fn h2_body_of_unknown_size_is_reset_when_it_misses_its_content_length() {
+        for chunks in [&["hello", " world"][..], &["hel"][..]] {
+            let (client_io, server_io, _) = setup_duplex_test_server();
+
+            let server = tokio::spawn(async move {
+                let mut h2 = rama_http_core::h2::server::handshake(ServiceInput::new(server_io))
+                    .await
+                    .unwrap();
+                let (req, _respond) = h2.accept().await.unwrap().unwrap();
+                tokio::spawn(async move {
+                    _ = poll_fn(|cx| h2.poll_closed(cx)).await;
+                });
+                let mut body = req.into_body();
+                let mut received = 0;
+                loop {
+                    match body.data().await {
+                        Some(Ok(data)) => {
+                            received += data.len();
+                            body.flow_control().release_capacity(data.len()).unwrap();
+                        }
+                        Some(Err(err)) => return (received, err.reason()),
+                        None => return (received, None),
+                    }
+                }
+            });
+
+            let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
+                .handshake(ServiceInput::new(client_io))
+                .await
+                .expect("http handshake");
+            tokio::spawn(async move {
+                _ = conn.await;
+            });
+
+            let frames = chunks
+                .iter()
+                .map(|chunk| Ok::<_, BoxError>(Frame::data(Bytes::from_static(chunk.as_bytes()))))
+                .collect::<Vec<_>>();
+            let req = Request::post("http://localhost/")
+                .header("content-length", "5")
+                .body(Body::new(StreamBody::new(iter(frames))))
+                .unwrap();
+            tokio::spawn(async move {
+                _ = client.send_request(req).await;
+            });
+
+            let (received, reason) = timeout(Duration::from_secs(5), server)
+                .await
+                .expect("server sees the stream end")
+                .unwrap();
+            // The client resets the stream itself, before the peer sees a mismatched length.
+            assert_eq!(reason, Some(Reason::INTERNAL_ERROR), "{chunks:?}");
+            assert!(received <= 5, "{chunks:?}: {received}");
+        }
     }
 
     // https://github.com/hyperium/hyper/issues/4003

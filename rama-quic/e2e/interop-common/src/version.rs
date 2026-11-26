@@ -335,7 +335,7 @@ pub async fn rama_server_side(run: &CaseRun<VersionScenario>) -> (Endpoint, Sock
                 .expect("the handshake settled something");
             assert_eq!(
                 settled.server_name,
-                Some(Domain::from_static(SERVER_NAME)),
+                Some(Domain::from_static(SERVER_NAME).into()),
                 "{}: the name the client asked for",
                 run.what
             );

@@ -1,5 +1,13 @@
 use super::*;
-use crate::qlog::{EncodedWriter, JsonSeqEncoder, QlogOutput, QueueLimits, TraceInfo};
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+use crate::proto::connection::migration::{PrevCid, PreviousPath};
+use crate::qlog::{
+    EncodedWriter, EventSchema, JsonSeqEncoder, NamedQlogEventView, QlogEventView, QlogFilter,
+    QlogOutput, QlogSink, QueueLimits, TraceInfo,
+};
 use parking_lot::Mutex;
 use rama_utils::octets;
 use serde_json::{Value, json};
@@ -7,7 +15,10 @@ use std::{
     io,
     net::{Ipv4Addr, SocketAddr},
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     task::{Context, Poll},
 };
 use tokio::io::AsyncWrite;
@@ -680,9 +691,6 @@ async fn recording_toggles_refresh_recovery_snapshot_without_redundant_state_upd
 
 #[tokio::test]
 async fn dynamic_filter_generation_refreshes_previously_suppressed_recovery_snapshot() {
-    use crate::qlog::{QlogEventView, QlogFilter, QlogSink};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     struct DynamicFilter(Arc<AtomicU64>);
 
     impl QlogFilter for DynamicFilter {
@@ -752,8 +760,6 @@ async fn dynamic_filter_generation_refreshes_previously_suppressed_recovery_snap
 
 #[test]
 fn post_build_recovery_snapshot_rejection_retries_complete_snapshot() {
-    use crate::qlog::{EventSchema, NamedQlogEventView, QlogEventView, QlogSink};
-
     #[derive(Default)]
     struct RejectFirst(Mutex<Vec<Value>>);
 
@@ -828,8 +834,6 @@ fn post_build_recovery_snapshot_rejection_retries_complete_snapshot() {
 ))]
 #[tokio::test]
 async fn migration_with_unusable_fallback_does_not_log_abandonment() {
-    use crate::proto::connection::migration::{PrevCid, PreviousPath};
-
     let mut pair = crate::proto::tests::util::Pair::default();
     let (client, _) = pair.connect();
     let now = pair.time;

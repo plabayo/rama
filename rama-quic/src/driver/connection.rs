@@ -23,6 +23,7 @@ use rama_net::{
     stream::SocketInfo,
 };
 use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt, Version};
+use rama_tls::{client::TlsEchAccepted, server::publish_server_client_hellos};
 use rama_udp::SendFailure;
 use rama_utils::reactive::{Change, ChangeListener, Changed, Reactive};
 use rustc_hash::FxHashMap;
@@ -3951,20 +3952,13 @@ impl State {
                     self.connected = true;
                     if let Some(accepted) = self.inner.crypto_session().ech_accepted() {
                         if self.inner.side().is_client() {
-                            extensions.insert(rama_tls::client::TlsEchAccepted(accepted));
-                        }
-                        if let Some(inner) = self.inner.crypto_session().effective_client_hello() {
-                            extensions.insert(rama_tls::server::ServerEchAccepted::new(accepted));
-                            if accepted
-                                && let Some(outer) = extensions
-                                    .get_ref::<rama_tls::SecureTransport>()
-                                    .and_then(rama_tls::SecureTransport::client_hello)
-                                    .cloned()
-                            {
-                                extensions
-                                    .insert(rama_tls::server::EchServerObservation::new(outer));
-                            }
-                            extensions.insert(rama_tls::SecureTransport::with_client_hello(inner));
+                            extensions.insert(TlsEchAccepted(accepted));
+                        } else {
+                            publish_server_client_hellos(
+                                extensions,
+                                Some(accepted),
+                                self.inner.crypto_session().effective_client_hello(),
+                            );
                         }
                     }
                     // Published like the TLS stacks do for streams, so services read the
@@ -4394,10 +4388,20 @@ fn is_mtu_probe(transmit: &crate::proto::Transmit, confirmed_mtu: u16) -> bool {
     all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
 ))]
 mod tests {
-    use std::num::NonZeroUsize;
+    use std::{assert_matches, error::Error as _, io::IoSliceMut, num::NonZeroUsize};
+
+    use rama_net::address::SocketAddress;
+    use rama_udp::{
+        DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
+    };
+    use rama_utils::{octets, reactive::ChangeWaiter};
 
     use super::*;
-    use crate::{driver::Instant, proto::ReceiveQueueLimits};
+    use crate::{
+        driver::Instant,
+        proto::ReceiveQueueLimits,
+        qlog::event::{DropEvent, EventView, drops::DropReason},
+    };
 
     /// A single datagram above the confirmed MTU is a probe; a batch never is.
     #[test]
@@ -4418,14 +4422,6 @@ mod tests {
             1200
         ));
     }
-    use std::{assert_matches, error::Error as _, io::IoSliceMut};
-
-    use rama_net::address::SocketAddress;
-    use rama_udp::{
-        DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
-    };
-    use rama_utils::{octets, reactive::ChangeWaiter};
-
     #[derive(Debug, Clone, Copy)]
     enum Failure {
         /// A destination-local refusal; the connection must keep running.
@@ -4665,7 +4661,6 @@ mod tests {
         }
 
         fn emit(&self, event: &crate::qlog::QlogEventView<'_>) -> bool {
-            use crate::qlog::event::{DropEvent, EventView, drops::DropReason};
             // Each packet is either held until its keys are available or, once the hold is
             // full, dropped for lack of them.
             let raw = match &event.fields.event {

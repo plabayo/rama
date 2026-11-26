@@ -196,7 +196,7 @@ impl EndpointBuilder {
     }
 
     /// Where a prepared socket becomes an endpoint.
-    fn on_socket(self, socket: Socket) -> Result<Endpoint, DatagramError> {
+    pub(crate) fn on_socket(self, socket: Socket) -> Result<Endpoint, DatagramError> {
         let Self {
             scope,
             config,

@@ -1,11 +1,14 @@
+use std::net::IpAddr;
+
 use rama_boring_tokio::SslStreamBuilder;
+use rama_net::tls::ServerName;
 
 use super::*;
 
 #[tokio::test]
 async fn contexts_never_resume_each_others_sessions() {
     let server = Server::new(SslVersion::TLS1_3);
-    let config = trusting_config().with_server_name(Host::from_static("a.test"));
+    let config = trusting_config().with_server_name(Domain::from_static("a.test"));
     let store = cache();
     let contexts = [(); 2].map(|()| {
         TlsConnectorContextBuilder::try_from(&config)
@@ -22,7 +25,7 @@ async fn contexts_never_resume_each_others_sessions() {
 #[tokio::test]
 async fn sessions_only_resume_on_their_own_context_and_server() {
     let server = Server::new(SslVersion::TLS1_3);
-    let config = trusting_config().with_server_name(Host::from_static("a.test"));
+    let config = trusting_config().with_server_name(Domain::from_static("a.test"));
     let sessions: Arc<Mutex<Vec<TlsClientSession>>> = Arc::default();
     let remembering = || {
         let sink = sessions.clone();
@@ -39,7 +42,7 @@ async fn sessions_only_resume_on_their_own_context_and_server() {
     let session = sessions.lock().pop().expect("the server issued tickets");
     let ssl_for = |context: &TlsConnectorContext, server: &'static str| {
         let mut data = context.configure().unwrap();
-        data.server_name = Some(Host::from_static(server));
+        data.server_name = Some(ServerName::from(Domain::from_static(server)));
         data.into_ssl().unwrap()
     };
     session.resume_on(&mut ssl_for(&issuing, "a.test")).unwrap();
@@ -115,7 +118,7 @@ async fn a_pinned_session_resumes_only_while_its_chain_verifies() {
             let mut outcomes = Vec::new();
             for judged_later in [false, false, true] {
                 let mut data = context.configure().unwrap();
-                data.server_name = Some(Host::from_static("a.test"));
+                data.server_name = Some(ServerName::from(Domain::from_static("a.test")));
                 let mut ssl = data.into_ssl().unwrap();
                 if judged_later {
                     ssl.param_mut().set_time(later.try_into().unwrap());
@@ -186,7 +189,7 @@ async fn a_chain_policy_is_checked_again_on_resumption() {
             for reject in [false, false, true] {
                 policy.reject.store(reject, Ordering::SeqCst);
                 let mut data = context.configure().unwrap();
-                data.server_name = Some(Host::from_static("a.test"));
+                data.server_name = Some(ServerName::from(Domain::from_static("a.test")));
                 let ssl = data.into_ssl().unwrap();
                 let (client_io, server_io) = tokio::io::duplex(1024);
                 let acceptor = server.acceptor.clone();
@@ -239,7 +242,7 @@ async fn keylog_intent_keeps_contexts_apart() {
     let mut lines = Vec::new();
     for config in [&logged, &unlogged, &logged] {
         let mut data = TlsConnectorData::try_from(config).unwrap();
-        data.server_name = Some(Host::from_static("a.test"));
+        data.server_name = Some(ServerName::from(Domain::from_static("a.test")));
         let ssl = data.into_ssl().unwrap();
         let (client_io, server_io) = tokio::io::duplex(1024);
         let acceptor = server.acceptor.clone();
@@ -286,7 +289,7 @@ async fn platform_chain_policy_is_checked_again_on_resumption() {
         for reject in [false, false, true] {
             policy.reject.store(reject, Ordering::SeqCst);
             let mut data = context.configure().unwrap();
-            data.server_name = Some(Host::from_static("a.test"));
+            data.server_name = Some(ServerName::from(Domain::from_static("a.test")));
             let ssl = data.into_ssl().unwrap();
             let (client_io, server_io) = tokio::io::duplex(1024);
             let acceptor = server.acceptor.clone();
@@ -308,4 +311,23 @@ async fn platform_chain_policy_is_checked_again_on_resumption() {
         assert_eq!(outcomes, [Some(false), Some(true), None], "{version:?}");
         assert_eq!(policy.checks.load(Ordering::SeqCst), 3, "{version:?}");
     }
+}
+
+#[test]
+fn session_keys_classify_numeric_dns_spellings_before_comparing() {
+    let config = trusting_config();
+    let context = TlsConnectorContextBuilder::try_from(&config)
+        .unwrap()
+        .build();
+    let address = context
+        .session_key(&ServerName::from(IpAddr::from([192, 0, 2, 1])))
+        .unwrap();
+    let literal = context
+        .session_key(&ServerName::from(Domain::from_static("192.0.2.1")))
+        .unwrap();
+    let dotted = context
+        .session_key(&ServerName::from(Domain::from_static("192.0.2.1.")))
+        .unwrap();
+    assert_eq!(address, literal);
+    assert_ne!(literal, dotted);
 }

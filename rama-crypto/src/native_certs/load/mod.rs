@@ -85,34 +85,31 @@ fn load_from_sources(
     Ok((certs, used_bundled_fallback))
 }
 
+// A malformed explicit bundle fails the read, while bad directory entries are skipped.
 fn checked_load_paths(paths: &CertPaths) -> Result<Vec<CertificateDer<'static>>, BoxError> {
-    let result =
-        super::read_cert_paths(paths.file.as_deref(), &paths.dirs, load_bundle, load_bundle);
-    checked_load(result)
+    let mut bundle_certs = 0;
+    let result = super::read_cert_paths(paths.file.as_deref(), &paths.dirs, |path, out| {
+        let errors = out.errors.len();
+        load_bundle(path, out, false);
+        if out.errors.len() > errors {
+            out.source_error.get_or_insert(errors);
+        }
+        bundle_certs = out.certs.len();
+    });
+    checked_load(result, bundle_certs)
 }
 
 #[cfg(all(unix, any(test, not(target_os = "macos"))))]
 fn load_system_paths(paths: &CertPaths) -> Result<Vec<CertificateDer<'static>>, BoxError> {
-    let result = super::read_cert_paths(
-        paths.file.as_deref(),
-        &paths.dirs,
-        |path, out| load_bundle_with_source_errors(path, out, true),
-        |path, out| super::load_pem_certs(path, out, false),
-    );
+    let result = super::read_cert_paths(paths.file.as_deref(), &paths.dirs, |path, out| {
+        load_bundle(path, out, true);
+    });
     checked_system_load(result)
 }
 
 // An empty bundle can intentionally withdraw all trust. Nonempty text must
 // contain certificates for a validated read to succeed.
-fn load_bundle(path: &Path, result: &mut CertificateResult) {
-    load_bundle_with_source_errors(path, result, false);
-}
-
-fn load_bundle_with_source_errors(
-    path: &Path,
-    result: &mut CertificateResult,
-    authoritative: bool,
-) {
+fn load_bundle(path: &Path, result: &mut CertificateResult, authoritative: bool) {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) => {
@@ -167,21 +164,23 @@ impl Read for BundleReader {
     }
 }
 
-fn checked_load(result: CertificateResult) -> Result<Vec<CertificateDer<'static>>, BoxError> {
-    if let Some(error) = result.errors.into_iter().next() {
-        return Err(error.into());
-    }
-    for cert in &result.certs {
-        validate_anchor(cert)?;
-    }
-    Ok(result.certs)
+fn checked_system_load(
+    result: CertificateResult,
+) -> Result<Vec<CertificateDer<'static>>, BoxError> {
+    checked_load(result, 0)
 }
 
-fn checked_system_load(
+/// Fails on a source error or an invalid certificate among the first `strict_certs`;
+/// other bad entries are skipped unless nothing valid remains.
+fn checked_load(
     mut result: CertificateResult,
+    strict_certs: usize,
 ) -> Result<Vec<CertificateDer<'static>>, BoxError> {
     if let Some(index) = result.source_error {
         return Err(result.errors.swap_remove(index).into());
+    }
+    for cert in &result.certs[..strict_certs] {
+        validate_anchor(cert)?;
     }
 
     let mut first_error = None;
@@ -189,12 +188,19 @@ fn checked_system_load(
         debug!(%error, "skipping invalid native trust entry");
         first_error.get_or_insert_with(|| error.into());
     }
-    result.certs.retain(|cert| match validate_anchor(cert) {
-        Ok(()) => true,
-        Err(error) => {
-            debug!(%error, "skipping invalid native trust certificate");
-            first_error.get_or_insert(error);
-            false
+    let mut index = 0;
+    result.certs.retain(|cert| {
+        index += 1;
+        if index <= strict_certs {
+            return true;
+        }
+        match validate_anchor(cert) {
+            Ok(()) => true,
+            Err(error) => {
+                debug!(%error, "skipping invalid native trust certificate");
+                first_error.get_or_insert(error);
+                false
+            }
         }
     });
     if result.certs.is_empty()

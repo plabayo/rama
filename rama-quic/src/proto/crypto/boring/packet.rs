@@ -291,14 +291,14 @@ mod tests {
 
     use rama_quic_proto::{
         crypto::{HeaderKey as _, PacketKey as _},
-        version::V1_WIRE,
+        version::{V1_WIRE, V2_WIRE},
     };
+    use sha2::{Digest as _, Sha256, Sha384};
 
     /// HMAC (RFC 2104) over one of the TLS 1.3 hashes. Written out here rather than taken
     /// from the crypto backend, so the expectations below come from an implementation
     /// independent of the one under test.
     fn hmac(hash_len: usize, key: &[u8], message: &[u8]) -> Vec<u8> {
-        use sha2::{Digest as _, Sha256, Sha384};
         let block_len = if hash_len == 48 { 128 } else { 64 };
         // TLS 1.3 traffic secrets are one hash long, always shorter than the block.
         assert!(key.len() <= block_len);
@@ -473,7 +473,6 @@ mod tests {
     /// `quicv2` labels.
     #[test]
     fn rfc9369_chacha_short_header_and_key_update() {
-        use rama_quic_proto::version::V2_WIRE;
         let secret = Secret::new(
             Suite::ChaCha20Poly1305,
             &hex("9ac312a7f877468ebe69422748ad00a15443f18203a07d6060f688f30f21632b"),

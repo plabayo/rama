@@ -88,7 +88,7 @@ impl<'a> Streams<'a> {
 
         self.state.next[dir as usize] += 1;
         let id = StreamId::new(self.state.side, dir, self.state.next[dir as usize] - 1);
-        self.state.insert(false, id);
+        self.state.insert_local(id);
         self.state.send_streams += 1;
         Some(id)
     }
@@ -219,6 +219,7 @@ impl RecvStream<'_> {
     /// attempts to operate on a stream will yield `ClosedStream` errors.
     pub(crate) fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
         let window = self.state.receive_window_for(self.id);
+        self.state.reserve_remote_slot(self.id);
         let mut entry = match self.state.recv.entry(self.id) {
             hash_map::Entry::Occupied(s) => s,
             hash_map::Entry::Vacant(_) => return Err(ClosedStream::new()),
@@ -257,6 +258,9 @@ impl RecvStream<'_> {
     /// After returning `Ok(Some(_))` once, stream state will be discarded and all future calls will
     /// return `Err(ClosedStream)`.
     pub(crate) fn received_reset(&mut self) -> Result<Option<VarInt>, ClosedStream> {
+        if self.state.is_unopened_remote(self.id) && !self.state.recv.contains_key(&self.id) {
+            return Ok(None);
+        }
         let hash_map::Entry::Occupied(entry) = self.state.recv.entry(self.id) else {
             return Err(ClosedStream::new());
         };
@@ -368,6 +372,7 @@ impl<'a> SendStream<'a> {
                 .min(self.state.send_window / 2),
         );
         let max_send_data = self.state.max_send_data(self.id);
+        self.state.reserve_remote_slot(self.id);
         let stream = self
             .state
             .send
@@ -413,6 +418,7 @@ impl<'a> SendStream<'a> {
         let limit = self.state.write_limit().saturating_sub(reserve);
 
         let max_send_data = self.state.max_send_data(self.id);
+        self.state.reserve_remote_slot(self.id);
 
         let stream = self
             .state
@@ -461,21 +467,23 @@ impl<'a> SendStream<'a> {
         match self.state.send.get(&self.id) {
             Some(Some(s)) => matches!(s.state, send::SendState::Ready) && s.stop_reason.is_none(),
             Some(None) => true,
-            None => false,
+            None => self.state.is_idle_remote_send(self.id),
         }
     }
 
     /// Check if this stream was stopped, get the reason if it was
     pub(crate) fn stopped(&self) -> Result<Option<VarInt>, ClosedStream> {
-        match self.state.send.get(&self.id).as_ref() {
+        match self.state.send.get(&self.id) {
             Some(Some(s)) => Ok(s.stop_reason),
             Some(None) => Ok(None),
+            None if self.state.is_idle_remote_send(self.id) => Ok(None),
             None => Err(ClosedStream::new()),
         }
     }
 
     pub(crate) fn track_datagram(&mut self, position: super::datagrams::DatagramQueuePosition) {
         let max_send_data = self.state.max_send_data(self.id);
+        self.state.reserve_remote_slot(self.id);
         if let Some(stream) = self
             .state
             .send
@@ -500,6 +508,7 @@ impl<'a> SendStream<'a> {
     )]
     pub fn finish(&mut self) -> Result<(), FinishError> {
         let max_send_data = self.state.max_send_data(self.id);
+        self.state.reserve_remote_slot(self.id);
         let stream = self
             .state
             .send
@@ -529,6 +538,7 @@ impl<'a> SendStream<'a> {
     )]
     pub fn reset(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
+        self.state.reserve_remote_slot(self.id);
         let stream = self
             .state
             .send
@@ -558,6 +568,7 @@ impl<'a> SendStream<'a> {
     /// - when applied to a receive stream
     pub(crate) fn set_priority(&mut self, priority: i32) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
+        self.state.reserve_remote_slot(self.id);
         let stream = self
             .state
             .send
@@ -574,9 +585,11 @@ impl<'a> SendStream<'a> {
     /// # Panics
     /// - when applied to a receive stream
     pub(crate) fn priority(&self) -> Result<i32, ClosedStream> {
-        let stream = self.state.send.get(&self.id).ok_or(ClosedStream::new())?;
-
-        Ok(stream.as_ref().map(|s| s.priority).unwrap_or_default())
+        match self.state.send.get(&self.id) {
+            Some(stream) => Ok(stream.as_ref().map(|s| s.priority).unwrap_or_default()),
+            None if self.state.is_idle_remote_send(self.id) => Ok(0),
+            None => Err(ClosedStream::new()),
+        }
     }
 }
 

@@ -1,6 +1,5 @@
-use rama_core::{futures::Stream, telemetry::tracing::warn};
-use rama_crypto::native_certs::NativeCertsChanges;
 use std::{
+    io,
     pin::Pin,
     sync::{
         Arc,
@@ -10,6 +9,9 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
+
+use rama_core::{futures::Stream, telemetry::tracing::warn};
+use rama_crypto::native_certs::{NativeCertsChanges, NativeCertsWake};
 
 /// Requests a refresh after the operating system's native trust store changes.
 ///
@@ -32,9 +34,10 @@ pub struct NativeTrustStoreChanges {
 impl NativeTrustStoreChanges {
     /// Set the file metadata polling interval, with a minimum of 10 ms.
     ///
-    /// The first poll starts a monitor thread. Once its initial probe completes
+    /// The first poll starts a monitor thread, which sleeps until a store
+    /// notification or the next file probe. Once its initial probe completes
     /// it asks the next handshake to recheck trust. Dropping the stream stops
-    /// its monitor.
+    /// its monitor. If the monitor cannot start, the stream ends.
     pub const fn new(interval: Duration) -> Self {
         Self {
             interval,
@@ -78,36 +81,69 @@ impl Stream for NativeTrustStoreChanges {
     }
 }
 
+const MIN_INTERVAL: Duration = Duration::from_millis(10);
+
+type MonitorTask = Box<dyn FnOnce() + Send + 'static>;
+
 struct NativeChangesWorker {
     events: flume::r#async::RecvStream<'static, ()>,
+    monitor: Option<Monitor>,
+}
+
+struct Monitor {
+    wake: Arc<NativeCertsWake>,
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl NativeChangesWorker {
     fn new(interval: Duration, extra_only: bool) -> Self {
+        Self::start(interval, extra_only, |task| {
+            thread::Builder::new()
+                .name("rama-native-trust-probe".into())
+                .spawn(task)
+        })
+    }
+
+    // Without a monitor the event sender is gone, so the stream ends and the
+    // reload controller stops polling it.
+    fn start(
+        interval: Duration,
+        extra_only: bool,
+        spawn: impl FnOnce(MonitorTask) -> io::Result<JoinHandle<()>>,
+    ) -> Self {
         // One queued event is enough to tell the next handshake to read trust.
         let (changes, events) = flume::bounded(1);
-        let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = stop.clone();
-        let thread = thread::Builder::new()
-            .name("rama-native-trust-probe".into())
-            .spawn(move || monitor_changes(interval, extra_only, &changes, &worker_stop))
-            .inspect_err(|error| warn!(%error, "could not start native trust store monitor"))
+        let monitor = NativeCertsWake::new()
+            .and_then(|wake| {
+                let wake = Arc::new(wake);
+                let stop = Arc::new(AtomicBool::new(false));
+                let task = {
+                    let (wake, stop) = (wake.clone(), stop.clone());
+                    Box::new(move || monitor_changes(interval, extra_only, &changes, &wake, &stop))
+                };
+                // The monitor is detached: dropping the stream stops it via `stop` and `wake`.
+                spawn(task).map(drop)?;
+                Ok(Monitor { wake, stop })
+            })
+            .inspect_err(|error| {
+                warn!(
+                    %error,
+                    "could not start native trust store monitor; store changes will not trigger reloads"
+                );
+            })
             .ok();
         Self {
             events: events.into_stream(),
-            stop,
-            thread,
+            monitor,
         }
     }
 }
 
 impl Drop for NativeChangesWorker {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(thread) = &self.thread {
-            thread.thread().unpark();
+        if let Some(monitor) = &self.monitor {
+            monitor.stop.store(true, Ordering::Release);
+            monitor.wake.wake();
         }
     }
 }
@@ -116,27 +152,22 @@ fn monitor_changes(
     interval: Duration,
     extra_only: bool,
     events: &flume::Sender<()>,
+    wake: &NativeCertsWake,
     stop: &AtomicBool,
 ) {
-    let file_interval = interval.max(Duration::from_millis(10));
+    let interval = interval.max(MIN_INTERVAL);
     let mut changes = if extra_only {
-        NativeCertsChanges::extra_only(file_interval)
+        NativeCertsChanges::extra_only(interval)
     } else {
-        NativeCertsChanges::new(file_interval)
-    };
-    // macOS and Windows can report store notifications between file probes.
-    let probe_interval = if !extra_only && cfg!(any(target_os = "macos", windows)) {
-        file_interval.min(Duration::from_millis(250))
-    } else {
-        file_interval
+        NativeCertsChanges::new(interval)
     };
 
     // Request a fresh read after registration because the initial handshake
     // can read the store while the worker is establishing its baseline.
-    let mut first_probe = true;
+    changes.changed();
+    let mut changed = true;
     while !stop.load(Ordering::Acquire) {
-        let changed = changes.changed();
-        if (first_probe || changed)
+        if changed
             && matches!(
                 events.try_send(()),
                 Err(flume::TrySendError::Disconnected(()))
@@ -144,7 +175,10 @@ fn monitor_changes(
         {
             break;
         }
-        first_probe = false;
-        thread::park_timeout(probe_interval);
+        // Blocks until a store notification, the next file probe, or a stop request.
+        changed = changes.wait_changed(wake);
     }
 }
+
+#[cfg(test)]
+mod tests;

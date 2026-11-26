@@ -26,11 +26,10 @@ impl KeyLog for RamaKeyLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn keylog_line_preserves_lowercase_pairs_without_prefixes() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
         #[derive(Debug)]
         struct Sink(AtomicBool);
 

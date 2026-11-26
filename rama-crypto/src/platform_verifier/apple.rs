@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use core_foundation::date::CFDate;
 use rama_core::error::BoxError;
+use rama_net::tls::ServerName;
 use security_framework::{
     certificate::SecCertificate, policy::SecPolicy, secure_transport::SslProtocolSide,
     trust::SecTrust,
@@ -54,10 +55,12 @@ impl Verifier {
         &self,
         end_entity: &CertificateDer<'_>,
         intermediates: &[CertificateDer<'_>],
-        server_name: &str,
+        server_name: &ServerName,
         ocsp_response: Option<&[u8]>,
         now: SystemTime,
     ) -> Result<Vec<CertificateDer<'static>>, PlatformVerifyError> {
+        let server_name_text = super::server_name_str(server_name);
+        let server_name = server_name_text.as_ref();
         let certificates = std::iter::once(end_entity)
             .chain(intermediates)
             .map(|certificate| {

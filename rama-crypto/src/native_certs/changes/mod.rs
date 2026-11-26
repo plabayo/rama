@@ -1,11 +1,23 @@
-#[cfg(any(target_os = "macos", windows))]
-use super::notifications::StoreNotifications;
-use super::{CertPaths, ENV_EXTRA_CERT_DIR, ENV_EXTRA_CERT_FILE};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt as _;
 use std::{
     fs, io,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime},
 };
+
+use rama_core::telemetry::tracing::warn;
+
+#[cfg(any(target_os = "macos", windows))]
+use super::notifications::StoreNotifications;
+use super::{CertPaths, ENV_EXTRA_CERT_DIR, ENV_EXTRA_CERT_FILE};
+
+mod wake;
+pub use wake::NativeCertsWake;
+
+/// Longest wait while store notifications can only be polled.
+#[cfg(target_os = "macos")]
+const DEGRADED_POLL: Duration = Duration::from_millis(250);
 
 /// Tracks changes in the native store and configured files between probes.
 /// Each instance maintains its own cursor over store notifications and file metadata.
@@ -30,6 +42,7 @@ impl NativeCertsChanges {
         Self::with_scope(interval, false)
     }
 
+    /// Initialize observation for the selected trust scope.
     const fn with_scope(interval: Duration, include_native: bool) -> Self {
         Self {
             interval,
@@ -41,6 +54,7 @@ impl NativeCertsChanges {
         }
     }
 
+    /// Check whether the next trust probe is due.
     fn probe_due(&self) -> bool {
         self.probed_at
             .is_none_or(|last| last.elapsed() >= self.interval)
@@ -62,6 +76,79 @@ impl NativeCertsChanges {
         self.probe_sources(&extra, CertPaths::from_env, Instant::now())
     }
 
+    /// Block until the next probe is due, a native store notification arrives,
+    /// or `wake` is woken, then probe like [`Self::changed`].
+    pub fn wait_changed(&mut self, wake: &NativeCertsWake) -> bool {
+        #[cfg(target_os = "macos")]
+        let wait =
+            |changes: &mut Self, timeout| wake.os.wait(changes.notifications.as_mut(), timeout);
+        #[cfg(windows)]
+        let wait =
+            |changes: &mut Self, timeout| wake.os.wait(changes.notifications.as_ref(), timeout);
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let wait = |_: &mut Self, timeout| wake.os.wait(timeout);
+        self.wait_changed_with(wake, wait)
+    }
+
+    /// Wait for trust changes using the supplied wait mechanism.
+    fn wait_changed_with(
+        &mut self,
+        wake: &NativeCertsWake,
+        wait: impl FnMut(&mut Self, Duration) -> io::Result<bool>,
+    ) -> bool {
+        let timeout = self.probed_at.map_or(Duration::ZERO, |last| {
+            self.interval.saturating_sub(last.elapsed())
+        });
+        #[cfg(target_os = "macos")]
+        let timeout = match self.notifications.as_mut() {
+            Some(notifications) => {
+                notifications.retry_wait();
+                // Without a wait descriptor only polling observes notifications.
+                if notifications.wait_degraded() {
+                    timeout.min(DEGRADED_POLL)
+                } else {
+                    timeout
+                }
+            }
+            None => timeout,
+        };
+        self.wait_then_probe(wake, timeout, wait)
+    }
+
+    /// Wait for a notification or probe deadline, then check the sources.
+    fn wait_then_probe(
+        &mut self,
+        wake: &NativeCertsWake,
+        timeout: Duration,
+        mut wait: impl FnMut(&mut Self, Duration) -> io::Result<bool>,
+    ) -> bool {
+        let started = Instant::now();
+        loop {
+            match wait(self, timeout.saturating_sub(started.elapsed())) {
+                Ok(true) if !wake.consumed() => {
+                    #[cfg(any(target_os = "macos", windows))]
+                    if self
+                        .notifications
+                        .as_mut()
+                        .and_then(StoreNotifications::poll)
+                        .unwrap_or(false)
+                    {
+                        return true;
+                    }
+                }
+                Ok(_) => break,
+                Err(error) => {
+                    // A wait that cannot block must neither spin nor delay a stop request.
+                    warn!(%error, "could not wait for native trust store changes; backing off until the next probe");
+                    wake.backoff(timeout.saturating_sub(started.elapsed()));
+                    break;
+                }
+            }
+        }
+        self.changed()
+    }
+
+    /// Probe the configured trust sources for changes.
     fn probe_sources(
         &mut self,
         extra: &CertPaths,
@@ -87,6 +174,7 @@ impl NativeCertsChanges {
     }
 
     #[cfg(any(target_os = "macos", windows))]
+    /// Check the native trust store for changes.
     fn check_store(&mut self, base: &CertPaths) -> bool {
         if base.has_overrides() {
             self.notifications = None;
@@ -109,6 +197,7 @@ impl NativeCertsChanges {
         changed
     }
 
+    /// Check the configured root files for changes.
     fn probe_files(&mut self, base: Option<&CertPaths>, extra: &CertPaths, now: Instant) -> bool {
         let mut files = Vec::new();
         if let Some(base) = base {
@@ -161,9 +250,6 @@ enum FileState {
 }
 
 fn file_state(path: &Path) -> FileState {
-    #[cfg(unix)]
-    use std::os::unix::fs::MetadataExt as _;
-
     match fs::metadata(path) {
         Ok(metadata) => FileState::Present {
             modified: metadata.modified().ok(),

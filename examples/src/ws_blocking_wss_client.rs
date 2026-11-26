@@ -21,7 +21,7 @@ use rama::{
     error::BoxError,
     extensions::Extensions,
     http::{client::EasyHttpWebClient, ws::handshake::client::BlockingHttpClientWebSocketExt as _},
-    tls::client::TlsServerName,
+    net::tls::ServerName,
 };
 
 fn main() -> Result<(), BoxError> {
@@ -35,7 +35,7 @@ fn main() -> Result<(), BoxError> {
     let client = EasyHttpWebClient::try_blocking()?;
     let extensions = Extensions::new();
     if let Some(server_name) = server_name {
-        extensions.insert(TlsServerName(server_name.parse()?));
+        extensions.insert(server_name.parse::<ServerName>()?);
     }
     let mut socket = client
         .websocket(url)

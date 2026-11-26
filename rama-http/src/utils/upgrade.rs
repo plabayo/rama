@@ -1,6 +1,6 @@
 use rama_core::extensions::ExtensionsRef as _;
 use rama_http_headers::{Connection, HeaderMapExt as _, Upgrade};
-use rama_http_types::{Method, Request, proto::ext::Protocol};
+use rama_http_types::{Method, Request, Version, header::UPGRADE, proto::ext::Protocol};
 
 /// Application protocol requested by an HTTP upgrade or Extended CONNECT.
 ///
@@ -26,6 +26,46 @@ pub fn request_connect_protocol<Body>(request: &Request<Body>) -> Option<Protoco
     let token = std::str::from_utf8(upgrade.as_bytes().trim_ascii()).ok()?;
     // A non-token upgrade value cannot be a `:protocol`; treat it as a mere advertisement.
     Protocol::try_from(token).ok()
+}
+
+/// Whether the request signals an upgrade: an `Upgrade` header, a `Connection` header
+/// naming `upgrade`, or a [`Protocol`] extension.
+///
+/// Broader than [`request_connect_protocol`]: each alone counts, such as a multi-token
+/// `Upgrade`, `Connection: upgrade` without `Upgrade`, or a [`Protocol`] on any method.
+pub fn request_signals_upgrade<Body>(request: &Request<Body>) -> bool {
+    request.headers().contains_key(UPGRADE)
+        || request
+            .headers()
+            .typed_get::<Connection>()
+            .is_some_and(|connection| connection.contains_upgrade())
+        || request.extensions().contains::<Protocol>()
+}
+
+/// Application protocol of an upgrade or Extended CONNECT that can be translated to another
+/// HTTP version, which only WebSocket can (RFC 8441, RFC 9220).
+///
+/// The request version adapter translates exactly these and rejects any other
+/// [`request_connect_protocol`].
+pub fn request_adaptable_upgrade<Body>(request: &Request<Body>) -> Option<Protocol> {
+    request_connect_protocol(request)
+        .filter(|protocol| is_adaptable_upgrade(request.method(), request.version(), protocol))
+}
+
+/// Whether `protocol`, as [`request_connect_protocol`] derived it, can change HTTP version:
+/// a WebSocket opening handshake is a `GET` on HTTP/1.x and Extended CONNECT otherwise.
+pub(crate) fn is_adaptable_upgrade(method: &Method, version: Version, protocol: &Protocol) -> bool {
+    let method_fits = if version <= Version::HTTP_11 {
+        method == Method::GET
+    } else {
+        method == Method::CONNECT
+    };
+    method_fits && is_websocket_protocol(protocol)
+}
+
+/// Whether a [`Protocol`] is the WebSocket Extended CONNECT / `Upgrade` protocol.
+pub(crate) fn is_websocket_protocol(protocol: &Protocol) -> bool {
+    protocol.as_str().eq_ignore_ascii_case("websocket")
 }
 
 /// A `CONNECT` without a [`Protocol`]: its target is a `host:port` authority (RFC 9110 §9.3.6).

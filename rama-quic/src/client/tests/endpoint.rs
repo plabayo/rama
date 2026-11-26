@@ -17,6 +17,7 @@ use rama_net::{
     },
 };
 use rama_quic_proto::{
+    capture::{CaptureLimits, QuicObservation},
     profile::{ConnectionIdProfile, ParameterOrder, QuicProfile, TransportLimits},
     transport_parameters::TransportParameterId,
 };
@@ -28,7 +29,7 @@ use super::connector::connector;
 use crate::{
     Endpoint,
     client::{QuicEndpointConnector, SharedQuicEndpoint, endpoint::MAX_CACHED_PROFILE_ENDPOINTS},
-    test_helpers::{identity, server},
+    test_helpers::{client, identity, server},
 };
 
 /// The endpoint `shared` hands out for a request carrying `profile`.
@@ -40,7 +41,8 @@ async fn endpoint(
     if let Some(profile) = profile {
         input.extensions().insert(profile.clone());
     }
-    Ok(shared.serve(input).await?.conn.endpoint().clone())
+    let EstablishedClientConnection { input, conn } = shared.serve(input).await?;
+    Ok(conn.ready(&input).await?.endpoint().clone())
 }
 
 fn zero_cid_profile() -> QuicProfile {
@@ -150,7 +152,7 @@ async fn supplied_zero_cid_endpoint_serves_one_attempt_at_a_time() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        next.conn.endpoint().local_addr().unwrap(),
+        next.conn.local_addr().unwrap(),
         supplied.local_addr().unwrap()
     );
     supplied.shutdown().await;
@@ -381,6 +383,95 @@ async fn quic_endpoint_connector_serves_the_proxy_route_its_socket_establishes()
             Some(&proxy)
         );
         let accepted = serve.await.unwrap();
+        connection.close(0u32, b"test complete");
+        accepted.close(0u32, b"test complete");
+        server.close(0u32, b"test complete");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn managed_endpoints_reselect_final_connection_id_policy() {
+    let shared = SharedQuicEndpoint::managed(WeakScope::detached());
+    let input = ConnectRequest::new(HostWithPort::local_ipv4(443));
+    input.extensions().insert(QuicProfile::standard());
+    let EstablishedClientConnection { input, conn } = shared.serve(input).await.unwrap();
+    let early = endpoint(&shared, Some(&QuicProfile::standard()))
+        .await
+        .unwrap();
+    assert_eq!(conn.local_addr().unwrap(), early.local_addr().unwrap());
+    let profile = QuicProfile::standard().with_connection_ids(
+        ConnectionIdProfile::standard()
+            .try_with_local_len(3)
+            .unwrap(),
+    );
+    input.extensions().insert(profile.clone());
+    let final_endpoint = conn.ready(&input).await.unwrap();
+    assert_ne!(
+        early.local_addr().unwrap(),
+        final_endpoint.endpoint().local_addr().unwrap()
+    );
+    let expected = endpoint(&shared, Some(&profile)).await.unwrap();
+    assert_eq!(
+        expected.local_addr().unwrap(),
+        final_endpoint.endpoint().local_addr().unwrap()
+    );
+    early.shutdown().await;
+    expected.shutdown().await;
+}
+
+#[tokio::test]
+async fn socket_endpoints_are_built_for_the_final_profile() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let identity = identity();
+        let client_address = SocketAddr::from(([10, 0, 0, 1], 50_000));
+        let peer = SocketAddr::from(([10, 0, 0, 2], 4433));
+        let (socket, remote) =
+            MemoryDatagramSocket::pair(client_address, peer, NonZeroUsize::new(64).unwrap());
+        let mut config = server(&identity);
+        config.set_capture(CaptureLimits::default());
+        let server = Endpoint::build(WeakScope::detached())
+            .with_server_config(config)
+            .with_datagram_socket(remote)
+            .unwrap();
+        let sockets = PreparedSockets::default();
+        sockets.0.lock().push(socket);
+        let input = ConnectRequest::new(HostWithPort::local_ipv4(443));
+        let early = QuicProfile::standard();
+        assert_ne!(early.connection_ids().local_len(), 3);
+        input.extensions().insert(early);
+        let EstablishedClientConnection { input, conn } =
+            QuicEndpointConnector::new(sockets, WeakScope::detached())
+                .serve(input)
+                .await
+                .unwrap();
+        // The final preparation picks a profile with other endpoint-wide settings.
+        input.extensions().insert(
+            QuicProfile::standard().with_connection_ids(
+                ConnectionIdProfile::standard()
+                    .try_with_local_len(3)
+                    .unwrap(),
+            ),
+        );
+        let ready = conn.ready(&input).await.unwrap();
+        assert_eq!(ready.peer(), Some(peer));
+        let accept = server.clone();
+        let serve = spawn(async move { accept.accept().await.unwrap().await.unwrap() });
+        let connection = ready
+            .endpoint()
+            .connect_with(client(&identity), peer, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+        let accepted = serve.await.unwrap();
+        let observation = accepted.extensions().get_ref::<QuicObservation>().unwrap();
+        let cid = observation
+            .transport_parameters
+            .iter()
+            .find(|parameter| parameter.id == TransportParameterId::InitialSourceConnectionId)
+            .unwrap();
+        assert_eq!(cid.value.len(), 3);
         connection.close(0u32, b"test complete");
         accepted.close(0u32, b"test complete");
         server.close(0u32, b"test complete");

@@ -30,6 +30,7 @@ use crate::proto::{
     Duration, Instant,
     cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
     connection::PreferredAddressState,
+    shared::{ConnectionEventInner, EndpointEvent, EndpointEventInner},
     token::reset_token,
 };
 pub(crate) mod util;
@@ -64,6 +65,8 @@ mod validation;
 mod version;
 mod zero_cid_routes;
 
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use rama_tls_rustls::dep::rustls::NamedGroup;
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -1632,8 +1635,6 @@ fn a_pending_attempt_survives_its_server_config_being_cleared() {
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 #[test]
 fn server_reports_negotiated_alpn_after_hello_retry() {
-    use rama_tls_rustls::dep::rustls::NamedGroup;
-
     let provider = crypto::rustls::configured_provider();
     let mut server = (*provider).clone();
     server
@@ -8760,8 +8761,6 @@ fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
 /// its own, so the events are handed to the endpoint directly.
 #[test]
 fn an_endpoint_with_no_room_refuses_the_route_and_indexes_nothing() {
-    use crate::proto::shared::{ConnectionEventInner, EndpointEvent, EndpointEventInner};
-
     let _guard = subscribe();
     let mut pair = Pair::default();
     let (client_ch, _server_ch) = pair.connect();

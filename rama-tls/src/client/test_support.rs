@@ -12,13 +12,22 @@ pub(crate) fn fragments(message: &[u8], chunk_size: usize) -> Vec<u8> {
 }
 
 pub(crate) fn hello(padding: usize) -> Vec<u8> {
+    hello_for("x.com", padding)
+}
+
+/// A ClientHello handshake message whose server_name lists `name`.
+pub(crate) fn hello_for(name: &str, padding: usize) -> Vec<u8> {
     let mut body = vec![3, 3];
     body.extend_from_slice(&[0; 32]);
     body.extend_from_slice(&[0, 0, 2, 0x13, 1, 1, 0]);
-    let mut extensions = vec![
-        0, 0, 0, 10, 0, 8, 0, 0, 5, b'x', b'.', b'c', b'o', b'm', 0, 16, 0, 5, 0, 3, 2, b'h', b'2',
-        0, 13, 0, 4, 0, 2, 4, 3,
-    ];
+    let name_len = u16::try_from(name.len()).unwrap();
+    let mut extensions = vec![0, 0];
+    extensions.extend_from_slice(&(name_len + 5).to_be_bytes());
+    extensions.extend_from_slice(&(name_len + 3).to_be_bytes());
+    extensions.push(0);
+    extensions.extend_from_slice(&name_len.to_be_bytes());
+    extensions.extend_from_slice(name.as_bytes());
+    extensions.extend_from_slice(&[0, 16, 0, 5, 0, 3, 2, b'h', b'2', 0, 13, 0, 4, 0, 2, 4, 3]);
     extensions.extend_from_slice(&[0, 21]);
     extensions.extend_from_slice(&u16::try_from(padding).unwrap().to_be_bytes());
     extensions.resize(extensions.len() + padding, 0);

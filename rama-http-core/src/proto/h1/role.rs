@@ -1305,7 +1305,7 @@ impl Client {
 
         // A capture/inspection body may still need polling to finish bookkeeping
         // although its exact payload length is zero. As in HTTP/2, do not invent
-        // Content-Length for GET/HEAD/DELETE/CONNECT. In particular, Capsule
+        // Content-Length for GET/HEAD/DELETE/CONNECT/OPTIONS/TRACE. In particular, Capsule
         // Protocol upgrade requests forbid even Content-Length: 0.
         if matches!(body, BodyLength::Known(0))
             && !headers::method_has_defined_payload_semantics(&head.subject.0)
@@ -3131,6 +3131,8 @@ mod tests {
             Method::HEAD,
             Method::DELETE,
             Method::CONNECT,
+            Method::OPTIONS,
+            Method::TRACE,
             Method::POST,
         ] {
             for explicit in [false, true] {
@@ -3450,6 +3452,42 @@ mod tests {
                     }
                     Err(Parse::TooLarge) => assert!(!accepted, "{case}"),
                     other => panic!("{case}: {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parse_head_size_limit_allows_a_head_of_exactly_the_limit() {
+        for (configured, limit) in [(None, DEFAULT_MAX_HEADER_LIST_SIZE), (Some(512), 512)] {
+            for (size, accepted) in [(limit - 1, true), (limit, true), (limit + 1, false)] {
+                for first_line in ["GET / HTTP/1.1\r\n", "HTTP/1.1 200 OK\r\n"] {
+                    // The first line, `x: `, the value and CRLF, then the empty line.
+                    let value = "v".repeat(size - first_line.len() - 7);
+                    let mut bytes =
+                        BytesMut::from(format!("{first_line}x: {value}\r\n\r\n").as_str());
+                    assert_eq!(bytes.len(), size);
+                    let ctx = ParseContext {
+                        req_method: &mut Some(Method::GET),
+                        h1_parser_config: Default::default(),
+                        h1_max_headers: None,
+                        h1_max_header_size: configured,
+                        h09_responses: false,
+                        on_informational: &mut None,
+                        informational_left: None,
+                        prepared_extensions: &mut Some(Extensions::default()),
+                    };
+                    let parsed = if first_line.starts_with("GET") {
+                        Server::parse(&mut bytes, ctx).map(|head| head.is_some())
+                    } else {
+                        Client::parse(&mut bytes, ctx).map(|head| head.is_some())
+                    };
+                    let case = format!("{configured:?}: {first_line:?} {size} bytes");
+                    match parsed {
+                        Ok(true) => assert!(accepted, "{case}"),
+                        Err(Parse::TooLarge) => assert!(!accepted, "{case}"),
+                        other => panic!("{case}: {other:?}"),
+                    }
                 }
             }
         }

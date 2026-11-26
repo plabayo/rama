@@ -1,21 +1,26 @@
+#[cfg(feature = "tls")]
+use std::mem::take;
 pub mod compiler;
 
 pub mod preparation;
 
 mod h3_settings;
 mod h3_startup;
-pub use h3_settings::H3SettingsReplayEvidence;
-
 use std::sync::Arc;
 
+pub use h3_settings::H3SettingsReplayEvidence;
+#[cfg(not(feature = "tls"))]
+use rama_core::telemetry::tracing;
 use rama_core::{error::BoxError, extensions::Extension};
 use rama_http::proto::{
     h2::frame::EarlyFrame,
     h3::{ClientSettingsProfile, SettingId, Settings},
 };
-
 #[cfg(feature = "tls")]
-use crate::profile::capture::tls::{TlsCapture, TlsCaptureLimits};
+use rama_quic_proto::VarInt;
+#[cfg(feature = "tls")]
+use rama_tls::ExtensionId;
+
 use crate::profile::{
     capture::{
         http2::{H2Capture, H2CaptureLimits},
@@ -35,19 +40,25 @@ use crate::profile::{
         DrawDomain, ProfileDraw, ProfileDrawContext, ProfileSeed, variants::ConnectionSelection,
     },
 };
-#[cfg(not(feature = "tls"))]
-use rama_core::telemetry::tracing;
+#[cfg(feature = "tls")]
+use crate::profile::{
+    capture::{
+        order::ProtocolValue,
+        tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtensionValue},
+    },
+    replay::request::LoweredProfileItem,
+};
 
 /// Typed, bounded components decoded from one immutable connection selection.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(ua))]
+#[extension(tags(ua), scope(connection))]
 pub struct PreparedConnectionComponents {
     #[cfg(feature = "tls")]
     pub tls: Option<TlsCapture>,
-    /// Matched wire outer when `tls` is an accepted-ECH inner.
     #[cfg(feature = "tls")]
     pub tls_outer: Option<TlsCapture>,
     pub quic_parameters: Option<OrderedProtocolCapture>,
+    pub quic_outer_parameters: Option<OrderedProtocolCapture>,
     pub h3_peer_settings: Option<OrderedProtocolCapture>,
     pub h3_settings_evidence: Option<H3SettingsReplayEvidence>,
     pub quic_versions: Option<OrderedProtocolCapture>,
@@ -55,16 +66,33 @@ pub struct PreparedConnectionComponents {
     pub quic_first_flight: Option<QuicFlightCapture>,
     pub h3_sequence: Option<H3ClientSequenceCapture>,
     pub h3_bootstrap: Option<H3BootstrapCapture>,
-    /// Differences introduced while compiling the selected connection capture.
     pub preservation_report: ProfilePreservationReport,
 }
 
+#[cfg(feature = "tls")]
+fn quic_parameter_length(parameters: &OrderedProtocolCapture) -> Option<u16> {
+    let length = parameters.fields.iter().try_fold(0usize, |length, field| {
+        let size = match &field.value {
+            ProtocolValue::Literal(value) => value.len(),
+            ProtocolValue::ConnectionLength(length) => *length,
+        };
+        let id = VarInt::from_u64(field.id).ok()?;
+        let encoded = VarInt::from_u64(u64::try_from(size).ok()?).ok()?;
+        length
+            .checked_add(id.size())?
+            .checked_add(encoded.size())?
+            .checked_add(size)
+    })?;
+    u16::try_from(length).ok()
+}
+
 impl PreparedConnectionComponents {
-    /// Use the matched outer as the native offer, checking that native ECH
-    /// construction preserves the stored inner, including ordered GREASE slots.
-    /// Call only after selecting an ECH-capable connection and validating its policy.
+    /// Use the matched outer as the native offer. With `ech_ready`, the selection's
+    /// [`ConnectionSelection::ech_ready`], native ECH must preserve the stored inner,
+    /// including ordered GREASE slots. Otherwise the selection drew the pair as a
+    /// GREASE offer: the outer is sent alone, its ECH extension as GREASE.
     #[cfg(feature = "tls")]
-    pub fn use_ech_outer_for_replay(&mut self) -> Result<(), ProfileDataError> {
+    pub fn use_ech_outer_for_replay(&mut self, ech_ready: bool) -> Result<(), BoxError> {
         let Some(outer) = self.tls_outer.take() else {
             return Ok(());
         };
@@ -72,15 +100,56 @@ impl PreparedConnectionComponents {
             .tls
             .take()
             .ok_or(ProfileDataError::Invalid("ECH replay without inner"))?;
-        let expected = outer
-            .ech_inner_from_outer()
-            .map(TlsCapture::with_grease_placeholders)
-            .transpose()?;
-        if expected.as_ref() != Some(&inner.with_grease_placeholders()?) {
-            self.preservation_report
-                .push(ProfilePreservationDifference::LoweredProfileItem {
-                    item: crate::profile::replay::request::LoweredProfileItem::TlsEchInner,
+        if ech_ready {
+            let mut expected = outer
+                .ech_inner_from_outer()
+                .map(TlsCapture::with_grease_placeholders)
+                .transpose()?;
+            if let Some(expected) = &mut expected
+                && expected.transport == TlsCaptureTransport::Quic
+                && let Some(length) = self
+                    .quic_parameters
+                    .as_ref()
+                    .and_then(quic_parameter_length)
+            {
+                for extension in &mut expected.extensions {
+                    if extension.id == u16::from(ExtensionId::QUIC_TRANSPORT_PARAMETERS) {
+                        extension.value = TlsCapturedExtensionValue::ConnectionLength(length);
+                    }
+                }
+            }
+            if let Some(expected) = &mut expected {
+                let server_name = inner
+                    .extensions
+                    .iter()
+                    .find(|extension| extension.id == u16::from(ExtensionId::SERVER_NAME));
+                let mut extensions = take(&mut expected.extensions).into_vec();
+                extensions.retain_mut(|extension| {
+                    if extension.id != u16::from(ExtensionId::SERVER_NAME) {
+                        return true;
+                    }
+                    match server_name {
+                        Some(server_name) => {
+                            extension.value = server_name.value.clone();
+                            true
+                        }
+                        None => false,
+                    }
                 });
+                expected.extensions = extensions.into();
+            }
+            if expected.as_ref() != Some(&inner.with_grease_placeholders()?) {
+                self.preservation_report
+                    .push(ProfilePreservationDifference::LoweredProfileItem {
+                        item: LoweredProfileItem::TlsEchInner,
+                    });
+            }
+        } else if !outer
+            .extensions
+            .iter()
+            .any(|extension| matches!(extension.value, TlsCapturedExtensionValue::EchOuter { .. }))
+        {
+            return Err(ProfileDataError::Invalid("ECH outer without its extension").into());
         }
         self.tls = Some(outer);
         Ok(())
@@ -204,6 +273,7 @@ impl ConnectionSelection {
             #[cfg(feature = "tls")]
             tls_outer: None,
             quic_parameters: None,
+            quic_outer_parameters: None,
             h3_peer_settings: None,
             h3_settings_evidence: None,
             quic_versions: None,
@@ -215,6 +285,10 @@ impl ConnectionSelection {
         };
         for slot in &joint.slots {
             match slot.kind {
+                CapturedSlotKind::QuicOuterParameters => {
+                    prepared.quic_outer_parameters =
+                        Some(order(&slot.value, orders, OrderNamespace::QuicParameter)?);
+                }
                 CapturedSlotKind::QuicParameters => {
                     prepared.quic_parameters =
                         Some(order(&slot.value, orders, OrderNamespace::QuicParameter)?);
@@ -322,6 +396,7 @@ fn check_connection_component(
         | CapturedSlotKind::TlsOuter
         | CapturedSlotKind::QuicTls
         | CapturedSlotKind::QuicParameters
+        | CapturedSlotKind::QuicOuterParameters
         | CapturedSlotKind::QuicVersions
         | CapturedSlotKind::QuicFirstFlight => compiled.supports(component),
         CapturedSlotKind::Http3Bootstrap => {

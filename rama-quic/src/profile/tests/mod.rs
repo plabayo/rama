@@ -10,9 +10,12 @@
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use std::assert_matches;
-
-#[cfg(feature = "boring")]
-use rama_quic_proto::profile::ParameterOrderEntry;
+use std::{
+    cell::Cell,
+    net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use rama_core::{bytes::BytesMut, graceful::WeakScope};
 use rama_crypto::hmac::HmacSha2;
@@ -27,23 +30,31 @@ use rama_quic_proto::{
     transport_parameters::TransportParameterId,
     version::{ClientVersionPolicy, LongKind, Version},
 };
+#[cfg(feature = "boring")]
+use rama_quic_proto::{capture::transport_parameters_from_hello, profile::ParameterOrderEntry};
 use rama_tls::client::{ClientHello, TlsClientConfig};
 #[cfg(feature = "boring")]
 use rama_tls::client::{ClientHelloExtension, ServerVerifyMode};
-use rand::{SeedableRng, rngs::StdRng};
-use std::{
-    cell::Cell,
-    net::{Ipv4Addr, SocketAddr},
-    sync::Arc,
-    time::{Duration, Instant},
+#[cfg(feature = "boring")]
+use rama_tls_boring::client::BoringClientConfigExt as _;
+#[cfg(all(feature = "boring", feature = "ua"))]
+use rama_ua::profile::capture::{
+    completeness::ProfileCaptureCompleteness,
+    order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+    quic::QuicFlightCapture,
 };
+use rand::{SeedableRng, rngs::StdRng};
 
+#[cfg(all(feature = "boring", feature = "ua"))]
+use super::replay::transport::prepare;
 use super::{
     browsers::{chrome_153, firefox_156},
     capture, *,
 };
-use crate::proto::{cid_generator::RandomConnectionIdGenerator, transport_parameters};
-use crate::{ClientConfig, Endpoint, EndpointConfig};
+use crate::{
+    ClientConfig, Endpoint, EndpointConfig,
+    proto::{cid_generator::RandomConnectionIdGenerator, transport_parameters},
+};
 
 macro_rules! include_fixture {
     ($name:literal) => {
@@ -1332,7 +1343,6 @@ fn wire_shape(hello: &ClientHello) -> Vec<String> {
 #[cfg(feature = "boring")]
 #[test]
 fn a_captured_browser_client_hello_is_reproduced_over_quic() {
-    use rama_tls_boring::client::BoringClientConfigExt as _;
     for (profile, files) in [
         (
             chrome_153(),
@@ -1344,7 +1354,7 @@ fn a_captured_browser_client_hello_is_reproduced_over_quic() {
         ),
     ] {
         let captured = captured_client_hello(files);
-        let server_name = captured.ext_server_name().unwrap().to_string();
+        let server_name = captured.ext_server_domain().unwrap().to_string();
         let tls = TlsClientConfig::new_from_client_hello(&captured)
             .with_server_verify(ServerVerifyMode::Disable);
         let config = ClientConfig::try_from_rama_tls_with_provider(
@@ -1354,7 +1364,7 @@ fn a_captured_browser_client_hello_is_reproduced_over_quic() {
         )
         .unwrap();
         let (_, _, emitted) = rama_first_flight_with(&profile, config, &server_name);
-        assert_eq!(emitted.ext_server_name(), captured.ext_server_name());
+        assert_eq!(emitted.ext_server_domain(), captured.ext_server_domain());
 
         let mut expected = wire_shape(&captured);
         // Without the compression feature, no compressor is registered.
@@ -1370,9 +1380,8 @@ fn a_captured_browser_client_hello_is_reproduced_over_quic() {
 #[cfg(feature = "boring")]
 #[test]
 fn a_permuting_browser_draws_its_extension_order_per_connection() {
-    use rama_tls_boring::client::BoringClientConfigExt as _;
     let captured = captured_client_hello(["chrome-153-initial-1.hex", "chrome-153-initial-2.hex"]);
-    let server_name = captured.ext_server_name().unwrap().to_string();
+    let server_name = captured.ext_server_domain().unwrap().to_string();
     let tls = TlsClientConfig::new_from_client_hello(&captured)
         .with_server_verify(ServerVerifyMode::Disable)
         .with_permute_extensions(true);
@@ -1413,7 +1422,6 @@ fn a_permuting_browser_draws_its_extension_order_per_connection() {
 #[cfg(feature = "boring")]
 #[test]
 fn sent_transport_parameters_compile_to_the_captured_layouts() {
-    use rama_quic_proto::capture::transport_parameters_from_hello;
     let compile = |files| {
         let sent = transport_parameters_from_hello(
             &captured_client_hello(files),
@@ -1509,6 +1517,9 @@ fn sent_transport_parameters_compile_to_the_captured_layouts() {
 
 mod versions;
 
+#[cfg(all(feature = "boring", feature = "ua"))]
+mod grease;
+
 #[test]
 fn capture_retains_each_authenticated_packet_number_width() {
     // Owned Chrome155 loopback Initials: the second number grows to two bytes
@@ -1528,12 +1539,6 @@ fn capture_retains_each_authenticated_packet_number_width() {
 #[cfg(all(feature = "boring", feature = "ua"))]
 #[test]
 fn safari_transport_capture_replays_without_version_information_or_cid_clamping() {
-    use rama_quic_proto::capture::transport_parameters_from_hello;
-    use rama_ua::profile::capture::{
-        completeness::ProfileCaptureCompleteness,
-        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
-        quic::QuicFlightCapture,
-    };
     let names = ["safari-26.5-initial-1.hex", "safari-26.5-initial-2.hex"];
     let datagrams = names.map(hex);
     let flight = capture::first_flight(&[&datagrams[0], &datagrams[1]], &*provider()).unwrap();
@@ -1548,6 +1553,24 @@ fn safari_transport_capture_replays_without_version_information_or_cid_clamping(
         OrderCaptureLimits::default(),
     )
     .unwrap();
+    let reduced = prepare(&parameters, None, None, false, false)
+        .unwrap()
+        .unwrap();
+    let identity = crate::test_helpers::identity();
+    let (reduced_flight, _, reduced_hello) = rama_first_flight_with(
+        &reduced,
+        crate::test_helpers::client(&identity),
+        "localhost",
+    );
+    assert_eq!(
+        reduced_flight.version,
+        ClientVersionPolicy::default().original()
+    );
+    assert_eq!(reduced_flight.chosen_version, None);
+    assert_eq!(
+        transport_parameters_from_hello(&reduced_hello, &CaptureLimits::default()).unwrap(),
+        sent
+    );
     let capture = QuicFlightCapture {
         completeness: ProfileCaptureCompleteness::Complete,
         flight,
@@ -1555,14 +1578,13 @@ fn safari_transport_capture_replays_without_version_information_or_cid_clamping(
     let mut unsupported = capture.clone();
     unsupported.flight.version = rama_quic_proto::version::Version::from_u32(0xface_b00c);
     assert!(
-        super::replay::transport::prepare(&parameters, None, Some(&unsupported), false)
+        prepare(&parameters, None, Some(&unsupported), false, false)
             .unwrap()
             .is_none()
     );
-    let profile = super::replay::transport::prepare(&parameters, None, Some(&capture), false)
+    let profile = prepare(&parameters, None, Some(&capture), false, false)
         .unwrap()
         .unwrap();
-    let identity = crate::test_helpers::identity();
     let (emitted, _, hello) = rama_first_flight_with(
         &profile,
         crate::test_helpers::client(&identity),
@@ -1575,3 +1597,6 @@ fn safari_transport_capture_replays_without_version_information_or_cid_clamping(
         sent
     );
 }
+
+#[cfg(all(feature = "boring", feature = "ua"))]
+mod ech;

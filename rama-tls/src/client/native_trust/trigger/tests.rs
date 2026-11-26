@@ -1,5 +1,9 @@
 use super::*;
-use std::task::Waker;
+use rama_core::futures::{
+    StreamExt as _,
+    stream::{Empty, Iter, Once, empty, iter, once},
+};
+use std::{array, task::Waker};
 
 #[test]
 fn manual_requests_coalesce_and_report_closure() {
@@ -20,16 +24,11 @@ fn manual_requests_coalesce_and_report_closure() {
 
 #[tokio::test]
 async fn grouped_triggers_accept_nested_custom_sources_and_pinned_streams() {
-    use rama_core::futures::{
-        StreamExt as _,
-        stream::{Iter, Once, iter, once},
-    };
-
     struct CustomTrigger;
     struct CustomKind;
 
     impl IntoNativeTrustReloadTrigger<CustomKind> for CustomTrigger {
-        type Stream = Iter<std::array::IntoIter<(), 2>>;
+        type Stream = Iter<array::IntoIter<(), 2>>;
 
         fn into_reload_stream(self) -> Self::Stream {
             iter([(), ()])
@@ -59,8 +58,6 @@ async fn grouped_triggers_accept_nested_custom_sources_and_pinned_streams() {
 
 #[test]
 fn four_triggers_keep_a_balanced_select_type() {
-    use rama_core::futures::stream::{Empty, empty};
-
     type Pair = Select<Empty<()>, Empty<()>>;
     let _events: Select<Pair, Pair> = (empty(), empty(), empty(), empty()).into_reload_stream();
 }

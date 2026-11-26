@@ -4,6 +4,7 @@ use super::{
 };
 use ahash::{HashMap, HashSet};
 use rama_net::ip::IpProtocol;
+use rama_utils::macros::nonzero;
 use std::{
     num::{NonZeroU16, NonZeroU32},
     sync::Arc,
@@ -163,8 +164,8 @@ impl ConnectIpStateSnapshot {
 impl Default for ConnectIpStateLimits {
     fn default() -> Self {
         Self {
-            max_entries: const { NonZeroU16::new(256).unwrap() },
-            max_request_ids: const { NonZeroU32::new(4096).unwrap() },
+            max_entries: nonzero!(256),
+            max_request_ids: nonzero!(4096),
         }
     }
 }

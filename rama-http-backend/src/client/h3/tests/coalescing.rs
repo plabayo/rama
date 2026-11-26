@@ -1,9 +1,10 @@
 //! Coalescing sets, pool identity and per-connection reuse scope.
 
-use crate::client::{
-    HttpConnIdentifier,
-    h3::{Http3Coalescing, coalescing::restrict_reuse},
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
+
 use rama_core::extensions::{Extensions, ExtensionsRef as _};
 use rama_http_types::{
     Version,
@@ -11,17 +12,18 @@ use rama_http_types::{
 };
 use rama_net::{
     Protocol,
-    address::Host,
+    address::{Domain, Host, HostWithPort},
     client::{
         ConnectRequest, ConnectorTarget,
         pool::{ConnectionReuse, ConnectionReusePolicy, ReqToConnID as _, ReuseKey},
     },
-    tls::ApplicationProtocol,
+    tls::{ApplicationProtocol, ServerName},
 };
 use rama_tls::client::{TlsServerAuthenticatedAliases, TlsServerAuthentication};
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+
+use crate::client::{
+    HttpConnIdentifier,
+    h3::{Http3Coalescing, coalescing::restrict_reuse},
 };
 
 fn origin(authority: &str) -> HttpOrigin {
@@ -162,15 +164,12 @@ fn connection(
 ) -> Extensions {
     let connection = Extensions::new();
     connection.insert(ConnectionReuse::new(Any));
-    connection.insert(TlsServerAuthentication(primary.map(Host::from_static)));
+    let name = |name: &'static str| ServerName::from(Domain::from_static(name));
+    connection.insert(TlsServerAuthentication(primary.map(name)));
     if let Some((bound, names)) = aliases {
         connection.insert(TlsServerAuthenticatedAliases::new(
-            Host::from_static(bound),
-            names
-                .iter()
-                .copied()
-                .map(Host::from_static)
-                .collect::<Vec<_>>(),
+            name(bound),
+            names.iter().copied().map(name).collect::<Vec<_>>(),
         ));
     }
     restrict_reuse(&request("a.example:443"), &connection);
@@ -198,4 +197,41 @@ fn connections_serve_only_verified_origins() {
         assert!(serves(&unverified, "a.example:443"));
         assert!(!serves(&unverified, "b.example:443"));
     }
+}
+
+#[test]
+fn canonical_primary_keeps_verified_coalescing_and_dns_scope() {
+    for (primary, permitted) in [("192.0.2.1", true), ("192.0.2.1.", false)] {
+        let connection = Extensions::new();
+        connection.insert(TlsServerAuthentication(Some(ServerName::from(
+            Domain::try_from(primary).unwrap(),
+        ))));
+        connection.insert(TlsServerAuthenticatedAliases::new(
+            "192.0.2.1".parse().unwrap(),
+            vec![ServerName::from(Domain::from_static("b.example"))],
+        ));
+        restrict_reuse(&request("a.example:443"), &connection);
+        assert_eq!(serves(&connection, "b.example:443"), permitted);
+    }
+}
+
+#[test]
+fn canonical_targets_keep_the_coalescing_pool_identity() {
+    let input = configured(
+        "a.example:443",
+        "127.0.0.1:443",
+        Some(group(&["a.example:443", "b.example:443"])),
+    );
+    let identifier = HttpConnIdentifier::new();
+    let address = identifier.id(&input).unwrap();
+    input.extensions().insert(ConnectorTarget(HostWithPort::new(
+        Host::Name(Domain::from_static("127.0.0.1")),
+        443,
+    )));
+    assert_eq!(identifier.id(&input).unwrap(), address);
+    input.extensions().insert(ConnectorTarget(HostWithPort::new(
+        Host::Name(Domain::from_static("127.0.0.1.")),
+        443,
+    )));
+    assert_ne!(identifier.id(&input).unwrap(), address);
 }

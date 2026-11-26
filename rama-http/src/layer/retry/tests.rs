@@ -3,26 +3,31 @@
     reason = "test policy stub: `retry` is only invoked after a request clone, which the test fixture deliberately prevents"
 )]
 
+use std::{
+    error::Error as _,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+};
+
+use parking_lot::Mutex;
+use rama_core::{
+    Layer, Service,
+    error::{BoxError, BoxErrorExt as _},
+    extensions::{Extension, ExtensionsRef},
+    service::service_fn,
+};
+use storage::MemoryReplay;
+
 use super::*;
-use crate::BodyExtractExt;
-use crate::service::web::response::IntoResponse;
 use crate::{
-    Body, Request, Response, StatusCode,
+    Body, BodyExtractExt, Request, Response, StatusCode,
     body::{CollectOptions, SizeHint},
     header::LOCATION,
     layer::follow_redirect::{FollowRedirectLayer, RequestUri, policy::Action},
     request::Parts,
-};
-use parking_lot::Mutex;
-use rama_core::error::BoxError;
-use rama_core::error::BoxErrorExt as _;
-use rama_core::extensions::{Extension, ExtensionsRef};
-use rama_core::service::service_fn;
-use rama_core::{Layer, Service};
-use std::error::Error as _;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    service::web::response::IntoResponse,
 };
 
 #[tokio::test]
@@ -326,6 +331,14 @@ impl Policy<Response, Error> for StampingRetry {
         Some(CollectOptions::new())
     }
 
+    fn replay_store(&self, _: &Parts) -> &dyn storage::ReplayStore {
+        &MemoryReplay::DEFAULT
+    }
+
+    async fn next_attempt(&self) -> bool {
+        true
+    }
+
     async fn retry(
         &self,
         req: Request<RetryBody>,
@@ -379,6 +392,14 @@ struct RetryServerErrors(Arc<Mutex<usize>>);
 impl Policy<Response, Error> for RetryServerErrors {
     fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
         Some(CollectOptions::new())
+    }
+
+    fn replay_store(&self, _: &Parts) -> &dyn storage::ReplayStore {
+        &MemoryReplay::DEFAULT
+    }
+
+    async fn next_attempt(&self) -> bool {
+        true
     }
 
     async fn retry(
@@ -500,6 +521,14 @@ impl Policy<Response, Error> for RetryErrors {
         Some(CollectOptions::new())
     }
 
+    fn replay_store(&self, _: &Parts) -> &dyn storage::ReplayStore {
+        &MemoryReplay::DEFAULT
+    }
+
+    async fn next_attempt(&self) -> bool {
+        true
+    }
+
     async fn retry(
         &self,
 
@@ -527,6 +556,14 @@ struct Limit(Arc<Mutex<usize>>);
 impl Policy<Response, Error> for Limit {
     fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
         Some(CollectOptions::new())
+    }
+
+    fn replay_store(&self, _: &Parts) -> &dyn storage::ReplayStore {
+        &MemoryReplay::DEFAULT
+    }
+
+    async fn next_attempt(&self) -> bool {
+        true
     }
 
     async fn retry(
@@ -558,6 +595,14 @@ struct UnlessErr(InnerError);
 impl Policy<Response, Error> for UnlessErr {
     fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
         Some(CollectOptions::new())
+    }
+
+    fn replay_store(&self, _: &Parts) -> &dyn storage::ReplayStore {
+        &MemoryReplay::DEFAULT
+    }
+
+    async fn next_attempt(&self) -> bool {
+        true
     }
 
     async fn retry(
@@ -594,6 +639,14 @@ impl Policy<Response, Error> for CannotClone {
         Some(CollectOptions::new())
     }
 
+    fn replay_store(&self, _: &Parts) -> &dyn storage::ReplayStore {
+        &MemoryReplay::DEFAULT
+    }
+
+    async fn next_attempt(&self) -> bool {
+        true
+    }
+
     async fn retry(
         &self,
 
@@ -621,6 +674,14 @@ where
 {
     fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
         Some(CollectOptions::new())
+    }
+
+    fn replay_store(&self, _: &Parts) -> &dyn storage::ReplayStore {
+        &MemoryReplay::DEFAULT
+    }
+
+    async fn next_attempt(&self) -> bool {
+        true
     }
 
     async fn retry(

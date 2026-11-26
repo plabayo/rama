@@ -3,6 +3,7 @@
 use std::time::SystemTime;
 
 use rama_core::error::BoxError;
+use rama_net::tls::ServerName;
 
 use super::{PlatformVerifyError, PlatformVerifyErrorKind};
 use crate::pki_types::CertificateDer;
@@ -25,7 +26,7 @@ impl Verifier {
         &self,
         _end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
-        _server_name: &str,
+        _server_name: &ServerName,
         _ocsp_response: Option<&[u8]>,
         _now: SystemTime,
     ) -> Result<Vec<CertificateDer<'static>>, PlatformVerifyError> {

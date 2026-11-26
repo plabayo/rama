@@ -1,7 +1,7 @@
 use crate::harness::{Test, ensure};
 use rama_core::{Layer as _, Service as _, ServiceInput};
 use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
-use rama_net::{address::Host, stream::service::EchoService};
+use rama_net::{address::Domain, stream::service::EchoService};
 use rama_tls::{
     client::{DistrustedServerKeys, TlsClientConfig, TlsServerTrust},
     server::{ServerAuthData, TlsServerConfig},
@@ -48,7 +48,7 @@ fn platform_verification_and_root_denial() -> Result<(), String> {
                             .map_err(|e| e.to_string())?
                     };
                     let mut config = TlsClientConfig::new()
-                        .with_server_name(Host::from_static("localhost"))
+                        .with_server_name(Domain::tld_localhost())
                         .with_server_trust(trust);
                     if mode == "denied" {
                         config.set_server_cert_chain_policy(
@@ -116,7 +116,7 @@ fn relay_platform_verification_and_root_denial() -> Result<(), String> {
             );
             let mut auth = TlsMitmEgressServerAuth::new()
                 .with_platform_verifier()
-                .with_server_name(Host::from_static("localhost"));
+                .with_server_name(Domain::tld_localhost());
             if mode != "untrusted" {
                 auth.try_set_extra_server_trust_anchors([root.clone()])?;
             }
@@ -152,7 +152,7 @@ fn relay_platform_verification_and_root_denial() -> Result<(), String> {
             });
             let guest = TlsClientConfig::new()
                 .with_server_verify(ServerVerifyMode::Disable)
-                .with_server_name(Host::from_static("localhost"));
+                .with_server_name(Domain::tld_localhost());
             drop(
                 tls_connect(
                     ServiceInput::new(client_io),

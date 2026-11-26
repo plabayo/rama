@@ -3,7 +3,10 @@ use rama_utils::{
     time::deadline_after,
 };
 use std::{
-    collections::{BTreeSet, hash_map},
+    collections::{
+        BTreeSet,
+        hash_map::{self, Entry},
+    },
     convert::TryFrom,
     fmt, mem,
     net::{IpAddr, SocketAddr},
@@ -2914,7 +2917,6 @@ impl ResetTokenTable {
     }
 
     fn remove(&mut self, remote: SocketAddr, token: ResetToken) {
-        use std::collections::hash_map::Entry;
         match self.0.entry(remote) {
             Entry::Vacant(_) => {}
             Entry::Occupied(mut e) => {

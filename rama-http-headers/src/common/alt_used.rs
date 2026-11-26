@@ -65,9 +65,12 @@ impl fmt::Display for AltUsed {
 
 #[cfg(test)]
 mod tests {
+    use std::iter::once;
+
+    use rama_http_types::HeaderMap;
+
     use super::*;
     use crate::HeaderMapExt;
-    use rama_http_types::HeaderMap;
 
     #[test]
     fn alternative_authority_round_trip() {
@@ -107,11 +110,16 @@ mod tests {
     }
 
     #[test]
-    fn unbracketed_ipv6_is_an_address_without_port() {
-        let value = HeaderValue::from_static("::1");
+    fn ipv6_must_be_bracketed() {
+        // RFC 7838 §5: `Alt-Used = uri-host [ ":" port ]`; an IPv6 uri-host is bracketed.
+        for authority in ["::1", "::1:443", "2001:db8::1"] {
+            let value = HeaderValue::from_static(authority);
+            AltUsed::decode(&mut once(&value)).expect_err(authority);
+        }
+        let value = HeaderValue::from_static("[::1]:443");
         let decoded = AltUsed::decode(&mut std::iter::once(&value)).unwrap();
-        assert_eq!(decoded.to_string(), "[::1]");
-        assert_eq!(decoded.0.port.as_u16(), None);
+        assert_eq!(decoded.to_string(), "[::1]:443");
+        assert_eq!(decoded.0.port.as_u16(), Some(443));
     }
 
     #[test]

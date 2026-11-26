@@ -317,6 +317,7 @@ fn extension_value(id: ExtensionId, value: &TlsCapturedExtensionValue) -> Vec<Sp
         }
     };
     vec![match value {
+        TlsCapturedExtensionValue::IpServerName => "IP literal SNI present".into(),
         TlsCapturedExtensionValue::U16List(values) => {
             let values = values.iter().copied();
             match id {

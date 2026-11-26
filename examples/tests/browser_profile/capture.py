@@ -24,6 +24,7 @@ import time
 import flows
 import wire
 
+from read_form import native_replay_reference
 from driver_receipt import write_driver_result
 from source_evidence import source_evidence
 from tcp_evidence import account_tcp, write_tcp_evidence
@@ -703,7 +704,7 @@ def capture_http1(args):
         require(replay_archive["profiles"], "no replay profile captured")
 
         # Require both archive agreement and independent packet agreement.
-        comparison = [str(rama), "ua", "compare", "--literal"]
+        comparison = [str(rama), "ua", "compare", "--native-replay" if secure else "--literal"]
         if not all_flows:
             comparison += ["--allow-partial-coverage"]
         comparison += [str(root / "profiles.json"), str(root / "replay-profiles.json")]
@@ -746,7 +747,7 @@ def capture_http1(args):
                 root / "replay.keys",
                 replay_port,
                 root / "replay.pdml",
-                inspected,
+                native_replay_reference(inspected),
             )
             (root / "tls-comparison.json").write_text(
                 json.dumps(

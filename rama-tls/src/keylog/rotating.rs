@@ -352,6 +352,8 @@ fn sweep_older_than(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
     fn period_zero_is_rejected() {
@@ -440,7 +442,6 @@ mod tests {
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt as _;
             let mode = std::fs::metadata(&expected_path)
                 .unwrap()
                 .permissions()

@@ -114,8 +114,12 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_client_hello_card(
         div!(
             class = "tls-facts",
             hello
-                .ext_server_name()
+                .ext_server_domain()
                 .map(|name| tls_fact("Server name", name)),
+            hello
+                .ext_server_name()
+                .and_then(|name| name.as_ip())
+                .map(|ip| tls_fact("Server name (IP literal)", ip)),
             tls_fact("Supported TLS", versions),
             tls_fact("ALPN", alpn),
             tls_fact("Cipher suites", hello.cipher_suites().len()),

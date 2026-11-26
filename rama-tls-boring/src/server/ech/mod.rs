@@ -10,7 +10,7 @@ use std::{
 use arc_swap::ArcSwap;
 use rama_boring::{
     hpke::HpkeKey,
-    ssl::{SslContext, SslEchKeys, SslMethod},
+    ssl::{SslContext, SslContextRef, SslEchKeys, SslMethod},
 };
 use rama_core::error::{BoxError, BoxErrorExt as _};
 
@@ -21,7 +21,9 @@ use rama_core::error::{BoxError, BoxErrorExt as _};
 /// The caller remains responsible for clearing its input buffer.
 #[non_exhaustive]
 pub struct EchServerKey<'a> {
+    /// The encoded ECHConfig.
     pub config: &'a [u8],
+    /// The private key of `config`.
     pub private_key: &'a [u8],
     /// Advertise this config after authenticated rejection. Retiring keys can
     /// remain decryptable without being advertised to new clients.
@@ -125,7 +127,7 @@ impl EchServerKeys {
 
     /// Install a complete generation. BoringSSL snapshots it when processing
     /// the first ClientHello and retains it through HRR and retry advertisement.
-    pub fn install(&self, context: &rama_boring::ssl::SslContextRef) -> Result<(), BoxError> {
+    pub fn install(&self, context: &SslContextRef) -> Result<(), BoxError> {
         context.set_ech_keys(&self.native)?;
         Ok(())
     }
@@ -137,6 +139,7 @@ impl EchServerKeys {
 /// generations; no provider work or key parsing runs on the handshake path.
 /// BoringSSL takes its stable snapshot at the first ClientHello, not TCP accept.
 pub trait EchServerKeysProvider: Send + Sync + 'static {
+    /// The current generation of keys.
     fn snapshot(&self) -> Arc<EchServerKeys>;
 
     /// Install the current generation and register a context for future updates.
@@ -177,6 +180,7 @@ impl fmt::Debug for ReloadableEchServerKeys {
 }
 
 impl ReloadableEchServerKeys {
+    /// Start from the generation `keys`.
     pub fn new(keys: Arc<EchServerKeys>) -> Self {
         Self(Arc::new(LiveKeys {
             keys: ArcSwap::from(keys),
@@ -222,13 +226,28 @@ impl EchServerKeysProvider for ReloadableEchServerKeys {
 }
 
 #[cfg(test)]
-#[path = "../../tests/support/ech_keys.rs"]
+#[path = "../../../tests/support/ech_keys.rs"]
 mod fixtures;
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::super::{BoringServerConfigExt as _, TlsAcceptorService};
     pub(crate) use super::fixtures::{SERVER_ECH_CONFIG, SERVER_ECH_KEY};
     use super::*;
+    use rama_boring::{
+        ssl::{Ssl, SslContentType, SslVerifyMode, is_ech_rejected},
+        x509::{X509, verify::X509VerifyFlags},
+    };
+    use rama_core::{Service, ServiceInput, extensions::ExtensionsRef, service::service_fn};
+    use rama_net::address::Domain;
+    use rama_tls::{
+        SecureTransport,
+        client::{ClientHelloExtension, ECHClientHello, parse_client_hello},
+        server::{
+            GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData, ServerEchAccepted,
+            TlsServerConfig,
+        },
+    };
     use rama_utils::octets::kib;
 
     fn key(config: &[u8], retry: bool) -> EchServerKey<'_> {
@@ -295,11 +314,6 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn tcp_acceptance_and_effective_hello_follow_rotation() {
-        use super::super::{BoringServerConfigExt as _, TlsAcceptorService};
-        use rama_boring::ssl::{Ssl, SslVerifyMode};
-        use rama_core::{Service, ServiceInput, extensions::ExtensionsRef, service::service_fn};
-        use rama_tls::{SecureTransport, server::ServerEchAccepted, server::TlsServerConfig};
-
         let a = EchServerKeys::new([key(SERVER_ECH_CONFIG, true)]).unwrap();
         let provider = ReloadableEchServerKeys::new(a.clone());
         let service = TlsAcceptorService::new(
@@ -348,12 +362,10 @@ pub(crate) mod tests {
                 let captured = wire.clone();
                 ssl.set_msg_callback(move |_, message| {
                     if message.is_written()
-                        && message.content_type() == rama_boring::ssl::SslContentType::HANDSHAKE
+                        && message.content_type() == SslContentType::HANDSHAKE
                         && message.handshake_type() == Some(1)
                     {
-                        *captured.lock() = Some(
-                            rama_tls::client::parse_client_hello(&message.bytes()[4..]).unwrap(),
-                        );
+                        *captured.lock() = Some(parse_client_hello(&message.bytes()[4..]).unwrap());
                     }
                 });
                 if real {
@@ -368,7 +380,7 @@ pub(crate) mod tests {
                 assert_eq!(client.unwrap().ssl().ech_accepted(), real);
                 let (accepted, hello) = server.unwrap();
                 assert_eq!(accepted, real);
-                assert_eq!(hello.ext_server_name().unwrap().as_str(), "localhost");
+                assert_eq!(hello.ext_server_domain().unwrap().as_str(), "localhost");
                 if !real {
                     assert_eq!(
                         serde_json::to_value(wire.lock().as_ref().unwrap()).unwrap(),
@@ -379,7 +391,7 @@ pub(crate) mod tests {
                         wire.lock()
                             .as_ref()
                             .unwrap()
-                            .ext_server_name()
+                            .ext_server_domain()
                             .unwrap()
                             .as_str(),
                         "ech.com"
@@ -388,9 +400,7 @@ pub(crate) mod tests {
                 assert_eq!(
                     hello.extensions().iter().any(|extension| matches!(
                         extension,
-                        rama_tls::client::ClientHelloExtension::EncryptedClientHello(
-                            rama_tls::client::ECHClientHello::Inner
-                        )
+                        ClientHelloExtension::EncryptedClientHello(ECHClientHello::Inner)
                     )),
                     real
                 );
@@ -400,16 +410,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn retired_key_rejection_advertises_exact_current_configs() {
-        use super::super::{BoringServerConfigExt as _, TlsAcceptorService};
-        use rama_boring::ssl::{Ssl, SslVerifyMode};
-        use rama_core::{Service, ServiceInput, extensions::ExtensionsRef, service::service_fn};
-        use rama_tls::server::{
-            GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData, TlsServerConfig,
-        };
-
         let leaf = LeafCertRequest {
             identities: ["localhost", "ech.com"]
-                .map(|name| rama_net::address::Domain::try_from(name).unwrap().into())
+                .map(|name| Domain::try_from(name).unwrap().into())
                 .to_vec(),
             ..Default::default()
         };
@@ -419,10 +422,10 @@ pub(crate) mod tests {
         context.set_verify(SslVerifyMode::PEER);
         context
             .cert_store_mut()
-            .set_flags(rama_boring::x509::verify::X509VerifyFlags::PARTIAL_CHAIN);
+            .set_flags(X509VerifyFlags::PARTIAL_CHAIN);
         context
             .cert_store_mut()
-            .add_cert(rama_boring::x509::X509::from_der(auth.cert_chain.last().unwrap()).unwrap())
+            .add_cert(X509::from_der(auth.cert_chain.last().unwrap()).unwrap())
             .unwrap();
         let context = context.build();
         let old = EchServerKeys::new([key(SERVER_ECH_CONFIG, true)]).unwrap();
@@ -436,7 +439,7 @@ pub(crate) mod tests {
                     Ok::<_, BoxError>(
                         stream
                             .extensions()
-                            .get_ref::<rama_tls::server::ServerEchAccepted>()
+                            .get_ref::<ServerEchAccepted>()
                             .unwrap()
                             .0,
                     )
@@ -459,9 +462,11 @@ pub(crate) mod tests {
         );
         let error = client.unwrap_err();
         assert!(
-            error.as_ssl_error_stack().unwrap().iter().any(|error| {
-                rama_boring::ssl::is_ech_rejected(error.library_code(), error.reason_code())
-            }),
+            error
+                .as_ssl_error_stack()
+                .unwrap()
+                .iter()
+                .any(|error| { is_ech_rejected(error.library_code(), error.reason_code()) }),
             "{error:?}"
         );
         let ssl = error.ssl().unwrap();

@@ -1,7 +1,7 @@
 //! Requirements and observations shared across a connection attempt.
 
 use super::{ConnectionError, ConnectionErrorKind};
-use crate::address::Host;
+use crate::tls::ServerName;
 use parking_lot::Mutex;
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
@@ -36,7 +36,7 @@ pub enum ConnectionPolicyScope {
 #[derive(Debug, Default, Extension)]
 #[extension(tags(net), scope(connection))]
 pub struct ConnectionAttempt {
-    authenticated_peer: Option<Host>,
+    authenticated_peer: Option<ServerName>,
     observations: Mutex<Observations>,
     dialed_for: Option<Arc<Self>>,
 }
@@ -70,8 +70,8 @@ impl ConnectionAttempt {
 
     generate_set_and_with! {
         /// Require this peer's authenticated identity, independently of the dial target.
-        pub fn authenticated_peer(mut self, peer: Host) -> Self {
-            self.authenticated_peer = Some(peer);
+        pub fn authenticated_peer(mut self, peer: impl Into<ServerName>) -> Self {
+            self.authenticated_peer = Some(peer.into());
             self
         }
     }
@@ -82,7 +82,7 @@ impl ConnectionAttempt {
     pub fn check_policy(
         &self,
         scope: ConnectionPolicyScope,
-        authenticated_peer: Option<&Host>,
+        authenticated_peer: Option<&ServerName>,
     ) -> Result<(), ConnectionError> {
         self.record_policy_scope(scope);
         if self
@@ -178,18 +178,19 @@ impl ExtensionsTransfer for ConnectionAttemptTransfer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::ConnectionErrorDomain;
+    use crate::{address::Domain, client::ConnectionErrorDomain};
 
     #[test]
     fn peer_requirement_preserves_policy_scope_without_claiming_a_remote_failure() {
-        let peer = Host::from_static("origin.example");
+        let peer = ServerName::from(Domain::from_static("origin.example"));
         let attempt = ConnectionAttempt::new().with_authenticated_peer(peer.clone());
         assert_eq!(attempt.policy_scope(), ConnectionPolicyScope::Unknown);
         for scope in [
             ConnectionPolicyScope::Connector,
             ConnectionPolicyScope::Request,
         ] {
-            for identity in [None, Some(&Host::EXAMPLE_NAME)] {
+            let example = ServerName::from(Domain::example());
+            for identity in [None, Some(&example)] {
                 let error = attempt.check_policy(scope, identity).unwrap_err();
                 assert_eq!(error.domain(), ConnectionErrorDomain::Local);
                 assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
@@ -201,7 +202,7 @@ mod tests {
         attempt
             .check_policy(
                 ConnectionPolicyScope::Connector,
-                Some(&Host::from_static("ORIGIN.Example")),
+                Some(&ServerName::from(Domain::from_static("ORIGIN.Example"))),
             )
             .unwrap();
     }
@@ -235,7 +236,7 @@ mod tests {
     fn a_request_local_restriction_reaches_the_attempt_it_is_dialed_for() {
         let origin = Extensions::new();
         origin.insert(
-            ConnectionAttempt::new().with_authenticated_peer(Host::from_static("origin.example")),
+            ConnectionAttempt::new().with_authenticated_peer(Domain::from_static("origin.example")),
         );
         let leg = origin.fork_connection(&ConnectionAttemptTransfer::new());
 

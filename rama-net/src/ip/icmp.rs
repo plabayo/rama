@@ -1,27 +1,185 @@
-//! ICMP forwarding errors without a socket or routing-table dependency.
+//! ICMP errors without a socket or routing-table dependency: the ones a forwarder returns to
+//! the source of a packet, and the reports a host receives about the packets it sent.
 
 use super::{
     InternetChecksum, IpPacket, IpPacketError, IpProtocol, Ipv4Header, Ipv6Header,
     internet_checksum,
 };
+use crate::address::SocketAddress;
 use core::net::{IpAddr, Ipv6Addr};
 
-/// A forwarding error that can be returned to the source of an IP packet.
+/// An ICMP error condition, for IPv4 (RFC 792) and IPv6 (RFC 4443) alike.
+///
+/// [`encode_icmp_error`] returns one to the source of a packet; [`IcmpErrorKind::from_icmpv4`]
+/// and [`IcmpErrorKind::from_icmpv6`] classify a received message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum IcmpErrorKind {
-    /// No route to the destination.
+    /// No route to the destination network.
     NoRoute,
+    /// The destination host is unreachable.
+    HostUnreachable,
+    /// No socket listens on the destination port.
+    PortUnreachable,
     /// Local policy forbids forwarding.
     AdministrativelyProhibited,
     /// IPv6 ingress/egress source-address policy failed (IPv4 uses prohibited).
     SourcePolicy,
     /// The outgoing link cannot carry the packet.
     PacketTooBig {
-        /// IP MTU, excluding link/tunnel encapsulation.
+        /// IP MTU, excluding link/tunnel encapsulation; zero when the reporter did not say
+        /// (RFC 1191 §4).
         mtu: u32,
     },
     /// TTL / Hop Limit expired in transit.
     HopLimitExceeded,
+}
+
+impl IcmpErrorKind {
+    /// Classify an ICMP (IPv4) error message by its type and code.
+    ///
+    /// `mtu` is the next-hop MTU a Fragmentation Needed message carries (RFC 1191) and is
+    /// read for no other message. `None` for a message this type does not model.
+    #[must_use]
+    pub const fn from_icmpv4(icmp_type: u8, code: u8, mtu: u32) -> Option<Self> {
+        match (icmp_type, code) {
+            (3, 0 | 6 | 11) => Some(Self::NoRoute),
+            (3, 1 | 7 | 12) => Some(Self::HostUnreachable),
+            (3, 3) => Some(Self::PortUnreachable),
+            (3, 4) => Some(Self::PacketTooBig { mtu }),
+            (3, 9 | 10 | 13) => Some(Self::AdministrativelyProhibited),
+            (11, 0) => Some(Self::HopLimitExceeded),
+            _ => None,
+        }
+    }
+
+    /// Classify an ICMPv6 error message by its type and code.
+    ///
+    /// `mtu` is the MTU a Packet Too Big message carries (RFC 4443 §3.2) and is read for no
+    /// other message. `None` for a message this type does not model.
+    #[must_use]
+    pub const fn from_icmpv6(icmp_type: u8, code: u8, mtu: u32) -> Option<Self> {
+        match (icmp_type, code) {
+            (1, 0) => Some(Self::NoRoute),
+            (1, 1) => Some(Self::AdministrativelyProhibited),
+            (1, 3) => Some(Self::HostUnreachable),
+            (1, 4) => Some(Self::PortUnreachable),
+            (1, 5) => Some(Self::SourcePolicy),
+            (2, 0) => Some(Self::PacketTooBig { mtu }),
+            (3, 0) => Some(Self::HopLimitExceeded),
+            _ => None,
+        }
+    }
+}
+
+/// Where an [`IcmpErrorReport`] came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum IcmpErrorOrigin {
+    /// An ICMP message for IPv4, with its type and code as received.
+    Icmpv4 {
+        /// The message type.
+        icmp_type: u8,
+        /// The message code.
+        code: u8,
+    },
+    /// An ICMPv6 message, with its type and code as received.
+    Icmpv6 {
+        /// The message type.
+        icmp_type: u8,
+        /// The message code.
+        code: u8,
+    },
+    /// The local network stack, which refused the packet without a message on the wire.
+    Local,
+}
+
+/// An error reported about a packet a host sent: by an ICMP message from the network, or by
+/// the local stack.
+///
+/// ICMP is not authenticated and is trivially spoofed (RFC 5927): a report is a hint about
+/// the path, never evidence that a peer or connection is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IcmpErrorReport {
+    origin: IcmpErrorOrigin,
+    kind: Option<IcmpErrorKind>,
+    destination: Option<SocketAddress>,
+    reporter: Option<IpAddr>,
+}
+
+impl IcmpErrorReport {
+    /// A report carried by an ICMP (IPv4) message; `mtu` as [`IcmpErrorKind::from_icmpv4`].
+    #[must_use]
+    pub const fn icmpv4(icmp_type: u8, code: u8, mtu: u32) -> Self {
+        Self::new(
+            IcmpErrorOrigin::Icmpv4 { icmp_type, code },
+            IcmpErrorKind::from_icmpv4(icmp_type, code, mtu),
+        )
+    }
+
+    /// A report carried by an ICMPv6 message; `mtu` as [`IcmpErrorKind::from_icmpv6`].
+    #[must_use]
+    pub const fn icmpv6(icmp_type: u8, code: u8, mtu: u32) -> Self {
+        Self::new(
+            IcmpErrorOrigin::Icmpv6 { icmp_type, code },
+            IcmpErrorKind::from_icmpv6(icmp_type, code, mtu),
+        )
+    }
+
+    /// A report the local stack made about a packet it refused to send.
+    #[must_use]
+    pub const fn local(kind: Option<IcmpErrorKind>) -> Self {
+        Self::new(IcmpErrorOrigin::Local, kind)
+    }
+
+    const fn new(origin: IcmpErrorOrigin, kind: Option<IcmpErrorKind>) -> Self {
+        Self {
+            origin,
+            kind,
+            destination: None,
+            reporter: None,
+        }
+    }
+
+    /// Where the report came from.
+    #[must_use]
+    pub const fn origin(&self) -> IcmpErrorOrigin {
+        self.origin
+    }
+
+    /// What the report says, when it is a condition [`IcmpErrorKind`] models.
+    #[must_use]
+    pub const fn kind(&self) -> Option<IcmpErrorKind> {
+        self.kind
+    }
+
+    /// The destination of the packet the report is about, when known.
+    #[must_use]
+    pub const fn destination(&self) -> Option<SocketAddress> {
+        self.destination
+    }
+
+    /// The node that sent the report, a router or the destination host, when known.
+    #[must_use]
+    pub const fn reporter(&self) -> Option<IpAddr> {
+        self.reporter
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the destination of the packet the report is about.
+        pub fn destination(mut self, destination: SocketAddress) -> Self {
+            self.destination = Some(destination);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the node that sent the report.
+        pub fn reporter(mut self, reporter: IpAddr) -> Self {
+            self.reporter = Some(reporter);
+            self
+        }
+    }
 }
 
 /// ICMPv6 checksum including the IPv6 pseudo-header (RFC 4443 §2.3).
@@ -128,6 +286,14 @@ pub fn encode_icmp_error(
             body[0] = 3;
             body[1] = 0;
         }
+        (true, IcmpErrorKind::HostUnreachable) => {
+            body[0] = 3;
+            body[1] = 1;
+        }
+        (true, IcmpErrorKind::PortUnreachable) => {
+            body[0] = 3;
+            body[1] = 3;
+        }
         (true, IcmpErrorKind::AdministrativelyProhibited | IcmpErrorKind::SourcePolicy) => {
             body[0] = 3;
             body[1] = 13;
@@ -139,6 +305,14 @@ pub fn encode_icmp_error(
         }
         (true, IcmpErrorKind::HopLimitExceeded) => body[0] = 11,
         (false, IcmpErrorKind::NoRoute) => body[0] = 1,
+        (false, IcmpErrorKind::HostUnreachable) => {
+            body[0] = 1;
+            body[1] = 3;
+        }
+        (false, IcmpErrorKind::PortUnreachable) => {
+            body[0] = 1;
+            body[1] = 4;
+        }
         (false, IcmpErrorKind::AdministrativelyProhibited) => {
             body[0] = 1;
             body[1] = 1;

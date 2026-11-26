@@ -1,20 +1,35 @@
-use std::convert::Infallible;
+use std::future::ready;
 
 use rama_core::stream::json::JsonReadStream;
 use rama_http_types::{BodyDataStream, header};
 
-use crate::Request;
-use crate::service::web::extract::{
-    FromRequest, FromRequestBody, OptionalFromRequest, OptionalFromRequestBody,
+use super::json_content_type::{JsonContentTypePolicy, JsonPayload, accepts_json_content_type};
+use crate::{
+    Request,
+    service::web::extract::{
+        FromRequest, FromRequestBody, OptionalFromRequest, OptionalFromRequestBody,
+    },
+    utils::macros::define_http_rejection,
 };
 
+/// Extracts newline-delimited JSON values as they arrive.
+///
+/// Any `Content-Type` is accepted unless a [`JsonContentTypePolicy`] extension says otherwise.
 pub type JsonLines<T> = JsonReadStream<T, BodyDataStream>;
+
+define_http_rejection! {
+    #[status = UNSUPPORTED_MEDIA_TYPE]
+    #[body = "JSON Lines request `Content-Type` is not accepted"]
+    /// Rejection type for [`JsonLines`]
+    /// used if the [`JsonContentTypePolicy`] rejects the `Content-Type`.
+    pub struct InvalidJsonLinesContentType;
+}
 
 impl<T> FromRequest for JsonLines<T>
 where
     T: serde::de::DeserializeOwned + Send + Sync + 'static,
 {
-    type Rejection = Infallible;
+    type Rejection = InvalidJsonLinesContentType;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
         let (parts, body) = req.into_parts();
@@ -28,9 +43,12 @@ where
     T: serde::de::DeserializeOwned + Send + Sync + 'static,
 {
     fn from_request_body(
-        _parts: &crate::request::Parts,
+        parts: &crate::request::Parts,
         body: crate::Body,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send + 'static {
+        if !accepts_json_content_type(parts, JsonPayload::Lines, JsonContentTypePolicy::Any) {
+            return ready(Err(InvalidJsonLinesContentType));
+        }
         std::future::ready(Ok(body.into_json_stream()))
     }
 }
@@ -39,7 +57,7 @@ impl<T> OptionalFromRequest for JsonLines<T>
 where
     T: serde::de::DeserializeOwned + Send + Sync + 'static,
 {
-    type Rejection = Infallible;
+    type Rejection = InvalidJsonLinesContentType;
 
     async fn from_request(req: Request) -> Result<Option<Self>, Self::Rejection> {
         let (parts, body) = req.into_parts();
@@ -74,12 +92,12 @@ where
 }
 #[cfg(test)]
 mod tests {
-    use crate::service::{client::HttpClientExt as _, web::Router};
-
-    use super::JsonLines;
     use rama_core::stream::StreamExt as _;
     use rama_http_types::StatusCode;
     use serde::{Deserialize, Serialize};
+
+    use super::JsonLines;
+    use crate::service::{client::HttpClientExt as _, web::Router};
 
     #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
     struct User {

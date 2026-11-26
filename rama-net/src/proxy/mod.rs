@@ -12,7 +12,3 @@ pub use crate::conn::LingeringClose;
 pub use forward::{
     BridgeCloseReason, FirstByteTimeoutStart, IoForwardError, IoForwardOutcome, IoForwardService,
 };
-
-mod idle;
-#[doc(inline)]
-pub use idle::{IdleActivity, IdleGuard};

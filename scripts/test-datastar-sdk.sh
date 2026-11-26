@@ -105,15 +105,28 @@ fi
 test_package=github.com/starfederation/datastar/sdk/tests/cmd/datastar-sdk-tests
 test_version="${DATASTAR_SDK_TEST_VERSION:-latest}"
 
+# Only fetching the test tool is retried: the module proxy fails transiently, a test must not rerun.
+run_tests='
+attempt=1
+until go install "$1"; do
+    if [ "$attempt" -ge 4 ]; then
+        echo "could not fetch the Datastar SDK tests" >&2
+        exit 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 5
+done
+bin=$(go env GOBIN)
+gopath=$(go env GOPATH)
+exec "${bin:-${gopath%%:*}/bin}/datastar-sdk-tests" -server "$2"
+'
+
 if [ "$RUNNER" = native ]; then
-    go run "$test_package@$test_version" \
-        -server http://127.0.0.1:12050
+    sh -c "$run_tests" sh "$test_package@$test_version" http://127.0.0.1:12050
 elif [ "$(uname -s)" = Linux ]; then
     docker run --rm --network host "${DATASTAR_GO_IMAGE:-golang:1.25}" \
-        go run "$test_package@$test_version" \
-        -server http://127.0.0.1:12050
+        sh -c "$run_tests" sh "$test_package@$test_version" http://127.0.0.1:12050
 else
     docker run --rm "${DATASTAR_GO_IMAGE:-golang:1.25}" \
-        go run "$test_package@$test_version" \
-        -server http://host.docker.internal:12050
+        sh -c "$run_tests" sh "$test_package@$test_version" http://host.docker.internal:12050
 fi

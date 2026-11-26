@@ -139,27 +139,26 @@ impl<'a> ConnectionClosed<'a> {
 }
 
 fn transport_error(code: u64) -> (TransportErrorName, Option<u64>) {
-    use TransportErrorName as Name;
     let name = match code {
-        0x00 => Name::NoError,
-        0x01 => Name::InternalError,
-        0x02 => Name::ConnectionRefused,
-        0x03 => Name::FlowControlError,
-        0x04 => Name::StreamLimitError,
-        0x05 => Name::StreamStateError,
-        0x06 => Name::FinalSizeError,
-        0x07 => Name::FrameEncodingError,
-        0x08 => Name::TransportParameterError,
-        0x09 => Name::ConnectionIdLimitError,
-        0x0a => Name::ProtocolViolation,
-        0x0b => Name::InvalidToken,
-        0x0c => Name::ApplicationError,
-        0x0d => Name::CryptoBufferExceeded,
-        0x0e => Name::KeyUpdateError,
-        0x0f => Name::AeadLimitReached,
-        0x10 => Name::NoViablePath,
-        0x100..=0x1ff => Name::Crypto((code - 0x100) as u8),
-        _ => return (Name::Unknown, Some(code)),
+        0x00 => TransportErrorName::NoError,
+        0x01 => TransportErrorName::InternalError,
+        0x02 => TransportErrorName::ConnectionRefused,
+        0x03 => TransportErrorName::FlowControlError,
+        0x04 => TransportErrorName::StreamLimitError,
+        0x05 => TransportErrorName::StreamStateError,
+        0x06 => TransportErrorName::FinalSizeError,
+        0x07 => TransportErrorName::FrameEncodingError,
+        0x08 => TransportErrorName::TransportParameterError,
+        0x09 => TransportErrorName::ConnectionIdLimitError,
+        0x0a => TransportErrorName::ProtocolViolation,
+        0x0b => TransportErrorName::InvalidToken,
+        0x0c => TransportErrorName::ApplicationError,
+        0x0d => TransportErrorName::CryptoBufferExceeded,
+        0x0e => TransportErrorName::KeyUpdateError,
+        0x0f => TransportErrorName::AeadLimitReached,
+        0x10 => TransportErrorName::NoViablePath,
+        0x100..=0x1ff => TransportErrorName::Crypto((code - 0x100) as u8),
+        _ => return (TransportErrorName::Unknown, Some(code)),
     };
     (name, None)
 }

@@ -4,7 +4,7 @@ use rama_core::{
     bytes::Bytes,
     error::{BoxError, CauseExt as _, ErrorExt as _},
 };
-use rama_quic::{Chunk, ExportKeyingMaterialError};
+use rama_quic::{Chunk, ConfigError, ExportKeyingMaterialError, TransportConfig};
 
 #[test]
 fn a_received_chunk_exposes_its_offset_and_owned_bytes() {
@@ -35,8 +35,6 @@ fn exporter_errors_support_standard_propagation_and_rama_context() {
 
 #[test]
 fn time_threshold_rejects_invalid_factors_without_changing_the_configuration() {
-    use rama_quic::{ConfigError, TransportConfig};
-
     let mut config = TransportConfig::default();
     for factor in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
         assert_eq!(

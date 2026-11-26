@@ -1,16 +1,14 @@
-use crate::std::borrow::ToOwned;
-use crate::std::vec::Vec;
+use core::str::from_utf8;
 
-use super::ExtensionValue;
-use super::{ForwardedElement, NodeId};
-use crate::forwarded::ForwardedProtocol;
-
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt};
 use rama_utils::{
+    byte_set::is_http_token,
     bytes::{trim_ows, trim_ows_start},
     macros::match_ignore_ascii_case_str,
 };
+
+use super::{ExtensionName, ExtensionValue, ForwardedElement, NodeId};
+use crate::{forwarded::ForwardedProtocol, std::vec::Vec};
 
 pub(crate) fn parse_single_forwarded_element(bytes: &[u8]) -> Result<ForwardedElement, BoxError> {
     if bytes.len() > 512 {
@@ -90,13 +88,29 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
     };
 
     loop {
-        let Some(separator_index) = bytes.iter().position(|b| *b == b'=') else {
+        let Some(separator_index) = bytes.iter().position(|b| matches!(*b, b'=' | b';' | b','))
+        else {
             bytes = trim_ows_start(bytes);
             // finished parsing
             break;
         };
 
-        let key = parse_value(trim_ows(&bytes[..separator_index]))?;
+        if bytes[separator_index] != b'=' {
+            // RFC 7239 §4 allows an empty pair, never a name without its value.
+            if !trim_ows(&bytes[..separator_index]).is_empty() {
+                return Err(BoxError::from_static_str(
+                    "Forwarded Element pair is missing its '='",
+                ));
+            }
+            bytes = &bytes[separator_index..];
+            if bytes[0] == b',' {
+                break;
+            }
+            bytes = &bytes[1..];
+            continue;
+        }
+
+        let key = parse_key(trim_ows(&bytes[..separator_index]))?;
         bytes = trim_ows_start(&bytes[separator_index + 1..]);
 
         // `unescaped` holds the decoded value only when the quoted form
@@ -148,25 +162,12 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
         }
 
         let value_bytes: &[u8] = unescaped.as_deref().unwrap_or(value_slice);
+        // RFC 7239 §4: `value = token / quoted-string`, so an IPv6 address is quoted.
         let value = if quoted {
             parse_quoted_value(value_bytes)?
         } else {
-            parse_value(value_bytes)?
+            parse_token_value(trim_ows(value_bytes))?
         };
-
-        // as defined in <https://datatracker.ietf.org/doc/html/rfc7239#section-4>:
-        //
-        // > Note that as ":" and "[]" are not valid characters in "token", IPv6
-        // > addresses are written as "quoted-string"
-        // >
-        // > cfr: <https://datatracker.ietf.org/doc/html/rfc7230#section-3.2.6>
-        // >
-        // > remark: we do not apply any validation here
-        if !quoted && value.contains(['[', ']', ':']) {
-            return Err(BoxError::from_static_str(
-                "Forwarded Element pair's value was expected to be a quoted string due to the chars it contains"
-            ).context_str_field("value", value));
-        }
 
         match_ignore_ascii_case_str! {
             match(key) {
@@ -191,11 +192,16 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
                     el.proto = Some(ForwardedProtocol::try_from(value).context("parse Forwarded Element 'proto' protocol")?);
                 },
                 _ => {
-                    el.extensions.get_or_insert_with(Default::default)
-                        .insert(key.to_owned(), ExtensionValue{
-                            value: value.to_owned(),
-                            quoted,
-                        });
+                    let extensions = el.extensions.get_or_insert_with(Default::default);
+                    let name = ExtensionName(key.into());
+                    if extensions.contains_key(&name) {
+                        return Err(BoxError::from_static_str("Forwarded Element can only contain a parameter once")
+                            .context_str_field("name", key));
+                    }
+                    extensions.insert(name, ExtensionValue{
+                        value: value.into(),
+                        quoted,
+                    });
                 }
             }
         }
@@ -275,11 +281,21 @@ fn scan_quoted_string(bytes: &[u8]) -> Result<QuotedScan, BoxError> {
     ))
 }
 
-/// Parse a `token`-form value: visible ASCII (`0x21..=0x7E`) only, no `"`.
-fn parse_value(slice: &[u8]) -> Result<&str, BoxError> {
-    if slice.iter().any(|b| !(32..127).contains(b) || *b == b'"') {
+/// Parse a pair's name, an RFC 7239 §4 `token`.
+fn parse_key(slice: &[u8]) -> Result<&str, BoxError> {
+    if !is_http_token(slice) {
         return Err(BoxError::from_static_str(
-            "value contains invalid characters",
+            "Forwarded Element pair name is not a token",
+        ));
+    }
+    from_utf8(slice).context("parse key as utf-8")
+}
+
+/// Parse an unquoted pair value, an RFC 7239 §4 `token`.
+fn parse_token_value(slice: &[u8]) -> Result<&str, BoxError> {
+    if !is_http_token(slice) {
+        return Err(BoxError::from_static_str(
+            "Forwarded Element pair value is neither a token nor a quoted string",
         ));
     }
     core::str::from_utf8(slice).context("parse value as utf-8")

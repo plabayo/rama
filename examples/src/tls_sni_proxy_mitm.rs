@@ -85,6 +85,8 @@
 //! notice that if you try to send for exampel plain-text HTTP traffic over it,
 //! that the connection will be simply aborted.
 
+use std::{sync::Arc, time::Duration};
+
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, extra::OpaqueError},
@@ -116,14 +118,12 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::server::{BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer},
     tls::{
+        boring::server::{BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer},
         client::{ServerVerifyMode, TlsClientConfig},
         server::{SniRequest, SniRouter, TlsServerConfig},
     },
 };
-
-use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -238,6 +238,7 @@ const DOMAIN_EXAMPLE: Domain = Domain::example();
 const DOMAIN_RAMAPROXY_ORG: Domain = Domain::from_static("ramaproxy.org");
 
 #[derive(Debug, Clone, Extension)]
+#[extension(scope(connection))]
 struct IngressSNI(Domain);
 
 #[derive(Debug, Clone)]
@@ -275,8 +276,10 @@ where
         // a more optimized routing approach, which on top of that
         // is probably dynamic in nature so you can update it on the fly,
         // for this example we just keep it simple with 2 hardcoded domains.
-        if sni == DOMAIN_EXAMPLE || DOMAIN_RAMAPROXY_ORG.is_parent_of(&sni) {
-            stream.extensions().insert(IngressSNI(sni.clone()));
+        if let Some(domain) = sni.as_domain()
+            && (*domain == DOMAIN_EXAMPLE || DOMAIN_RAMAPROXY_ORG.is_parent_of(domain))
+        {
+            stream.extensions().insert(IngressSNI(domain.clone()));
             self.https_svc
                 .serve(stream)
                 .await

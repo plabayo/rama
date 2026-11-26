@@ -15,7 +15,6 @@ use rama_http_types::{
         frame::{EarlyFrame, Settings},
     },
 };
-
 /// Retain existing immutable extension storage; checkout never encodes/copies frames.
 #[derive(Clone, Debug)]
 pub(super) struct H2WirePreferences {

@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use rama_core::{
     Service,
     error::BoxError,
-    extensions::{Extensions, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef, NoExtensionsTransfer},
     futures::{
         StreamExt as _,
         stream::{self, BoxStream},
@@ -21,17 +21,22 @@ use rama_net::{
         ConnectionErrorKind, ConnectorTarget, ConnectorTargetStream, EstablishedClientConnection,
         EstablishedProxyRoute, ProxyRoute,
     },
-    tls::ApplicationProtocol,
+    tls::{ApplicationProtocol, ServerName, TlsAlpn},
 };
 use rama_quic_proto::{
-    profile::{ConnectionIdProfile, QuicProfile},
+    profile::{ConnectionIdProfile, QuicProfile, TransportLimits},
     version::{ClientVersionPolicy, Version as QuicVersion},
 };
-use rama_tls::{client::TlsClientConfig, server::ServerAuthData};
+use rama_tls::{
+    client::{
+        ServerVerifyMode, TlsClientConfig, TlsProfilePreparation, TlsServerTrust, TlsServerVerify,
+    },
+    server::ServerAuthData,
+};
 
 use crate::{
-    Endpoint, EndpointConfig,
-    client::{ClientEndpoint, QuicConnector, SharedQuicEndpoint},
+    Endpoint, EndpointConfig, TransportConfig,
+    client::{ClientEndpoint, QuicConnector, SharedQuicEndpoint, with_application_stream_credit},
     test_helpers::{identity, server},
     tls::default_tls_provider,
 };
@@ -164,7 +169,7 @@ impl Service<ConnectRequest> for PathEndpoints {
             .push(input.extensions().contains::<ConnectorTarget>());
         let EstablishedClientConnection { input, mut conn } = self.shared.serve(input).await?;
         if self.peer {
-            let peer = conn.endpoint().local_addr().unwrap();
+            let peer = conn.local_addr().unwrap();
             conn = conn.with_peer(peer);
         }
         if let Some(route) = &self.route {
@@ -282,19 +287,150 @@ mod out_of_band {
     }
 }
 
+#[tokio::test]
+async fn http3_stream_credit_applies_after_ech_replaces_the_profile() {
+    for streams in [0, 2, 3, 8] {
+        let profile = QuicProfile::standard()
+            .with_versions(ClientVersionPolicy::new(QuicVersion::V1).unwrap())
+            .try_with_limits(TransportLimits {
+                initial_max_streams_uni: streams,
+                ..TransportLimits::standard()
+            })
+            .unwrap();
+        let tls = TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+        let connector = QuicConnector::new((), tls, default_tls_provider().unwrap());
+        let input = ConnectRequest::new(HostWithPort::local_ipv4(443));
+        input.extensions().insert(
+            profile
+                .clone()
+                .try_with_limits(TransportLimits {
+                    initial_max_streams_uni: streams.max(3),
+                    ..profile.limits().clone()
+                })
+                .unwrap(),
+        );
+        input
+            .extensions()
+            .insert(TlsProfilePreparation::new(move |_, _, request| {
+                request.insert(profile.clone());
+                Ok(Extensions::new())
+            }));
+        let prepared = connector.prepare(&input).await.unwrap();
+        // The credit is the connection's: the input keeps the profile as prepared.
+        let profile = input.extensions().get_ref::<QuicProfile>().unwrap();
+        assert_eq!(profile.limits().initial_max_streams_uni, streams);
+        assert_eq!(
+            prepared
+                .config
+                .transport
+                .max_concurrent_uni_streams
+                .into_inner(),
+            streams.max(3)
+        );
+    }
+}
+
+#[test]
+fn final_http3_profile_admits_critical_streams_without_reducing_other_limits() {
+    for streams in [0, 2, 3, 8] {
+        let profile = Arc::new(
+            QuicProfile::standard()
+                .try_with_limits(TransportLimits {
+                    initial_max_streams_uni: streams,
+                    ..TransportLimits::standard()
+                })
+                .unwrap(),
+        );
+        for protocols in [
+            None,
+            Some(TlsAlpn::http_2()),
+            Some(TlsAlpn([ApplicationProtocol::HTTP_3].into_iter().collect())),
+        ] {
+            let prepared =
+                with_application_stream_credit(profile.clone(), protocols.as_ref()).unwrap();
+            let http3 = protocols
+                .as_ref()
+                .is_some_and(|offer| offer.0.contains(&ApplicationProtocol::HTTP_3));
+            if http3 && streams < 3 {
+                let expected = (*profile)
+                    .clone()
+                    .try_with_limits(TransportLimits {
+                        initial_max_streams_uni: 3,
+                        ..profile.limits().clone()
+                    })
+                    .unwrap();
+                assert_eq!(*prepared, expected);
+            } else {
+                assert!(Arc::ptr_eq(&prepared, &profile));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn authentication_identity_follows_the_final_native_preparation() {
+    let identity = identity();
+    let connector = connector((), &identity);
+    let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(443));
+    input
+        .extensions()
+        .insert(TlsProfilePreparation::new(|_, effective, _| {
+            effective.insert(ServerName::from(Domain::from_static("verified.example")));
+            Ok(Extensions::new())
+        }));
+    let prepared = connector.prepare(&input).await.unwrap();
+    assert_eq!(
+        prepared.authenticated_identity,
+        Some(ServerName::from(Domain::from_static("verified.example")))
+    );
+    assert_eq!(prepared.server_name.as_ref(), "verified.example");
+}
+
+#[tokio::test]
+async fn absent_transport_uses_the_connector_default_and_a_caller_profile_answers() {
+    let identity = identity();
+    let transport = Arc::new(TransportConfig::default());
+    let connector = connector((), &identity).with_transport(transport.clone());
+    let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(443));
+    let prepared = connector.prepare(&input).await.unwrap();
+    assert!(Arc::ptr_eq(&transport, &prepared.config.transport));
+    let caller = Arc::new(
+        QuicProfile::standard().with_connection_ids(
+            ConnectionIdProfile::standard()
+                .try_with_local_len(3)
+                .unwrap(),
+        ),
+    );
+    input.extensions().insert_arc(caller.clone());
+    assert!(Arc::ptr_eq(
+        &caller,
+        &input.extensions().get_arc::<QuicProfile>().unwrap()
+    ));
+}
+
+#[test]
+fn profiles_stop_at_child_connections() {
+    let extensions = Extensions::new();
+    extensions.insert(QuicProfile::standard());
+    let child = extensions.fork_connection(&NoExtensionsTransfer::new());
+    // A QUIC profile belongs to the connection it configures.
+    assert!(child.get_ref::<QuicProfile>().is_none());
+    let own = Arc::new(QuicProfile::standard());
+    child.insert_arc(own.clone());
+    assert!(Arc::ptr_eq(&own, &child.get_arc::<QuicProfile>().unwrap()));
+}
+
 #[test]
 fn a_nested_leg_takes_its_tls_config_from_the_connector() {
-    use rama_core::extensions::NoExtensionsTransfer;
-    use rama_net::tls::TlsAlpn;
-    use rama_tls::client::{ServerVerifyMode, TlsServerName, TlsServerTrust, TlsServerVerify};
-
     let identity = identity();
     let quic = connector((), &identity);
 
     let origin = Extensions::new();
     TlsClientConfig::new()
         .with_alpn_http_1()
-        .with_server_name(Domain::from_static("origin.example").into())
+        .with_server_name(Domain::from_static("origin.example"))
         .with_server_verify(ServerVerifyMode::Disable)
         .write_to(&origin);
 
@@ -311,7 +447,7 @@ fn a_nested_leg_takes_its_tls_config_from_the_connector() {
         "the origin's ALPN is not the proxy connection's",
     );
     assert!(
-        effective.get_ref::<TlsServerName>().is_none(),
+        effective.get_ref::<ServerName>().is_none(),
         "the origin's server name is not the proxy connection's",
     );
     assert!(

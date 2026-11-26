@@ -15,6 +15,7 @@ use rama_net::{
         ConnectionError, ConnectionErrorKind, ConnectorTarget, EstablishedClientConnection,
         pool::{ConnectionReuse, ReuseKey},
     },
+    tls::ServerName,
 };
 use rama_quic::{
     Endpoint, ServerConfig,
@@ -29,7 +30,7 @@ use rama_quic_proto::{
 };
 use rama_tls::{
     ExtensionId,
-    client::{TlsClientConfig, TlsConnectionReuse, TlsPoolId, TlsServerName},
+    client::{TlsClientConfig, TlsConnectionReuse, TlsPoolId},
     server::{LeafCertRequest, ServerAuthData, TlsServerConfig},
 };
 use rama_ua::profile::{
@@ -53,6 +54,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::{sync::oneshot, task::JoinHandle};
 
 mod bindings;
+mod derived;
 mod preserve;
 mod providers;
 mod selection;
@@ -128,14 +130,17 @@ impl Fixture {
         let tls = self.connector.quic().tls_config_for(input);
         let identity = tls
             .as_extensions()
-            .get_ref::<TlsServerName>()
-            .map_or_else(|| input.authority.host.clone(), |name| name.0.clone());
+            .get_ref::<ServerName>()
+            .map_or_else(|| input.authority.host.clone(), Host::from);
         Ok(Prepared {
             authenticated_identity: provider
                 .authenticates_server(tls.as_extensions())
                 .then_some(identity),
             reuse: TlsConnectionReuse::new(provider.clone(), input.extensions()),
-            profile: input.extensions().get_arc::<QuicProfile>(),
+            profile: input
+                .extensions()
+                .get_arc::<QuicProfile>()
+                .map(with_critical_stream_credit),
         })
     }
 
@@ -213,6 +218,10 @@ async fn fixture() -> Fixture {
 }
 
 async fn fixture_with_profile(profile: QuicProfile) -> Fixture {
+    fixture_with_connections(profile, 2).await
+}
+
+async fn fixture_with_connections(profile: QuicProfile, connections: usize) -> Fixture {
     // An opaque test parameter makes ClientHello span multiple datagrams and
     // exceed automatic TLS padding, without provider-specific configuration.
     let mut extra = profile.transport_parameters().extra().to_vec();
@@ -241,7 +250,7 @@ async fn fixture_with_profile(profile: QuicProfile) -> Fixture {
     let task = spawn(async move {
         let mut send = Some(send);
         let mut captures = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..connections {
             let mut incoming = accept.accept().await.unwrap();
             let hello = incoming.client_hello().await.unwrap();
             let capture = TlsCapture::capture(
@@ -299,13 +308,19 @@ async fn fixture_with_profile(profile: QuicProfile) -> Fixture {
         .unwrap();
     let endpoint_request = ConnectRequest::new(HostWithPort::local_ipv4(port));
     endpoint_request.extensions().insert(profile.clone());
-    let client_endpoint = connector
+    let EstablishedClientConnection {
+        input: endpoint_request,
+        conn: client_endpoint,
+    } = connector
         .quic()
         .endpoints()
         .serve(endpoint_request)
         .await
+        .unwrap();
+    let client_endpoint = client_endpoint
+        .ready(&endpoint_request)
+        .await
         .unwrap()
-        .conn
         .endpoint()
         .clone();
     let source = ConnectRequest::new(HostWithPort::localhost_domain_with_port(port))

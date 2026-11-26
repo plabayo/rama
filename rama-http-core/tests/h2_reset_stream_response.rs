@@ -3,9 +3,12 @@
 
 #![expect(clippy::unwrap_used, reason = "test fixtures")]
 
-use rama_core::extensions::ExtensionsRef as _;
-use rama_core::{ServiceInput, graceful::WeakScope, service::service_fn};
-use rama_http::{Body, Request, Response, StatusCode, Version};
+use std::{convert::Infallible, time::Duration};
+
+use rama_core::{
+    ServiceInput, extensions::ExtensionsRef as _, graceful::WeakScope, service::service_fn,
+};
+use rama_http::{Body, Method, Request, Response, StatusCode, Version};
 use rama_http_core::{
     client::conn,
     h2::{Reason, client as h2_client},
@@ -13,8 +16,8 @@ use rama_http_core::{
     service::RamaHttpService,
 };
 use rama_http_types::proto::h2::ext::ResetStream;
-use std::{convert::Infallible, time::Duration};
-use tokio::time::timeout;
+use rama_net::uri::Uri;
+use tokio::{io::duplex, time::timeout};
 
 const REFUSE_HEADER: &str = "x-refuse";
 
@@ -70,6 +73,49 @@ async fn h2_server_resets_stream_with_requested_reason() {
 
     let ok = send(false).await.expect("connection must stay usable");
     assert_eq!(ok.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn h2_server_keeps_serving_after_resetting_a_connect_with_a_body() {
+    let (client_io, server_io) = duplex(64 * 1024);
+    tokio::spawn(
+        server::conn::http2::Builder::new(WeakScope::detached()).serve_connection(
+            ServiceInput::new(server_io),
+            RamaHttpService::new(service_fn(handler)),
+        ),
+    );
+    let (client, conn) = h2_client::handshake(ServiceInput::new(client_io))
+        .await
+        .unwrap();
+    tokio::spawn(conn);
+
+    timeout(Duration::from_secs(5), async move {
+        let mut sender = client.ready().await.unwrap();
+        let connect = rama_http_types::Request::builder()
+            .method(Method::CONNECT)
+            .uri(Uri::parse_authority_form("example.test:443").unwrap())
+            .version(Version::HTTP_2)
+            .header("content-length", "5")
+            .body(())
+            .unwrap();
+        let (response, _body) = sender.send_request(connect, false).unwrap();
+        let err = response
+            .await
+            .expect_err("CONNECT with a body must be reset");
+        assert_eq!(err.reason(), Some(Reason::INTERNAL_ERROR), "got: {err:?}");
+
+        let mut sender = sender.ready().await.unwrap();
+        let get = rama_http_types::Request::builder()
+            .uri("http://example.test/")
+            .version(Version::HTTP_2)
+            .body(())
+            .unwrap();
+        let (response, _) = sender.send_request(get, true).unwrap();
+        let ok = response.await.expect("connection must stay usable");
+        assert_eq!(ok.status(), StatusCode::OK);
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

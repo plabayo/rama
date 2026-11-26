@@ -2,21 +2,28 @@
 //!
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
 
-use crate::{
-    HeaderMap, HeaderValue, Method, Request, Response,
-    header::{self},
+use std::{mem, sync::Arc};
+
+use rama_core::{
+    Layer, Service,
+    error::{BoxError, BoxErrorExt as _},
+    extensions::ExtensionsRef,
+    telemetry::tracing,
 };
-use rama_core::error::BoxError;
-use rama_core::error::BoxErrorExt as _;
-use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_http_headers::{
     AccessControlAllowHeaders, AccessControlAllowMethods, AccessControlExposeHeaders,
     AccessControlMaxAge, HeaderMapExt, Vary, util::Seconds,
 };
 use rama_http_types::{body::OptionalBody, request::Parts as RequestParts};
-use rama_utils::collections::NonEmptyVec;
-use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
-use std::{mem, sync::Arc};
+use rama_utils::{
+    collections::NonEmptyVec,
+    macros::{define_inner_service_accessors, generate_set_and_with},
+};
+
+use crate::{
+    HeaderMap, HeaderValue, Method, Request, Response, StatusCode,
+    header::{self},
+};
 
 mod allow_credentials;
 mod allow_headers;
@@ -804,9 +811,9 @@ where
         {
             let req = Request::from_parts(parts, body);
             let mut response: Response<ResBody> = self.inner.serve(req).await?;
-            // The response still depends on the request's CORS headers.
-            for value in headers.get_all(header::VARY) {
-                response.headers_mut().append(header::VARY, value.clone());
+            headers.retain_names(|name| *name == header::VARY);
+            if !merge_cors_headers(response.headers_mut(), headers) {
+                return Ok(header_capacity_response());
             }
             return Ok(response.map(OptionalBody::some));
         }
@@ -828,7 +835,9 @@ where
                 let req = Request::from_parts(parts, body);
 
                 let mut response: Response<ResBody> = self.inner.serve(req).await?;
-                merge_cors_headers(response.headers_mut(), headers);
+                if !merge_cors_headers(response.headers_mut(), headers) {
+                    return Ok(header_capacity_response());
+                }
 
                 response.map(OptionalBody::some)
             } else {
@@ -846,7 +855,9 @@ where
             let req = Request::from_parts(parts, body);
 
             let mut response: Response<ResBody> = self.inner.serve(req).await?;
-            merge_cors_headers(response.headers_mut(), headers);
+            if !merge_cors_headers(response.headers_mut(), headers) {
+                return Ok(header_capacity_response());
+            }
 
             Ok(response.map(OptionalBody::some))
         }
@@ -865,35 +876,35 @@ fn vary_contains_origin(vary: &Vary) -> bool {
 
 /// Merge the locally-built CORS headers into the inner handler's response,
 /// preserving any CORS headers the inner handler already set. `Vary` is
-/// merged via append; everything else is `entry().or_insert(_)` so an
-/// explicit per-handler override always wins over the layer default.
-fn merge_cors_headers(response_headers: &mut HeaderMap, mut cors_headers: HeaderMap) {
-    // Drain all Vary values from the local map and append each to the
-    // response, preserving any Vary entries the inner handler already set.
-    let vary_values: Vec<HeaderValue> =
-        cors_headers.get_all(header::VARY).iter().cloned().collect();
-    cors_headers.remove(header::VARY);
-    for value in vary_values {
-        response_headers.append(header::VARY, value);
-    }
-
-    // For all remaining CORS headers, let the inner handler win — the
-    // CORS layer only supplies the default when no explicit value was set.
-    let mut last_name: Option<header::HeaderName> = None;
-    for (name, value) in cors_headers.drain() {
-        let entry_name = match name {
-            Some(n) => {
-                last_name = Some(n.clone());
-                n
-            }
-            // Continuation of the previous header name in `drain`'s order.
-            None => match last_name.clone() {
-                Some(n) => n,
-                None => continue,
-            },
-        };
-        if !response_headers.contains_key(&entry_name) {
-            response_headers.insert(entry_name, value);
+/// merged via append; every other name is added with all its lines only when
+/// the inner handler did not set it, so an explicit per-handler override
+/// always wins over the layer default.
+fn merge_cors_headers(response_headers: &mut HeaderMap, mut cors_headers: HeaderMap) -> bool {
+    cors_headers.retain_names(|name| *name == header::VARY || !response_headers.contains_key(name));
+    let needs_vary = cors_headers.contains_key(header::VARY);
+    if needs_vary {
+        let additional = cors_headers
+            .keys()
+            .filter(|name| !response_headers.contains_key(*name))
+            .count();
+        if response_headers.try_reserve(additional).is_err() {
+            return false;
         }
     }
+    match response_headers.try_append_map(cors_headers) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::debug!(%error, "response headers full: CORS headers not all added");
+            !needs_vary
+        }
+    }
+}
+
+fn header_capacity_response<B>() -> Response<OptionalBody<B>> {
+    let mut response = Response::new(OptionalBody::none());
+    *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
