@@ -15,7 +15,7 @@ use std::{
 use super::*;
 #[cfg(target_os = "macos")]
 use crate::native_certs::notifications::{StoreNotifications, WaitError, WaitToken};
-use crate::native_certs::{NativeCertsChanges, tests::TestDir};
+use crate::native_certs::{NativeCertsChanges, changes::WAIT_TICK, tests::TestDir};
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
@@ -148,6 +148,32 @@ fn an_idle_monitor_waits_for_its_source() {
 }
 
 #[test]
+fn a_wait_that_ends_a_tick_early_still_probes() {
+    let wake = NativeCertsWake::new().unwrap();
+    let interval = Duration::from_secs(2);
+    let mut changes = NativeCertsChanges::extra_only(interval);
+    changes.changed();
+    // The last probe is moved back so each wait ends 8ms before the next one is due.
+    let nearly_due = |changes: &mut NativeCertsChanges| {
+        let probed = Instant::now().checked_sub(interval.saturating_sub(Duration::from_millis(8)));
+        changes.probed_at = probed;
+        probed
+    };
+    let mut probed = None;
+    changes.wait_changed_with(&wake, |changes, _| {
+        probed = nearly_due(changes);
+        Ok(false)
+    });
+    assert!(changes.probed_at > probed);
+    // A wait that ends long before its timeout leaves the probe for when it is due.
+    let mut changes = NativeCertsChanges::extra_only(Duration::from_hours(1));
+    changes.changed();
+    let probed = changes.probed_at;
+    changes.wait_changed_with(&wake, |_, _| Ok(false));
+    assert_eq!(changes.probed_at, probed);
+}
+
+#[test]
 fn idle_monitor_detects_an_extra_root_file_change_through_the_os_wait() {
     const CHILD: &str = "RAMA_TEST_NATIVE_IDLE_CHILD";
     let interval = Duration::from_millis(100);
@@ -159,7 +185,7 @@ fn idle_monitor_detects_an_extra_root_file_change_through_the_os_wait() {
         assert!(!changes.changed());
         fs::write(bundle, b"changed source of another length").unwrap();
         assert!(changes.wait_changed(&wake));
-        assert!(started.elapsed() >= interval);
+        assert!(started.elapsed() >= interval.saturating_sub(WAIT_TICK));
         assert!(!changes.wait_changed(&wake));
         return;
     }

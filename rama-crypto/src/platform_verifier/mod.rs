@@ -233,10 +233,7 @@ impl AsRef<str> for ServerNameText<'_> {
 #[cfg(any(target_vendor = "apple", windows, target_os = "android", test))]
 fn server_name_str(server_name: &ServerName) -> ServerNameText<'_> {
     match (server_name.as_domain(), server_name.as_ip()) {
-        (Some(domain), _) => {
-            let text = domain.as_str();
-            ServerNameText::Borrowed(text.strip_suffix('.').unwrap_or(text))
-        }
+        (Some(domain), _) => ServerNameText::Borrowed(domain.as_non_fqdn().as_str()),
         (None, Some(ip)) => ServerNameText::Owned(ip.to_string().into_boxed_str()),
         (None, None) => ServerNameText::Owned(server_name.to_string().into_boxed_str()),
     }

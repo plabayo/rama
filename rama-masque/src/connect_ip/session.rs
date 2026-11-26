@@ -1,5 +1,6 @@
 use std::{
     fmt,
+    future::poll_fn,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
@@ -28,6 +29,7 @@ use rama_net::ip::{
 use rama_utils::{macros::generate_set_and_with, time::deadline_after};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
+    runtime::{Handle, Id},
     sync::Notify,
     task::unconstrained,
     time::{Instant, timeout_at},
@@ -486,6 +488,7 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
                 finished: false,
                 http: receiver,
                 shared,
+                idle: None,
             },
         })
     }
@@ -899,6 +902,8 @@ impl<T> Drop for ConnectIpSender<T> {
 pub struct ConnectIpReceiver<T = Upgraded> {
     http: SessionReceiver<T>,
     shared: Arc<Shared>,
+    // Kept across receives; tagged with the runtime its timer is armed on.
+    idle: Option<(Id, IdleGuard)>,
     finished: bool,
 }
 
@@ -940,9 +945,6 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
             self.http.abort();
             return Err(error);
         }
-        // Armed by this call's runtime, which a receive cancelled on another one cannot be.
-        let mut idle =
-            IdleGuard::for_activity(self.shared.config.idle_timeout, &self.shared.activity);
         loop {
             tokio::task::consume_budget().await;
             if self.shared.idle(&now) {
@@ -951,13 +953,27 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
                 return Err(ConnectIpError::Timeout);
             }
             let shared = &self.shared;
+            let kept = &mut self.idle;
+            // A timer armed on one runtime cannot be polled from another one, so each poll
+            // takes the guard its own runtime armed.
+            let expired = poll_fn(|cx| {
+                let runtime = Handle::current().id();
+                let (_, idle) = match kept.take() {
+                    Some(guard) if guard.0 == runtime => kept.insert(guard),
+                    _ => kept.insert((
+                        runtime,
+                        IdleGuard::for_activity(shared.config.idle_timeout, &shared.activity),
+                    )),
+                };
+                idle.poll_expired(cx, &shared.activity)
+            });
             // A ready event wins over an idle deadline passing at the same time; the deadline
             // is polled unconstrained so a reader spending the task budget cannot starve it.
             let received = async {
                 tokio::select! {
                     biased;
                     result = self.http.recv() => Some(result),
-                    () = unconstrained(idle.expired(&shared.activity)) => None,
+                    () = unconstrained(expired) => None,
                 }
             };
             let event = tokio::select! {

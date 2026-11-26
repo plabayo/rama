@@ -19,6 +19,9 @@ pub use wake::NativeCertsWake;
 #[cfg(target_os = "macos")]
 const DEGRADED_POLL: Duration = Duration::from_millis(250);
 
+/// Slack for an operating system wait that ends a clock tick before its timeout.
+const WAIT_TICK: Duration = Duration::from_millis(16);
+
 /// Tracks changes in the native store and configured files between probes.
 /// Each instance maintains its own cursor over store notifications and file metadata.
 pub struct NativeCertsChanges {
@@ -72,6 +75,11 @@ impl NativeCertsChanges {
             #[cfg(not(any(target_os = "macos", windows)))]
             return false;
         }
+        self.probe()
+    }
+
+    /// Probe the backing sources now, whether or not a probe is due.
+    fn probe(&mut self) -> bool {
         let extra = CertPaths::from_env_vars(ENV_EXTRA_CERT_FILE, ENV_EXTRA_CERT_DIR);
         self.probe_sources(&extra, CertPaths::from_env, Instant::now())
     }
@@ -123,6 +131,7 @@ impl NativeCertsChanges {
         mut wait: impl FnMut(&mut Self, Duration) -> io::Result<bool>,
     ) -> bool {
         let started = Instant::now();
+        let mut timed_out = false;
         loop {
             match wait(self, timeout.saturating_sub(started.elapsed())) {
                 Ok(true) if !wake.consumed() => {
@@ -136,7 +145,10 @@ impl NativeCertsChanges {
                         return true;
                     }
                 }
-                Ok(_) => break,
+                Ok(woken) => {
+                    timed_out = !woken;
+                    break;
+                }
                 Err(error) => {
                     // A wait that cannot block must neither spin nor delay a stop request.
                     warn!(%error, "could not wait for native trust store changes; backing off until the next probe");
@@ -144,6 +156,13 @@ impl NativeCertsChanges {
                     break;
                 }
             }
+        }
+        // A wait that ends a clock tick early would leave `changed` skipping the probe.
+        let until_due = self.probed_at.map_or(Duration::ZERO, |last| {
+            self.interval.saturating_sub(last.elapsed())
+        });
+        if timed_out && until_due <= WAIT_TICK {
+            return self.probe();
         }
         self.changed()
     }

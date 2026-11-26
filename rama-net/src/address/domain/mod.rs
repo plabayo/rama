@@ -153,6 +153,14 @@ impl Domain {
         self.0.last() == Some(&b'.')
     }
 
+    /// A view of this name without the trailing dot of its fully qualified form.
+    #[must_use]
+    pub fn as_non_fqdn(&self) -> DomainRef<'_> {
+        let name = self.as_str();
+        // A valid name keeps at least one label once its trailing dot is gone.
+        DomainRef::from_validated_str(name.strip_suffix('.').unwrap_or(name))
+    }
+
     /// Returns `true` if this domain is a wildcard domain (i.e. its leftmost
     /// label is `"*"`).
     ///

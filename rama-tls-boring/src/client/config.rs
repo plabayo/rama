@@ -225,6 +225,11 @@ impl BoringTlsConnectorConfig<'_> {
         }
         if let Some(sni_policy) = sni_policy {
             builder.set_component(*sni_policy);
+            if **sni_policy == TlsClientSni::Verbatim
+                && let Some(name) = server_name
+            {
+                builder.set_component(&VerbatimSniSpelling(name.to_string().into_boxed_str()));
+            }
         }
         if let Some(scope) = session_profile_scope {
             builder.set_component(*scope);
@@ -455,7 +460,13 @@ impl BoringTlsConnectorConfig<'_> {
             return false;
         };
         match (name.as_domain(), name.as_ip()) {
-            (Some(domain), _) => certificate.check_host(domain.as_str()).unwrap_or(false),
+            // The engine compares names exactly, so the trailing dot is left out.
+            (Some(domain), _) => certificate
+                .check_host(
+                    name.as_dns_host()
+                        .map_or(domain.as_str(), |host| host.as_str()),
+                )
+                .unwrap_or(false),
             (None, Some(address)) => certificate
                 .check_ip_asc(&address.to_string())
                 .unwrap_or(false),
@@ -984,6 +995,17 @@ pub struct BoringExtensionOrder(pub Vec<ExtensionId>);
 #[extension(tags(tls), scope(connection))]
 pub struct BoringPermuteExtensions(pub bool);
 
+/// The spelling a verbatim SNI puts on the wire, which server name equality does not tell apart.
+struct VerbatimSniSpelling(Box<str>);
+
+impl TlsPoolComponent for VerbatimSniSpelling {
+    type Identity = Box<str>;
+
+    fn pool_component_identity(&self) -> Box<str> {
+        self.0.clone()
+    }
+}
+
 /// What a ClientHello does with listed values BoringSSL cannot negotiate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls), scope(connection))]
@@ -1154,19 +1176,8 @@ impl std::fmt::Debug for BoringServerVerifyCertStore {
 
 impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
     fn rama_from(hello: &ClientHello) -> Self {
-        let mut config = Self::new().with_sni_policy(
-            if hello
-                .ext_server_name()
-                .and_then(|name| name.as_ip())
-                .is_some()
-            {
-                TlsClientSni::IncludeIp
-            } else if hello.ext_server_domain().is_some() {
-                TlsClientSni::Auto
-            } else {
-                TlsClientSni::Disabled
-            },
-        );
+        let mut config =
+            Self::new().with_sni_policy(TlsClientSni::mirroring(hello.ext_server_name()));
 
         // Every shaping piece is set explicitly, absent extensions included,
         // so a layered base config cannot add anything the hello did not offer.
@@ -1416,6 +1427,7 @@ mod pool_tests {
     use rama_boring::x509::store::X509StoreBuilder;
     use rama_core::{combinators::Either, extensions::Extensions};
     use rama_crypto::platform_verifier::PlatformVerifier;
+    use rama_net::address::Domain;
     use rama_tls::{
         ProtocolVersion,
         client::{
@@ -1435,6 +1447,7 @@ mod pool_tests {
         for policy in [
             TlsClientSni::Auto,
             TlsClientSni::IncludeIp,
+            TlsClientSni::Verbatim,
             TlsClientSni::Disabled,
         ] {
             let config = TlsClientConfig::new().with_sni_policy(policy);
@@ -1448,6 +1461,7 @@ mod pool_tests {
             for other in [
                 TlsClientSni::Auto,
                 TlsClientSni::IncludeIp,
+                TlsClientSni::Verbatim,
                 TlsClientSni::Disabled,
             ] {
                 let config = TlsClientConfig::new().with_sni_policy(other);
@@ -1466,6 +1480,21 @@ mod pool_tests {
                     view.sni_policy == other.sni_policy
                 );
             }
+        }
+    }
+
+    #[test]
+    fn verbatim_sni_separates_the_spellings_of_one_server_name() {
+        for (policy, shared) in [(TlsClientSni::Auto, true), (TlsClientSni::Verbatim, false)] {
+            let config = |name: &'static str| {
+                TlsClientConfig::new()
+                    .with_server_name(Domain::from_static(name))
+                    .with_sni_policy(policy)
+            };
+            let (rooted, dotted) = (config("example.test"), config("example.test."));
+            let rooted = BoringTlsConnectorConfig::from_extensions(rooted.as_extensions());
+            let dotted = BoringTlsConnectorConfig::from_extensions(dotted.as_extensions());
+            assert_eq!(rooted.pool_id() == dotted.pool_id(), shared, "{policy:?}");
         }
     }
 
@@ -2025,6 +2054,12 @@ mod authenticated_alias_tests {
         let policy = Extensions::new();
         assert!(matches(&policy, leaf, &first));
         assert!(matches(&policy, leaf, &second));
+        // The root dot names the same host.
+        assert!(matches(
+            &policy,
+            leaf,
+            &ServerName::from(Domain::from_static("a.example."))
+        ));
         assert!(!matches(
             &policy,
             leaf,

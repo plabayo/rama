@@ -705,11 +705,7 @@ where
                 .as_extensions()
                 .get_ref::<TlsClientSni>();
             tls.set_sni_policy(configured.copied().unwrap_or_else(|| {
-                match self.peeked.client_hello.ext_server_name() {
-                    Some(name) if name.as_ip().is_some() => TlsClientSni::IncludeIp,
-                    Some(_) => TlsClientSni::Auto,
-                    None => TlsClientSni::Disabled,
-                }
+                TlsClientSni::mirroring(self.peeked.client_hello.ext_server_name())
             }));
             // The mirrored certificate is built from the origin's leaf.
             tls.set_store_server_cert_chain(true);

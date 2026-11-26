@@ -227,12 +227,20 @@ impl RustlsTlsProvider {
         request: ClientConfigRequest<'_>,
         verification: Option<&RustlsServerVerification>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
-        if request.config().as_extensions().get_ref::<TlsClientSni>()
-            == Some(&TlsClientSni::IncludeIp)
-        {
-            return Err(
-                BoxError::from_static_str("IP literal SNI requires the BoringSSL backend").into(),
-            );
+        match request.config().as_extensions().get_ref::<TlsClientSni>() {
+            Some(TlsClientSni::IncludeIp) => {
+                return Err(BoxError::from_static_str(
+                    "IP literal SNI requires the BoringSSL backend",
+                )
+                .into());
+            }
+            Some(TlsClientSni::Verbatim) => {
+                return Err(BoxError::from_static_str(
+                    "verbatim SNI requires the BoringSSL backend",
+                )
+                .into());
+            }
+            Some(TlsClientSni::Auto | TlsClientSni::Disabled) | None => {}
         }
         let resolution = request.resolve_target_ech(false)?;
         if let Some(resolution) = &resolution
@@ -902,6 +910,33 @@ mod tests {
     }
 
     #[test]
+    fn verbatim_sni_does_not_share_a_config_between_spellings_of_one_name() {
+        let provider = Arc::new(BoringTlsProvider::new());
+        let cache = ClientConfigCache::new(provider, TlsOptions::default());
+        for (policy, shared) in [(TlsClientSni::Auto, true), (TlsClientSni::Verbatim, false)] {
+            let config = |name: &'static str| {
+                TlsClientConfig::new()
+                    .with_server_verify(ServerVerifyMode::Disable)
+                    .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
+                    .with_server_name(Domain::from_static(name))
+                    .with_sni_policy(policy)
+            };
+            let (rooted, dotted) = (config("example.test"), config("example.test."));
+            let rooted = cache
+                .client_config(&rooted, rooted.as_extensions())
+                .unwrap();
+            let dotted = cache
+                .client_config(&dotted, dotted.as_extensions())
+                .unwrap();
+            assert_eq!(
+                Arc::ptr_eq(&rooted.crypto, &dotted.crypto),
+                shared,
+                "{policy:?}"
+            );
+        }
+    }
+
+    #[test]
     fn cached_rustls_configs_reject_ip_literal_sni() {
         let provider = Arc::new(RustlsTlsProvider::new(rustls_crypto::configured_provider()));
         let cache = ClientConfigCache::new(provider, TlsOptions::default());
@@ -911,12 +946,23 @@ mod tests {
         cache
             .client_config(&config, config.as_extensions())
             .unwrap();
-        let opted = config.with_sni_policy(TlsClientSni::IncludeIp);
-        let error = cache
-            .client_config(&opted, opted.as_extensions())
-            .err()
-            .unwrap();
-        assert!(format!("{error:?}").contains("IP literal SNI requires the BoringSSL backend"));
+        for (policy, refusal) in [
+            (
+                TlsClientSni::IncludeIp,
+                "IP literal SNI requires the BoringSSL backend",
+            ),
+            (
+                TlsClientSni::Verbatim,
+                "verbatim SNI requires the BoringSSL backend",
+            ),
+        ] {
+            let opted = config.clone().with_sni_policy(policy);
+            let error = cache
+                .client_config(&opted, opted.as_extensions())
+                .err()
+                .unwrap();
+            assert!(format!("{error:?}").contains(refusal), "{policy:?}");
+        }
     }
 
     #[test]

@@ -138,10 +138,18 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
 
 /// Reject settings this backend cannot honour, whatever configuration is cached.
 pub(super) fn reject_unsupported(value: &RustlsTlsConnectorConfig<'_>) -> Result<(), BoxError> {
-    if value.sni_policy == Some(&TlsClientSni::IncludeIp) {
-        return Err(BoxError::from_static_str(
-            "IP literal SNI requires the BoringSSL backend",
-        ));
+    match value.sni_policy {
+        Some(TlsClientSni::IncludeIp) => {
+            return Err(BoxError::from_static_str(
+                "IP literal SNI requires the BoringSSL backend",
+            ));
+        }
+        Some(TlsClientSni::Verbatim) => {
+            return Err(BoxError::from_static_str(
+                "verbatim SNI requires the BoringSSL backend",
+            ));
+        }
+        Some(TlsClientSni::Auto | TlsClientSni::Disabled) | None => {}
     }
     if value.ech_requirement == Some(&EchRequirement::Required) {
         return Err(BoxError::from_static_str(
@@ -542,6 +550,14 @@ mod tests {
             error
                 .to_string()
                 .contains("IP literal SNI requires the BoringSSL backend")
+        );
+        let verbatim = unsupported.with_sni_policy(TlsClientSni::Verbatim);
+        let error =
+            TlsConnectorData::from_extensions(verbatim.as_extensions(), None, &cache).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("verbatim SNI requires the BoringSSL backend")
         );
     }
 
