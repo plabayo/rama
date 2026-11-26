@@ -7,6 +7,7 @@ use std::str::FromStr;
 use std::{cmp, fmt, str};
 
 use crate::header::name::HeaderName;
+use crate::proto::ext::Protocol;
 use rama_utils::collections::smallvec::SmallVec;
 
 /// Represents an HTTP header field value.
@@ -494,6 +495,16 @@ impl From<HeaderName> for HeaderValue {
     fn from(h: HeaderName) -> HeaderValue {
         HeaderValue {
             inner: h.into_bytes(),
+            is_sensitive: false,
+        }
+    }
+}
+
+impl From<Protocol> for HeaderValue {
+    #[inline]
+    fn from(protocol: Protocol) -> HeaderValue {
+        HeaderValue {
+            inner: protocol.into_bytes(),
             is_sensitive: false,
         }
     }

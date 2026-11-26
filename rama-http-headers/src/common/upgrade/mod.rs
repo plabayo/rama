@@ -1,4 +1,5 @@
 use rama_http_types::HeaderValue;
+use rama_http_types::proto::ext::Protocol;
 
 /// `Upgrade` header, defined in [RFC7230](https://datatracker.ietf.org/doc/html/rfc7230#section-6.7)
 ///
@@ -82,6 +83,20 @@ impl Upgrade {
     #[must_use]
     pub fn websocket() -> Self {
         Self(HeaderValue::from_static("websocket"))
+    }
+
+    /// Constructs an `Upgrade` header offering only `protocol`.
+    #[must_use]
+    pub fn from_protocol(protocol: Protocol) -> Self {
+        Self(protocol.into())
+    }
+
+    /// Returns true if this header offers only `protocol`, compared case-insensitively.
+    pub fn is_protocol(&self, protocol: &Protocol) -> bool {
+        self.0
+            .as_bytes()
+            .trim_ascii()
+            .eq_ignore_ascii_case(protocol.as_str().as_bytes())
     }
 
     /// Returns true if this is an `Upgrade: websocket` header.

@@ -273,8 +273,14 @@ mod tests {
                 None,
             ),
             (
-                "other upgrade",
-                request(Version::HTTP_11, Method::GET, &upgrade("test")),
+                "connect-udp upgrade",
+                request(Version::HTTP_11, Method::GET, &upgrade("connect-udp")),
+                None,
+                Some("connect-udp"),
+            ),
+            (
+                "h2c upgrade",
+                request(Version::HTTP_11, Method::GET, &upgrade("h2c")),
                 Some(Version::HTTP_11),
                 None,
             ),

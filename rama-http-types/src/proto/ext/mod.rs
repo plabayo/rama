@@ -84,6 +84,10 @@ impl Protocol {
         self.as_str().eq_ignore_ascii_case(Self::WEBSOCKET.as_str())
     }
 
+    pub(crate) fn into_bytes(self) -> Bytes {
+        self.value.into_bytes()
+    }
+
     /// Parses a `:protocol` value from raw wire bytes, validating that it is a non-empty token.
     /// The same protocol in bytes of its own.
     pub(crate) fn detached(&self) -> Self {

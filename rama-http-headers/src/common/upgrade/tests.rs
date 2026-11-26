@@ -1,5 +1,6 @@
 use super::Upgrade;
 use crate::common::test_decode;
+use rama_http_types::proto::ext::Protocol;
 
 #[test]
 fn websocket_offer_can_contain_other_protocols() {
@@ -25,4 +26,20 @@ fn every_upgrade_line_counts() {
     assert!(upgrade.contains_websocket());
     let upgrade: Upgrade = test_decode(&["WebSocket"]).unwrap();
     assert!(upgrade.is_websocket());
+}
+
+#[test]
+fn upgrade_for_a_protocol() {
+    let upgrade = Upgrade::from_protocol(Protocol::CONNECT_UDP);
+    assert_eq!(upgrade.as_bytes(), b"connect-udp");
+    assert!(upgrade.is_protocol(&Protocol::CONNECT_UDP));
+    assert!(!upgrade.is_protocol(&Protocol::WEBSOCKET));
+    for value in [" Connect-UDP\t", "connect-udp"] {
+        let upgrade: Upgrade = test_decode(&[value]).unwrap();
+        assert!(upgrade.is_protocol(&Protocol::CONNECT_UDP), "{value:?}");
+    }
+    for value in ["connect-udp, websocket", "connect-udp/1"] {
+        let upgrade: Upgrade = test_decode(&[value]).unwrap();
+        assert!(!upgrade.is_protocol(&Protocol::CONNECT_UDP), "{value:?}");
+    }
 }
